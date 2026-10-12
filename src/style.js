@@ -90,17 +90,41 @@ export function noOutline(material) {
 }
 
 /**
- * Give a non-indexed geometry the trivial index 0..n-1 (in place; returns it).
- * mergeGeometries needs every part indexed or none, so this lets indexed parts
- * stay indexed (shared vertices stored once) instead of de-indexing them all.
+ * Prepare a part for mergeGeometries, which needs every part indexed or none, so
+ * indexed parts can stay indexed (shared vertices stored once) instead of being
+ * de-indexed. Works in place and returns `g`:
+ * - a non-indexed geometry gets the trivial index 0..n-1;
+ * - an indexed one drops any vertices its index never uses (toNonIndexed() used to
+ *   drop them too; kept, they would waste memory and grow the bounding sphere,
+ *   which decides frustum culling). Vertex order is kept.
  */
 export function ensureIndex(g) {
+  const n = g.attributes.position.count;
+  const big = (count) => (count > 65535 ? Uint32Array : Uint16Array);
   if (!g.index) {
-    const n = g.attributes.position.count;
-    const index = new (n > 65535 ? Uint32Array : Uint16Array)(n);
+    const index = new (big(n))(n);
     for (let i = 0; i < n; i++) index[i] = i;
     g.setIndex(new THREE.BufferAttribute(index, 1));
+    return g;
   }
+  const index = g.index.array;
+  const map = new Int32Array(n).fill(-1);
+  for (let i = 0; i < index.length; i++) map[index[i]] = 0;
+  let used = 0;
+  for (let v = 0; v < n; v++) if (map[v] === 0) map[v] = used++;
+  const all = [...Object.values(g.attributes), ...Object.values(g.morphAttributes).flat()];
+  if (used === n || all.some((a) => a.isInterleavedBufferAttribute)) return g;
+  const pack = (a) => {
+    const k = a.itemSize;
+    const out = new a.array.constructor(used * k);
+    for (let v = 0; v < n; v++) if (map[v] >= 0) for (let c = 0; c < k; c++) out[map[v] * k + c] = a.array[v * k + c];
+    return new THREE.BufferAttribute(out, k, a.normalized);
+  };
+  for (const name of Object.keys(g.attributes)) g.setAttribute(name, pack(g.attributes[name]));
+  for (const name of Object.keys(g.morphAttributes)) g.morphAttributes[name] = g.morphAttributes[name].map(pack);
+  const packed = new (big(used))(index.length);
+  for (let i = 0; i < index.length; i++) packed[i] = map[index[i]];
+  g.setIndex(new THREE.BufferAttribute(packed, 1));
   return g;
 }
 
@@ -121,14 +145,13 @@ export function mergeStatic(root) {
     if (obj === root) return;
     for (let p = obj; p && p !== root; p = p.parent) if (p.userData.keep) return;
     if (!obj.isMesh || obj.isInstancedMesh || Array.isArray(obj.material)) return;
-    let g = obj.geometry.clone();
+    const src = obj.geometry;
+    // A part without normals gets flat ones, as it always has (so de-index it first).
+    // (Plain BufferGeometry copy: clone() would rebuild a default primitive first.)
+    const g = src.index && !src.attributes.normal ? src.toNonIndexed() : new THREE.BufferGeometry().copy(src);
     // Merged geometries must share attribute sets.
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
-    if (!g.attributes.normal) {
-      // flat-shaded, as a part without normals always was
-      if (g.index) g = g.toNonIndexed();
-      g.computeVertexNormals();
-    }
+    if (!g.attributes.normal) g.computeVertexNormals();
     if (!g.attributes.uv) {
       g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     }

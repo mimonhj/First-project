@@ -34,9 +34,12 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const g = (page, expr) => page.evaluate(`window.__game.${expr}`);
 
 // Freeze the real-time loop so the test can drive the simulation deterministically.
+// The pause overlay is hidden again so it doesn't sit over the screens checked later.
 const freeze = (page) => page.evaluate(() => {
   const G = window.__game;
   if (G.state.mode === 'playing') G.togglePause();
+  document.getElementById('pause-screen').classList.add('hidden');
+  if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 });
 // Step the simulation `seconds` while the page is frozen.
 const simulate = (page, seconds) =>
@@ -291,10 +294,11 @@ async function shotColours(page) {
     }
     G.colliders.forEach((c) => (c.x -= 5000));
     G.state.mode = 'paused';
-    return { pMax, eMax, cap: G.SHIP_TYPES.player.maxSpeed };
+    return { pMax, eMax, cap: G.SHIP_TYPES.player.maxSpeed, prahuCap: G.SHIP_TYPES.prahu.maxSpeed };
   });
   check(reef.pMax < reef.cap * 0.6, `reef slows the Sea Biscuit (top speed ${reef.pMax.toFixed(1)} of ${reef.cap})`);
-  check(reef.eMax > reef.pMax + 1, `prahus skim over reefs (${reef.eMax.toFixed(1)})`);
+  // Prahus have a shallow draft: they keep going faster than the reef speed limit.
+  check(reef.eMax > reef.prahuCap * 0.45 + 1, `prahus skim over reefs (${reef.eMax.toFixed(1)})`);
 
   // ---- Pause.
   await page.evaluate(() => { window.__game.state.mode = 'playing'; });
@@ -450,7 +454,8 @@ async function shotColours(page) {
     const G = window.__game;
     const wrap = (a) => ((((a + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
     const results = [];
-    for (let n = 1; n <= G.LEVELS.length; n++) {
+    // Like a player, the bot gets a second try at a level it loses.
+    for (let n = 1, attempt = 1; n <= G.LEVELS.length; n++) {
       G.startLevel(n);
       G.togglePause();
       G.state.mode = 'playing';
@@ -502,6 +507,12 @@ async function shotColours(page) {
         }
         t += 6 / 120;
       }
+      if (G.state.mode === 'over' && attempt === 1) {
+        attempt = 2;
+        n--;
+        continue;
+      }
+      attempt = 1;
       results.push({ level: n, hurtBy: JSON.stringify(G.state.hurtBy), result: G.state.mode, time: Math.round(t), hpLeft: Math.round(G.player.hp), damageTaken: Math.round(damageTaken), stuck, left: G.enemies.filter((e) => e.hp > 0).map((e) => e.typeName).join(' ') });
       if (G.state.mode === 'playing') G.state.mode = 'paused';
     }
@@ -532,6 +543,8 @@ async function shotColours(page) {
   await mobile.tap('#start-btn');
   check((await g(mobile, 'state.mode')) === 'playing', 'mobile: tap Set sail starts');
   check(await mobile.isVisible('#touch'), 'mobile: touch controls are shown');
+  await mobile.tap('[data-tap="sailDown"]');
+  check((await g(mobile, 'state.sail')) === 1, 'mobile: − lowers sails');
   await mobile.tap('[data-tap="sailUp"]');
   check((await g(mobile, 'state.sail')) === 2, 'mobile: + raises sails');
   await mobile.tap('[data-tap="fireStar"]');

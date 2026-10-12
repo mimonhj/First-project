@@ -10,8 +10,15 @@
   --teal: #1fb5b0;
   --sea: #2f8fd8;
   --orange: #ff9f1c;
-  --head: "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif;
-  --body: "Fredoka", "Trebuchet MS", system-ui, sans-serif;
+  /* The web fonts load without blocking. Until they arrive (or when the font host is unreachable)
+     these chunky, rounded system fonts stand in: SF Rounded on Apple (ui-rounded), Arial Rounded on
+     macOS Chrome, Segoe UI Black / Comic Sans on Windows, Roboto Black on Android. */
+  --head: "Luckiest Guy", ui-rounded, "Arial Rounded MT Bold", "Segoe UI Black", "Comic Sans MS", "Arial Black", system-ui, sans-serif;
+  --body: "Fredoka", ui-rounded, "Nunito", "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  /* HUD geometry shared by several rules */
+  --edge: 12px;     /* gap between HUD and screen edge */
+  --mm: 150px;      /* minimap diameter */
+  --top-h: 61px;    /* height of the top HUD row (cards + shadow) */
 }
 
 html, body {
@@ -25,6 +32,16 @@ html, body {
   -webkit-user-select: none;
   user-select: none;
   touch-action: none;
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Display type. Luckiest Guy has a single weight: ask for 900 so the fallback fonts come out
+   chunky, and turn off faux bold so Luckiest Guy itself is drawn as designed. */
+.value, .icon-btn, .boss-name, .sails, .banner, h1, h2, .lvl-num, .btn, .touch button,
+.hitmark, .fire-tag, .final strong, .new-best {
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
 }
 
 #game {
@@ -48,23 +65,25 @@ html, body {
 
 .label {
   font-size: 11px;
+  line-height: 1.3;
   text-transform: uppercase;
   letter-spacing: 0.06em;
   color: #7a5a3a;
+  white-space: nowrap;
 }
 
 .value {
-  font-family: var(--head);
   font-size: 22px;
   line-height: 1.1;
   letter-spacing: 0.02em;
+  white-space: nowrap;
 }
 
 .hud-top {
   position: fixed;
-  top: 12px;
-  left: 12px;
-  right: 12px;
+  top: var(--edge);
+  left: var(--edge);
+  right: var(--edge);
   display: flex;
   gap: 10px;
   align-items: stretch;
@@ -72,10 +91,24 @@ html, body {
 }
 
 .hull { min-width: 200px; }
-.level .value { font-size: 18px; white-space: nowrap; }
+.hull .label { overflow: hidden; text-overflow: ellipsis; } /* very narrow phones: no spill under the next card */
+.level { min-width: 0; overflow: hidden; }
+.level .value { font-size: 18px; overflow: hidden; text-overflow: ellipsis; }
 .gold .value { color: #c47f00; }
 
+/* Hull card shakes and flashes red when the ship is hit. */
+.hull.hurt { animation: hurt 0.35s ease-out; }
+@keyframes hurt {
+  0% { transform: translateX(0); background: #ffc2bd; border-color: var(--red); }
+  20% { transform: translateX(-5px) rotate(-1.5deg); }
+  40% { transform: translateX(4px) rotate(1deg); background: #ffd9d4; }
+  60% { transform: translateX(-3px); }
+  80% { transform: translateX(2px); }
+  100% { transform: none; background: var(--paper); border-color: var(--ink); }
+}
+
 .bar {
+  position: relative;
   height: 16px;
   margin-top: 4px;
   width: 100%;
@@ -86,47 +119,95 @@ html, body {
 }
 .bar.small { height: 12px; width: 92px; border-width: 2px; }
 .fill { height: 100%; width: 100%; border-radius: 6px; transition: width 0.12s linear; box-shadow: inset 0 -4px 0 rgba(0, 0, 0, 0.18), inset 0 3px 0 rgba(255, 255, 255, 0.35); }
+.bar > .fill { position: relative; } /* above the ghost */
 .fill.good { background: #4cd964; }
 .fill.warn { background: var(--orange); }
 .fill.bad { background: var(--red); }
 .fill.reload { background: var(--gold); transition: none; }
+/* Pale segment that lingers behind the hull fill after a hit, showing how much it took. */
+.ghost {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  width: 0;
+  background: #fff3c4;
+  border-radius: 6px;
+}
 
 .icon-btn {
-  margin-left: auto;
   pointer-events: auto;
-  font-family: var(--head);
   font-size: 20px;
+  line-height: 1;
   color: var(--ink);
   cursor: pointer;
   min-width: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
 }
 .icon-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+#mute-btn { margin-left: auto; }
 
+/* Speaker glyph shared by both mute buttons; .muted swaps the sound waves for a red cross. */
+.ico {
+  width: 24px;
+  height: 24px;
+  fill: none;
+  stroke: var(--ink);
+  stroke-width: 2.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.ico .spk { fill: var(--ink); }
+.ico .cross { display: none; stroke: var(--red); stroke-width: 3; }
+.mute-btn.muted .ico .waves { display: none; }
+.mute-btn.muted .ico .cross { display: inline; }
+.mute-btn.muted { background: #e8dcc2; }
+.mute-btn.muted .ico .spk { fill: #7a6a5a; stroke: #7a6a5a; }
+
+/* Boss health: centred under the top HUD row. */
 .boss {
   position: fixed;
-  top: 84px;
+  top: calc(var(--edge) + var(--top-h) + 10px);
   left: 50%;
   transform: translateX(-50%);
   width: min(460px, 70vw);
   text-align: center;
   pointer-events: none;
 }
+/* The name sits inside the bar, so the whole thing is one slim strip (less of the boss ship hidden). */
+.boss { display: grid; }
+.boss > .boss-name, .boss > .boss-bar { grid-area: 1 / 1; }
 .boss-name {
-  font-family: var(--head);
-  font-size: 24px;
-  color: var(--orange);
+  position: relative;
+  z-index: 1;
+  align-self: center;
+  padding: 0 14px;
+  font-size: 18px;
+  line-height: 1;
+  color: var(--paper);
   -webkit-text-stroke: 1.5px var(--ink);
-  text-shadow: 0 3px 0 var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 2px 0 var(--ink);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
-.boss-bar { height: 20px; }
-.boss-bar .fill { background: linear-gradient(90deg, #ff3b1f, #ff9f1c); }
+.boss-bar { height: 30px; margin-top: 0; border-radius: 12px; box-shadow: 0 4px 0 var(--ink); }
+.boss-bar .fill { background: linear-gradient(90deg, #ff3b1f, #ff9f1c); border-radius: 8px; }
 
+/* Minimap: bottom-right on desktop, clear of the enemy name tags that float up and right of the
+   ship when you trade broadsides. Touch layouts move it to the top-right (the touch pads own the
+   bottom corners). */
 #minimap {
   position: fixed;
-  top: 84px;
-  right: 12px;
-  width: 150px;
-  height: 150px;
+  right: calc(var(--edge) + 4px);
+  bottom: 24px;
+  width: var(--mm);
+  height: var(--mm);
   border-radius: 50%;
   border: 4px solid var(--ink);
   box-shadow: 0 0 0 4px var(--paper), 0 0 0 7px var(--ink), 0 6px 0 7px var(--ink);
@@ -143,25 +224,168 @@ html, body {
   pointer-events: none;
 }
 
-.guns { display: flex; gap: 22px; align-items: flex-end; padding: 8px 16px 10px; }
-.gun { display: flex; flex-direction: column; align-items: center; gap: 2px; }
-.sails { font-family: var(--head); font-size: 17px; color: var(--sea); }
+.guns { display: flex; gap: 14px; align-items: flex-end; padding: 7px 12px 8px; }
+.gun {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 6px 3px;
+  border-radius: 10px;
+}
+.sails { font-size: 17px; line-height: 1.2; color: var(--sea); white-space: nowrap; }
+.steer-alt { font-size: 11px; line-height: 1.3; color: #7a5a3a; white-space: nowrap; }
+.steer-alt kbd { font-size: 9px; min-width: 16px; padding: 0 4px; box-shadow: 0 1px 0 var(--ink); margin: 0 0 0 2px; }
+
+/* An enemy is inside this side's firing arc: dim ring while reloading, a pulsing gold glow and a
+   FIRE! tag once the guns are loaded. */
+.gun.target:not(.ready) { box-shadow: 0 0 0 2px rgba(196, 127, 0, 0.55); }
+.gun.target.ready {
+  background: #fff9dd;
+  box-shadow: 0 0 0 3px var(--gold), 0 0 0 5px var(--ink);
+  animation: fire-glow 0.6s ease-in-out infinite alternate;
+}
+@keyframes fire-glow {
+  from { box-shadow: 0 0 0 3px var(--gold), 0 0 0 5px var(--ink), 0 0 4px 4px rgba(255, 201, 60, 0.4); }
+  to { box-shadow: 0 0 0 3px var(--gold), 0 0 0 5px var(--ink), 0 0 16px 9px rgba(255, 201, 60, 0.95); }
+}
+.fire-tag {
+  display: none;
+  position: absolute;
+  top: -19px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 2px 8px 1px;
+  font-size: 12px;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--red);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  white-space: nowrap;
+  text-shadow: 0 1px 0 var(--ink);
+}
+.gun.target.ready .fire-tag { display: block; animation: tag-bob 0.6s ease-in-out infinite alternate; }
+@keyframes tag-bob {
+  from { transform: translateX(-50%) translateY(0) scale(1); }
+  to { transform: translateX(-50%) translateY(-2px) scale(1.08); }
+}
+
+/* Screen-edge flash on the side a hit came from. main.js re-adds .on per hit; the animation
+   fades it out by itself. */
+.edge {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+}
+.edge.left { background: linear-gradient(90deg, rgba(230, 57, 70, 0.6), rgba(230, 57, 70, 0.25) 9%, rgba(230, 57, 70, 0) 22%); }
+.edge.right { background: linear-gradient(270deg, rgba(230, 57, 70, 0.6), rgba(230, 57, 70, 0.25) 9%, rgba(230, 57, 70, 0) 22%); }
+.edge.lava.left { background: linear-gradient(90deg, rgba(255, 128, 20, 0.65), rgba(255, 128, 20, 0.28) 9%, rgba(255, 128, 20, 0) 22%); }
+.edge.lava.right { background: linear-gradient(270deg, rgba(255, 128, 20, 0.65), rgba(255, 128, 20, 0.28) 9%, rgba(255, 128, 20, 0) 22%); }
+.edge.on { animation: edge-flash 0.45s ease-out both; }
+@keyframes edge-flash {
+  from { opacity: 1; }
+  to { opacity: 0; }
+}
+
+/* HIT! / SUNK! pop on the side the volley was fired. */
+.hitmark {
+  position: fixed;
+  top: 40%;
+  font-size: clamp(30px, 4.6vw, 54px);
+  line-height: 1;
+  color: var(--gold);
+  -webkit-text-stroke: 2px var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 4px 0 var(--ink);
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+}
+.hitmark.left { left: 12%; transform-origin: 30% 60%; }
+.hitmark.right { right: 12%; transform-origin: 70% 60%; }
+.hitmark.sunk { color: var(--orange); font-size: clamp(38px, 6.4vw, 74px); }
+.hitmark.pop { animation: hitmark 0.7s ease-out both; }
+@keyframes hitmark {
+  0% { opacity: 0; transform: scale(0.3) rotate(-10deg); }
+  14% { opacity: 1; transform: scale(1.18) rotate(4deg); }
+  28% { opacity: 1; transform: scale(1) rotate(0); }
+  70% { opacity: 1; transform: translateY(-6px); }
+  100% { opacity: 0; transform: translateY(-22px); }
+}
+
+/* Hint bubble: parchment speech bubble centred above the bottom gun card. */
+.hint-bubble {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 104px;
+  margin: 0 auto;
+  width: max-content;
+  max-width: min(520px, 90vw);
+  padding: 8px 16px 9px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 4px 0 var(--ink);
+  font-size: 16px;
+  line-height: 1.35;
+  text-align: center;
+  white-space: normal;
+  text-wrap: balance;
+  pointer-events: none;
+  animation: hint-in 0.35s cubic-bezier(0.2, 1.5, 0.4, 1), hint-bob 2.6s ease-in-out 0.35s infinite;
+}
+.hint-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -10px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  background: var(--paper);
+  border-right: 3px solid var(--ink);
+  border-bottom: 3px solid var(--ink);
+  border-bottom-right-radius: 3px;
+  transform: rotate(45deg);
+}
+.hint-bubble b { color: var(--red); }
+.hint-bubble kbd { font-size: 12px; padding: 0 6px; }
+@keyframes hint-in {
+  from { opacity: 0; transform: translateY(12px) scale(0.85); }
+  to { opacity: 1; transform: none; }
+}
+@keyframes hint-bob {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-4px); }
+}
 
 /* ---------- Banner ---------- */
 .banner {
   position: fixed;
-  top: 24%;
+  /* below the boss bar (which ends ~120px down) even on short screens */
+  top: max(24%, 132px);
   left: 50%;
   transform: translateX(-50%);
+  width: max-content;
+  max-width: min(92vw, 760px);
   font-family: var(--head);
   font-size: clamp(26px, 4.4vw, 52px);
+  line-height: 1.12;
   color: var(--gold);
   text-align: center;
   -webkit-text-stroke: 2.5px var(--ink);
   paint-order: stroke fill;
   text-shadow: 0 5px 0 var(--ink);
   pointer-events: none;
-  white-space: nowrap;
+  white-space: normal;
+  overflow-wrap: break-word;
+  text-wrap: balance;
   letter-spacing: 0.02em;
 }
 .banner small {
@@ -169,12 +393,15 @@ html, body {
   font-family: var(--body);
   font-weight: 700;
   font-size: clamp(14px, 1.6vw, 19px);
+  line-height: 1.35;
   color: var(--paper);
   -webkit-text-stroke: 0;
   text-shadow: 2px 2px 0 var(--ink), -2px 2px 0 var(--ink), 2px -2px 0 var(--ink), -2px -2px 0 var(--ink), 0 3px 0 var(--ink);
-  margin-top: 8px;
+  margin-top: 6px;
   letter-spacing: 0;
 }
+.banner small + small { margin-top: 2px; }
+.banner kbd { -webkit-text-stroke: 0; text-shadow: none; font-size: 0.85em; padding: 0 5px; }
 .banner.pop { animation: pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
 @keyframes pop {
   from { transform: translateX(-50%) scale(0.4) rotate(-6deg); opacity: 0; }
@@ -194,10 +421,13 @@ html, body {
 .overlay.menu { background: radial-gradient(ellipse at 50% 40%, rgba(29, 19, 48, 0), rgba(29, 19, 48, 0.35)); }
 
 .panel {
+  position: relative;
   max-width: 480px;
   width: 100%;
   max-height: 100%;
   overflow: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
   text-align: center;
   background: var(--paper);
   border: 4px solid var(--ink);
@@ -209,8 +439,6 @@ html, body {
 
 h1, h2 {
   margin: 0 0 12px;
-  font-family: var(--head);
-  font-weight: 400;
   color: var(--red);
   -webkit-text-stroke: 2px var(--ink);
   paint-order: stroke fill;
@@ -219,12 +447,43 @@ h1, h2 {
 }
 h1 { font-size: clamp(44px, 8vw, 70px); line-height: 1; }
 h1 span { color: var(--gold); display: inline-block; transform: rotate(-4deg); }
-h2 { font-size: 36px; }
+h2 { font-size: 36px; line-height: 1.1; }
 p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
+.panel p small { display: block; font-size: 13px; line-height: 1.4; opacity: 0.8; margin-top: 6px; }
 .tagline { font-size: 16px; }
 .tip { color: #1a7f7b; font-size: 14px; }
 
+/* Small sound toggle in the title panel's corner. */
+.menu-mute {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.menu-mute .ico { width: 20px; height: 20px; }
+.menu-mute:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+
 .level-cards { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 16px 0; }
+/* Until main.js has started and drawn the cards, say so and don't offer a dead button. */
+.level-cards:empty::before {
+  content: "Loading the fleet\2026";
+  grid-column: 1 / -1;
+  padding: 18px 0;
+  font-size: 15px;
+  color: #7a5a3a;
+}
+.panel:has(.level-cards:empty) #start-btn { opacity: 0.5; filter: grayscale(0.7); pointer-events: none; }
+
 .level-card {
   position: relative;
   font-family: var(--body);
@@ -237,7 +496,7 @@ p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  gap: 5px;
   min-height: 132px;
   text-shadow: 0 2px 0 rgba(29, 19, 48, 0.8);
 }
@@ -248,25 +507,44 @@ p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
 .lvl-3 { background: linear-gradient(180deg, #ff8a4c 0%, #7a3b8f 45%, #23505e 46%, #142f3a 100%); }
 .level-card.locked { filter: grayscale(0.85) brightness(0.8); cursor: not-allowed; }
 .lvl-num {
-  font-family: var(--head);
   font-size: 34px;
   line-height: 1;
   color: var(--gold);
   -webkit-text-stroke: 1.5px var(--ink);
+  paint-order: stroke fill;
   text-shadow: 0 3px 0 var(--ink);
 }
 .lvl-name { font-weight: 700; font-size: 15px; line-height: 1.15; }
 .lvl-stars { color: var(--gold); font-size: 16px; letter-spacing: 2px; }
+/* Difficulty word: dark ink on a light pill, so it stays readable on the greyed-out locked cards. */
+.lvl-diff {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--ink);
+  background: #c9f7d0;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  padding: 0 8px;
+  text-shadow: none;
+  white-space: nowrap;
+}
+.lvl-2 .lvl-diff { background: #ffe39a; }
+.lvl-3 .lvl-diff { background: #ffc1b3; }
 .lvl-lock {
   margin-top: auto;
   font-size: 12px;
+  font-weight: 700;
   background: var(--paper);
   color: var(--ink);
   border: 2px solid var(--ink);
   border-radius: 999px;
-  padding: 1px 10px;
+  padding: 1px 12px;
   text-shadow: none;
 }
+.level-card:not(.locked) .lvl-lock { background: var(--gold); }
 
 .controls {
   list-style: none;
@@ -278,6 +556,23 @@ p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
   justify-content: center;
   gap: 6px 16px;
 }
+/* Touch players get a list of the on-screen buttons instead of keys. */
+.controls.touch-help { display: none; }
+.touch-help b {
+  display: inline-block;
+  min-width: 24px;
+  padding: 0 7px;
+  margin-right: 3px;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: #fff;
+  box-shadow: 0 2px 0 var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.5;
+  text-align: center;
+}
+.touch-help b.fire { background: var(--red); color: #fff; text-shadow: 0 1px 0 var(--ink); }
 
 kbd {
   display: inline-block;
@@ -291,13 +586,13 @@ kbd {
   font-family: var(--body);
   font-weight: 700;
   font-size: 12px;
+  line-height: 1.3;
   text-align: center;
   color: var(--ink);
 }
 .label kbd { font-size: 9px; min-width: 16px; padding: 0 4px; box-shadow: 0 1px 0 var(--ink); }
 
 .btn {
-  font-family: var(--head);
   font-size: 24px;
   letter-spacing: 0.03em;
   padding: 12px 34px 9px;
@@ -312,57 +607,248 @@ kbd {
 .btn:hover { filter: brightness(1.07); }
 .btn:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--ink); }
 .btn.alt { background: #fff; }
-.btn:focus-visible, .icon-btn:focus-visible, .level-card:focus-visible { outline: 4px solid var(--teal); outline-offset: 3px; }
+.btn:focus-visible, .icon-btn:focus-visible, .level-card:focus-visible, .menu-mute:focus-visible { outline: 4px solid var(--teal); outline-offset: 3px; }
 
 .best, .hint { font-size: 13px; opacity: 0.75; margin-bottom: 0; }
-.final strong { color: var(--red); font-family: var(--head); font-size: 30px; }
-.new-best { color: #c47f00; font-family: var(--head); font-size: 22px; }
+.final strong { color: var(--red); font-size: 30px; }
+.new-best { color: #c47f00; font-size: 22px; }
+
+.error-detail {
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 1.4;
+  color: #7a5a3a;
+  background: rgba(122, 90, 58, 0.1);
+  border-radius: 8px;
+  padding: 6px 10px;
+  word-break: break-word;
+  user-select: text;
+  -webkit-user-select: text;
+}
+.panel code { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: 0.9em; background: rgba(122, 90, 58, 0.14); border-radius: 5px; padding: 0 4px; white-space: nowrap; }
 
 /* ---------- Touch controls ---------- */
+/* Steering bottom-left with the sail buttons stacked above it, fire buttons bottom-right: the middle
+   of the screen, where the chase camera puts your ship, stays clear. */
 .touch {
   display: none;
   position: fixed;
-  left: 12px;
-  right: 12px;
+  left: var(--edge);
+  right: var(--edge);
   bottom: 86px;
-  justify-content: space-between;
-  align-items: flex-end;
+  grid-template-columns: auto 1fr auto;
+  grid-template-areas: "sail . ." "steer . fire";
+  align-items: end;
+  row-gap: 10px;
   pointer-events: none;
 }
 .pad { display: flex; gap: 10px; pointer-events: auto; }
-.pad.mid { flex-direction: column; gap: 8px; }
+.pad.left { grid-area: steer; }
+.pad.mid { grid-area: sail; gap: 8px; }
+.pad.right { grid-area: fire; }
 .touch button {
   width: 66px;
   height: 66px;
-  font-family: var(--head);
+  padding: 0;
   font-size: 22px;
+  line-height: 1;
   color: var(--ink);
   background: var(--paper);
   border: 3px solid var(--ink);
   border-radius: 50%;
   box-shadow: 0 4px 0 var(--ink);
   touch-action: none;
+  white-space: nowrap;
 }
-.pad.mid button { width: 50px; height: 44px; border-radius: 14px; font-size: 20px; }
-.touch button.fire { font-size: 14px; background: var(--red); color: #fff; text-shadow: 0 2px 0 var(--ink); }
+.pad.mid button { width: 66px; height: 44px; border-radius: 14px; font-size: 15px; }
+.touch button.fire { font-size: 15px; background: var(--red); color: #fff; text-shadow: 0 2px 0 var(--ink); }
 .touch button.active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); filter: brightness(1.1); }
+/* The fire button for a side glows too when that side has a target and is loaded. */
+#hud:has(#gun-port.target.ready) button[data-tap="firePort"],
+#hud:has(#gun-star.target.ready) button[data-tap="fireStar"] {
+  box-shadow: 0 0 0 4px var(--gold), 0 4px 0 4px var(--ink), 0 0 18px 8px rgba(255, 201, 60, 0.8);
+}
 
 @media (hover: none) and (pointer: coarse) {
-  .touch { display: flex; }
+  .touch { display: grid; }
+  /* Keyboard help is useless on a touch screen. */
+  .controls:not(.touch-help), .label kbd, .gun.steer, .hint { display: none; }
+  .controls.touch-help { display: flex; }
+  /* The touch pads own the bottom corners, so the minimap goes top-right, under the HUD row. */
+  #minimap { top: calc(var(--edge) + var(--top-h) + 10px); bottom: auto; right: calc(var(--edge) + 4px); }
+  .boss { width: min(460px, calc(100vw - 2 * (var(--mm) + 34px))); }
+  /* Hint bubble sits above the touch pads (sail row included). */
+  .hint-bubble { bottom: 214px; }
+  /* HIT!/SUNK! stays below the top-right minimap (short tablets such as 1024x600). */
+  .hitmark { top: max(40%, calc(var(--edge) + var(--top-h) + var(--mm) + 34px)); }
 }
 
+/* ---------- Narrower desktop windows ---------- */
+/* The bottom-right minimap shrinks, then moves above the gun card, so they never collide. */
+@media (max-width: 900px) {
+  :root { --mm: 120px; }
+}
+@media (max-width: 800px) {
+  /* Room for the voyage name in the top row. */
+  .hud-top { gap: 8px; }
+  .card { padding: 5px 10px 6px; }
+  .hull { min-width: 150px; }
+  .level .value { font-size: 16px; line-height: 1.2; }
+  .icon-btn { min-width: 46px; }
+}
+@media (max-width: 720px) {
+  .hull { min-width: 128px; }
+  .level .value { font-size: 15px; }
+}
+@media (max-width: 780px) {
+  .guns { gap: 8px; padding: 6px 8px 7px; }
+  .bar.small { width: 72px; }
+  #minimap { bottom: 102px; }
+}
+
+/* ---------- Phones (portrait) and narrow windows ---------- */
 @media (max-width: 640px) {
-  .hud-top { gap: 6px; top: 8px; left: 8px; right: 8px; }
+  :root { --edge: 8px; --mm: 96px; --top-h: 51px; }
+  .hud-top { gap: 6px; }
   .card { padding: 4px 8px 5px; border-radius: 11px; }
+  .label { font-size: 10px; letter-spacing: 0.04em; }
+  .hull .label { letter-spacing: 0; }
   .value { font-size: 17px; }
   .level { display: none; }
-  .hull { min-width: 110px; }
-  #minimap { width: 104px; height: 104px; top: 70px; }
-  .boss { top: 70px; width: 56vw; left: 38%; }
-  .guns { gap: 10px; padding: 6px 10px 8px; }
-  .bar.small { width: 64px; }
-  .level-cards { grid-template-columns: 1fr; }
+  .hull { min-width: 0; flex: 1 1 100px; max-width: 170px; }
+  .bar { height: 14px; }
+  .icon-btn { min-width: 44px; font-size: 17px; }
+  .ico { width: 20px; height: 20px; }
+  .boss { width: min(440px, 84vw); }
+  .boss-name { font-size: 15px; padding: 0 10px; }
+  .boss-bar { height: 25px; }
+  .guns { gap: 6px; padding: 5px 6px 6px; }
+  .gun { padding: 2px 4px 3px; }
+  .bar.small { width: 60px; }
+  .sails { font-size: 15px; }
+  #minimap { bottom: 94px; }
+  .hint-bubble { bottom: 96px; font-size: 15px; }
+  .level-cards { grid-template-columns: 1fr; gap: 8px; }
   .level-card { min-height: 0; flex-direction: row; justify-content: space-between; padding: 8px 14px; }
+  .lvl-num { font-size: 28px; }
+  .lvl-name { flex: 1; text-align: left; }
   .lvl-lock { margin-top: 0; }
   .panel { padding: 18px 16px; }
+  .menu-mute { top: 8px; right: 8px; width: 36px; height: 36px; }
+  h2 { font-size: 30px; }
+}
+@media (max-width: 480px) {
+  /* Title on two lines so it clears the sound button in the panel's corner. */
+  h1 { font-size: 50px; }
+  h1 span { display: block; margin-top: 2px; }
+}
+@media (max-width: 640px) and (hover: none) and (pointer: coarse) {
+  /* Boss bar sits left of the top-right minimap, centred in the space that is left. */
+  .boss { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+  .hint-bubble { bottom: 214px; }
+  /* Shorter phones (360x640, 375x667): the banner starts below the top-right minimap. */
+  .banner { top: max(24%, calc(var(--edge) + var(--top-h) + var(--mm) + 28px)); }
+}
+@media (max-width: 640px) and (min-height: 600px) {
+  /* HIT!/SUNK! below the banner's lines: a wave banner and the SUNK! that ends the wave show together. */
+  .hitmark { top: max(40%, 300px); }
+}
+/* Narrow windows without a touch layout: the minimap sits above the gun card at the right, at the
+   hint bubble's height. Keep the centred bubble clear of it: narrower up to 780px, and above the
+   minimap from 640px down (where a narrow bubble would wrap too much). */
+@media (max-width: 780px) and (hover: hover), (max-width: 780px) and (pointer: fine) {
+  .hint-bubble { max-width: min(520px, calc(100vw - 2 * (var(--mm) + 30px))); }
+}
+@media (max-width: 640px) and (hover: hover), (max-width: 640px) and (pointer: fine) {
+  #minimap { bottom: 100px; }
+  .hint-bubble { bottom: calc(100px + var(--mm) + 20px); max-width: min(520px, 90vw); }
+}
+@media (max-width: 400px) and (hover: hover), (max-width: 400px) and (pointer: fine) {
+  .gun.steer { display: none; } /* the gun card would not fit; the menu lists the keys */
+}
+@media (max-width: 380px) {
+  .hud-top { gap: 5px; }
+  .card { padding: 4px 6px 5px; }
+  .label { letter-spacing: 0.02em; }
+  .icon-btn { min-width: 40px; }
+  .touch button { width: 62px; height: 62px; }
+  .pad.mid button { width: 62px; height: 42px; }
+}
+@media (max-width: 340px) {
+  h1 { font-size: 40px; } /* clears the sound button */
+}
+
+/* ---------- Short screens: phones in landscape, short windows ---------- */
+@media (max-height: 500px) {
+  :root { --edge: 8px; --mm: 92px; --top-h: 46px; }
+  .hud-top { gap: 6px; }
+  .card { padding: 3px 8px 4px; border-radius: 11px; box-shadow: 0 3px 0 var(--ink); }
+  .label { font-size: 10px; letter-spacing: 0.04em; }
+  .value { font-size: 17px; }
+  .level .value { font-size: 14px; line-height: 1.3; }
+  .hull { min-width: 150px; }
+  .bar { height: 13px; margin-top: 3px; }
+  .icon-btn { min-width: 44px; font-size: 17px; }
+  .ico { width: 20px; height: 20px; }
+  .boss { top: calc(var(--edge) + var(--top-h) + 6px); width: min(340px, 46vw); }
+  .boss-name { font-size: 14px; -webkit-text-stroke-width: 1px; text-shadow: 0 1px 0 var(--ink); padding: 0 10px; }
+  .boss-bar { height: 22px; border-width: 2px; border-radius: 10px; box-shadow: 0 3px 0 var(--ink); }
+  .banner { top: max(27%, 104px); font-size: clamp(22px, 3.6vw, 34px); -webkit-text-stroke-width: 2px; text-shadow: 0 4px 0 var(--ink); }
+  .banner small { font-size: 13px; margin-top: 3px; }
+  .hud-bottom { bottom: 8px; }
+  .guns { gap: 8px; padding: 4px 8px 5px; }
+  .gun { padding: 1px 5px 2px; gap: 1px; }
+  .bar.small { width: 66px; height: 11px; }
+  .sails { font-size: 15px; }
+  #minimap { bottom: 80px; }
+  .hint-bubble { bottom: 82px; font-size: 14px; padding: 5px 12px 6px; max-width: min(460px, calc(100vw - 300px)); }
+  .hitmark { top: min(40%, calc(100% - 232px)); } /* above the bottom-right minimap (touch: see below) */
+
+  /* Touch pads drop to the bottom corners, beside the gun card; smaller buttons. */
+  .touch { bottom: 8px; row-gap: 8px; }
+  .touch button { width: 56px; height: 56px; font-size: 19px; }
+  .pad.mid button { width: 56px; height: 40px; font-size: 13px; }
+  .touch button.fire { font-size: 13px; }
+
+  /* Menus fit without scrolling where possible (they still scroll if not). */
+  .overlay { padding: 8px; }
+  .panel { padding: 12px 18px 10px; border-radius: 20px; box-shadow: 0 6px 0 var(--ink), 0 12px 30px rgba(0, 0, 0, 0.3); }
+  h1 { font-size: 36px; margin-bottom: 4px; text-shadow: 0 3px 0 var(--ink); }
+  h2 { font-size: 26px; margin-bottom: 4px; }
+  p { font-size: 14px; line-height: 1.35; margin: 5px 0; }
+  .tagline { font-size: 13px; }
+  .tip { font-size: 12px; margin: 2px 0; }
+  .best, .hint { font-size: 12px; margin-top: 2px; }
+  .level-cards { grid-template-columns: repeat(3, 1fr); gap: 8px; margin: 8px 0 4px; }
+  .level-card { min-height: 0; flex-direction: column; justify-content: flex-start; padding: 5px 6px 6px; gap: 3px; border-radius: 14px; box-shadow: 0 4px 0 var(--ink); }
+  .lvl-num { font-size: 22px; }
+  .lvl-name { flex: none; font-size: 13px; text-align: center; }
+  .lvl-lock { margin-top: 0; font-size: 11px; padding: 0 10px; }
+  .btn { font-size: 19px; padding: 7px 26px 5px; margin: 3px 4px; border-width: 3px; box-shadow: 0 4px 0 var(--ink); }
+  .controls { margin: 6px 0 2px; font-size: 12px; gap: 4px 12px; }
+  .menu-mute { top: 8px; right: 8px; width: 34px; height: 34px; }
+  .menu-mute .ico { width: 18px; height: 18px; }
+}
+@media (max-height: 500px) and (hover: none) and (pointer: coarse) {
+  /* 12px: the minimap's outer ring clears the mute/pause buttons' drop shadow. */
+  #minimap { top: calc(var(--edge) + var(--top-h) + 12px); bottom: auto; }
+  .boss { left: 50%; right: auto; transform: translateX(-50%); width: min(340px, calc(100vw - 2 * (var(--mm) + 30px))); }
+  .hint-bubble { bottom: 74px; }
+  .hitmark { top: max(47%, 180px); } /* below the top-right minimap */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .hint-bubble, .gun.target.ready, .gun.target.ready .fire-tag { animation: none; }
+  .hull.hurt { animation-name: hurt-flash; } /* keep the red flash, drop the shake */
+  .hitmark.pop { animation-name: hitmark-fade; }
+  .banner.pop { animation: none; }
+}
+@keyframes hitmark-fade {
+  0%, 70% { opacity: 1; }
+  100% { opacity: 0; }
+}
+@keyframes hurt-flash {
+  0% { background: #ffc2bd; border-color: var(--red); }
+  100% { background: var(--paper); border-color: var(--ink); }
 }

@@ -156,6 +156,10 @@ const mm = ui.minimap.getContext ? ui.minimap.getContext('2d') : null;
 
 function show(el, visible) {
   el.classList.toggle('hidden', !visible);
+  // A hidden button must not keep keyboard focus (it would swallow Enter/Space).
+  if (!visible && el.contains(document.activeElement) && document.activeElement instanceof HTMLElement) {
+    document.activeElement.blur();
+  }
 }
 
 // Restart a CSS animation class on an element.
@@ -263,6 +267,7 @@ const perf = {
   floor: 0, // frame time we learned resolution can't improve
   upHold: 6, // seconds of steady frames needed before trying a higher resolution
   probing: false, // the last change was a step up
+  typical: 0, // smoothed recent frame time, to tell a one-off hitch from a slow device
 };
 let pausedDrawn = false;
 
@@ -292,8 +297,12 @@ window.addEventListener('resize', resize);
 // Called every frame with the real (unclamped) frame time.
 function trackPerformance(rawDt) {
   if (perf.fixed || document.hidden || state.mode === 'paused') return;
-  if (rawDt > 0.25) {
-    resetPerfWindow(0.5); // a hitch (level load, GC, tab switch), not slowness
+  // A lone long frame (level load, GC) is a hitch, not slowness. On a slow device every
+  // frame is long, so compare against the recent typical frame time.
+  const prev = perf.typical;
+  perf.typical = prev ? prev * 0.9 + Math.min(rawDt, 2) * 0.1 : Math.min(rawDt, 0.25);
+  if (rawDt > 0.25 && prev && rawDt > prev * 4) {
+    resetPerfWindow(0.5);
     return;
   }
   if (perf.settle > 0) {
@@ -513,13 +522,15 @@ function labelTexture(typeName) {
   }
   return entry.tex;
 }
-// Re-draw labels once the cartoon font has loaded.
-document.fonts?.ready.then(() => {
+// Re-draw labels once the cartoon font has loaded (fonts load late, without blocking the page).
+function redrawLabels() {
   for (const e of labelCache.values()) {
     drawLabel(e.canvas, e.text);
     e.tex.needsUpdate = true;
   }
-});
+}
+document.fonts?.ready.then(redrawLabels);
+document.fonts?.addEventListener?.('loadingdone', redrawLabels);
 
 const barBgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0x1d1330, fog: false }));
 const barFgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xe63946, fog: false }));
@@ -1074,7 +1085,10 @@ function damage(ship, amount, x, z, source = 'other') {
   ship.flash = 0.3;
   const hx = x ?? ship.x;
   const hz = z ?? ship.z;
-  puff(hx, 1.4, hz, 7, 0x8b5a2b, 7, 7, 0.4, 0.9); // wood splinters
+  for (let i = 0; i < 7; i++) {
+    // Flat little planks flying off the hull.
+    spawnParticle('puff', 0x8b5a2b, hx, 1.4, hz, rand(-3.5, 3.5), rand(2, 7), rand(-3.5, 3.5), rand(0.6, 1.1), rand(0.22, 0.32), GRAVITY, false, true);
+  }
   puff(hx, 1.6, hz, 3, 0xffb627, 3, 3, 0.5, 0.3, 0, false, 'glow');
   audio.play('hit', sfxAt(hx, hz));
   if (ship.kind === 'player') {

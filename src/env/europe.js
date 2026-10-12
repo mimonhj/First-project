@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
-import { toon, setOutline, noOutline, mergeStatic, gradientMap } from '../style.js';
+import { toon, setOutline, noOutline, mergeStatic, gradientMap, ensureIndex } from '../style.js';
 import { waveHeight } from '../scenery.js';
 
 // Level 1, "Coast of Europe": a sunny Atlantic / Mediterranean coast.
@@ -510,9 +510,11 @@ function bake(group) {
   const victims = [];
   group.traverse((o) => {
     if (!o.isMesh) return;
-    const g = o.geometry.index ? o.geometry.toNonIndexed() : o.geometry.clone();
+    const src = o.geometry;
+    const g = src.index && !src.attributes.normal ? src.toNonIndexed() : new THREE.BufferGeometry().copy(src);
     for (const k of Object.keys(g.attributes)) if (k !== 'position' && k !== 'normal') g.deleteAttribute(k);
     if (!g.attributes.normal) g.computeVertexNormals();
+    ensureIndex(g);
     g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
     const c = o.material.color;
     const n = g.attributes.position.count;

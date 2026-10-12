@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { toon, mergeStatic } from './style.js';
+import { toon, mergeStatic, ensureIndex } from './style.js';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
 
 // Cartoon ship models.
@@ -274,10 +274,11 @@ function taperTube(points, rFn, segs = 24, radial = 10, closedCurve = false) {
 function mergeByMaterial(parts) {
   const byMat = new Map();
   for (const { geo, material } of parts) {
-    const g = geo.index ? geo.toNonIndexed() : geo.clone();
+    const g = new THREE.BufferGeometry().copy(geo);
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
     if (!g.attributes.uv) g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     g.morphAttributes = {};
+    ensureIndex(g);
     const list = byMat.get(material) || [];
     list.push(g);
     byMat.set(material, list);

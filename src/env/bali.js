@@ -1044,6 +1044,47 @@ function addCoral(parent, x, z, rng, kind, tall = false) {
   return g;
 }
 
+/**
+ * Coral stands mostly under the opaque water, and the swell never drops below
+ * -0.48, so triangles entirely below `y0` can never be seen. Bake each mesh of
+ * `group` into `into`'s space and drop those triangles (before mergeStatic).
+ */
+function trimUnderwater(group, into, y0 = -0.6) {
+  into.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(into.matrixWorld).invert();
+  const meshes = [];
+  group.traverse((o) => {
+    if (o.isMesh) meshes.push(o);
+  });
+  const xf = new THREE.Matrix4();
+  for (const m of meshes) {
+    const g = m.geometry.clone(); // geometries may be shared: never edit the original
+    g.applyMatrix4(xf.multiplyMatrices(inv, m.matrixWorld));
+    const y = g.attributes.position;
+    const src = g.index ? g.index.array : null;
+    const n = src ? src.length : y.count;
+    const keep = [];
+    for (let i = 0; i < n; i += 3) {
+      const a = src ? src[i] : i;
+      const b = src ? src[i + 1] : i + 1;
+      const c = src ? src[i + 2] : i + 2;
+      if (Math.max(y.getY(a), y.getY(b), y.getY(c)) >= y0) keep.push(a, b, c);
+    }
+    m.removeFromParent();
+    if (!keep.length) {
+      g.dispose();
+      continue;
+    }
+    g.setIndex(keep);
+    m.geometry = g;
+    m.position.set(0, 0, 0);
+    m.rotation.set(0, 0, 0);
+    m.scale.set(1, 1, 1);
+    into.add(m);
+  }
+  group.removeFromParent();
+}
+
 // ---------------------------------------------------------------------------
 // Rice terraces: a wavy stepped hill, colours per vertex (crisp via duplicated rings)
 // ---------------------------------------------------------------------------
@@ -1838,6 +1879,8 @@ export function build(scene, ctx = {}) {
   }
 
   // ---- coral reefs: a few outcrops per reef, each a pale reef-rock mound ringed by coral heads
+  const coral = new THREE.Group(); // reef + barrier coral, trimmed below the waterline before merging
+  statics.add(coral);
   const coralSpots = [];
   for (const rf of REEFS) {
     const nC = rf.r >= 10 ? 4 : 3;
@@ -1851,7 +1894,7 @@ export function build(scene, ctx = {}) {
       clusters.push([x, z]);
       // a pale reef-rock mound just awash (flatter and lower than a sea rock: ships sail over it)
       const mr = 0.85 + rng() * 0.35;
-      const mound = mesh(statics, bumpyRock(rng, true), toon(C.reefRock), x, -0.4, z, rng() * 6);
+      const mound = mesh(coral, bumpyRock(rng, true), toon(C.reefRock), x, -0.4, z, rng() * 6);
       mound.scale.set(mr * 1.45, mr * 0.7, mr * 1.25);
       mound.updateMatrixWorld(true);
       mound.position.y -= Math.max(0, _coralBox.setFromObject(mound, true).max.y - (CORAL_TOP - 0.1));
@@ -1861,7 +1904,7 @@ export function build(scene, ctx = {}) {
       for (let k = 0; k < nh; k++) {
         const ha = a0 + (k / nh) * Math.PI * 2 + (rng() - 0.5) * 0.5;
         const hd = 1.25 + rng() * 0.5;
-        addCoral(statics, x + Math.cos(ha) * hd, z + Math.sin(ha) * hd, rng, CORAL_KINDS[(k0 + k) % 4]);
+        addCoral(coral, x + Math.cos(ha) * hd, z + Math.sin(ha) * hd, rng, CORAL_KINDS[(k0 + k) % 4]);
       }
       coralSpots.push([x, z, 2.5]);
       i++;
@@ -1890,10 +1933,11 @@ export function build(scene, ctx = {}) {
         // the tall tube sponges and staghorn grow out here, beside the outer rocks,
         // where no ship can reach (ships stop at WORLD_R; these sit at 149+)
         const off = (k === 0 ? -1 : 1) * (2.3 + rng() * 0.7);
-        addCoral(statics, px - Math.sin(aa) * off, pz + Math.cos(aa) * off, rng, (i + k / 2) % 2 ? 'tube' : 'stag', true);
+        addCoral(coral, px - Math.sin(aa) * off, pz + Math.cos(aa) * off, rng, (i + k / 2) % 2 ? 'tube' : 'stag', true);
       }
     }
   }
+  trimUnderwater(coral, statics);
   checkReefWaves();
   const reefSurf = buildReefSurface(REEFS, rng, coralSpots, arcs, rockSpots, timeU, { value: palette.waveAmp });
   root.add(reefSurf.mesh);

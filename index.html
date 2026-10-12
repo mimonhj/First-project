@@ -5,9 +5,16 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
   <title>Pirates Ahoy!</title>
   <meta name="description" content="A cartoon 3D pirate adventure: sail from the coast of Europe to Bali and the volcano, sinking pirate fleets along the way." />
+  <meta name="theme-color" content="#8fd3ff" />
+  <!-- Web fonts load without blocking the first paint or the game script. Until they arrive (or if the
+       font host is slow or blocked) the cartoon system-font fallbacks in style.css are used. -->
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Luckiest+Guy&display=swap" />
+  <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Luckiest+Guy&display=swap" onload="this.onload=null;this.rel='stylesheet'" />
+  <noscript>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;600;700&family=Luckiest+Guy&display=swap" />
+    <style>#menu-screen { display: none !important; }</style>
+  </noscript>
   <link rel="stylesheet" href="style.css" />
   <script type="importmap">
     { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }
@@ -17,40 +24,65 @@
   <canvas id="game" aria-label="Game view"></canvas>
 
   <div id="hud" class="hidden">
+    <div id="edge" class="edge" aria-hidden="true"></div>
     <div class="hud-top">
-      <div class="card hull">
+      <div id="hull-card" class="card hull">
         <div class="label">The Sea Biscuit</div>
-        <div class="bar"><div id="hull-fill" class="fill good"></div></div>
+        <div class="bar"><div id="hull-ghost" class="ghost"></div><div id="hull-fill" class="fill good"></div></div>
       </div>
       <div class="card level"><div class="label">Voyage</div><div id="level-name" class="value">1. Coast of Europe</div></div>
-      <div class="card"><div class="label">Pirates</div><div id="ships" class="value">0</div></div>
+      <div class="card pirates"><div class="label">Pirates left</div><div id="ships" class="value">0</div></div>
       <div class="card gold"><div class="label">Gold</div><div id="gold" class="value">0</div></div>
-      <button id="pause-btn" class="card icon-btn" aria-label="Pause">II</button>
+      <button id="mute-btn" class="card icon-btn mute-btn" type="button" aria-label="Mute sound" aria-pressed="false">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path class="spk" d="M3 9.5h3.6L12 5v14l-5.4-4.5H3z" />
+          <path class="waves" d="M15.4 9a4.2 4.2 0 0 1 0 6M18.2 6.2a8.2 8.2 0 0 1 0 11.6" />
+          <path class="cross" d="M16 9.5l5 5M21 9.5l-5 5" />
+        </svg>
+      </button>
+      <button id="pause-btn" class="card icon-btn" type="button" aria-label="Pause">II</button>
     </div>
     <div id="boss" class="boss hidden">
       <div id="boss-name" class="boss-name">Boss</div>
       <div class="bar boss-bar"><div id="boss-fill" class="fill"></div></div>
     </div>
     <canvas id="minimap" width="150" height="150" aria-label="Minimap"></canvas>
+    <div id="hitmark" class="hitmark" aria-hidden="true"></div>
+    <div id="hint" class="hint-bubble hidden" role="status" aria-live="polite"></div>
     <div class="hud-bottom">
       <div class="card guns">
-        <div class="gun"><span class="label">Port <kbd>Q</kbd></span><div class="bar small"><div id="reload-port" class="fill reload"></div></div></div>
-        <div class="gun"><span class="label">Sails <kbd>W</kbd><kbd>S</kbd></span><div id="sails" class="sails">Half sail</div></div>
-        <div class="gun"><span class="label">Starboard <kbd>E</kbd></span><div class="bar small"><div id="reload-star" class="fill reload"></div></div></div>
+        <div id="gun-port" class="gun port">
+          <span class="fire-tag">FIRE!</span>
+          <span class="label">Port <kbd>Q</kbd></span>
+          <div class="bar small"><div id="reload-port" class="fill reload"></div></div>
+        </div>
+        <div class="gun steer">
+          <span class="label">Steer <kbd>A</kbd><kbd>D</kbd></span>
+          <span class="steer-alt">or <kbd>&larr;</kbd><kbd>&rarr;</kbd></span>
+        </div>
+        <div class="gun speed">
+          <span class="label">Speed <kbd>W</kbd><kbd>S</kbd></span>
+          <div id="sails" class="sails">Cruising &#9646;&#9646;&#9647;</div>
+        </div>
+        <div id="gun-star" class="gun star">
+          <span class="fire-tag">FIRE!</span>
+          <span class="label">Starboard <kbd>E</kbd></span>
+          <div class="bar small"><div id="reload-star" class="fill reload"></div></div>
+        </div>
       </div>
     </div>
     <div id="touch" class="touch">
       <div class="pad left">
-        <button data-hold="left" aria-label="Turn left">&#9664;</button>
-        <button data-hold="right" aria-label="Turn right">&#9654;</button>
+        <button type="button" data-hold="left" aria-label="Turn left">&#9664;</button>
+        <button type="button" data-hold="right" aria-label="Turn right">&#9654;</button>
       </div>
       <div class="pad mid">
-        <button data-tap="sailUp" aria-label="More sail">+</button>
-        <button data-tap="sailDown" aria-label="Less sail">&minus;</button>
+        <button type="button" data-tap="sailUp" aria-label="More sail">+ Sail</button>
+        <button type="button" data-tap="sailDown" aria-label="Less sail">&minus; Sail</button>
       </div>
       <div class="pad right">
-        <button data-tap="firePort" class="fire" aria-label="Fire port cannons">&#8598; Fire</button>
-        <button data-tap="fireStar" class="fire" aria-label="Fire starboard cannons">Fire &#8599;</button>
+        <button type="button" data-tap="firePort" class="fire" aria-label="Fire port cannons">&#9664; Fire</button>
+        <button type="button" data-tap="fireStar" class="fire" aria-label="Fire starboard cannons">Fire &#9654;</button>
       </div>
     </div>
   </div>
@@ -59,15 +91,28 @@
 
   <div id="menu-screen" class="overlay menu">
     <div class="panel wide">
+      <button id="menu-mute" class="mute-btn menu-mute" type="button" aria-label="Mute sound" aria-pressed="false">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path class="spk" d="M3 9.5h3.6L12 5v14l-5.4-4.5H3z" />
+          <path class="waves" d="M15.4 9a4.2 4.2 0 0 1 0 6M18.2 6.2a8.2 8.2 0 0 1 0 11.6" />
+          <path class="cross" d="M16 9.5l5 5M21 9.5l-5 5" />
+        </svg>
+      </button>
       <h1>Pirates <span>Ahoy!</span></h1>
       <p class="tagline">Captain the <b>Sea Biscuit</b> from the coast of Europe to the islands of Bali and the fiery volcano seas. Sink every pirate fleet and plunder their gold!</p>
       <div id="level-cards" class="level-cards"></div>
-      <button id="start-btn" class="btn">Set sail!</button>
+      <button id="start-btn" class="btn" type="button">Set sail!</button>
       <ul class="controls">
-        <li><kbd>A</kbd><kbd>D</kbd> steer</li>
-        <li><kbd>W</kbd><kbd>S</kbd> sails up / down</li>
+        <li><kbd>A</kbd><kbd>D</kbd> or <kbd>&larr;</kbd><kbd>&rarr;</kbd> steer</li>
+        <li><kbd>W</kbd><kbd>S</kbd> sails up / down (speed)</li>
         <li><kbd>Q</kbd> fire left &middot; <kbd>E</kbd> fire right &middot; <kbd>Space</kbd> both</li>
         <li><kbd>P</kbd> pause</li>
+      </ul>
+      <ul class="controls touch-help">
+        <li><b>&#9664;</b><b>&#9654;</b> steer</li>
+        <li><b>+</b> / <b>&minus;</b> sails (speed)</li>
+        <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot left / right</li>
+        <li><b>II</b> pause</li>
       </ul>
       <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
       <p class="best">Best plunder: <span id="best">0</span> gold</p>
@@ -77,7 +122,19 @@
   <div id="pause-screen" class="overlay hidden">
     <div class="panel">
       <h2>Paused</h2>
-      <button id="resume-btn" class="btn">Resume</button>
+      <button id="resume-btn" class="btn" type="button">Resume</button>
+      <ul class="controls">
+        <li><kbd>A</kbd><kbd>D</kbd> steer</li>
+        <li><kbd>W</kbd><kbd>S</kbd> speed</li>
+        <li><kbd>Q</kbd> / <kbd>E</kbd> fire left / right</li>
+        <li><kbd>P</kbd> resume</li>
+      </ul>
+      <ul class="controls touch-help">
+        <li><b>&#9664;</b><b>&#9654;</b> steer</li>
+        <li><b>+</b> / <b>&minus;</b> speed</li>
+        <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot sideways</li>
+      </ul>
+      <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
     </div>
   </div>
 
@@ -85,7 +142,7 @@
     <div class="panel">
       <h2 id="level-title">Level cleared!</h2>
       <p id="level-summary"></p>
-      <button id="next-btn" class="btn">Next level</button>
+      <button id="next-btn" class="btn" type="button">Next level</button>
       <p class="hint">Press <kbd>Enter</kbd></p>
     </div>
   </div>
@@ -94,8 +151,8 @@
     <div class="panel">
       <h2>Shipwrecked!</h2>
       <p id="over-summary"></p>
-      <button id="retry-btn" class="btn">Try again</button>
-      <button id="menu-btn" class="btn alt">Main menu</button>
+      <button id="retry-btn" class="btn" type="button">Try again</button>
+      <button id="menu-btn" class="btn alt" type="button">Main menu</button>
       <p class="hint">Press <kbd>Enter</kbd> to try again</p>
     </div>
   </div>
@@ -106,17 +163,93 @@
       <p>The Molten Maw is sunk and every pirate fleet is at the bottom of the sea. The seas are yours, Captain!</p>
       <p class="final">Plunder: <strong id="won-gold">0</strong> gold</p>
       <p id="won-best" class="new-best hidden">New best!</p>
-      <button id="again-btn" class="btn">Main menu</button>
+      <button id="again-btn" class="btn" type="button">Main menu</button>
     </div>
   </div>
 
-  <div id="error-screen" class="overlay hidden">
+  <div id="error-screen" class="overlay error hidden" role="alert">
     <div class="panel">
       <h2>Can't start</h2>
-      <p>Your browser doesn't seem to support WebGL.</p>
+      <p id="error-msg">Your browser doesn't seem to support WebGL, which the game needs for its 3D seas. Try turning on hardware acceleration in your browser settings, or use another browser.</p>
+      <p id="error-detail" class="error-detail hidden"></p>
+      <button id="reload-btn" class="btn" type="button" onclick="location.reload()">Reload</button>
     </div>
   </div>
 
+  <noscript>
+    <div class="overlay">
+      <div class="panel">
+        <h2>Can't start</h2>
+        <p>Pirates Ahoy! needs JavaScript. Please turn it on and reload the page.</p>
+      </div>
+    </div>
+  </noscript>
+
+  <!-- Startup guard. If the game's modules fail to load (opened as a file, missing files, a browser
+       without module or import-map support) or crash during startup, show #error-screen instead of a
+       title screen whose buttons do nothing. main.js sets window.__gameReady once it has started.
+       No timeout on purpose: startup can be slow on weak machines. -->
+  <script>
+    (function () {
+      var base = location.href.replace(/[?#].*$/, '').replace(/[^\/]*$/, '');
+      function ours(url) {
+        return typeof url === 'string' && (url.indexOf(base + 'src/') === 0 || url.indexOf(base + 'vendor/') === 0);
+      }
+      function mentionsOurs(text) {
+        return typeof text === 'string' && (text.indexOf(base + 'src/') >= 0 || text.indexOf(base + 'vendor/') >= 0);
+      }
+      function fail(kind, detail) {
+        if (window.__gameReady === true) return;
+        var screen = document.getElementById('error-screen');
+        // Already showing: main.js reports a missing WebGL with its own message.
+        if (!screen || !screen.classList.contains('hidden')) return;
+        var noImportMap = window.HTMLScriptElement && HTMLScriptElement.supports && !HTMLScriptElement.supports('importmap');
+        var msg;
+        if (location.protocol === 'file:') {
+          msg = "The game can't run straight from a file. Start a small web server in the game's folder " +
+            '(for example <code>npm start</code> or <code>python3 -m http.server 8080</code>, see README.md) ' +
+            'and open the address it prints.';
+        } else if (kind === 'old' || noImportMap) {
+          msg = 'Your browser is too old for this game. Please update it, or try a recent Chrome, Edge, Firefox or Safari.';
+        } else if (kind === 'load') {
+          msg = "Some of the game's files didn't load. Check your connection and reload the page.";
+        } else {
+          msg = 'Something went wrong while starting the game. Reload the page to try again, or try another browser.';
+        }
+        document.getElementById('error-msg').innerHTML = msg;
+        var d = document.getElementById('error-detail');
+        if (detail) {
+          d.textContent = String(detail).replace(base, '').slice(0, 200);
+          d.classList.remove('hidden');
+        }
+        var menu = document.getElementById('menu-screen');
+        if (menu) menu.classList.add('hidden');
+        screen.classList.remove('hidden');
+      }
+      window.addEventListener('error', function (e) {
+        var t = e.target;
+        if (t && t !== window && (t.tagName === 'SCRIPT' || t.tagName === 'LINK')) {
+          // For a module script this also fires when one of the files it imports fails to load.
+          var url = t.src || t.href;
+          if (ours(url)) fail('load', "Couldn't load " + url + (t.type === 'module' ? ' or a file it imports' : ''));
+        } else if (/module specifier/i.test(e.message || '')) {
+          fail('old', e.message); // no import maps (e.g. Safari before 16.4)
+        } else if (ours(e.filename) || (!e.filename && e.error && mentionsOurs(e.error.stack))) {
+          fail('crash', e.message);
+        }
+      }, true);
+      window.addEventListener('unhandledrejection', function (e) {
+        var r = e.reason;
+        if (r && mentionsOurs(r.stack)) fail('crash', r.message || String(r));
+      });
+      // Backstop for failures no event reports: deferred module scripts have run by the time 'load' fires.
+      window.addEventListener('load', function () {
+        if (window.__gameReady !== true && !window.__game) fail('load', 'The game script never started.');
+      });
+      window.__gameLoadFailed = fail;
+    })();
+  </script>
   <script type="module" src="src/main.js"></script>
+  <script nomodule>window.__gameLoadFailed && window.__gameLoadFailed('old');</script>
 </body>
 </html>

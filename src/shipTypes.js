@@ -56,7 +56,7 @@ export const SHIP_TYPES = {
   inferno: {
     name: 'The Molten Maw',
     boss: true,
-    hp: 280, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.6, guns: 6, dmg: 4,
+    hp: 280, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.8, guns: 6, dmg: 4,
     gold: 20, engage: 25, spread: 0.07,
   },
 };

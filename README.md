@@ -12,10 +12,18 @@ sky with puffy clouds, and cartoon water with foam around every shore.
 |-------|-------|---------|---------|
 | 1 ★☆☆ | **Coast of Europe**: cliffs, a lighthouse, a harbour town and a castle | Corsair Cutters, then a Privateer Brig | Rocky islets |
 | 2 ★★☆ | **Bali Islands**: jungle islands, temples and rice terraces | Prahu Raiders, then Dragon Junks | Coral reefs slow your ship (but not the shallow-draft prahus) |
-| 3 ★★★ | **The Volcano**: open sea under an erupting volcano | Ember Corsairs and a Man-o'-War, then **The Molten Maw** | Lava bombs rain down on a marked target circle and hurt any ship caught there |
+| 3 ★★★ | **The Volcano**: open sea under an erupting volcano | Ember Corsairs and a Man-o'-War, then **The Molten Maw** alone | Lava bombs land inside red target circles and hurt any ship caught there, pirates included |
 
 Each level comes in two waves. When reinforcements arrive, your crew patches part of the hull.
-Clearing a level unlocks the next one on the title screen.
+Clearing a level unlocks the next one on the title screen (marked Easy, Medium and Hard).
+
+On your first voyage, hints show how to steer and when a pirate is in your firing arc.
+The gun panel lights up **FIRE!** when a side has a target, and hits pop up as **HIT!** / **SUNK!**.
+Any key skips the camera fly-in at the start of a level.
+
+All sound effects and music are generated in the browser with the Web Audio API: cannon booms,
+splashes, a sea shanty for Europe, gamelan bells for Bali and drums for the Volcano.
+Press `M` (or the speaker button) to mute.
 
 ## Play
 
@@ -36,10 +44,11 @@ The game lowers its internal resolution automatically if frames run slow. Add `?
 |------------------------|-----------------------|-----------------|
 | Steer                  | `A` `D` / `←` `→`     | ◀ ▶ (hold)      |
 | Raise / lower sails    | `W` `S` / `↑` `↓`     | `+` `−`         |
-| Fire left (port)       | `Q`                   | ↖ Fire          |
-| Fire right (starboard) | `E`                   | Fire ↗          |
+| Fire left (port)       | `Q`                   | ◀ Fire          |
+| Fire right (starboard) | `E`                   | Fire ▶          |
 | Fire both sides        | `Space`               |                 |
 | Pause                  | `P` / `Esc`           | `II` button     |
+| Mute                   | `M`                   | speaker button  |
 
 Cannons fire **sideways**, so turn your side toward the enemy. Your gunners automatically aim at
 the nearest ship on that side and lead it. Each side reloads separately, and the hull slowly repairs
@@ -51,6 +60,7 @@ when you haven't been hit for a few seconds.
 - `src/scenery.js`: renderer with the cartoon outline effect, sky, ocean shader, clouds and lights
 - `src/ships.js`: the cartoon ship models
 - `src/shipTypes.js`: ship stats and dimensions
+- `src/audio.js`: procedural sound effects, music and ambience
 - `src/env/europe.js`, `src/env/bali.js`, `src/env/volcano.js`: the three level environments
 - `src/style.js`: shared cel-shading materials, outline settings and palette fields
 
@@ -64,6 +74,7 @@ when you haven't been hit for a few seconds.
 - level unlocking, game over, retrying and winning
 - that every level spawns ships in open water and keeps draw calls reasonable
 - the touch controls
+- keyboard focus, pause/mute keys, hit and aim feedback, first-voyage hints, adaptive resolution
 - a bot captain playing all three levels with simulated controls, to show every level can be won
 
 ```sh

@@ -86,8 +86,10 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
     outlineColor: { value: new THREE.Color().fromArray(color) },
     outlineAlpha: { value: 1 },
   };
-  const cache = new Map(); // original material -> { material, frame }
-  const arrays = new Map(); // original material array -> { materials, frame }
+  // original material uuid -> { material, frame } (keyed by uuid so that a dropped
+  // level's materials are not kept alive until their entries are evicted)
+  const cache = new Map();
+  const arrays = new WeakMap(); // original material array -> { materials, frame }
   let frame = 0;
   // Swapped (or hidden) during the current outline render; emptied right after it.
   const swapped = [];
@@ -130,7 +132,7 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
   }
 
   function outlineFor(o) {
-    let e = cache.get(o);
+    let e = cache.get(o.uuid);
     if (e === undefined) {
       const material = new THREE.ShaderMaterial({
         type: 'OutlineEffect',
@@ -140,7 +142,7 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
         side: THREE.BackSide,
       });
       e = { material, frame: -1 };
-      cache.set(o, e);
+      cache.set(o.uuid, e);
     }
     if (e.frame !== frame) {
       e.frame = frame;
@@ -181,13 +183,12 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
   };
 
   function evict() {
-    for (const [o, e] of cache) {
+    for (const [uuid, e] of cache) {
       if (frame - e.frame > EVICT_FRAMES) {
         e.material.dispose();
-        cache.delete(o);
+        cache.delete(uuid);
       }
     }
-    for (const [list, e] of arrays) if (frame - e.frame > EVICT_FRAMES) arrays.delete(list);
   }
 
   const pass = {
@@ -222,7 +223,7 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
     },
     /** Bookkeeping sizes, for tests. */
     stats() {
-      return { cache: cache.size, arrays: arrays.size, pending: swapped.length + hidden.length, frame };
+      return { cache: cache.size, pending: swapped.length + hidden.length, frame };
     },
   };
   outlinePasses.set(renderer, pass);
