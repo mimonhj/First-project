@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
+  <title>Pixel Pirates</title>
+  <meta name="description" content="A pixel-art 3D pirate game: sail the seas and sink enemy pirate ships across five levels." />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap" />
+  <link rel="stylesheet" href="style.css" />
+  <script type="importmap">
+    { "imports": { "three": "./vendor/three.module.min.js" } }
+  </script>
+</head>
+<body>
+  <canvas id="game" aria-label="Game view"></canvas>
+
+  <div id="hud" class="hidden">
+    <div class="hud-top">
+      <div class="box hull">
+        <div class="label">Hull</div>
+        <div class="bar"><div id="hull-fill" class="fill"></div></div>
+      </div>
+      <div class="box"><div class="label">Level</div><div id="level">1</div></div>
+      <div class="box"><div class="label">Ships</div><div id="ships">0</div></div>
+      <div class="box gold"><div class="label">Gold</div><div id="gold">0</div></div>
+      <button id="pause-btn" class="box icon-btn" aria-label="Pause">II</button>
+    </div>
+    <canvas id="minimap" width="112" height="112" aria-label="Minimap"></canvas>
+    <div class="hud-bottom">
+      <div class="box guns">
+        <div class="gun"><span class="label">Port Q</span><div class="bar small"><div id="reload-port" class="fill"></div></div></div>
+        <div class="gun"><span class="label">Sails</span><div id="sails" class="sails"></div></div>
+        <div class="gun"><span class="label">Stbd E</span><div class="bar small"><div id="reload-star" class="fill"></div></div></div>
+      </div>
+    </div>
+    <div id="touch" class="touch">
+      <div class="pad left">
+        <button data-hold="left" aria-label="Turn left">&#9664;</button>
+        <button data-hold="right" aria-label="Turn right">&#9654;</button>
+      </div>
+      <div class="pad mid">
+        <button data-tap="sailUp" aria-label="More sail">+</button>
+        <button data-tap="sailDown" aria-label="Less sail">&minus;</button>
+      </div>
+      <div class="pad right">
+        <button data-tap="firePort" class="fire" aria-label="Fire port cannons">&#8598;FIRE</button>
+        <button data-tap="fireStar" class="fire" aria-label="Fire starboard cannons">FIRE&#8599;</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="banner" class="banner hidden"></div>
+
+  <div id="menu-screen" class="overlay">
+    <div class="panel">
+      <h1>Pixel<br />Pirates</h1>
+      <p>Hoist the sails, captain! Sink every pirate ship in each level and plunder their gold. Five levels, one boss.</p>
+      <ul class="controls">
+        <li><kbd>A</kbd><kbd>D</kbd> / <kbd>&larr;</kbd><kbd>&rarr;</kbd> steer</li>
+        <li><kbd>W</kbd><kbd>S</kbd> / <kbd>&uarr;</kbd><kbd>&darr;</kbd> raise / lower sails</li>
+        <li><kbd>Q</kbd> fire left (port) &middot; <kbd>E</kbd> fire right (starboard)</li>
+        <li><kbd>Space</kbd> fire both sides &middot; <kbd>P</kbd> pause</li>
+      </ul>
+      <p class="tip">Cannons fire sideways, so turn your side to the enemy!</p>
+      <button id="start-btn" class="btn">Set sail</button>
+      <p class="best">Best plunder: <span id="best">0</span></p>
+    </div>
+  </div>
+
+  <div id="pause-screen" class="overlay hidden">
+    <div class="panel">
+      <h2>Paused</h2>
+      <button id="resume-btn" class="btn">Resume</button>
+    </div>
+  </div>
+
+  <div id="level-screen" class="overlay hidden">
+    <div class="panel">
+      <h2>Level cleared!</h2>
+      <p id="level-summary"></p>
+      <button id="next-btn" class="btn">Next level</button>
+      <p class="hint">Press <kbd>Enter</kbd></p>
+    </div>
+  </div>
+
+  <div id="over-screen" class="overlay hidden">
+    <div class="panel">
+      <h2>Ship sunk!</h2>
+      <p id="over-summary"></p>
+      <button id="retry-btn" class="btn">Retry level</button>
+      <button id="newgame-btn" class="btn alt">New game</button>
+      <p class="hint">Press <kbd>Enter</kbd> to retry</p>
+    </div>
+  </div>
+
+  <div id="won-screen" class="overlay hidden">
+    <div class="panel">
+      <h2>Victory!</h2>
+      <p>The pirate fleet is sunk and the seas are yours.</p>
+      <p class="final">Plunder: <strong id="won-gold">0</strong></p>
+      <p id="won-best" class="new-best hidden">New best!</p>
+      <button id="again-btn" class="btn">Play again</button>
+    </div>
+  </div>
+
+  <div id="error-screen" class="overlay hidden">
+    <div class="panel">
+      <h2>Can't start</h2>
+      <p>Your browser doesn't seem to support WebGL.</p>
+    </div>
+  </div>
+
+  <script type="module" src="src/main.js"></script>
+</body>
+</html>
