@@ -48,6 +48,13 @@ const simulate = (page, seconds) =>
     if (mode === 'playing') G.state.mode = 'paused';
     return mode;
   }, seconds);
+// Wait (in real time) until the game's own clock has advanced `seconds`.
+// Software WebGL can be slow, so wall-clock waits are not reliable.
+const waitSim = (page, seconds) =>
+  page.waitForFunction((target) => window.__game.state.time >= target, seconds, { timeout: 120000, polling: 50 })
+    .catch(() => {})
+    .then(() => {});
+const simTime = (page) => page.evaluate(() => window.__game.state.time);
 // Sink every live enemy, then let waves/timers play out.
 const sinkAll = (page) => page.evaluate(() => window.__game.enemies.forEach((e) => window.__game.damage(e, 9999)));
 
@@ -83,8 +90,8 @@ async function shotColours(page) {
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   watch(page);
 
-  await page.goto(url);
-  await page.waitForFunction(() => window.__game && window.__game.env);
+  await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await page.waitForFunction(() => window.__game && window.__game.env, null, { timeout: 120000 });
   await sleep(1500);
   await page.screenshot({ path: path.join(OUT, '1-menu.png') });
   check(await page.isVisible('#menu-screen'), 'title screen is shown');
@@ -93,6 +100,10 @@ async function shotColours(page) {
   // Full-resolution rendering (no more pixel upscaling).
   const size = await page.evaluate(() => [document.getElementById('game').width, document.getElementById('game').height]);
   check(size[0] >= 1280 && size[1] >= 720, `renders at full resolution (${size})`);
+  // Slow (software) rendering should make the game lower its internal resolution.
+  await page.waitForFunction(() => window.__game.quality.level > 0, null, { timeout: 120000 }).catch(() => {});
+  const q = await g(page, 'quality');
+  check(q.level > 0 && q.scale < 1, `adaptive resolution kicks in on a slow renderer (scale ${q.scale})`);
   const colours = await shotColours(page);
   check(colours > 40, `title scene renders with rich colour (${colours} colour buckets)`);
 
@@ -110,7 +121,8 @@ async function shotColours(page) {
   check(l1.enemies.join() === 'cutter,cutter', `level 1 opens with corsair cutters (${l1.enemies})`);
   check(l1.colliders > 3, `level 1 has land to steer around (${l1.colliders} colliders)`);
   check(await page.isVisible('.hud-top'), 'HUD is visible');
-  await sleep(2500);
+  await page.screenshot({ path: path.join(OUT, '2a-europe-intro.png') });
+  await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
   await page.screenshot({ path: path.join(OUT, '2-europe.png') });
 
   // ---- Sails and steering.
@@ -121,19 +133,20 @@ async function shotColours(page) {
   await page.keyboard.press('s');
   check((await g(page, 'state.sail')) === 2, 'S lowers sails');
   const p0 = await page.evaluate(() => [window.__game.player.x, window.__game.player.z]);
-  await sleep(900);
+  await waitSim(page, (await simTime(page)) + 1);
   const p1 = await page.evaluate(() => [window.__game.player.x, window.__game.player.z]);
   check(Math.hypot(p1[0] - p0[0], p1[1] - p0[1]) > 1, 'ship sails forward');
   const h0 = await g(page, 'player.h');
   await page.keyboard.down('a');
-  await sleep(400);
+  await waitSim(page, (await simTime(page)) + 0.4);
   await page.keyboard.up('a');
   const h1 = await g(page, 'player.h');
-  check(h1 > h0 + 0.1, `A turns to port (${h0.toFixed(2)} -> ${h1.toFixed(2)})`);
+  const turned = (a, b) => ((((b - a + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  check(turned(h0, h1) > 0.1, `A turns to port (${h0.toFixed(2)} -> ${h1.toFixed(2)})`);
   await page.keyboard.down('ArrowRight');
-  await sleep(400);
+  await waitSim(page, (await simTime(page)) + 0.4);
   await page.keyboard.up('ArrowRight');
-  check((await g(page, 'player.h')) < h1 - 0.1, 'ArrowRight turns to starboard');
+  check(turned(h1, await g(page, 'player.h')) < -0.1, 'ArrowRight turns to starboard');
 
   // ---- Firing and reloading.
   await freeze(page);
@@ -151,7 +164,7 @@ async function shotColours(page) {
   check(fired.ok1 && fired.added === fired.guns, `port broadside fires ${fired.added} balls`);
   check(!fired.ok2 && fired.ok3, 'each side reloads independently');
   await simulate(page, 2.5);
-  check((await g(page, 'balls.length')) === 0, 'cannonballs splash down and are removed');
+  check((await page.evaluate(() => window.__game.balls.filter((b) => b.owner === 'player').length)) === 0, 'cannonballs splash down and are removed');
 
   // ---- Hits at several ranges (only one target, land moved out of the way).
   for (const dist of [10, 18, 26, 32]) {
@@ -211,7 +224,7 @@ async function shotColours(page) {
   check(l2.enemies.join() === 'prahu,prahu,prahu', `Bali opens with prahu raiders (${l2.enemies})`);
   check(l2.reefs > 0, `Bali has coral reefs (${l2.reefs})`);
   check(l2.hp === 120, 'hull is repaired between levels');
-  await sleep(2500);
+  await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
   await page.screenshot({ path: path.join(OUT, '4-bali.png') });
 
   // Reefs slow deep hulls but not the shallow-draft prahus.
@@ -291,7 +304,9 @@ async function shotColours(page) {
   const l3 = await page.evaluate(() => ({ name: window.__game.LEVELS[2].env.meta.name, volcano: window.__game.env.volcano, enemies: window.__game.enemies.map((e) => e.typeName) }));
   check(/Volcano/i.test(l3.name) && l3.volcano && l3.volcano.craterY > 10, `level 3 is the volcano (${l3.name}, crater at ${l3.volcano && Math.round(l3.volcano.craterY)})`);
   check(!l3.enemies.includes('inferno'), `the boss waits for the second wave (${l3.enemies})`);
-  await sleep(2500);
+  await waitSim(page, 1.2);
+  await page.screenshot({ path: path.join(OUT, '5a-volcano-intro.png') });
+  await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
   await page.screenshot({ path: path.join(OUT, '5-volcano.png') });
 
   await freeze(page);
@@ -329,7 +344,7 @@ async function shotColours(page) {
     G.player.x = b.x - 30; G.player.z = b.z; G.player.h = Math.PI / 2;
     G.state.mode = 'playing';
   });
-  await sleep(1500);
+  await page.waitForSelector('#boss', { state: 'visible', timeout: 60000 }).catch(() => {});
   check(await page.isVisible('#boss'), 'boss health bar is shown');
   await page.screenshot({ path: path.join(OUT, '6-boss.png') });
   await freeze(page);
@@ -364,7 +379,7 @@ async function shotColours(page) {
   const calls = [];
   for (let n = 1; n <= 3; n++) {
     await page.evaluate((n) => { window.__game.startLevel(n); }, n);
-    await sleep(1200);
+    await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     calls.push(await page.evaluate(() => window.__game.renderInfo.calls));
   }
   check(calls.every((c) => c > 0 && c < 1600), `draw calls per frame are reasonable (${calls.join(', ')})`);
@@ -427,7 +442,7 @@ async function shotColours(page) {
         }
         t += 6 / 120;
       }
-      results.push({ level: n, result: G.state.mode, time: Math.round(t), hpLeft: Math.round(G.player.hp), damageTaken: Math.round(damageTaken), stuck, left: G.enemies.filter((e) => e.hp > 0).map((e) => e.typeName).join(' ') });
+      results.push({ level: n, hurtBy: JSON.stringify(G.state.hurtBy), result: G.state.mode, time: Math.round(t), hpLeft: Math.round(G.player.hp), damageTaken: Math.round(damageTaken), stuck, left: G.enemies.filter((e) => e.hp > 0).map((e) => e.typeName).join(' ') });
       if (G.state.mode === 'playing') G.state.mode = 'paused';
     }
     return results;
@@ -446,8 +461,8 @@ async function shotColours(page) {
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   watch(mobile);
-  await mobile.goto(url);
-  await mobile.waitForFunction(() => window.__game && window.__game.env);
+  await mobile.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
+  await mobile.waitForFunction(() => window.__game && window.__game.env, null, { timeout: 120000 });
   await mobile.tap('#start-btn');
   check((await g(mobile, 'state.mode')) === 'playing', 'mobile: tap Set sail starts');
   check(await mobile.isVisible('#touch'), 'mobile: touch controls are shown');
@@ -457,16 +472,19 @@ async function shotColours(page) {
   check((await g(mobile, 'player.reload.star')) > 0, 'mobile: fire button fires');
   const mh = await g(mobile, 'player.h');
   await mobile.evaluate(() => document.querySelector('[data-hold="left"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, pointerType: 'touch' })));
-  await sleep(500);
+  await waitSim(mobile, (await simTime(mobile)) + 0.5);
   await mobile.evaluate(() => document.querySelector('[data-hold="left"]').dispatchEvent(new PointerEvent('pointerup', { bubbles: true, pointerType: 'touch' })));
-  check((await g(mobile, 'player.h')) > mh + 0.05 && !(await g(mobile, 'input.left')), 'mobile: holding the turn button steers');
+  const mh2 = await g(mobile, 'player.h');
+  const mTurn = ((((mh2 - mh + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
+  check(mTurn > 0.05 && !(await g(mobile, 'input.left')), `mobile: holding the turn button steers (${mTurn.toFixed(2)} rad)`);
   await sleep(1500);
   await mobile.screenshot({ path: path.join(OUT, '7-mobile.png') });
 
   await page.setViewportSize({ width: 800, height: 900 });
-  await sleep(300);
-  const resized = await page.evaluate(() => document.getElementById('game').width);
-  check(resized >= 800, `canvas resizes with the window (${resized})`);
+  await page.waitForFunction(() => window.innerWidth === 800, null, { timeout: 60000 });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const resized = await page.evaluate(() => ({ w: document.getElementById('game').width, pr: window.__game.quality.pixelRatio }));
+  check(resized.w === Math.round(800 * resized.pr), `canvas resizes with the window (${resized.w}px at pixel ratio ${resized.pr.toFixed(2)})`);
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''}`);
 

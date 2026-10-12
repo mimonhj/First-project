@@ -38,7 +38,7 @@ export const SHIP_TYPES = {
   },
   junk: {
     name: 'Dragon Junk',
-    hp: 100, len: 11, wid: 3.8, maxSpeed: 7.5, accel: 2.3, turn: 0.8, reload: 2.3, guns: 3, dmg: 5,
+    hp: 100, len: 11, wid: 3.8, maxSpeed: 7.5, accel: 2.3, turn: 0.8, reload: 2.3, guns: 3, dmg: 4,
     gold: 8, engage: 22, spread: 0.09,
   },
 
@@ -50,13 +50,13 @@ export const SHIP_TYPES = {
   },
   manowar: {
     name: "Man-o'-War",
-    hp: 160, len: 13, wid: 4.4, maxSpeed: 7, accel: 2.1, turn: 0.7, reload: 2.4, guns: 4, dmg: 5,
+    hp: 160, len: 13, wid: 4.4, maxSpeed: 7, accel: 2.1, turn: 0.7, reload: 2.7, guns: 4, dmg: 5,
     gold: 10, engage: 24, spread: 0.08,
   },
   inferno: {
     name: 'The Molten Maw',
     boss: true,
-    hp: 320, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.9, guns: 6, dmg: 4,
+    hp: 280, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.9, guns: 6, dmg: 3,
     gold: 20, engage: 25, spread: 0.07,
   },
 };

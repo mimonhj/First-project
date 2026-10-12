@@ -28,6 +28,8 @@ npm start            # serves on http://localhost:8080
 
 Three.js and the add-ons it needs are vendored in `vendor/`, so there is no build step.
 
+The game lowers its internal resolution automatically if frames run slow. Add `?quality=high` to the URL to force full resolution, or `?quality=low` for weak devices.
+
 ### Controls
 
 | Action                 | Keyboard              | Touch           |

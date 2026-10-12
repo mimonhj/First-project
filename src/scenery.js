@@ -23,6 +23,18 @@ export function createRenderer(canvas) {
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NoToneMapping; // keep cartoon colours exact
   const effect = new OutlineEffect(renderer, { defaultThickness: OUTLINE_THICKNESS, defaultColor: INK });
+  // OutlineEffect only swaps materials on meshes with normals; everything else
+  // (sprites, points, lines, normal-less meshes) would be drawn a second time by
+  // the outline pass, doubling the opacity of labels and particles. Hide them for
+  // that pass. (Reused list and callback: no per-frame allocation.)
+  const hidden = [];
+  const hideForOutline = (o) => {
+    const bareMesh = o.isMesh && !(o.geometry && o.geometry.attributes.normal) && o.children.length === 0;
+    if (o.isSprite || o.isPoints || o.isLine || bareMesh) {
+      o.visible = false;
+      hidden.push(o);
+    }
+  };
   return {
     renderer,
     effect,
@@ -31,7 +43,18 @@ export function createRenderer(canvas) {
       renderer.setSize(Math.max(1, Math.round(cssW)), Math.max(1, Math.round(cssH)), false);
     },
     render(scene, camera) {
-      effect.render(scene, camera);
+      if (effect.enabled === false) {
+        renderer.render(scene, camera);
+        return;
+      }
+      const autoClear = renderer.autoClear;
+      renderer.autoClear = effect.autoClear;
+      renderer.render(scene, camera);
+      renderer.autoClear = autoClear;
+      scene.traverseVisible(hideForOutline);
+      effect.renderOutline(scene, camera);
+      for (let i = 0; i < hidden.length; i++) hidden[i].visible = true;
+      hidden.length = 0;
     },
   };
 }
@@ -110,10 +133,76 @@ const OCEAN_LEVELS = [
   { s: 4, e: 192 },
   { s: 8, e: 320 },
   { s: 16, e: 448 },
+  { s: 32, e: 640 },
 ];
-const OCEAN_SNAP = 16; // coarsest spacing: recentring by multiples keeps every vertex on its lattice
-const MAX_FOAM = 64;
+const OCEAN_SNAP = 32; // coarsest spacing: recentring by multiples keeps every vertex on its lattice
+const OCEAN_EXTENT = OCEAN_LEVELS[OCEAN_LEVELS.length - 1].e;
 const MAX_CLOUD_SHADOWS = 24;
+
+// ---------------------------------------------------------------------------
+// Shorelines: the foam circles are baked once (per setFoam) into a signed
+// distance texture, so any number of circles costs one texture fetch per pixel
+// and nothing pops as the player moves. Distances are smooth-min blended so a
+// chain of overlapping circles reads as one coastline.
+// ---------------------------------------------------------------------------
+const SHORE_CLAMP = 16; // shore effects end before this distance from land
+const SHORE_MIN = -8; // deep inside land nothing is visible
+const SHORE_K = 4; // smooth-min radius between neighbouring circles
+// A circle further than this (from its rim) cannot change a texel: smin(a, b, k)
+// equals min(a, b) when |a - b| >= k, and anything above SHORE_CLAMP is clamped.
+const SHORE_REACH = SHORE_CLAMP + SHORE_K + 2;
+
+function smin(a, b, k) {
+  const h = Math.max(k - Math.abs(a - b), 0) / k;
+  return Math.min(a, b) - h * h * k * 0.25;
+}
+
+/** Bakes circles into a half-float distance field; returns {data, res, x0, z0, size}. */
+function bakeShoreField(circles) {
+  let x0 = Infinity;
+  let z0 = Infinity;
+  let x1 = -Infinity;
+  let z1 = -Infinity;
+  for (const c of circles) {
+    const m = c.r + SHORE_REACH;
+    x0 = Math.min(x0, c.x - m);
+    z0 = Math.min(z0, c.z - m);
+    x1 = Math.max(x1, c.x + m);
+    z1 = Math.max(z1, c.z + m);
+  }
+  const size = Math.max(x1 - x0, z1 - z0, 1);
+  // about one texel per world unit (0.6-1.3 for arenas up to ~1300 units across)
+  const res = Math.min(1024, Math.max(256, 2 ** Math.ceil(Math.log2(size / 1.3))));
+  const cx = (x0 + x1) / 2;
+  const cz = (z0 + z1) / 2;
+  x0 = cx - size / 2;
+  z0 = cz - size / 2;
+  const cell = size / res;
+  const field = new Float32Array(res * res).fill(1e4);
+  for (const c of circles) {
+    const reach = c.r + SHORE_REACH;
+    const i0 = Math.max(0, Math.floor((c.x - reach - x0) / cell));
+    const i1 = Math.min(res - 1, Math.ceil((c.x + reach - x0) / cell));
+    const j0 = Math.max(0, Math.floor((c.z - reach - z0) / cell));
+    const j1 = Math.min(res - 1, Math.ceil((c.z + reach - z0) / cell));
+    for (let j = j0; j <= j1; j++) {
+      const dz = z0 + (j + 0.5) * cell - c.z;
+      const row = j * res;
+      for (let i = i0; i <= i1; i++) {
+        const dx = x0 + (i + 0.5) * cell - c.x;
+        const d = Math.sqrt(dx * dx + dz * dz) - c.r;
+        if (d > reach - c.r) continue;
+        field[row + i] = smin(field[row + i], d, SHORE_K);
+      }
+    }
+  }
+  const open = THREE.DataUtils.toHalfFloat(SHORE_CLAMP);
+  const data = new Uint16Array(res * res).fill(open);
+  for (let i = 0; i < field.length; i++) {
+    if (field[i] < SHORE_CLAMP) data[i] = THREE.DataUtils.toHalfFloat(Math.max(SHORE_MIN, field[i]));
+  }
+  return { data, res, x0, z0, size };
+}
 
 function buildOceanGeometry() {
   const pos = [];
@@ -206,8 +295,10 @@ uniform vec3 uShallow;
 uniform vec3 uFoam;
 uniform vec3 uSunColor;
 uniform vec3 uSunDir;
-uniform vec3 uShore[${MAX_FOAM}];
-uniform int uShoreN;
+uniform vec3 uSkyHorizon;
+uniform sampler2D uShoreTex; // signed distance to the nearest shoreline (world units)
+uniform vec4 uShoreXf; // xy: world xz of the texture's corner, z: 1 / size, w: 1 if any shore
+uniform vec2 uCenter; // xz centre of the ocean mesh (its far edge fades into the fog)
 uniform vec4 uCloudSh[${MAX_CLOUD_SHADOWS}];
 uniform int uCloudN;
 uniform float uCloudStrength;
@@ -234,11 +325,6 @@ vec2 worley(vec2 p, float t) {
   }
   f1 = sqrt(f1);
   return vec2(f1, sqrt(f2) - f1);
-}
-
-float smin(float a, float b, float k) {
-  float h = max(k - abs(a - b), 0.0) / k;
-  return min(a, b) - h * h * k * 0.25;
 }
 
 // crisp cartoon edge with ~1px anti-aliasing
@@ -269,17 +355,25 @@ void main() {
   vec2 rip = (d1 * cos(r1) * 0.07 + d2 * cos(r2) * 0.05) * near;
   vec3 n = normalize(vec3(-(hg.y + rip.x), 1.0, -(hg.z + rip.y)));
 
-  // ---- painted body colour: deep / mid / light bands following the swell
-  vec2 bandNoise = vec2(vnoise(p * 0.045 + vec2(t * 0.02, 0.0)), vnoise(p * 0.11 - vec2(0.0, t * 0.05)));
-  float tone = 0.75 * hn + 0.38 * (bandNoise.x - 0.5) + 0.18 * (bandNoise.y - 0.5);
+  // ---- painted body colour: deep / mid / light bands following the swell.
+  // Bands are stretched along the crests of the main swell and gently warped.
+  vec2 d0 = normalize(vec2(${glslNum(WAVES[0].kx)}, ${glslNum(WAVES[0].kz)}));
+  float su = dot(p, d0);
+  float sv = dot(p, vec2(-d0.y, d0.x));
+  float ph0 = ${glslNum(WAVES[0].kx)} * p.x + ${glslNum(WAVES[0].kz)} * p.y - ${glslNum(WAVES[0].w)} * t + ${glslNum(WAVES[0].ph)};
+  vec2 bandNoise = vec2(vnoise(vec2(su * 0.06, sv * 0.022) + vec2(t * 0.02, 0.0)), vnoise(p * 0.11 - vec2(0.0, t * 0.05)));
+  float swell = sin(ph0 + (bandNoise.x - 0.5) * 3.0);
+  float tone = 0.5 * hn + 0.34 * swell + 0.3 * (vnoise(vec2(su * 0.1, sv * 0.035) - t * 0.03) - 0.5) + 0.14 * (bandNoise.y - 0.5);
   tone += 2.2 * (dot(n, L) - L.y * 0.98);
+  tone = mix(tone, 0.15, smoothstep(140.0, 300.0, dist)); // calm, even water far away
   vec3 midCol = mix(uDeep, uShallow, 0.42);
   vec3 col = mix(uDeep, midCol, edge(tone, -0.12));
   col = mix(col, uShallow, edge(tone, 0.42));
 
-  // far water picks up the sky: a lighter band towards the horizon
+  // far water mirrors the sky near the horizon: two painted bands of reflection
   float graze = 1.0 - clamp(V.y * 3.2, 0.0, 1.0);
-  col = mix(col, mix(uShallow, vec3(1.0), 0.15), 0.45 * edge(graze, 0.82));
+  vec3 skyRefl = mix(uShallow, uSkyHorizon, 0.55);
+  col = mix(col, skyRefl, 0.4 * edge(graze, 0.82) + 0.25 * edge(graze, 0.93));
 
   // ---- cloud shadows drifting over the water
   float shadow = 0.0;
@@ -292,50 +386,78 @@ void main() {
   }
   col *= 1.0 - shadow * uCloudStrength;
 
-  // ---- foam squiggles: broken white lines riding the swell (cells drift slowly)
-  vec2 fp = p * 0.24 + vec2(t * 0.06, t * 0.04);
-  vec2 wr = worley(fp, t * 0.6);
-  float breakup = vnoise(p * 0.32 + vec2(t * 0.1, -t * 0.07));
-  float lineMask = smoothstep(0.1, 0.5, hn + (vnoise(p * 0.05 + 3.1) - 0.5) * 1.1) * smoothstep(0.45, 0.62, breakup);
-  float lw = 0.03 + 0.035 * lineMask;
-  float aaw = fwidth(wr.y);
-  float lines = 1.0 - smoothstep(lw - aaw, lw + aaw, wr.y);
-  lines *= step(0.01, lineMask) * near * (1.0 - smoothstep(0.04, 0.09, aaw));
+  // ---- crest highlights: a broken white rim along the top of the light bands
+  float lineFade = 1.0 - smoothstep(35.0, 120.0, dist);
+  // short brush strokes: the dash noise both cuts the rim and tapers its width
+  float dash = vnoise(p * vec2(0.55, 0.42) + vec2(t * 0.08, -t * 0.06));
+  float taper = smoothstep(0.52 - 0.1 * clamp(uAmp - 1.0, 0.0, 1.0), 0.72, dash);
+  float tw0 = fwidth(tone);
+  float rim = 1.0 - smoothstep(0.4 + 1.1 * taper, 0.9 + 1.2 * taper, abs(tone - 0.5) / max(tw0, 1e-4));
+  float lines = rim * step(0.001, taper) * lineFade;
 
-  // ---- white caps on the highest crests
-  float capField = hn + (0.3 - wr.x) * 0.35 + (bandNoise.y - 0.5) * 0.35;
-  float caps = edge(capField, 0.86) * (0.4 + 0.6 * near);
+  // ---- white caps: a foam patch on the highest crests with a bubbly fringe
+  vec2 wr = worley(p * 0.8 + vec2(t * 0.05, t * 0.03), t * 0.7);
+  float capField = hn + (bandNoise.y - 0.5) * 0.5;
+  float bubbleR = 0.27 * smoothstep(0.7, 0.98, capField);
+  float caps = (1.0 - edge(wr.x, bubbleR)) * step(0.02, bubbleR) * lineFade;
+  // rougher seas (waveAmp > 1) break into more white caps
+  float rough = clamp(uAmp - 1.0, 0.0, 1.0);
+  caps = max(caps, edge(capField - (wr.x - 0.4) * 0.12 + rough * 0.12, 1.0) * (1.0 - smoothstep(110.0, 210.0, dist)));
 
   // ---- sun glints: little twinkling stars where the water mirrors the sun
   vec3 R = reflect(-V, n);
   float sunR = max(dot(R, L), 0.0);
-  float sunPath = pow(sunR, 18.0);
-  col = mix(col, mix(col, uShallow + uSunColor * 0.25, 0.65), edge(sunPath, 0.35));
+  float sunPath = pow(sunR, 50.0) * (0.55 + 0.9 * clamp(tone, 0.0, 1.0));
+  // a low sun paints a warm glitter path (gold at sunset), a high one a light one
+  // (painted as opaque strokes: blending an orange sun into teal water turns grey)
+  float lowSun = 1.0 - smoothstep(0.15, 0.6, L.y);
+  float warm = smoothstep(0.05, 0.45, lowSun);
+  vec3 sunGold = min(uSunColor * 1.08, vec3(1.0));
+  vec3 pathCol = mix(uShallow * 1.18, sunGold, 0.12 + 0.88 * warm);
+  // low sun: a wider tier of horizontal dashes (stripes across the sun's azimuth,
+  // so perspective makes them thinner with distance), broken into segments
+  vec2 sunAz = normalize(L.xz + 1e-5);
+  float su2 = dot(p, sunAz);
+  float sunDash = 0.5 + 0.5 * sin(su2 * 1.15 + (bandNoise.x - 0.5) * 6.0 - t * 0.7);
+  // stripes thinner than ~3 px would shimmer: far away they merge into one bright band
+  sunDash = mix(sunDash, 0.62, smoothstep(0.7, 2.0, fwidth(su2) * 1.15));
+  float seg = vnoise(vec2(dot(p, vec2(-sunAz.y, sunAz.x)) * 0.2, su2 * 0.45));
+  float pathWide = pow(sunR, 13.0) * (0.25 + 0.75 * sunDash) * (0.55 + 0.8 * seg) * (0.75 + 0.5 * clamp(tone + 0.3, 0.0, 1.0)) * warm;
+  col = mix(col, uSunColor * 0.8, edge(pathWide, 0.55));
+  sunPath *= mix(1.0, 0.55 + 0.7 * sunDash, warm);
+  col = mix(col, pathCol, (0.8 + 0.2 * warm) * edge(sunPath, 0.45));
   vec2 gc = p * 0.5;
   vec2 gi = floor(gc);
   vec2 gr = hash22(gi + 17.0);
   vec2 gq = fract(gc) - 0.5 - (gr - 0.5) * 0.5;
   float tw = 0.5 + 0.5 * sin(t * (2.0 + 3.0 * gr.y) + gr.x * 40.0);
-  float glintChance = pow(sunR, 10.0) * 0.9 + 0.006;
-  float gsize = 0.26 * tw * step(gr.x, glintChance);
+  // dense only right in the sun's reflection, a sprinkle elsewhere
+  float glintChance = pow(sunR, 22.0) * 0.6 + pow(sunR, 80.0) * 0.35 + 0.005;
+  float gpx = max(length(fwidth(gc)), 1e-5); // one pixel, in cell units
+  float gsize = min((0.17 + 0.11 * gr.y) * tw, 9.0 * gpx) * step(gr.x, glintChance);
   float star = min(abs(gq.x) + abs(gq.y) * 6.0, abs(gq.y) + abs(gq.x) * 6.0);
-  float glint = (1.0 - edge(star, gsize)) * near * step(0.001, gsize);
+  // stars under ~2 px would only read as dust: fade them out
+  float glintFade = smoothstep(1.6, 3.2, gsize / gpx) * (1.0 - smoothstep(60.0, 140.0, dist));
+  float glint = (1.0 - edge(star, gsize)) * glintFade * step(0.001, gsize);
 
   // ---- shorelines: lighter shallows, a wobbly surf band and incoming wave lines
-  float sd = 1e4;
-  for (int i = 0; i < ${MAX_FOAM}; i++) {
-    if (i >= uShoreN) break;
-    vec3 c = uShore[i];
-    sd = smin(sd, length(p - c.xy) - c.z, 4.0);
+  // (the baked field is clamped to ${SHORE_CLAMP}; outside the texture it is open sea)
+  float sd = ${glslNum(SHORE_CLAMP)};
+  if (uShoreXf.w > 0.5) {
+    vec2 suv = (p - uShoreXf.xy) * uShoreXf.z;
+    sd = texture2D(uShoreTex, clamp(suv, 0.0, 1.0)).r;
   }
   float surf = 0.0;
-  if (sd < 16.0) {
+  {
     float wob = 0.55 * sin(p.x * 0.42 + t * 1.3) * cos(p.y * 0.37 - t * 1.1) + 0.3 * sin((p.x - p.y) * 0.9 + t * 2.0);
     float sdw = sd - wob;
     float shallow = 1.0 - edge(sdw * 0.6 + sd * 0.4, 8.0);
-    vec3 shCol = mix(uShallow, uFoam, 0.32);
-    col = mix(col, mix(uShallow, uFoam, 0.12), 1.0 - edge(sd + wob * 0.4, 13.0));
+    // shallows: a brighter, still saturated version of the shallow colour
+    vec3 shCol = mix(uShallow * 1.32 + uFoam * 0.1, mix(uShallow, uFoam, 0.3), 0.45);
+    float outerShallow = 1.0 - edge(sd + wob * 0.4, 13.0);
+    col = mix(col, mix(uShallow, shCol, 0.35), outerShallow);
     col = mix(col, shCol, shallow);
+    lines *= 1.0 - outerShallow; // keep the beach clean of crest strokes
     // two wave lines rolling in towards the beach
     for (int k = 0; k < 2; k++) {
       float ph = fract(t * 0.16 + float(k) * 0.5);
@@ -350,19 +472,33 @@ void main() {
     surf = max(surf, 1.0 - edge(sdw + bubbles, 3.0));
   }
 
-  float foam = max(max(lines, caps), max(surf, glint));
+  float foam = max(max(lines * 0.85, caps), surf);
   col = mix(col, uFoam, clamp(foam, 0.0, 1.0));
+  col = mix(col, mix(vec3(1.0), uSunColor, 0.3 + 0.35 * lowSun), glint);
 
   gl_FragColor = vec4(col, 1.0);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
   #include <fog_fragment>
+  #ifdef USE_FOG
+  // whatever the palette's fog distance, the square edge of the sea never shows
+  vec2 rel = abs(vWorld.xz - uCenter);
+  gl_FragColor.rgb = mix(gl_FragColor.rgb, fogColor, smoothstep(${glslNum(OCEAN_EXTENT - 150)}, ${glslNum(OCEAN_EXTENT - 24)}, max(rel.x, rel.y)));
+  #endif
 }
 `;
 
 export function createOcean(scene) {
   const geometry = buildOceanGeometry();
-  const shore = Array.from({ length: MAX_FOAM }, () => new THREE.Vector3(0, 0, -1));
+  const makeShoreTex = (data, res) => {
+    const tex = new THREE.DataTexture(data, res, res, THREE.RedFormat, THREE.HalfFloatType);
+    tex.minFilter = THREE.LinearFilter;
+    tex.magFilter = THREE.LinearFilter;
+    tex.wrapS = tex.wrapT = THREE.ClampToEdgeWrapping;
+    tex.generateMipmaps = false;
+    tex.needsUpdate = true;
+    return tex;
+  };
   const uniforms = {
     ...THREE.UniformsUtils.clone(THREE.UniformsLib.fog),
     uTime: { value: 0 },
@@ -372,8 +508,10 @@ export function createOcean(scene) {
     uFoam: { value: new THREE.Color() },
     uSunColor: { value: new THREE.Color() },
     uSunDir: { value: new THREE.Vector3(0.5, 0.8, 0.3) },
-    uShore: { value: shore },
-    uShoreN: { value: 0 },
+    uSkyHorizon: { value: new THREE.Color() },
+    uShoreTex: { value: makeShoreTex(new Uint16Array([THREE.DataUtils.toHalfFloat(SHORE_CLAMP)]), 1) },
+    uShoreXf: { value: new THREE.Vector4(0, 0, 1, 0) },
+    uCenter: { value: new THREE.Vector2() },
     uCloudSh: cloudShadow.list,
     uCloudN: cloudShadow.count,
     uCloudStrength: cloudShadow.strength,
@@ -393,27 +531,6 @@ export function createOcean(scene) {
   scene.add(mesh);
 
   let amp = DEFAULT_PALETTE.waveAmp;
-  let circles = [];
-  let lastPick = null;
-
-  // With more than MAX_FOAM circles, keep the ones nearest the focus.
-  function pickShore(cx, cz) {
-    let list = circles;
-    if (circles.length > MAX_FOAM) {
-      list = circles
-        .map((c) => ({ c, d: Math.hypot(c.x - cx, c.z - cz) - c.r }))
-        .sort((a, b) => a.d - b.d)
-        .slice(0, MAX_FOAM)
-        .map((o) => o.c);
-    }
-    for (let i = 0; i < MAX_FOAM; i++) {
-      const c = list[i];
-      if (c) shore[i].set(c.x, c.z, c.r);
-      else shore[i].set(0, 0, -1);
-    }
-    uniforms.uShoreN.value = Math.min(list.length, MAX_FOAM);
-    lastPick = { x: cx, z: cz };
-  }
 
   const api = {
     mesh,
@@ -426,17 +543,36 @@ export function createOcean(scene) {
       uniforms.uFoam.value.setHex(P.waterFoam);
       uniforms.uSunColor.value.setHex(P.sunColor);
       uniforms.uSunDir.value.fromArray(P.sunDir).normalize();
+      uniforms.uSkyHorizon.value.setHex(P.skyHorizon);
     },
-    /** circles: [{x, z, r}] shorelines (r = shoreline radius); extra fields are ignored. */
+    /**
+     * circles: [{x, z, r}] shorelines (r = shoreline radius), any number; extra
+     * fields are ignored, so colliders can be passed directly. Bakes a distance
+     * field (a few ms), so call it once per level, not per frame.
+     */
     setFoam(list) {
-      circles = (list || []).filter((c) => c && Number.isFinite(c.x) && Number.isFinite(c.z) && c.r > 0);
-      pickShore(lastPick ? lastPick.x : 0, lastPick ? lastPick.z : 0);
+      const circles = (list || []).filter((c) => c && Number.isFinite(c.x) && Number.isFinite(c.z) && Number.isFinite(c.r) && c.r > 0);
+      if (!circles.length) {
+        uniforms.uShoreXf.value.w = 0;
+        return;
+      }
+      const f = bakeShoreField(circles);
+      const old = uniforms.uShoreTex.value;
+      if (old.image.width === f.res) {
+        old.image.data = f.data;
+        old.needsUpdate = true;
+      } else {
+        old.dispose();
+        uniforms.uShoreTex.value = makeShoreTex(f.data, f.res);
+      }
+      uniforms.uShoreXf.value.set(f.x0, f.z0, 1 / f.size, 1);
     },
     update(t, cx = 0, cz = 0) {
       uniforms.uTime.value = t;
+      if (!Number.isFinite(cx) || !Number.isFinite(cz)) cx = cz = 0;
       mesh.position.set(Math.round(cx / OCEAN_SNAP) * OCEAN_SNAP, 0, Math.round(cz / OCEAN_SNAP) * OCEAN_SNAP);
       mesh.updateMatrix();
-      if (circles.length > MAX_FOAM && (!lastPick || Math.hypot(cx - lastPick.x, cz - lastPick.z) > 8)) pickShore(cx, cz);
+      uniforms.uCenter.value.set(mesh.position.x, mesh.position.z);
     },
     heightAt(x, z, t) {
       return waveHeight(x, z, t, amp);
@@ -476,21 +612,30 @@ float edge(float v, float th) {
   return smoothstep(th - w, th + w, v);
 }
 
-// height profile (in elevation) of a row of puffy cloud tops around the horizon
-float bankTop(float az, float cells, float seed, float lift, float puff) {
+// Elevation of the top of a ring of distant cumulus clusters around the horizon
+// (-1 where there is no cloud). Each cluster is a few round bumps, with gaps between.
+float bankTop(float az, float cells, float seed, float scale) {
   float W = 6.2831853 / cells;
-  float x = az / W;
-  float ci = floor(x);
+  float ci = floor(az / W);
   float top = -1.0;
-  for (int k = -2; k <= 2; k++) {
+  for (int k = -1; k <= 1; k++) {
     float c = ci + float(k);
-    vec2 r = hash22(vec2(mod(c, cells), seed));
-    vec2 r2 = hash22(vec2(mod(c, cells) + 31.0, seed + 7.0));
-    float cx = (c + 0.5 + (r.x - 0.5) * 0.7) * W;
-    float rad = W * (0.5 + 0.8 * r.y);
-    float dx = az - cx;
-    float hgt = sqrt(max(rad * rad - dx * dx, 0.0)) * puff * (0.6 + 0.8 * r2.x) + lift * (0.4 + 0.9 * r2.y);
-    if (abs(dx) < rad) top = max(top, hgt);
+    float cm = mod(c, cells);
+    vec2 ra = hash22(vec2(cm, seed));
+    vec2 rb = hash22(vec2(cm + 17.0, seed + 3.0));
+    if (rb.y < 0.22) continue; // gap in the bank
+    float cx = (c + 0.5 + (ra.x - 0.5) * 0.3) * W;
+    float hw = W * (0.3 + 0.22 * ra.y);
+    float dx = (az - cx) / hw;
+    for (int b = 0; b < 4; b++) {
+      float fb = float(b);
+      vec2 rc = hash22(vec2(cm * 4.0 + fb, seed + 9.0));
+      float inner = (b == 1 || b == 2) ? 1.0 : 0.0;
+      float bx = -0.68 + fb * 0.45 + (rc.x - 0.5) * 0.18;
+      float br = 0.3 + 0.16 * rc.y + 0.12 * inner;
+      float dd = dx - bx;
+      if (abs(dd) < br) top = max(top, (sqrt(br * br - dd * dd) * 0.8 + 0.08 + 0.22 * inner * rb.x) * hw * scale);
+    }
   }
   return top;
 }
@@ -502,13 +647,17 @@ void main() {
   vec3 L = normalize(uSunDir);
 
   // gradient with a few painterly, slightly uneven strokes
-  float g = pow(clamp(e, 0.0, 1.0), 0.55);
-  float stroke = (vnoise(vec2(az * 2.2, e * 7.0)) - 0.5) * 0.10 + (vnoise(vec2(az * 6.0, e * 22.0)) - 0.5) * 0.04;
+  float g = 1.0 - pow(1.0 - clamp(e, 0.0, 1.0), 4.0);
+  // (noise sampled on the horizontal unit circle so it wraps around without a seam)
+  vec2 dh = normalize(d.xz + 1e-5);
+  float stroke = (vnoise(dh * 1.6 + vec2(e * 7.0, 0.0)) - 0.5) * 0.10 + (vnoise(dh * 4.5 + vec2(0.0, e * 22.0)) - 0.5) * 0.04;
   g = clamp(g + stroke * (1.0 - g) * 1.4, 0.0, 1.0);
-  vec3 col = mix(uHorizon, uTop, smoothstep(0.0, 0.95, g));
+  vec3 col = mix(uHorizon, uTop, g);
+  // keep the blend between warm and cool colours from going grey
+  float luma = dot(col, vec3(0.299, 0.587, 0.114));
+  col = max(mix(vec3(luma), col, 1.0 + 0.9 * g * (1.0 - g)), 0.0);
 
   // warm glow along the horizon on the sun side
-  vec2 dh = normalize(d.xz + 1e-5);
   vec2 lh = normalize(L.xz + 1e-5);
   float sunSide = pow(max(dot(dh, lh), 0.0), 3.0);
   col = mix(col, mix(col, uSunColor, 0.55), sunSide * (1.0 - smoothstep(0.0, 0.35, e)) * 0.6);
@@ -525,19 +674,19 @@ void main() {
   col = mix(col, core, 1.0 - edge(ang, 0.058));
 
   // ---- distant cloud banks (two layers), drawn over the sun
-  float back = bankTop(az, 34.0, 3.0, 0.022, 0.32);
-  float front = bankTop(az + 0.37, 52.0, 11.0, 0.008, 0.3);
-  vec3 hazeCloud = mix(uCloud, uHorizon, 0.45);
-  vec3 hazeShade = mix(uCloudShade, uHorizon, 0.4);
-  vec3 lit = mix(hazeCloud, mix(uCloud, uSunColor, 0.4), sunSide * 0.6);
+  vec3 hazeCloud = mix(uCloud, uHorizon, 0.5);
+  vec3 hazeShade = mix(uCloudShade, uHorizon, 0.45);
+  vec3 litCloud = mix(hazeCloud, mix(uCloud, uSunColor, 0.45), sunSide * 0.7);
+  float back = bankTop(az, 15.0, 3.0, 0.75);
   float inBack = 1.0 - edge(e, back);
-  float rimB = (1.0 - edge(e, back)) * edge(e, back - 0.006);
-  col = mix(col, mix(hazeShade, hazeCloud, 0.55), inBack * 0.85);
+  col = mix(col, mix(mix(hazeShade, hazeCloud, 0.5), uHorizon, 0.35), inBack);
+  float front = bankTop(az + 0.21, 23.0, 11.0, 0.6);
   float inFront = 1.0 - edge(e, front);
-  float shadeLine = 1.0 - edge(e, front * 0.45);
-  vec3 fcol = mix(lit, hazeShade, shadeLine);
+  float lowerPart = 1.0 - edge(e, front * 0.5);
+  vec3 fcol = mix(litCloud, hazeShade, lowerPart);
+  float rimF = inFront * edge(e, front - 0.0035);
+  fcol = mix(fcol, mix(hazeShade, uTop, 0.25), rimF * 0.55);
   col = mix(col, fcol, inFront);
-  col = mix(col, mix(hazeShade, uTop, 0.35), rimB * 0.5);
 
   // below the horizon the fog colour takes over (meets the fogged ocean)
   col = mix(uFog, col, smoothstep(-0.015, 0.045, e));
@@ -600,13 +749,17 @@ export function createSky(scene) {
 // cloudColor / cloudShade and inked by the outline effect.
 // ---------------------------------------------------------------------------
 const CLOUD_VERT = /* glsl */ `
+uniform vec3 uEllC;
+uniform vec3 uEllK;
 varying vec3 vN;
-varying float vLocalY;
+varying vec3 vE;
+varying vec3 vLocal;
 varying float vDepth;
 void main() {
-  vec3 nv = normalize(normalMatrix * normal);
-  vN = normalize((vec4(nv, 0.0) * viewMatrix).xyz);
-  vLocalY = position.y;
+  vN = normalize(mat3(modelMatrix) * normal);
+  vLocal = position;
+  // gradient of an ellipsoid around the whole cloud (interpolated, normalised per pixel)
+  vE = mat3(modelMatrix) * ((position - uEllC) * uEllK);
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   vDepth = -mv.z;
   gl_Position = projectionMatrix * mv;
@@ -621,24 +774,32 @@ uniform vec3 uFogColor;
 uniform float uFogNear;
 uniform float uFogFar;
 uniform float uFogAmount;
+uniform float uOpacity;
 varying vec3 vN;
-varying float vLocalY;
+varying vec3 vE;
+varying vec3 vLocal;
 varying float vDepth;
 float edge(float v, float th) {
   float w = max(fwidth(v), 1e-4) * 0.75;
   return smoothstep(th - w, th + w, v);
 }
 void main() {
-  vec3 n = normalize(vN);
+  // Bend each puff's normal towards the whole cloud's ellipsoid normal: light and
+  // shade sweep across the cloud as one soft shape while the inked silhouette stays lumpy.
+  vec3 n = normalize(normalize(vN) * 0.12 + normalize(vE) * 0.88);
   vec3 L = normalize(uSunDir);
-  float l = dot(n, L) * 0.75 + n.y * 0.35;
+  // two main tones (sunlit body / shaded side) and a thin soft mid band between them;
+  // the terminator gets a gentle scalloped wobble like a painted cloud
+  float scallop = 0.07 * sin(vLocal.x * 0.75 + vLocal.z * 0.4) + 0.04 * sin(vLocal.x * 1.7 - vLocal.y * 0.9);
+  // (a strong "lit top, shaded belly" term keeps them fluffy white even when backlit)
+  float l = dot(n, L) * 0.5 + n.y * 0.62 + 0.1 + scallop;
   vec3 mid = mix(uShade, uLit, 0.55);
   vec3 col = mix(uShade, mid, edge(l, -0.12));
-  col = mix(col, uLit, edge(l, 0.22));
-  // the underside is always in shade
-  col = mix(uShade * 0.93, col, edge(vLocalY, -1.3));
+  col = mix(col, uLit, edge(l, -0.02));
+  // the flat underside is always in shade
+  col = mix(uShade * 0.94, col, edge(vLocal.y, -1.6));
   float f = smoothstep(uFogNear, uFogFar, vDepth) * uFogAmount;
-  gl_FragColor = vec4(mix(col, uFogColor, f), 1.0);
+  gl_FragColor = vec4(mix(col, uFogColor, f), uOpacity);
   #include <tonemapping_fragment>
   #include <colorspace_fragment>
 }
@@ -668,6 +829,14 @@ function buildCloudGeometry(shape) {
   });
   const merged = mergeGeometries(parts, false);
   parts.forEach((g) => g.dispose());
+  // Ellipsoid around the whole cloud, used by the shader to soften the shading.
+  merged.computeBoundingBox();
+  const bb = merged.boundingBox;
+  const c = bb.getCenter(new THREE.Vector3());
+  const h = bb.getSize(new THREE.Vector3()).multiplyScalar(0.5);
+  c.y -= h.y * 0.25;
+  merged.userData.ellC = c;
+  merged.userData.ellK = new THREE.Vector3(1 / (h.x * h.x), 1 / (h.y * h.y), 1 / (h.z * h.z));
   merged.computeBoundingSphere();
   return merged;
 }
@@ -683,6 +852,8 @@ function mulberry32(seed) {
 }
 
 const CLOUD_AREA = 500; // clouds wrap inside this square around the focus
+// v wrapped into [-size/2, size/2)
+const wrapCentered = (v, size) => v - size * Math.floor(v / size + 0.5);
 const WIND = new THREE.Vector2(0.86, 0.5).normalize();
 const WIND_SPEED = 2.2;
 
@@ -691,7 +862,7 @@ export function createClouds(scene) {
   group.name = 'clouds';
   scene.add(group);
   const geometries = CLOUD_SHAPES.map(buildCloudGeometry);
-  const uniforms = {
+  const shared = {
     uLit: { value: new THREE.Color() },
     uShade: { value: new THREE.Color() },
     uSunDir: { value: new THREE.Vector3(0.5, 0.8, 0.3) },
@@ -700,24 +871,35 @@ export function createClouds(scene) {
     uFogFar: { value: 320 },
     uFogAmount: { value: 0.55 },
   };
-  const material = new THREE.ShaderMaterial({
-    name: 'CartoonCloud',
-    uniforms,
-    vertexShader: CLOUD_VERT,
-    fragmentShader: CLOUD_FRAG,
-    fog: false,
-  });
-  setOutline(material, { thickness: OUTLINE_THICKNESS * 0.85 });
+  // One material per cloud (same shader program) so each can fade out on its own,
+  // ink outline included, when it wraps around the edge of the cloud area.
+  const makeMaterial = (geo) => {
+    const m = new THREE.ShaderMaterial({
+      name: 'CartoonCloud',
+      uniforms: { ...shared, uOpacity: { value: 1 }, uEllC: { value: geo.userData.ellC }, uEllK: { value: geo.userData.ellK } },
+      vertexShader: CLOUD_VERT,
+      fragmentShader: CLOUD_FRAG,
+      transparent: true,
+      fog: false,
+    });
+    setOutline(m, { thickness: OUTLINE_THICKNESS * 0.85 });
+    return m;
+  };
+
+  // Depth-only twin drawn just before a fading cloud, so only its front surface blends.
+  const depthMat = noOutline(new THREE.MeshBasicMaterial({ colorWrite: false, transparent: true }));
 
   let clouds = [];
-  let focus = { x: 0, z: 0 };
+  const focus = { x: 0, z: 0 };
   const sunDir = new THREE.Vector3(0.5, 0.8, 0.3).normalize();
 
   function build(count) {
-    for (const c of clouds) group.remove(c.mesh);
+    for (const c of clouds) {
+      group.remove(c.mesh);
+      c.mesh.material.dispose();
+    }
     clouds = [];
     const rng = mulberry32(1234567);
-    const half = CLOUD_AREA / 2;
     // spread them out: best-of-k candidates with toroidal distance
     const pts = [];
     for (let i = 0; i < count; i++) {
@@ -742,48 +924,50 @@ export function createClouds(scene) {
       pts.push(best);
     }
     pts.forEach((pt, i) => {
-      const shape = i % CLOUD_SHAPES.length;
-      const mesh = new THREE.Mesh(geometries[shape], material);
+      const geo = geometries[i % CLOUD_SHAPES.length];
+      const prepass = new THREE.Mesh(geo, depthMat); // created first: lower id sorts first
+      const mesh = new THREE.Mesh(geo, makeMaterial(geo));
+      mesh.add(prepass);
       const s = 1.1 + rng() * 0.9;
-      const y = 45 + rng() * 45;
+      const y = 45 + 45 * rng() * rng(); // mostly low, so they show from the chase cam
       mesh.rotation.y = (rng() - 0.5) * 0.7 + (rng() < 0.5 ? Math.PI : 0);
+      mesh.scale.setScalar(s);
       mesh.userData.keep = true;
       group.add(mesh);
-      // shadow ellipse radii in world units (clouds are ~2.4x wider than deep)
-      const width = 15 * s;
-      clouds.push({ mesh, x: pt.x + focus.x, z: pt.z + focus.z, y, s, rx: width, rz: width * 0.45, rot: mesh.rotation.y });
-      void half;
+      const width = 15 * s; // shadow ellipse radii (clouds are ~2.2x wider than deep)
+      clouds.push({ mesh, prepass, x: pt.x + focus.x, z: pt.z + focus.z, y, s, rx: width, rz: width * 0.45, rot: mesh.rotation.y });
     });
     place(0);
   }
 
   function place(dt) {
     const half = CLOUD_AREA / 2;
-    const fade = 40;
+    const fade = 36;
     let n = 0;
     for (const c of clouds) {
       c.x += WIND.x * WIND_SPEED * dt;
       c.z += WIND.y * WIND_SPEED * dt;
-      while (c.x - focus.x > half) c.x -= CLOUD_AREA;
-      while (c.x - focus.x < -half) c.x += CLOUD_AREA;
-      while (c.z - focus.z > half) c.z -= CLOUD_AREA;
-      while (c.z - focus.z < -half) c.z += CLOUD_AREA;
-      // shrink away near the wrap border so clouds never pop
+      c.x = focus.x + wrapCentered(c.x - focus.x, CLOUD_AREA);
+      c.z = focus.z + wrapCentered(c.z - focus.z, CLOUD_AREA);
+      // fade out near the wrap border so clouds never pop
       const edgeDist = half - Math.max(Math.abs(c.x - focus.x), Math.abs(c.z - focus.z));
-      const k = Math.min(1, Math.max(0, edgeDist / fade));
-      const sc = c.s * (k * k * (3 - 2 * k));
-      c.mesh.visible = sc > 0.02;
-      c.mesh.scale.setScalar(Math.max(sc, 0.001));
+      let k = Math.min(1, Math.max(0, edgeDist / fade));
+      k = k * k * (3 - 2 * k);
+      k *= k; // spend little time half-faded
+      const mat = c.mesh.material;
+      mat.uniforms.uOpacity.value = k;
+      mat.userData.outlineParameters.alpha = k;
+      c.mesh.visible = k > 0.01;
+      c.prepass.visible = k < 0.995;
       c.mesh.position.set(c.x, c.y, c.z);
       // shadow on the sea, projected along the sun
-      if (n < MAX_CLOUD_SHADOWS && sunDir.y > 0.2 && sc > 0.02) {
+      if (n < MAX_CLOUD_SHADOWS && sunDir.y > 0.2 && k > 0.01) {
         const sx = c.x - (sunDir.x / sunDir.y) * c.y;
         const sz = c.z - (sunDir.z / sunDir.y) * c.y;
-        // ellipse aligned to the cloud's rotation (approximate with axis radii)
         const ca = Math.abs(Math.cos(c.rot));
         const sa = Math.abs(Math.sin(c.rot));
-        const rx = (c.rx * ca + c.rz * sa) * (sc / c.s) * 0.85;
-        const rz = (c.rx * sa + c.rz * ca) * (sc / c.s) * 0.85;
+        const rx = (c.rx * ca + c.rz * sa) * 0.85 * (0.5 + 0.5 * k);
+        const rz = (c.rx * sa + c.rz * ca) * 0.85 * (0.5 + 0.5 * k);
         cloudShadow.list.value[n++].set(sx, sz, rx, rz);
       }
     }
@@ -794,22 +978,24 @@ export function createClouds(scene) {
     group,
     setPalette(p) {
       const P = withDefaults(p);
-      uniforms.uLit.value.setHex(P.cloudColor);
-      uniforms.uShade.value.setHex(P.cloudShade);
+      shared.uLit.value.setHex(P.cloudColor);
+      shared.uShade.value.setHex(P.cloudShade);
       sunDir.fromArray(P.sunDir).normalize();
-      uniforms.uSunDir.value.copy(sunDir);
-      uniforms.uFogColor.value.setHex(P.fogColor);
-      uniforms.uFogNear.value = P.fogNear;
-      uniforms.uFogFar.value = P.fogFar * 1.6;
+      shared.uSunDir.value.copy(sunDir);
+      shared.uFogColor.value.setHex(P.fogColor);
+      shared.uFogNear.value = P.fogNear;
+      shared.uFogFar.value = P.fogFar * 1.6;
       cloudShadow.strength.value = 0.16 * Math.min(1, Math.max(0, (sunDir.y - 0.2) / 0.3));
       const count = Math.max(0, Math.round(P.cloudCount));
       if (count !== clouds.length) build(count);
       else place(0);
     },
     update(dt, cx = 0, cz = 0) {
-      focus.x = cx;
-      focus.z = cz;
-      place(dt || 0);
+      if (Number.isFinite(cx) && Number.isFinite(cz)) {
+        focus.x = cx;
+        focus.z = cz;
+      }
+      place(Number.isFinite(dt) ? dt : 0);
     },
   };
   api.setPalette(DEFAULT_PALETTE);

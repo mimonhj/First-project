@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
-import { buildShip, animateShip } from './ships.js';
+import { buildShip, animateShip, disposeShip } from './ships.js';
 import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
 import { toon, noOutline, gradientMap } from './style.js';
 import * as europe from './env/europe.js';
@@ -28,6 +28,10 @@ const REEF_SLOW = 0.45; // speed multiplier for deep-hulled ships on a reef
 const BOMB_RADIUS = 5; // lava bomb blast radius
 const BOMB_DAMAGE = 16;
 const PARTICLE_CAP = 600;
+const INTRO_TIME = 3.6; // seconds of the camera fly-in at the start of a level
+const CHASE_BACK = 17; // chase camera: distance behind the ship
+const CHASE_UP = 10; // chase camera: height
+const CHASE_AHEAD = 8; // chase camera: look this far ahead of the ship
 const BEST_KEY = 'pirates-ahoy-best';
 const PROGRESS_KEY = 'pirates-ahoy-unlocked';
 
@@ -176,13 +180,55 @@ const sky = createSky(scene);
 const clouds = createClouds(scene);
 const lights = createLights(scene);
 
+// Adaptive resolution: if frames are slow, render fewer pixels (the HUD stays sharp).
+// ?quality=high keeps full resolution, ?quality=low starts at the lowest step.
+const QUALITY_STEPS = [1, 0.85, 0.7, 0.55, 0.45];
+const qualityParam = new URLSearchParams(location.search).get('quality');
+const perf = {
+  level: qualityParam === 'low' ? QUALITY_STEPS.length - 1 : 0,
+  fixed: qualityParam === 'high' || qualityParam === 'low',
+  frames: 0,
+  time: 0,
+  settle: 2,
+};
+
 function resize() {
   view.setSize(window.innerWidth, window.innerHeight);
+  const q = QUALITY_STEPS[perf.level];
+  if (q < 1) {
+    view.renderer.setPixelRatio(view.renderer.getPixelRatio() * q);
+    view.renderer.setSize(window.innerWidth, window.innerHeight, false);
+  }
   camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 }
 resize();
 window.addEventListener('resize', resize);
+
+// Called every frame with the real (unclamped) frame time.
+function trackPerformance(rawDt) {
+  if (perf.fixed || document.hidden || state.mode === 'paused') return;
+  if (perf.settle > 0) {
+    perf.settle -= rawDt; // ignore shader compiles and level loads
+    return;
+  }
+  perf.frames++;
+  perf.time += rawDt;
+  if (perf.time < 2 || perf.frames < 20) return;
+  const avg = perf.time / perf.frames;
+  if (avg > 1 / 38 && perf.level < QUALITY_STEPS.length - 1) {
+    perf.level++;
+    resize();
+  } else if (avg < 1 / 75 && perf.level > 0 && perf.time > 5) {
+    perf.level--;
+    resize();
+  } else if (perf.time < 5) {
+    return; // keep collecting before deciding to step back up
+  }
+  perf.frames = 0;
+  perf.time = 0;
+  perf.settle = 0.5;
+}
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -204,6 +250,8 @@ const state = {
   nextBomb: 0,
   shake: 0,
   bannerTimer: 0,
+  intro: 0, // seconds left of the level fly-in
+  hurtBy: {}, // damage the player took this level, by source
 };
 
 const input = { left: false, right: false };
@@ -392,7 +440,7 @@ function createShip(typeName, kind, x, z, h) {
 }
 
 function removeShip(s) {
-  scene.remove(s.mesh);
+  disposeShip(s.mesh);
   if (s.tag) {
     scene.remove(s.tag);
     s.tag.children[2].material.dispose();
@@ -499,7 +547,7 @@ function describeWave(wave) {
 function startLevel(n) {
   clearLevelEntities();
   if (menuShipMesh) {
-    scene.remove(menuShipMesh);
+    disposeShip(menuShipMesh);
     menuShipMesh = null;
   }
   state.level = n;
@@ -507,6 +555,7 @@ function startLevel(n) {
   state.time = 0;
   state.sail = 1;
   state.sunk = 0;
+  state.hurtBy = {};
   state.lastHit = -99;
   state.clearTimer = 0;
   state.deathTimer = 0;
@@ -521,6 +570,8 @@ function startLevel(n) {
   state.nextBomb = def.bombs ? def.grace + rand(...def.bombs.every) : Infinity;
   spawnWave(0);
   snapCamera();
+  state.intro = INTRO_TIME;
+  perf.settle = 1.5;
 
   state.mode = 'playing';
   for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won]) show(el, false);
@@ -672,6 +723,7 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
     balls.push({
       mesh,
       owner: ship.kind,
+      src: ship.typeName,
       dmg: t.dmg,
       x,
       y: BALL_Y,
@@ -708,9 +760,10 @@ function playerFire(side) {
   return fire(player, side, aim);
 }
 
-function damage(ship, amount, x, z) {
+function damage(ship, amount, x, z, source = 'other') {
   if (ship.hp <= 0) return;
   ship.hp -= amount;
+  if (ship.kind === 'player') state.hurtBy[source] = (state.hurtBy[source] || 0) + amount;
   const hx = x ?? ship.x;
   const hz = z ?? ship.z;
   puff(hx, 1.4, hz, 7, 0x8b5a2b, 7, 7, 0.4, 0.9); // wood splinters
@@ -794,7 +847,7 @@ function updateBombs(dt) {
       if (s.hp <= 0) continue;
       const d = Math.hypot(s.x - b.tx, s.z - b.tz);
       const reach = BOMB_RADIUS + s.type.wid * 0.4;
-      if (d < reach) damage(s, Math.round(BOMB_DAMAGE * (1 - (0.5 * d) / reach)), b.tx, b.tz);
+      if (d < reach) damage(s, Math.round(BOMB_DAMAGE * (1 - (0.5 * d) / reach)), b.tx, b.tz, 'lava');
     }
     if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) state.shake = Math.max(state.shake, 0.5);
     scene.remove(b.mesh);
@@ -974,7 +1027,7 @@ function updateBalls(dt) {
     const targets = b.owner === 'player' ? enemies : player ? [player] : [];
     for (const s of targets) {
       if (hitsShip(b, s)) {
-        damage(s, b.dmg, b.x, b.z);
+        damage(s, b.dmg, b.x, b.z, b.src);
         gone = true;
         break;
       }
@@ -1217,7 +1270,7 @@ function showMenu() {
 // A ship bobbing in the harbour behind the title screen.
 let menuShipMesh = null;
 function menuShip() {
-  if (menuShipMesh) scene.remove(menuShipMesh);
+  if (menuShipMesh) disposeShip(menuShipMesh);
   menuShipMesh = buildShip('player');
   scene.add(menuShipMesh);
 }
@@ -1413,16 +1466,24 @@ function syncShip(s, t) {
   }
 }
 
-// Place the chase camera straight behind the player (no swoop on level start).
+const chasePos = new THREE.Vector3(); // where the chase camera wants to be (smoothed)
+const camLook = new THREE.Vector3();
+const camFar = new THREE.Vector3();
+const camStart = new THREE.Vector3();
+
+// Place the chase camera straight behind the player.
 function snapCamera() {
   if (!player) return;
-  camera.position.set(player.x - fwdX(player.h) * 17, 10, player.z - fwdZ(player.h) * 17);
-  camera.lookAt(player.x + fwdX(player.h) * 8, 1.5, player.z + fwdZ(player.h) * 8);
+  chasePos.set(player.x - fwdX(player.h) * CHASE_BACK, CHASE_UP, player.z - fwdZ(player.h) * CHASE_BACK);
+  camera.position.copy(chasePos);
+  camera.lookAt(player.x + fwdX(player.h) * CHASE_AHEAD, 1.5, player.z + fwdZ(player.h) * CHASE_AHEAD);
 }
 
 function frame() {
   requestAnimationFrame(frame);
-  const dt = Math.min(clock.getDelta(), MAX_FRAME_DT);
+  const rawDt = clock.getDelta();
+  trackPerformance(rawDt);
+  const dt = Math.min(rawDt, MAX_FRAME_DT);
   const paused = state.mode === 'paused';
   if (!paused) visualTime += dt;
   const t = visualTime;
@@ -1465,18 +1526,30 @@ function frame() {
   if (player) {
     fx = fwdX(player.h);
     fz = fwdZ(player.h);
-    const tx = player.x - fx * 17;
-    const tz = player.z - fz * 17;
     const k = Math.min(1, dt * 3);
-    camera.position.x += (tx - camera.position.x) * k;
-    camera.position.z += (tz - camera.position.z) * k;
-    camera.position.y += (10 - camera.position.y) * k;
+    chasePos.x += (player.x - fx * CHASE_BACK - chasePos.x) * k;
+    chasePos.z += (player.z - fz * CHASE_BACK - chasePos.z) * k;
+    chasePos.y += (CHASE_UP - chasePos.y) * k;
+    camera.position.copy(chasePos);
+    camLook.set(player.x + fx * CHASE_AHEAD, 1.5, player.z + fz * CHASE_AHEAD);
+    if (state.intro > 0) {
+      // Level fly-in: start high above and behind, looking out over the level, then swoop down.
+      if (!paused) state.intro = Math.max(0, state.intro - dt);
+      const u = 1 - state.intro / INTRO_TIME;
+      const e = u * u * (3 - 2 * u);
+      const v = env.volcano;
+      if (v) camFar.set(v.x, v.craterY * 0.75, v.z);
+      else camFar.set(player.x + fx * 70, 4, player.z + fz * 70);
+      camStart.set(player.x - fx * 48, 42, player.z - fz * 48);
+      camera.position.lerpVectors(camStart, chasePos, e);
+      camLook.lerpVectors(camFar, camLook, e);
+    }
     if (state.shake > 0) {
       if (!paused) state.shake = Math.max(0, state.shake - dt);
       camera.position.x += (Math.random() - 0.5) * state.shake;
       camera.position.y += (Math.random() - 0.5) * state.shake;
     }
-    camera.lookAt(player.x + fx * 8, 1.5, player.z + fz * 8);
+    camera.lookAt(camLook);
   } else if (env) {
     const ps = env.playerStart;
     if (menuShipMesh) {
@@ -1540,5 +1613,8 @@ window.__game = {
   step,
   get renderInfo() {
     return { ...view.renderer.info.render };
+  },
+  get quality() {
+    return { level: perf.level, scale: QUALITY_STEPS[perf.level], pixelRatio: view.renderer.getPixelRatio() };
   },
 };
