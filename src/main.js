@@ -1,44 +1,73 @@
 import * as THREE from 'three';
-import { buildShip, buildIsland, buildHealthBar, setHealthBar, gunOffset, mat, basicMat } from './models.js';
+import { SHIP_TYPES, gunOffset } from './shipTypes.js';
+import { buildShip, animateShip } from './ships.js';
+import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
+import { toon, noOutline, gradientMap } from './style.js';
+import * as europe from './env/europe.js';
+import * as bali from './env/bali.js';
+import * as volcano from './env/volcano.js';
 
 // ---------------------------------------------------------------------------
 // Tuning
 // ---------------------------------------------------------------------------
-const PIXEL = 3; // render at 1/PIXEL resolution, then scale up with hard edges
-const WORLD_R = 130; // radius of the playable sea
 const GRAVITY = -20;
 const BALL_SPEED = 30;
 const BALL_Y = 1.6; // height cannonballs are fired from
 const MAX_RANGE = 34;
 const DEFAULT_RANGE = 24;
 const MAX_TRAVERSE = 0.3; // radians the guns can swivel off the beam
-const ENEMY_LEAD = 0.6; // pirate gunners only partly account for your motion
 const MAX_STEP = 1 / 120; // physics substep: keeps fast cannonballs from skipping through hulls
 const MAX_FRAME_DT = 0.1;
 const SAIL_LEVELS = [0, 0.35, 0.7, 1];
 const COIN_VALUE = 10;
-const LEVEL_BONUS = 50;
 const REGEN_DELAY = 5; // seconds without damage before the hull repairs itself
 const REGEN_RATE = 2; // hp per second
-const ENEMY_GRACE = 3; // seconds at level start before enemies may shoot
-const MAX_ATTACKERS = 2; // only this many pirates attack at once; the rest wait their turn
 const WAIT_DIST = 50; // distance waiting pirates keep from the player
-const MAX_PARTICLES = 700;
-const BEST_KEY = 'pixel-pirates-best';
+const WAVE_REPAIR = 0.35; // fraction of the hull your crew patches when reinforcements arrive
+const REEF_SLOW = 0.45; // speed multiplier for deep-hulled ships on a reef
+const BOMB_RADIUS = 5; // lava bomb blast radius
+const BOMB_DAMAGE = 16;
+const PARTICLE_CAP = 600;
+const BEST_KEY = 'pirates-ahoy-best';
+const PROGRESS_KEY = 'pirates-ahoy-unlocked';
 
-const SHIP_TYPES = {
-  player: { hp: 100, len: 9, wid: 3.2, maxSpeed: 12, accel: 4, turn: 1.4, reload: 1.6, guns: 3, dmg: 10, masts: 2, hull: 0x8a5a2b, trim: 0xe0b04a, sail: 0xf4ecd8, flag: 0x2c7be5 },
-  sloop: { hp: 40, len: 7, wid: 2.6, maxSpeed: 9, accel: 3, turn: 1.1, reload: 2.8, guns: 2, dmg: 4, masts: 1, hull: 0x5a3a22, trim: 0x2a2a2a, sail: 0x2b2b2b, flag: 0x111111, gold: 3, engage: 20, spread: 0.1 },
-  brig: { hp: 75, len: 9, wid: 3.2, maxSpeed: 8, accel: 2.5, turn: 0.85, reload: 2.5, guns: 3, dmg: 5, masts: 2, hull: 0x4a2e1a, trim: 0x8b1e1e, sail: 0x7a1d1d, flag: 0x111111, gold: 5, engage: 22, spread: 0.08 },
-  galleon: { hp: 220, len: 13, wid: 4.4, maxSpeed: 6, accel: 2, turn: 0.6, reload: 2.2, guns: 5, dmg: 6, masts: 3, hull: 0x2e1f14, trim: 0xc9a227, sail: 0x1a1a1a, flag: 0xb01010, gold: 12, engage: 24, spread: 0.07 },
-};
-
+// Each level: its environment, enemy waves (the next wave sails in once
+// `nextWaveAt` or fewer ships of the current one are left) and difficulty knobs.
 const LEVELS = [
-  { name: 'Calm Waters', ships: ['sloop', 'sloop'] },
-  { name: "Smugglers' Cove", ships: ['sloop', 'sloop', 'brig'] },
-  { name: 'The Blockade', ships: ['brig', 'brig', 'sloop', 'sloop'] },
-  { name: 'Storm Fleet', ships: ['brig', 'brig', 'brig', 'sloop'] },
-  { name: "Blackbeard's Galleon", ships: ['galleon', 'sloop', 'sloop'], boss: true },
+  {
+    env: europe,
+    stars: 1,
+    waves: [['cutter', 'cutter'], ['privateer', 'cutter']],
+    nextWaveAt: 0,
+    maxAttackers: 2, // pirates allowed to attack at once
+    lead: 0.3, // how well enemy gunners lead your motion (0..1)
+    spreadMul: 1.5, // enemy aim error multiplier
+    grace: 5, // seconds before enemies may open fire
+    bonus: 100,
+  },
+  {
+    env: bali,
+    stars: 2,
+    waves: [['prahu', 'prahu', 'prahu'], ['junk', 'junk', 'prahu']],
+    nextWaveAt: 1,
+    maxAttackers: 2,
+    lead: 0.55,
+    spreadMul: 1.0,
+    grace: 4,
+    bonus: 200,
+  },
+  {
+    env: volcano,
+    stars: 3,
+    waves: [['corsair', 'corsair', 'manowar'], ['inferno', 'corsair']],
+    nextWaveAt: 0,
+    maxAttackers: 2,
+    lead: 0.6,
+    spreadMul: 1.0,
+    grace: 3,
+    bombs: { every: [4.5, 7.5], spread: 9 }, // lava bombs from the volcano
+    bonus: 400,
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -59,16 +88,13 @@ function wrapAngle(a) {
 }
 
 const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+const rand = (lo, hi) => lo + Math.random() * (hi - lo);
 
 // Ships face (sin h, cos h) in the xz plane; "right" is starboard.
 const fwdX = (h) => Math.sin(h);
 const fwdZ = (h) => Math.cos(h);
 const rightX = (h) => -Math.cos(h);
 const rightZ = (h) => Math.sin(h);
-
-function waveHeight(x, z, t) {
-  return Math.sin(x * 0.15 + t * 1.2) * 0.35 + Math.cos(z * 0.12 + t * 0.9) * 0.35;
-}
 
 // ---------------------------------------------------------------------------
 // DOM
@@ -78,18 +104,24 @@ const ui = {
   canvas: $('game'),
   hud: $('hud'),
   hullFill: $('hull-fill'),
-  level: $('level'),
+  levelName: $('level-name'),
   ships: $('ships'),
   gold: $('gold'),
   reloadPort: $('reload-port'),
   reloadStar: $('reload-star'),
   sails: $('sails'),
   minimap: $('minimap'),
+  boss: $('boss'),
+  bossName: $('boss-name'),
+  bossFill: $('boss-fill'),
   banner: $('banner'),
   menu: $('menu-screen'),
+  levelCards: $('level-cards'),
   pause: $('pause-screen'),
   levelDone: $('level-screen'),
+  levelTitle: $('level-title'),
   levelSummary: $('level-summary'),
+  nextBtn: $('next-btn'),
   over: $('over-screen'),
   overSummary: $('over-summary'),
   won: $('won-screen'),
@@ -104,98 +136,53 @@ function show(el, visible) {
   el.classList.toggle('hidden', !visible);
 }
 
-function loadBest() {
+function loadNumber(key) {
   try {
-    return Number(localStorage.getItem(BEST_KEY)) || 0;
+    return Number(localStorage.getItem(key)) || 0;
   } catch {
     return 0;
   }
 }
 
-function saveBest(v) {
+function saveNumber(key, v) {
   try {
-    localStorage.setItem(BEST_KEY, String(v));
+    localStorage.setItem(key, String(v));
   } catch {
-    // Storage blocked: the best score just won't persist.
+    // Storage blocked: progress just won't persist.
   }
 }
 
 // ---------------------------------------------------------------------------
 // Renderer / scene
 // ---------------------------------------------------------------------------
-let renderer;
+let view;
 try {
-  renderer = new THREE.WebGLRenderer({ canvas: ui.canvas, antialias: false });
+  view = createRenderer(ui.canvas);
 } catch (err) {
   show(ui.menu, false);
   show(ui.error, true);
   throw err;
 }
-renderer.setPixelRatio(1);
 
-const SKY = 0x87cefa;
+// The outline effect renders the scene twice; count both passes per frame.
+view.renderer.info.autoReset = false;
+
 const scene = new THREE.Scene();
-scene.background = new THREE.Color(SKY);
-scene.fog = new THREE.Fog(SKY, 70, 190);
-
-const camera = new THREE.PerspectiveCamera(60, 1, 0.5, 400);
+const camera = new THREE.PerspectiveCamera(55, 1, 0.5, 900);
 camera.position.set(0, 12, -20);
 
+const ocean = createOcean(scene);
+const sky = createSky(scene);
+const clouds = createClouds(scene);
+const lights = createLights(scene);
+
 function resize() {
-  const w = window.innerWidth;
-  const h = window.innerHeight;
-  renderer.setSize(Math.ceil(w / PIXEL), Math.ceil(h / PIXEL), false);
-  camera.aspect = w / h;
+  view.setSize(window.innerWidth, window.innerHeight);
+  camera.aspect = window.innerWidth / window.innerHeight;
   camera.updateProjectionMatrix();
 }
 resize();
 window.addEventListener('resize', resize);
-
-scene.add(new THREE.HemisphereLight(0xdff3ff, 0x2a4a6a, 1.4));
-const sun = new THREE.DirectionalLight(0xfff1d0, 1.8);
-sun.position.set(40, 80, 20);
-scene.add(sun);
-// Fill light from the opposite side so sails seen from behind aren't left in shadow.
-const fill = new THREE.DirectionalLight(0xcfe6ff, 0.9);
-fill.position.set(-30, 50, -40);
-scene.add(fill);
-
-// Low-poly ocean, animated per frame. Flat shading makes each facet a solid colour.
-const OCEAN_SIZE = WORLD_R * 2 + 140;
-const oceanGeo = new THREE.PlaneGeometry(OCEAN_SIZE, OCEAN_SIZE, 70, 70);
-oceanGeo.rotateX(-Math.PI / 2);
-const ocean = new THREE.Mesh(oceanGeo, new THREE.MeshLambertMaterial({ color: 0x2a8fd4, flatShading: true }));
-scene.add(ocean);
-const oceanPos = oceanGeo.attributes.position;
-
-// A ring of rocks marks the edge of the playable sea.
-const edgeRng = mulberry32(99);
-for (let i = 0; i < 60; i++) {
-  const a = (i / 60) * Math.PI * 2;
-  const r = WORLD_R + 8 + edgeRng() * 6;
-  const s = 2 + edgeRng() * 3;
-  const rock = new THREE.Mesh(new THREE.BoxGeometry(s, s * (0.8 + edgeRng()), s), mat(edgeRng() < 0.5 ? 0x7d7d7d : 0x6a6a6a));
-  rock.position.set(Math.cos(a) * r, s * 0.3, Math.sin(a) * r);
-  rock.rotation.y = edgeRng() * Math.PI;
-  scene.add(rock);
-}
-
-// Pixel clouds.
-const clouds = [];
-for (let i = 0; i < 14; i++) {
-  const c = new THREE.Group();
-  const n = 2 + Math.floor(Math.random() * 3);
-  for (let k = 0; k < n; k++) {
-    const b = new THREE.Mesh(new THREE.BoxGeometry(8 + Math.random() * 8, 3, 6 + Math.random() * 4), basicMat(0xffffff));
-    b.position.set(k * 6 - n * 3, Math.random() * 1.5, Math.random() * 3);
-    c.add(b);
-  }
-  const a = Math.random() * Math.PI * 2;
-  const d = 40 + Math.random() * 120;
-  c.position.set(Math.cos(a) * d, 45 + Math.random() * 15, Math.sin(a) * d);
-  scene.add(c);
-  clouds.push(c);
-}
 
 // ---------------------------------------------------------------------------
 // Game state
@@ -203,32 +190,182 @@ for (let i = 0; i < 14; i++) {
 const state = {
   mode: 'menu', // menu | playing | paused | levelDone | over | won
   level: 1,
+  wave: 0,
   gold: 0,
   goldAtLevelStart: 0,
-  best: loadBest(),
-  time: 0, // time since level start
+  sunk: 0, // ships sunk this level
+  best: loadNumber(BEST_KEY),
+  unlocked: Math.max(1, loadNumber(PROGRESS_KEY)),
+  time: 0, // simulated seconds since level start
   sail: 1,
   lastHit: -99,
   clearTimer: 0, // counts down after the last enemy sinks
   deathTimer: 0, // counts down while the player's ship sinks
+  nextBomb: 0,
   shake: 0,
   bannerTimer: 0,
 };
 
 const input = { left: false, right: false };
 let player = null;
+let env = null; // the current level environment (see src/env/*.js)
 const enemies = [];
 const balls = [];
 const coins = [];
-const islands = [];
-const particles = [];
+const colliders = []; // [{x, z, r, h}] from the environment
+const reefs = []; // [{x, z, r}]
+const bombs = [];
+
+// ---------------------------------------------------------------------------
+// Particles: two instanced pools (lit puffs and glowing sparks), no outlines.
+// ---------------------------------------------------------------------------
+const particleGeo = new THREE.IcosahedronGeometry(1, 1);
+function makePool(material) {
+  const mesh = new THREE.InstancedMesh(particleGeo, material, PARTICLE_CAP);
+  mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+  mesh.setColorAt(0, new THREE.Color());
+  mesh.count = 0;
+  mesh.frustumCulled = false;
+  scene.add(mesh);
+  return { mesh, items: [] };
+}
+const pools = {
+  puff: makePool(noOutline(new THREE.MeshToonMaterial({ color: 0xffffff, gradientMap: gradientMap(3) }))),
+  glow: makePool(noOutline(new THREE.MeshBasicMaterial({ color: 0xffffff }))),
+};
+const tmpColor = new THREE.Color();
+const dummy = new THREE.Object3D();
+
+function spawnParticle(kind, color, x, y, z, vx, vy, vz, life, size, grav = GRAVITY, grow = false, flat = false) {
+  const pool = pools[kind];
+  if (pool.items.length >= PARTICLE_CAP) return;
+  pool.items.push({ color, x, y, z, vx, vy, vz, life, max: life, size, grav, grow, flat, rot: Math.random() * 6 });
+}
+
+function puff(x, y, z, n, color, spread, up, size, life, grav = GRAVITY, grow = false, kind = 'puff') {
+  for (let i = 0; i < n; i++) {
+    spawnParticle(
+      kind,
+      color,
+      x,
+      y,
+      z,
+      (Math.random() - 0.5) * spread,
+      Math.random() * up,
+      (Math.random() - 0.5) * spread,
+      life * rand(0.7, 1.3),
+      size * rand(0.7, 1.3),
+      grav,
+      grow
+    );
+  }
+}
+
+function updateParticles(dt) {
+  for (const pool of Object.values(pools)) {
+    const items = pool.items;
+    let k = 0;
+    for (let i = 0; i < items.length; i++) {
+      const p = items[i];
+      p.life -= dt;
+      if (p.life <= 0) continue;
+      p.vy += p.grav * dt;
+      p.x += p.vx * dt;
+      p.y += p.vy * dt;
+      p.z += p.vz * dt;
+      const f = p.life / p.max;
+      const s = p.grow ? p.size * (1.7 - f * 0.7) * Math.min(1, f * 4) : p.size * Math.min(1, f * 1.5);
+      dummy.position.set(p.x, p.y, p.z);
+      dummy.rotation.set(p.rot, p.rot * 0.7, 0);
+      dummy.scale.set(s, p.flat ? s * 0.3 : s, s);
+      dummy.updateMatrix();
+      pool.mesh.setMatrixAt(k, dummy.matrix);
+      pool.mesh.setColorAt(k, tmpColor.setHex(p.color));
+      items[k++] = p;
+    }
+    items.length = k;
+    pool.mesh.count = k;
+    pool.mesh.instanceMatrix.needsUpdate = true;
+    if (pool.mesh.instanceColor) pool.mesh.instanceColor.needsUpdate = true;
+  }
+}
+
+function clearParticles() {
+  for (const pool of Object.values(pools)) {
+    pool.items.length = 0;
+    pool.mesh.count = 0;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Floating labels and health bars above enemy ships
+// ---------------------------------------------------------------------------
+const labelCache = new Map();
+function drawLabel(canvas, text, boss) {
+  const ctx = canvas.getContext('2d');
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.font = `${boss ? 46 : 40}px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif`;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  ctx.lineWidth = 10;
+  ctx.strokeStyle = '#1d1330';
+  ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+  ctx.fillStyle = boss ? '#ff9f1c' : '#fff4d6';
+  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+}
+function labelTexture(typeName) {
+  let entry = labelCache.get(typeName);
+  if (!entry) {
+    const canvas = document.createElement('canvas');
+    canvas.width = 512;
+    canvas.height = 80;
+    const t = SHIP_TYPES[typeName];
+    drawLabel(canvas, t.name, t.boss);
+    const tex = new THREE.CanvasTexture(canvas);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    entry = { canvas, tex, text: t.name, boss: !!t.boss };
+    labelCache.set(typeName, entry);
+  }
+  return entry.tex;
+}
+// Re-draw labels once the cartoon font has loaded.
+document.fonts?.ready.then(() => {
+  for (const e of labelCache.values()) {
+    drawLabel(e.canvas, e.text, e.boss);
+    e.tex.needsUpdate = true;
+  }
+});
+
+const barBgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0x1d1330, fog: false }));
+const barFgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xe63946, fog: false }));
+const barGeoBg = new THREE.PlaneGeometry(4.4, 0.75);
+const barGeoFg = new THREE.PlaneGeometry(4, 0.4);
+function buildTag(typeName) {
+  const g = new THREE.Group();
+  const bg = new THREE.Mesh(barGeoBg, barBgMat);
+  const fg = new THREE.Mesh(barGeoFg, barFgMat);
+  fg.position.z = 0.01;
+  const label = new THREE.Sprite(new THREE.SpriteMaterial({ map: labelTexture(typeName), fog: false, depthWrite: false }));
+  const big = SHIP_TYPES[typeName].boss ? 1.25 : 1;
+  label.scale.set(8 * big, 1.25 * big, 1);
+  label.position.y = 1.3;
+  g.add(bg, fg, label);
+  g.userData.fg = fg;
+  return g;
+}
+function setTag(tag, ratio) {
+  const r = clamp(ratio, 0.001, 1);
+  tag.userData.fg.scale.x = r;
+  tag.userData.fg.position.x = -(1 - r) * 2;
+}
 
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
 function createShip(typeName, kind, x, z, h) {
   const type = SHIP_TYPES[typeName];
-  const mesh = buildShip(type, kind === 'enemy');
+  const mesh = buildShip(typeName);
   scene.add(mesh);
   const ship = {
     kind,
@@ -243,96 +380,133 @@ function createShip(typeName, kind, x, z, h) {
     reload: { port: 0, star: 0 },
     sinking: 0, // > 0 while sinking (seconds since it started)
     roll: 0,
+    onReef: false,
     mesh,
-    bar: null,
-    aiSide: Math.random() < 0.5 ? 1 : -1,
+    tag: null,
   };
   if (kind === 'enemy') {
-    ship.bar = buildHealthBar();
-    scene.add(ship.bar);
+    ship.tag = buildTag(typeName);
+    scene.add(ship.tag);
   }
   return ship;
 }
 
 function removeShip(s) {
   scene.remove(s.mesh);
-  if (s.bar) scene.remove(s.bar);
-}
-
-const ballGeo = new THREE.IcosahedronGeometry(0.28, 0);
-const coinGeo = new THREE.BoxGeometry(0.9, 0.9, 0.22);
-const coinMat = new THREE.MeshLambertMaterial({ color: 0xffd23f, emissive: 0x6b4a00, flatShading: true });
-const particleGeo = new THREE.BoxGeometry(1, 1, 1);
-
-function spawnParticle(color, x, y, z, vx, vy, vz, life, size, grav = GRAVITY, grow = false) {
-  if (particles.length >= MAX_PARTICLES) return;
-  const mesh = new THREE.Mesh(particleGeo, basicMat(color));
-  mesh.position.set(x, y, z);
-  mesh.scale.setScalar(size);
-  scene.add(mesh);
-  particles.push({ mesh, vx, vy, vz, life, max: life, size, grav, grow });
-}
-
-function puff(x, y, z, n, color, spread, up, size, life, grav, grow) {
-  for (let i = 0; i < n; i++) {
-    spawnParticle(
-      color,
-      x,
-      y,
-      z,
-      (Math.random() - 0.5) * spread,
-      Math.random() * up,
-      (Math.random() - 0.5) * spread,
-      life * (0.7 + Math.random() * 0.6),
-      size * (0.7 + Math.random() * 0.6),
-      grav,
-      grow
-    );
+  if (s.tag) {
+    scene.remove(s.tag);
+    s.tag.children[2].material.dispose();
   }
 }
+
+const ballGeo = new THREE.SphereGeometry(0.34, 12, 8);
+const ballMat = toon(0x2b2b38);
+const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.2, 20);
+const coinMat = toon(0xffc93c, { emissive: 0x6b4a00, emissiveIntensity: 0.5 });
+const bombGeo = new THREE.IcosahedronGeometry(1.1, 1);
+const bombMat = toon(0x3a2a2a, { emissive: 0xff5a1f, emissiveIntensity: 0.9 });
+const ringGeo = new THREE.RingGeometry(BOMB_RADIUS - 1, BOMB_RADIUS, 40);
+ringGeo.rotateX(-Math.PI / 2);
+const ringMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xff3b1f, transparent: true, opacity: 0.6, depthWrite: false }));
 
 function clearLevelEntities() {
   for (const e of enemies) removeShip(e);
   if (player) removeShip(player);
   for (const b of balls) scene.remove(b.mesh);
   for (const c of coins) scene.remove(c.mesh);
-  for (const i of islands) scene.remove(i.mesh);
-  for (const p of particles) scene.remove(p.mesh);
-  enemies.length = balls.length = coins.length = islands.length = particles.length = 0;
+  for (const b of bombs) {
+    scene.remove(b.mesh);
+    scene.remove(b.ring);
+  }
+  enemies.length = balls.length = coins.length = bombs.length = 0;
   player = null;
+  clearParticles();
 }
 
 // ---------------------------------------------------------------------------
 // Levels
 // ---------------------------------------------------------------------------
-function placeIslands(level) {
-  const rng = mulberry32(level * 7919 + 13);
-  const count = 6 + Math.floor(rng() * 4);
-  let tries = 0;
-  while (islands.length < count && tries++ < 500) {
-    const r = 4 + rng() * 5;
-    const a = rng() * Math.PI * 2;
-    const d = 25 + rng() * (WORLD_R - 35);
-    const x = Math.cos(a) * d;
-    const z = Math.sin(a) * d;
-    if (Math.hypot(x, z) < 22 + r) continue; // keep the player's start clear
-    if (islands.some((o) => Math.hypot(o.x - x, o.z - z) < o.r + r + 14)) continue; // leave channels between islands
-    const mesh = buildIsland(r, rng);
-    mesh.position.set(x, 0, z);
-    scene.add(mesh);
-    islands.push({ x, z, r, mesh });
-  }
+function loadEnvironment(n) {
+  if (env) env.dispose();
+  const def = LEVELS[n - 1];
+  env = def.env.build(scene, { rng: mulberry32(n * 7919 + 13) });
+  colliders.length = 0;
+  for (const c of env.colliders) colliders.push({ h: 3, ...c });
+  reefs.length = 0;
+  if (env.reefs) reefs.push(...env.reefs);
+  ocean.setFoam(colliders);
+  applyPalette(scene, def.env.palette, { ocean, sky, clouds, lights });
 }
 
 function freeSpot(x, z, clearance) {
-  return islands.every((i) => Math.hypot(i.x - x, i.z - z) > i.r * 1.15 + clearance);
+  return colliders.every((c) => Math.hypot(c.x - x, c.z - z) > c.r + clearance);
+}
+
+// Pick spawn points for a wave: far enough from the player and from other
+// pirates, preferring the environment's ordering (which is spread out).
+function pickSpawns(count) {
+  const used = [];
+  const px = player ? player.x : env.playerStart.x;
+  const pz = player ? player.z : env.playerStart.z;
+  const candidates = env.enemySpawns.filter((s) => freeSpot(s.x, s.z, 6));
+  const ok = (s, minPlayer) =>
+    Math.hypot(s.x - px, s.z - pz) >= minPlayer &&
+    used.every((u) => Math.hypot(u.x - s.x, u.z - s.z) > 18) &&
+    enemies.every((e) => e.hp <= 0 || Math.hypot(e.x - s.x, e.z - s.z) > 18);
+  for (const minPlayer of [55, 40, 25, 0]) {
+    for (const s of candidates) {
+      if (used.length >= count) break;
+      if (!used.includes(s) && ok(s, minPlayer)) used.push(s);
+    }
+  }
+  // Fall back to reusing points (offset) if the environment ran short.
+  while (used.length < count) {
+    const s = candidates[used.length % candidates.length];
+    used.push({ x: s.x + rand(-6, 6), z: s.z + rand(-6, 6) });
+  }
+  return used;
+}
+
+function spawnWave(index) {
+  const def = LEVELS[state.level - 1];
+  const wave = def.waves[index];
+  const spots = pickSpawns(wave.length);
+  wave.forEach((typeName, i) => {
+    const s = spots[i];
+    const px = player ? player.x : 0;
+    const pz = player ? player.z : 0;
+    enemies.push(createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z)));
+  });
+  state.wave = index;
+  if (index > 0 && player && !player.sinking) {
+    player.hp = Math.min(player.maxHp, player.hp + player.maxHp * WAVE_REPAIR);
+  }
+  if (index > 0) {
+    const boss = wave.find((t) => SHIP_TYPES[t].boss);
+    const label = boss ? `${SHIP_TYPES[boss].name} appears!` : 'Reinforcements!';
+    showBanner(`${label}<small>${describeWave(wave)}</small><small>Your crew patches the hull</small>`, 3);
+  }
+}
+
+function describeWave(wave) {
+  const counts = {};
+  for (const t of wave) counts[t] = (counts[t] || 0) + 1;
+  return Object.entries(counts)
+    .map(([t, n]) => `${n} &times; ${SHIP_TYPES[t].name}`)
+    .join(' &middot; ');
 }
 
 function startLevel(n) {
   clearLevelEntities();
+  if (menuShipMesh) {
+    scene.remove(menuShipMesh);
+    menuShipMesh = null;
+  }
   state.level = n;
+  state.wave = 0;
   state.time = 0;
   state.sail = 1;
+  state.sunk = 0;
   state.lastHit = -99;
   state.clearTimer = 0;
   state.deathTimer = 0;
@@ -340,39 +514,26 @@ function startLevel(n) {
   state.goldAtLevelStart = state.gold;
   input.left = input.right = false;
 
-  placeIslands(n);
-  player = createShip('player', 'player', 0, 0, 0);
-
+  loadEnvironment(n);
   const def = LEVELS[n - 1];
-  const rng = mulberry32(n * 31 + 5);
-  def.ships.forEach((typeName, i) => {
-    // Spread enemies around the compass, ahead of the player first.
-    let a = (i / def.ships.length) * Math.PI * 2 + rng() * 0.6;
-    let d = 60 + rng() * 25;
-    let x = Math.sin(a) * d;
-    let z = Math.cos(a) * d;
-    for (let k = 0; k < 40 && !freeSpot(x, z, 8); k++) {
-      a += 0.3;
-      d = 55 + rng() * 35;
-      x = Math.sin(a) * d;
-      z = Math.cos(a) * d;
-    }
-    const e = createShip(typeName, 'enemy', x, z, Math.atan2(-x, -z));
-    enemies.push(e);
-  });
+  const ps = env.playerStart;
+  player = createShip('player', 'player', ps.x, ps.z, ps.h);
+  state.nextBomb = def.bombs ? def.grace + rand(...def.bombs.every) : Infinity;
+  spawnWave(0);
+  snapCamera();
 
   state.mode = 'playing';
   for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won]) show(el, false);
   show(ui.hud, true);
-  const boss = def.boss ? '<small>Sink the galleon!</small>' : `<small>${def.ships.length} pirate ships</small>`;
-  showBanner(`Level ${n}: ${def.name}${boss}`, 3);
+  const m = def.env.meta;
+  showBanner(`Level ${n}: ${m.name}<small>${m.subtitle}</small><small>${describeWave(def.waves[0])}</small>`, 4);
   updateHud(true);
 }
 
-function newGame() {
+function newGame(level = 1) {
   state.gold = 0;
   blurActive();
-  startLevel(1);
+  startLevel(level);
 }
 
 function retryLevel() {
@@ -394,6 +555,10 @@ function blurActive() {
 function showBanner(html, seconds) {
   ui.banner.innerHTML = html;
   show(ui.banner, true);
+  // Restart the pop-in animation.
+  ui.banner.classList.remove('pop');
+  void ui.banner.offsetWidth;
+  ui.banner.classList.add('pop');
   state.bannerTimer = seconds;
 }
 
@@ -402,7 +567,8 @@ function finishLevel() {
   state.gold += coins.length * COIN_VALUE;
   for (const c of coins) scene.remove(c.mesh);
   coins.length = 0;
-  state.gold += LEVEL_BONUS * state.level;
+  const def = LEVELS[state.level - 1];
+  state.gold += def.bonus;
   show(ui.banner, false);
 
   if (state.level >= LEVELS.length) {
@@ -410,16 +576,26 @@ function finishLevel() {
     const isBest = state.gold > state.best;
     if (isBest) {
       state.best = state.gold;
-      saveBest(state.best);
+      saveNumber(BEST_KEY, state.best);
     }
     ui.wonGold.textContent = state.gold;
     show(ui.wonBest, isBest);
     show(ui.won, true);
   } else {
     state.mode = 'levelDone';
-    ui.levelSummary.textContent = `Level bonus +${LEVEL_BONUS * state.level} gold. Total plunder: ${state.gold}. Your hull is repaired for the next fight.`;
+    if (state.level + 1 > state.unlocked) {
+      state.unlocked = state.level + 1;
+      saveNumber(PROGRESS_KEY, state.unlocked);
+    }
+    const next = LEVELS[state.level].env.meta;
+    ui.levelTitle.textContent = `${def.env.meta.name} cleared!`;
+    ui.levelSummary.innerHTML =
+      `Ships sunk: <b>${state.sunk}</b> &middot; Level bonus: <b>+${def.bonus}</b> gold<br>` +
+      `Total plunder: <b>${state.gold}</b> gold`;
+    ui.nextBtn.textContent = `Sail to ${next.name}`;
     show(ui.levelDone, true);
   }
+  renderLevelCards();
   updateHud(true);
 }
 
@@ -427,9 +603,9 @@ function playerSunk() {
   state.mode = 'over';
   if (state.gold > state.best) {
     state.best = state.gold;
-    saveBest(state.best);
+    saveNumber(BEST_KEY, state.best);
   }
-  ui.overSummary.textContent = `You reached level ${state.level} with ${state.gold} gold. Retrying restores the gold you had at the start of this level.`;
+  ui.overSummary.innerHTML = `The ${SHIP_TYPES.player.name} went down off the ${LEVELS[state.level - 1].env.meta.name}.<br>Retrying restores the gold you had when the level started.`;
   show(ui.over, true);
 }
 
@@ -441,7 +617,7 @@ function launchVy(t) {
   return clamp((0.8 - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
 }
 
-// Position of `target` relative to `ship`: distance along the bow and to starboard.
+// Position of a point relative to `ship`: distance along the bow and to starboard.
 function relative(ship, tx, tz) {
   const dx = tx - ship.x;
   const dz = tz - ship.z;
@@ -490,7 +666,7 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
     const dx = Math.sin(a);
     const dz = Math.cos(a);
 
-    const mesh = new THREE.Mesh(ballGeo, basicMat(0x1b1b1b));
+    const mesh = new THREE.Mesh(ballGeo, ballMat);
     mesh.position.set(x, BALL_Y, z);
     scene.add(mesh);
     balls.push({
@@ -501,14 +677,16 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
       y: BALL_Y,
       z,
       vx: dx * BALL_SPEED + svx,
-      vy: launchVy(flight) * (0.97 + Math.random() * 0.06),
+      vy: launchVy(flight) * rand(0.97, 1.03),
       vz: dz * BALL_SPEED + svz,
     });
-    puff(x, BALL_Y + 0.3, z, 4, 0xe8e8e8, 2, 2, 0.8, 0.9, 1.5, true);
-    spawnParticle(0xffb627, x, BALL_Y + 0.2, z, dx * 4, 0.5, dz * 4, 0.12, 0.9, 0);
+    // Cartoon muzzle blast: a fiery flash and a big puff of smoke.
+    puff(x + dx * 0.6, BALL_Y + 0.3, z + dz * 0.6, 4, 0xf4f1ea, 2.5, 1.8, 0.75, 1.0, 1.2, true);
+    spawnParticle('glow', 0xffd23f, x + dx * 0.4, BALL_Y + 0.2, z + dz * 0.4, dx * 5, 0.6, dz * 5, 0.14, 0.75, 0);
+    spawnParticle('glow', 0xff7b1c, x + dx * 0.8, BALL_Y + 0.2, z + dz * 0.8, dx * 7, 0.4, dz * 7, 0.12, 0.55, 0);
   }
   ship.reload[key] = t.reload;
-  ship.roll -= side * 0.08;
+  ship.roll -= side * 0.09;
   return true;
 }
 
@@ -533,17 +711,21 @@ function playerFire(side) {
 function damage(ship, amount, x, z) {
   if (ship.hp <= 0) return;
   ship.hp -= amount;
-  puff(x ?? ship.x, 1.4, z ?? ship.z, 8, 0x7a4a1a, 6, 6, 0.45, 0.8);
-  puff(x ?? ship.x, 1.6, z ?? ship.z, 3, 0xffb627, 3, 3, 0.4, 0.3, 0);
+  const hx = x ?? ship.x;
+  const hz = z ?? ship.z;
+  puff(hx, 1.4, hz, 7, 0x8b5a2b, 7, 7, 0.4, 0.9); // wood splinters
+  puff(hx, 1.6, hz, 3, 0xffb627, 3, 3, 0.5, 0.3, 0, false, 'glow');
   if (ship.kind === 'player') {
     state.lastHit = state.time;
-    state.shake = Math.max(state.shake, 0.35);
+    state.shake = Math.max(state.shake, 0.4);
   }
   if (ship.hp <= 0) {
     ship.hp = 0;
     ship.sinking = 0.001;
-    puff(ship.x, 1.5, ship.z, 25, 0xff7b00, 8, 8, 0.6, 1.0);
+    puff(ship.x, 2, ship.z, 18, 0xff7b1c, 8, 9, 0.7, 1.0, GRAVITY, false, 'glow');
+    puff(ship.x, 2, ship.z, 10, 0x4a4050, 6, 5, 1.2, 1.6, 1.5, true);
     if (ship.kind === 'enemy') {
+      state.sunk++;
       for (let i = 0; i < ship.type.gold; i++) {
         const a = (i / ship.type.gold) * Math.PI * 2;
         const mesh = new THREE.Mesh(coinGeo, coinMat);
@@ -551,11 +733,73 @@ function damage(ship, amount, x, z) {
         coins.push({ mesh, x: ship.x + Math.cos(a) * 2.5, z: ship.z + Math.sin(a) * 2.5, spin: Math.random() * 6 });
       }
       const left = enemies.filter((e) => e.hp > 0).length;
-      if (left > 0) showBanner(`Ship sunk! <small>${left} to go</small>`, 1.8);
+      const def = LEVELS[state.level - 1];
+      const moreWaves = state.wave < def.waves.length - 1;
+      if (ship.type.boss) showBanner(`${ship.type.name} is sunk!`, 2.5);
+      else if (left > 0 || moreWaves) showBanner(`${ship.type.name} sunk!${left ? `<small>${left} to go</small>` : ''}`, 1.8);
     } else {
       state.deathTimer = 2.5;
       showBanner('Abandon ship!', 2.5);
     }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Lava bombs (volcano level)
+// ---------------------------------------------------------------------------
+function launchBomb() {
+  const v = env.volcano;
+  if (!v || !player || player.sinking) return;
+  const def = LEVELS[state.level - 1];
+  const T = rand(2.4, 3.2);
+  // Aim roughly where the player will be, with some scatter so you can dodge.
+  const lead = T * 0.8;
+  const a = Math.random() * Math.PI * 2;
+  const d = Math.random() * def.bombs.spread;
+  const tx = player.x + fwdX(player.h) * player.speed * lead + Math.cos(a) * d;
+  const tz = player.z + fwdZ(player.h) * player.speed * lead + Math.sin(a) * d;
+  const mesh = new THREE.Mesh(bombGeo, bombMat);
+  const ring = new THREE.Mesh(ringGeo, ringMat);
+  scene.add(mesh, ring);
+  bombs.push({ mesh, ring, sx: v.x, sy: v.craterY, sz: v.z, tx, tz, t: 0, T, H: 30 + Math.random() * 15 });
+}
+
+function bombPos(b, u) {
+  return {
+    x: b.sx + (b.tx - b.sx) * u,
+    y: b.sy * (1 - u) + 4 * b.H * u * (1 - u),
+    z: b.sz + (b.tz - b.sz) * u,
+  };
+}
+
+function updateBombs(dt) {
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    const b = bombs[i];
+    b.t += dt;
+    const u = b.t / b.T;
+    if (u < 1) {
+      if (Math.random() < dt * 30) {
+        const p = bombPos(b, u);
+        spawnParticle('glow', Math.random() < 0.5 ? 0xff7b1c : 0xffd23f, p.x, p.y, p.z, rand(-1, 1), rand(-1, 1), rand(-1, 1), 0.5, 0.5, 0);
+        spawnParticle('puff', 0x3d3440, p.x, p.y, p.z, rand(-0.5, 0.5), 1, rand(-0.5, 0.5), 1.2, 0.7, 0, true);
+      }
+      continue;
+    }
+    // Impact.
+    puff(b.tx, 0.5, b.tz, 16, 0xffffff, 8, 12, 0.7, 1.0);
+    puff(b.tx, 1, b.tz, 10, 0xff7b1c, 7, 9, 0.6, 0.7, GRAVITY, false, 'glow');
+    puff(b.tx, 1, b.tz, 8, 0xe8e4f0, 5, 4, 1.3, 1.6, 2, true);
+    const ships = player ? [player, ...enemies] : enemies;
+    for (const s of ships) {
+      if (s.hp <= 0) continue;
+      const d = Math.hypot(s.x - b.tx, s.z - b.tz);
+      const reach = BOMB_RADIUS + s.type.wid * 0.4;
+      if (d < reach) damage(s, Math.round(BOMB_DAMAGE * (1 - (0.5 * d) / reach)), b.tx, b.tz);
+    }
+    if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) state.shake = Math.max(state.shake, 0.5);
+    scene.remove(b.mesh);
+    scene.remove(b.ring);
+    bombs.splice(i, 1);
   }
 }
 
@@ -569,6 +813,10 @@ function steerToward(ship, desired, dt) {
   ship.h = wrapAngle(ship.h + clamp(diff, -rate * dt, rate * dt));
 }
 
+function speedCap(s) {
+  return s.onReef && !s.type.shallow ? s.type.maxSpeed * REEF_SLOW : s.type.maxSpeed;
+}
+
 function updatePlayer(dt) {
   const p = player;
   if (p.sinking) return;
@@ -576,8 +824,8 @@ function updatePlayer(dt) {
   const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   const rate = t.turn * (0.35 + 0.65 * Math.min(1, p.speed / t.maxSpeed));
   p.h = wrapAngle(p.h + turn * rate * dt);
-  const target = SAIL_LEVELS[state.sail] * t.maxSpeed;
-  p.speed += clamp(target - p.speed, -t.accel * dt, t.accel * dt);
+  const target = SAIL_LEVELS[state.sail] * speedCap(p);
+  p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
 
   if (state.time - state.lastHit > REGEN_DELAY && p.hp < p.maxHp) {
     p.hp = Math.min(p.maxHp, p.hp + REGEN_RATE * dt);
@@ -588,6 +836,7 @@ function updateEnemy(e, dt, attacking) {
   if (e.sinking) return;
   const t = e.type;
   const p = player;
+  const def = LEVELS[state.level - 1];
   let desired = e.h;
   let targetSpeed = t.maxSpeed * 0.6;
 
@@ -618,28 +867,32 @@ function updateEnemy(e, dt, attacking) {
     }
 
     // Fire when the player is roughly abeam and in range.
-    if (attacking && state.time > ENEMY_GRACE && r.dist < MAX_RANGE - 4 && Math.abs(r.along) < Math.abs(r.lat) * 0.45) {
-      fire(e, r.lat > 0 ? 1 : -1, p, { spread: t.spread, lead: ENEMY_LEAD, rangeErr: 0.88 + Math.random() * 0.24 });
+    if (attacking && state.time > def.grace && r.dist < MAX_RANGE - 4 && Math.abs(r.along) < Math.abs(r.lat) * 0.45) {
+      fire(e, r.lat > 0 ? 1 : -1, p, { spread: t.spread * def.spreadMul, lead: def.lead, rangeErr: rand(0.88, 1.12) });
     }
   }
 
-  // Avoid islands: look ahead and turn away from anything in the way.
-  const lookX = e.x + fwdX(e.h) * 14;
-  const lookZ = e.z + fwdZ(e.h) * 14;
-  for (const i of islands) {
-    if (Math.hypot(i.x - lookX, i.z - lookZ) < i.r * 1.15 + 6 || Math.hypot(i.x - e.x, i.z - e.z) < i.r * 1.15 + 6) {
-      const r = relative(e, i.x, i.z);
+  // Avoid land (and reefs, for deep hulls): look ahead and turn away from anything in the way.
+  const look = 10 + t.len;
+  const lookX = e.x + fwdX(e.h) * look;
+  const lookZ = e.z + fwdZ(e.h) * look;
+  const avoid = (o, margin) => {
+    if (Math.hypot(o.x - lookX, o.z - lookZ) < o.r + margin || Math.hypot(o.x - e.x, o.z - e.z) < o.r + margin) {
+      const r = relative(e, o.x, o.z);
       if (r.along > -2) {
         desired = e.h + (r.lat > 0 ? 1.2 : -1.2);
         targetSpeed = Math.min(targetSpeed, t.maxSpeed * 0.6);
       }
     }
-  }
+  };
+  if (!t.shallow) for (const reef of reefs) avoid(reef, 2);
+  for (const c of colliders) avoid(c, t.wid + 5);
   // Stay inside the sea.
-  if (Math.hypot(e.x, e.z) > WORLD_R - 15) desired = Math.atan2(-e.x, -e.z);
+  if (Math.hypot(e.x, e.z) > env.worldRadius - 15) desired = Math.atan2(-e.x, -e.z);
 
   steerToward(e, desired, dt);
-  e.speed += clamp(targetSpeed - e.speed, -t.accel * dt, t.accel * dt);
+  targetSpeed = Math.min(targetSpeed, speedCap(e));
+  e.speed += clamp(targetSpeed - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
 }
 
 function moveShip(s, dt) {
@@ -651,25 +904,32 @@ function moveShip(s, dt) {
   s.x += fwdX(s.h) * s.speed * dt;
   s.z += fwdZ(s.h) * s.speed * dt;
 
-  // Islands are solid.
+  // Land is solid.
   const hullR = s.type.wid * 0.5 + 0.4;
-  for (const i of islands) {
-    const dx = s.x - i.x;
-    const dz = s.z - i.z;
+  for (const c of colliders) {
+    const dx = s.x - c.x;
+    const dz = s.z - c.z;
     const d = Math.hypot(dx, dz);
-    const min = i.r * 1.15 + hullR;
+    const min = c.r + hullR;
     if (d < min && d > 0.0001) {
-      s.x = i.x + (dx / d) * min;
-      s.z = i.z + (dz / d) * min;
+      s.x = c.x + (dx / d) * min;
+      s.z = c.z + (dz / d) * min;
       s.speed *= 1 - Math.min(1, dt * 4);
     }
   }
+  // Reefs slow deep hulls.
+  const wasOnReef = s.onReef;
+  s.onReef = reefs.some((r) => Math.hypot(s.x - r.x, s.z - r.z) < r.r);
+  if (s.kind === 'player' && s.onReef && !wasOnReef && !s.sinking && state.bannerTimer <= 0) {
+    showBanner('Scraping the reef!<small>Shallow water slows you down</small>', 1.6);
+  }
+  if (s.onReef && !s.type.shallow) s.speed = Math.min(s.speed, s.type.maxSpeed * REEF_SLOW + 0.5);
   // Edge of the world.
   const d = Math.hypot(s.x, s.z);
-  if (d > WORLD_R) {
-    s.x *= WORLD_R / d;
-    s.z *= WORLD_R / d;
-    if (s.kind === 'player' && state.bannerTimer <= 0) showBanner('Turn back!<small>Rocks ahead</small>', 1.5);
+  if (d > env.worldRadius) {
+    s.x *= env.worldRadius / d;
+    s.z *= env.worldRadius / d;
+    if (s.kind === 'player' && state.bannerTimer <= 0) showBanner('Turn back!<small>There be nothing but sea serpents out there</small>', 1.5);
   }
 }
 
@@ -697,7 +957,7 @@ function separateShips() {
 }
 
 function hitsShip(b, s) {
-  if (s.hp <= 0 || b.y > 3.5) return false;
+  if (s.hp <= 0 || b.y > 3.8) return false;
   const r = relative(s, b.x, b.z);
   return Math.abs(r.along) < s.type.len / 2 + 0.3 && Math.abs(r.lat) < s.type.wid / 2 + 0.3;
 }
@@ -720,16 +980,17 @@ function updateBalls(dt) {
       }
     }
     if (!gone) {
-      for (const isl of islands) {
-        if (b.y < 2.2 && Math.hypot(b.x - isl.x, b.z - isl.z) < isl.r * 1.05) {
-          puff(b.x, b.y, b.z, 6, 0xe8d28a, 4, 4, 0.4, 0.6);
+      for (const c of colliders) {
+        if (b.y < c.h && Math.hypot(b.x - c.x, b.z - c.z) < c.r) {
+          puff(b.x, b.y, b.z, 6, 0xd8c08a, 4, 4, 0.45, 0.6);
           gone = true;
           break;
         }
       }
     }
     if (!gone && b.y <= 0) {
-      puff(b.x, 0.2, b.z, 8, 0xffffff, 3, 7, 0.45, 0.7);
+      puff(b.x, 0.2, b.z, 7, 0xffffff, 3, 7, 0.5, 0.7);
+      spawnParticle('puff', 0xffffff, b.x, 0.15, b.z, 0, 0, 0, 0.6, 1.4, 0, true, true);
       gone = true;
     }
     if (gone) {
@@ -746,14 +1007,14 @@ function updateCoins(dt) {
     const dx = player.x - c.x;
     const dz = player.z - c.z;
     const d = Math.hypot(dx, dz);
-    if (!player.sinking && (d < 10 || state.clearTimer > 0)) {
+    if (!player.sinking && d > 0.001 && (d < 10 || state.clearTimer > 0)) {
       const pull = (state.clearTimer > 0 ? 30 : 14) * dt;
       c.x += (dx / d) * Math.min(pull, d);
       c.z += (dz / d) * Math.min(pull, d);
     }
     if (!player.sinking && d < 3) {
       state.gold += COIN_VALUE;
-      puff(c.x, 1.5, c.z, 6, 0xffd23f, 3, 5, 0.3, 0.5);
+      puff(c.x, 1.5, c.z, 5, 0xffd23f, 3, 5, 0.3, 0.5, GRAVITY, false, 'glow');
       scene.remove(c.mesh);
       coins.splice(i, 1);
     }
@@ -762,13 +1023,14 @@ function updateCoins(dt) {
 
 function step(dt) {
   state.time += dt;
+  const def = LEVELS[state.level - 1];
   if (player) updatePlayer(dt);
   // The nearest pirates get the attack slots.
   const attackers = new Set(
     enemies
       .filter((e) => e.hp > 0 && player)
       .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
-      .slice(0, MAX_ATTACKERS)
+      .slice(0, def.maxAttackers)
   );
   for (const e of enemies) updateEnemy(e, dt, attackers.has(e));
   if (player) moveShip(player, dt);
@@ -776,6 +1038,7 @@ function step(dt) {
   separateShips();
   updateBalls(dt);
   updateCoins(dt);
+  updateBombs(dt);
 
   // Remove fully sunk enemies.
   for (let i = enemies.length - 1; i >= 0; i--) {
@@ -795,9 +1058,19 @@ function step(dt) {
     if (state.clearTimer <= 0) finishLevel();
     return;
   }
-  if (player && !player.sinking && !enemies.some((e) => e.hp > 0)) {
+  if (!player || player.sinking) return;
+
+  if (def.bombs && state.time >= state.nextBomb) {
+    launchBomb();
+    state.nextBomb = state.time + rand(...def.bombs.every);
+  }
+
+  const alive = enemies.filter((e) => e.hp > 0).length;
+  if (state.wave < def.waves.length - 1 && alive <= def.nextWaveAt) {
+    spawnWave(state.wave + 1);
+  } else if (alive === 0 && state.wave === def.waves.length - 1) {
     state.clearTimer = 2.5;
-    showBanner(LEVELS[state.level - 1].boss ? 'The galleon is sunk!' : 'Level cleared!', 2.5);
+    showBanner(state.level === LEVELS.length ? 'Victory!<small>The seas are yours</small>' : 'Level cleared!<small>Grab the loot</small>', 2.5);
   }
 }
 
@@ -898,16 +1171,56 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   });
 }
 
-$('start-btn').addEventListener('click', newGame);
+$('start-btn').addEventListener('click', () => newGame(1));
 $('resume-btn').addEventListener('click', togglePause);
 $('next-btn').addEventListener('click', nextLevel);
 $('retry-btn').addEventListener('click', retryLevel);
-$('newgame-btn').addEventListener('click', newGame);
-$('again-btn').addEventListener('click', newGame);
+$('menu-btn').addEventListener('click', showMenu);
+$('again-btn').addEventListener('click', showMenu);
 $('pause-btn').addEventListener('click', (e) => {
   togglePause();
   e.currentTarget.blur(); // so Space doesn't re-press the button
 });
+
+// Level select cards on the title screen.
+function renderLevelCards() {
+  ui.best.textContent = state.best;
+  ui.levelCards.innerHTML = '';
+  LEVELS.forEach((def, i) => {
+    const n = i + 1;
+    const locked = n > state.unlocked;
+    const btn = document.createElement('button');
+    btn.className = `level-card lvl-${n}${locked ? ' locked' : ''}`;
+    btn.disabled = locked;
+    btn.dataset.level = n;
+    btn.innerHTML =
+      `<span class="lvl-num">${n}</span>` +
+      `<span class="lvl-name">${def.env.meta.name}</span>` +
+      `<span class="lvl-stars">${'★'.repeat(def.stars)}${'☆'.repeat(3 - def.stars)}</span>` +
+      `<span class="lvl-lock">${locked ? 'Locked' : 'Play'}</span>`;
+    btn.addEventListener('click', () => newGame(n));
+    ui.levelCards.appendChild(btn);
+  });
+}
+
+function showMenu() {
+  blurActive();
+  clearLevelEntities();
+  for (const el of [ui.pause, ui.levelDone, ui.over, ui.won, ui.hud, ui.banner, ui.boss]) show(el, false);
+  state.mode = 'menu';
+  loadEnvironment(1);
+  menuShip();
+  renderLevelCards();
+  show(ui.menu, true);
+}
+
+// A ship bobbing in the harbour behind the title screen.
+let menuShipMesh = null;
+function menuShip() {
+  if (menuShipMesh) scene.remove(menuShipMesh);
+  menuShipMesh = buildShip('player');
+  scene.add(menuShipMesh);
+}
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -928,64 +1241,126 @@ function setWidth(el, key, pct, force) {
 }
 
 function updateHud(force = false) {
-  ui.best.textContent = state.best;
   if (!player) return;
   const hpPct = (player.hp / player.maxHp) * 100;
   setWidth(ui.hullFill, 'hp', hpPct, force);
-  const color = hpPct > 50 ? '#4cd964' : hpPct > 25 ? '#ffb627' : '#d7263d';
-  if (force || shown.hpColor !== color) ui.hullFill.style.background = shown.hpColor = color;
-  setText(ui.level, 'level', `${state.level}/${LEVELS.length}`, force);
-  setText(ui.ships, 'ships', enemies.filter((e) => e.hp > 0).length, force);
+  const cls = hpPct > 50 ? 'good' : hpPct > 25 ? 'warn' : 'bad';
+  if (force || shown.hpCls !== cls) {
+    ui.hullFill.className = `fill ${cls}`;
+    shown.hpCls = cls;
+  }
+  setText(ui.levelName, 'level', `${state.level}. ${LEVELS[state.level - 1].env.meta.name}`, force);
+  const def = LEVELS[state.level - 1];
+  const pending = def.waves.slice(state.wave + 1).reduce((n, w) => n + w.length, 0);
+  setText(ui.ships, 'ships', enemies.filter((e) => e.hp > 0).length + pending, force);
   setText(ui.gold, 'gold', state.gold, force);
-  setText(ui.sails, 'sails', '▮'.repeat(state.sail) + '▯'.repeat(SAIL_LEVELS.length - 1 - state.sail), force);
+  setText(ui.sails, 'sails', ['Anchored', 'Half sail', 'Most sail', 'Full sail'][state.sail], force);
   const t = player.type;
   setWidth(ui.reloadPort, 'rp', (1 - player.reload.port / t.reload) * 100, force);
   setWidth(ui.reloadStar, 'rs', (1 - player.reload.star / t.reload) * 100, force);
+
+  const boss = enemies.find((e) => e.type.boss && e.hp > 0);
+  if (force || shown.boss !== !!boss) {
+    show(ui.boss, !!boss);
+    shown.boss = !!boss;
+    if (boss) ui.bossName.textContent = boss.type.name;
+  }
+  if (boss) setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
 }
 
 // Minimap rotates with the ship so "up" is always the bow.
 function drawMinimap() {
   const S = ui.minimap.width;
   const c = S / 2;
-  const scale = (S / 2 - 4) / (WORLD_R + 10);
-  mm.fillStyle = '#1e6fb0';
+  mm.clearRect(0, 0, S, S);
+  mm.save();
+  mm.beginPath();
+  mm.arc(c, c, c - 2, 0, Math.PI * 2);
+  mm.clip();
+  mm.fillStyle = '#2f8fd8';
   mm.fillRect(0, 0, S, S);
-  if (!player) return;
+  if (!player || !env) {
+    mm.restore();
+    return;
+  }
+  const R = env.worldRadius;
+  const scale = (S / 2 - 6) / (R * 0.75);
   const toMap = (x, z) => {
     const r = relative(player, x, z);
-    return [Math.round(c + r.lat * scale), Math.round(c - r.along * scale)];
+    return [c + r.lat * scale, c - r.along * scale];
   };
-  // Edge of the sea.
+  // Beyond the edge of the sea.
   const [ox, oy] = toMap(0, 0);
-  mm.strokeStyle = '#6a6a6a';
-  mm.lineWidth = 3;
+  mm.fillStyle = '#1b5c95';
   mm.beginPath();
-  mm.arc(ox, oy, WORLD_R * scale, 0, Math.PI * 2);
-  mm.stroke();
-  mm.fillStyle = '#e8d28a';
-  for (const i of islands) {
-    const [x, y] = toMap(i.x, i.z);
-    const r = Math.max(2, Math.round(i.r * scale));
-    mm.fillRect(x - r, y - r, r * 2, r * 2);
+  mm.rect(0, 0, S, S);
+  mm.arc(ox, oy, R * scale, 0, Math.PI * 2, true);
+  mm.fill();
+  mm.fillStyle = '#7fe0d6';
+  for (const r of reefs) {
+    const [x, y] = toMap(r.x, r.z);
+    mm.beginPath();
+    mm.arc(x, y, Math.max(2, r.r * scale), 0, Math.PI * 2);
+    mm.fill();
   }
-  mm.fillStyle = '#ffd23f';
+  mm.fillStyle = '#f2d98a';
+  for (const col of colliders) {
+    const [x, y] = toMap(col.x, col.z);
+    mm.beginPath();
+    mm.arc(x, y, Math.max(1.5, col.r * scale), 0, Math.PI * 2);
+    mm.fill();
+  }
+  if (env.volcano) {
+    const [x, y] = toMap(env.volcano.x, env.volcano.z);
+    mm.fillStyle = '#ff5a1f';
+    mm.beginPath();
+    mm.arc(x, y, 4, 0, Math.PI * 2);
+    mm.fill();
+  }
+  mm.fillStyle = '#ff3b1f';
+  for (const b of bombs) {
+    const [x, y] = toMap(b.tx, b.tz);
+    mm.fillRect(x - 2, y - 2, 4, 4);
+  }
+  mm.fillStyle = '#ffc93c';
   for (const co of coins) {
     const [x, y] = toMap(co.x, co.z);
-    mm.fillRect(x - 1, y - 1, 2, 2);
+    mm.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
   for (const e of enemies) {
     if (e.hp <= 0) continue;
     let [x, y] = toMap(e.x, e.z);
-    x = clamp(x, 3, S - 3);
-    y = clamp(y, 3, S - 3);
-    mm.fillStyle = e.typeName === 'galleon' ? '#000' : '#d7263d';
-    mm.fillRect(x - 3, y - 3, 6, 6);
+    // Pin off-map enemies to the rim so you can always find them.
+    const dx = x - c;
+    const dy = y - c;
+    const dl = Math.hypot(dx, dy);
+    if (dl > c - 7) {
+      x = c + (dx / dl) * (c - 7);
+      y = c + (dy / dl) * (c - 7);
+    }
+    const r = e.type.boss ? 6 : 4;
+    mm.fillStyle = '#1d1330';
+    mm.beginPath();
+    mm.arc(x, y, r + 1.5, 0, Math.PI * 2);
+    mm.fill();
+    mm.fillStyle = e.type.boss ? '#ff9f1c' : '#e63946';
+    mm.beginPath();
+    mm.arc(x, y, r, 0, Math.PI * 2);
+    mm.fill();
   }
   // The player: a little arrow pointing up.
-  mm.fillStyle = '#fff';
-  mm.fillRect(c - 1, c - 5, 3, 3);
-  mm.fillRect(c - 2, c - 2, 5, 3);
-  mm.fillRect(c - 3, c + 1, 7, 3);
+  mm.fillStyle = '#fff4d6';
+  mm.strokeStyle = '#1d1330';
+  mm.lineWidth = 2;
+  mm.beginPath();
+  mm.moveTo(c, c - 7);
+  mm.lineTo(c + 5, c + 5);
+  mm.lineTo(c, c + 2);
+  mm.lineTo(c - 5, c + 5);
+  mm.closePath();
+  mm.fill();
+  mm.stroke();
+  mm.restore();
 }
 
 // ---------------------------------------------------------------------------
@@ -995,52 +1370,54 @@ const clock = new THREE.Clock();
 let visualTime = 0;
 
 function syncShip(s, t) {
-  const wy = waveHeight(s.x, s.z, t);
-  // Pitch from the slope of the waves along the hull.
+  const wy = ocean.heightAt(s.x, s.z, t);
+  // Pitch and roll from the slope of the waves under the hull.
   const fx = fwdX(s.h);
   const fz = fwdZ(s.h);
-  const ahead = waveHeight(s.x + fx * 2, s.z + fz * 2, t);
-  const behind = waveHeight(s.x - fx * 2, s.z - fz * 2, t);
+  const half = s.type.len * 0.35;
+  const ahead = ocean.heightAt(s.x + fx * half, s.z + fz * half, t);
+  const behind = ocean.heightAt(s.x - fx * half, s.z - fz * half, t);
+  const side = s.type.wid * 0.5;
+  const port = ocean.heightAt(s.x - rightX(s.h) * side, s.z - rightZ(s.h) * side, t);
+  const star = ocean.heightAt(s.x + rightX(s.h) * side, s.z + rightZ(s.h) * side, t);
   s.roll *= 0.92;
   const sink = s.sinking ? Math.min(s.sinking, 4) : 0;
-  s.mesh.position.set(s.x, wy - 0.3 - sink * 1.4, s.z);
+  s.mesh.position.set(s.x, wy - sink * 1.5, s.z);
   s.mesh.rotation.set(0, 0, 0);
   s.mesh.rotation.y = s.h;
-  s.mesh.rotateX(-(ahead - behind) * 0.12 + sink * 0.1);
-  s.mesh.rotateZ(Math.sin(t * 1.3 + s.x) * 0.04 + s.roll + sink * 0.25);
+  s.mesh.rotateX(Math.atan2(behind - ahead, half * 2) * 0.8 + sink * 0.1);
+  s.mesh.rotateZ(Math.atan2(port - star, side * 2) * 0.6 + s.roll + sink * 0.28);
+  animateShip(s.mesh, t, s.sinking ? 0 : s.speed / s.type.maxSpeed);
+
   if (s.sinking && Math.random() < 0.5) {
-    spawnParticle(Math.random() < 0.5 ? 0xff7b00 : 0x444444, s.x + (Math.random() - 0.5) * 3, 2 - sink, s.z + (Math.random() - 0.5) * 3, 0, 3, 0, 0.8, 0.7, 0, true);
+    spawnParticle('glow', Math.random() < 0.5 ? 0xff7b1c : 0xffd23f, s.x + rand(-2, 2), 2 - sink, s.z + rand(-2, 2), 0, 3, 0, 0.6, 0.6, 0);
+    spawnParticle('puff', 0x4a4050, s.x + rand(-2, 2), 2.5 - sink, s.z + rand(-2, 2), 0, 2.5, 0, 1.4, 0.9, 0, true);
   }
-  if (s.bar) {
-    s.bar.visible = s.hp > 0;
-    s.bar.position.set(s.x, wy + 4 + s.type.len * 0.42, s.z);
-    s.bar.quaternion.copy(camera.quaternion);
-    setHealthBar(s.bar, s.hp / s.maxHp);
+  if (s.tag) {
+    s.tag.visible = s.hp > 0;
+    s.tag.position.set(s.x, wy + 4.5 + s.type.len * 0.55, s.z);
+    s.tag.quaternion.copy(camera.quaternion);
+    setTag(s.tag, s.hp / s.maxHp);
   }
-  // Wake behind moving ships.
-  if (s.speed > 2 && !s.sinking && Math.random() < s.speed / 30) {
+  // Foamy wake behind moving ships.
+  if (s.speed > 2 && !s.sinking && Math.random() < s.speed / 18) {
     const bx = s.x - fx * s.type.len * 0.5;
     const bz = s.z - fz * s.type.len * 0.5;
-    spawnParticle(0xffffff, bx + (Math.random() - 0.5) * 2, 0.2, bz + (Math.random() - 0.5) * 2, 0, 0.3, 0, 1.2, 0.5, 0);
+    spawnParticle('puff', 0xffffff, bx + rand(-1, 1), wy + 0.1, bz + rand(-1, 1), 0, 0.2, 0, 1.4, rand(0.5, 0.9), 0, true, true);
+  }
+  // Bow spray.
+  if (s.speed > 6 && !s.sinking && Math.random() < 0.25) {
+    const bx = s.x + fx * s.type.len * 0.5;
+    const bz = s.z + fz * s.type.len * 0.5;
+    spawnParticle('puff', 0xffffff, bx, wy + 0.3, bz, rightX(s.h) * rand(-3, 3), 2, rightZ(s.h) * rand(-3, 3), 0.5, 0.35, GRAVITY * 0.5);
   }
 }
 
-function updateParticles(dt) {
-  for (let i = particles.length - 1; i >= 0; i--) {
-    const p = particles[i];
-    p.life -= dt;
-    if (p.life <= 0) {
-      scene.remove(p.mesh);
-      particles.splice(i, 1);
-      continue;
-    }
-    p.vy += p.grav * dt;
-    p.mesh.position.x += p.vx * dt;
-    p.mesh.position.y += p.vy * dt;
-    p.mesh.position.z += p.vz * dt;
-    const k = p.life / p.max;
-    p.mesh.scale.setScalar(p.grow ? p.size * (1.6 - k * 0.6) * Math.min(1, k * 3) : p.size * k);
-  }
+// Place the chase camera straight behind the player (no swoop on level start).
+function snapCamera() {
+  if (!player) return;
+  camera.position.set(player.x - fwdX(player.h) * 17, 10, player.z - fwdZ(player.h) * 17);
+  camera.lookAt(player.x + fwdX(player.h) * 8, 1.5, player.z + fwdZ(player.h) * 8);
 }
 
 function frame() {
@@ -1064,29 +1441,30 @@ function frame() {
     if (state.bannerTimer <= 0) show(ui.banner, false);
   }
 
-  // Ocean waves.
-  for (let i = 0; i < oceanPos.count; i++) {
-    oceanPos.setY(i, waveHeight(oceanPos.getX(i), oceanPos.getZ(i), t));
-  }
-  oceanPos.needsUpdate = true;
-
   if (!paused) updateParticles(dt);
   if (player) syncShip(player, t);
   for (const e of enemies) syncShip(e, t);
   for (const b of balls) b.mesh.position.set(b.x, b.y, b.z);
   for (const c of coins) {
-    c.mesh.position.set(c.x, waveHeight(c.x, c.z, t) + 0.6, c.z);
-    c.mesh.rotation.y = t * 3 + c.spin;
+    c.mesh.position.set(c.x, ocean.heightAt(c.x, c.z, t) + 0.8, c.z);
+    c.mesh.rotation.set(Math.PI / 2, 0, t * 3 + c.spin);
   }
-  for (const c of clouds) {
-    c.position.x += dt * 1.5;
-    if (c.position.x > 200) c.position.x = -200;
+  for (const b of bombs) {
+    const u = Math.min(1, b.t / b.T);
+    const p = bombPos(b, u);
+    b.mesh.position.set(p.x, p.y, p.z);
+    b.mesh.rotation.set(t * 3, t * 2, 0);
+    b.ring.position.set(b.tx, ocean.heightAt(b.tx, b.tz, t) + 0.25, b.tz);
+    b.ring.scale.setScalar(0.35 + 0.65 * u);
   }
+  ringMat.opacity = 0.45 + 0.3 * Math.sin(t * 12);
 
   // Camera: a chase cam behind the player, or a slow orbit on the menu.
+  let fx = 0;
+  let fz = 0;
   if (player) {
-    const fx = fwdX(player.h);
-    const fz = fwdZ(player.h);
+    fx = fwdX(player.h);
+    fz = fwdZ(player.h);
     const tx = player.x - fx * 17;
     const tz = player.z - fz * 17;
     const k = Math.min(1, dt * 3);
@@ -1099,41 +1477,34 @@ function frame() {
       camera.position.y += (Math.random() - 0.5) * state.shake;
     }
     camera.lookAt(player.x + fx * 8, 1.5, player.z + fz * 8);
-  } else {
-    camera.position.set(Math.sin(t * 0.1) * 40, 18, Math.cos(t * 0.1) * 40);
-    camera.lookAt(0, 0, 0);
+  } else if (env) {
+    const ps = env.playerStart;
+    if (menuShipMesh) {
+      menuShipMesh.position.set(ps.x, ocean.heightAt(ps.x, ps.z, t), ps.z);
+      menuShipMesh.rotation.set(Math.sin(t * 0.9) * 0.03, ps.h + 0.6, Math.sin(t * 1.3) * 0.05);
+      animateShip(menuShipMesh, t, 0.4);
+    }
+    const a = t * 0.08;
+    camera.position.set(ps.x + Math.sin(a) * 26, 9, ps.z + Math.cos(a) * 26);
+    camera.lookAt(ps.x, 3, ps.z);
   }
+
+  const focusX = player ? player.x : camera.position.x;
+  const focusZ = player ? player.z : camera.position.z;
+  ocean.update(t, focusX, focusZ);
+  sky.update(camera);
+  clouds.update(paused ? 0 : dt, focusX, focusZ);
+  if (env && !paused) env.update(t, dt);
 
   if (state.mode !== 'menu') {
     updateHud();
     drawMinimap();
   }
-  renderer.render(scene, camera);
+  view.renderer.info.reset();
+  view.render(scene, camera);
 }
 
-// A decorative ship for the title screen.
-const menuShip = buildShip(SHIP_TYPES.galleon, true);
-scene.add(menuShip);
-const menuIslands = mulberry32(3);
-for (let i = 0; i < 3; i++) {
-  const isl = buildIsland(5 + i * 2, menuIslands);
-  isl.position.set(Math.cos(i * 2.1) * 26, 0, Math.sin(i * 2.1) * 26);
-  scene.add(isl);
-  islands.push({ x: isl.position.x, z: isl.position.z, r: 5 + i * 2, mesh: isl });
-}
-const menuAnimate = () => {
-  if (state.mode !== 'menu') {
-    scene.remove(menuShip);
-    return;
-  }
-  menuShip.position.y = waveHeight(0, 0, visualTime) - 0.3;
-  menuShip.rotation.y = visualTime * 0.2;
-  menuShip.rotation.z = Math.sin(visualTime * 1.3) * 0.05;
-  requestAnimationFrame(menuAnimate);
-};
-menuAnimate();
-
-updateHud(true);
+showMenu();
 frame();
 
 // Exposed for automated tests and console tinkering.
@@ -1143,21 +1514,31 @@ window.__game = {
   enemies,
   balls,
   coins,
-  islands,
+  colliders,
+  reefs,
+  bombs,
   LEVELS,
   SHIP_TYPES,
   get player() {
     return player;
   },
+  get env() {
+    return env;
+  },
   newGame,
   startLevel,
   nextLevel,
   retryLevel,
+  showMenu,
   togglePause,
   changeSail,
   playerFire,
   fire,
   damage,
   relative,
+  launchBomb,
   step,
+  get renderInfo() {
+    return { ...view.renderer.info.render };
+  },
 };

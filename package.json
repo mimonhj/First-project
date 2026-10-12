@@ -1,8 +1,8 @@
 {
-  "name": "pixel-pirates",
+  "name": "pirates-ahoy",
   "version": "1.0.0",
   "private": true,
-  "description": "A pixel-art 3D pirate naval battle game for the browser, built with three.js",
+  "description": "A cartoon 3D pirate adventure for the browser, built with three.js",
   "scripts": {
     "start": "npx http-server -p 8080 -c-1 .",
     "test": "node tests/smoke.cjs"
