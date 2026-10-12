@@ -1,5 +1,4 @@
 import * as THREE from 'three';
-import { OutlineEffect } from 'three/addons/effects/OutlineEffect.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { INK, OUTLINE_THICKNESS, DEFAULT_PALETTE, noOutline, setOutline } from './style.js';
 
@@ -14,6 +13,229 @@ const glslNum = (v) => {
 };
 
 // ---------------------------------------------------------------------------
+// Ink outlines
+// ---------------------------------------------------------------------------
+// The outline pass of three r170's OutlineEffect (vendor/addons/effects/), with the
+// same shader and the same per-material options (material.userData.outlineParameters:
+// thickness, color, alpha, visible): every mesh with normals is drawn a second time,
+// back faces only, pushed out along its normals in clip space and filled with ink.
+//
+// Only the bookkeeping differs. The vendored effect keeps a key for every mesh it
+// has ever drawn (it assigns `undefined` but never deletes) and walks all of them
+// every frame, so each cannonball, coin and level load made every later frame a bit
+// slower; and outline materials with `keepAlive` were never evicted (nor disposed,
+// so the renderer kept them as well). Here the per-frame swap list is a reused
+// array, and an outline material unused for EVICT_FRAMES frames is disposed.
+const OUTLINE_VERTEX = `
+#include <common>
+#include <uv_pars_vertex>
+#include <displacementmap_pars_vertex>
+#include <fog_pars_vertex>
+#include <morphtarget_pars_vertex>
+#include <skinning_pars_vertex>
+#include <logdepthbuf_pars_vertex>
+#include <clipping_planes_pars_vertex>
+uniform float outlineThickness;
+vec4 calculateOutline( vec4 pos, vec3 normal, vec4 skinned ) {
+	float thickness = outlineThickness;
+	const float ratio = 1.0;
+	vec4 pos2 = projectionMatrix * modelViewMatrix * vec4( skinned.xyz + normal, 1.0 );
+	vec4 norm = normalize( pos - pos2 );
+	return pos + norm * thickness * pos.w * ratio;
+}
+void main() {
+	#include <uv_vertex>
+	#include <beginnormal_vertex>
+	#include <morphnormal_vertex>
+	#include <skinbase_vertex>
+	#include <skinnormal_vertex>
+	#include <begin_vertex>
+	#include <morphtarget_vertex>
+	#include <skinning_vertex>
+	#include <displacementmap_vertex>
+	#include <project_vertex>
+	vec3 outlineNormal = - objectNormal; // the outline material is always rendered with BackSide
+	gl_Position = calculateOutline( gl_Position, outlineNormal, vec4( transformed, 1.0 ) );
+	#include <logdepthbuf_vertex>
+	#include <clipping_planes_vertex>
+	#include <fog_vertex>
+}`;
+const OUTLINE_FRAGMENT = `
+#include <common>
+#include <fog_pars_fragment>
+#include <logdepthbuf_pars_fragment>
+#include <clipping_planes_pars_fragment>
+uniform vec3 outlineColor;
+uniform float outlineAlpha;
+void main() {
+	#include <clipping_planes_fragment>
+	#include <logdepthbuf_fragment>
+	gl_FragColor = vec4( outlineColor, outlineAlpha );
+	#include <tonemapping_fragment>
+	#include <colorspace_fragment>
+	#include <fog_fragment>
+	#include <premultiplied_alpha_fragment>
+}`;
+const EVICT_FRAMES = 60;
+const noHook = () => {};
+const outlinePasses = new WeakMap(); // renderer -> pass (for outlineStats)
+
+function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = {}) {
+  const uniformsOutline = {
+    outlineThickness: { value: thickness },
+    outlineColor: { value: new THREE.Color().fromArray(color) },
+    outlineAlpha: { value: 1 },
+  };
+  const cache = new Map(); // original material -> { material, frame }
+  const arrays = new Map(); // original material array -> { materials, frame }
+  let frame = 0;
+  // Swapped (or hidden) during the current outline render; emptied right after it.
+  const swapped = [];
+  const originals = [];
+  const hooks = [];
+  const hidden = [];
+
+  // Copy the original material's state and outline options onto its outline material.
+  function sync(m, o) {
+    const p = o.userData.outlineParameters;
+    const u = m.uniforms;
+    m.fog = o.fog;
+    m.toneMapped = o.toneMapped;
+    m.premultipliedAlpha = o.premultipliedAlpha;
+    m.displacementMap = o.displacementMap;
+    u.outlineAlpha.value = o.opacity;
+    if (p !== undefined) {
+      m.visible = o.visible === false ? false : p.visible !== undefined ? p.visible : true;
+      m.transparent = p.alpha !== undefined && p.alpha < 1 ? true : o.transparent;
+      if (p.thickness !== undefined) u.outlineThickness.value = p.thickness;
+      if (p.color !== undefined) u.outlineColor.value.fromArray(p.color);
+      if (p.alpha !== undefined) u.outlineAlpha.value = p.alpha;
+    } else {
+      m.transparent = o.transparent;
+      m.visible = o.visible;
+    }
+    if (o.wireframe === true || o.depthTest === false) m.visible = false;
+    if (o.clippingPlanes) {
+      m.clipping = true;
+      m.clippingPlanes = o.clippingPlanes;
+      m.clipIntersection = o.clipIntersection;
+      m.clipShadows = o.clipShadows;
+    }
+    if (o.displacementMap) {
+      u.displacementMap.value = o.displacementMap;
+      u.displacementScale.value = o.displacementScale;
+      u.displacementBias.value = o.displacementBias;
+    }
+    m.version = o.version; // recompile the outline when the original needs it
+  }
+
+  function outlineFor(o) {
+    let e = cache.get(o);
+    if (e === undefined) {
+      const material = new THREE.ShaderMaterial({
+        type: 'OutlineEffect',
+        uniforms: THREE.UniformsUtils.merge([THREE.UniformsLib.fog, THREE.UniformsLib.displacementmap, uniformsOutline]),
+        vertexShader: OUTLINE_VERTEX,
+        fragmentShader: OUTLINE_FRAGMENT,
+        side: THREE.BackSide,
+      });
+      e = { material, frame: -1 };
+      cache.set(o, e);
+    }
+    if (e.frame !== frame) {
+      e.frame = frame;
+      sync(e.material, o);
+    }
+    return e.material;
+  }
+
+  function outlineArray(list) {
+    let e = arrays.get(list);
+    if (e === undefined) {
+      e = { materials: [], frame: -1 };
+      arrays.set(list, e);
+    }
+    if (e.frame !== frame) {
+      e.frame = frame;
+      e.materials.length = list.length;
+      for (let i = 0; i < list.length; i++) e.materials[i] = outlineFor(list[i]);
+    }
+    return e.materials;
+  }
+
+  // Meshes with normals get their outline material (also when hidden, which keeps
+  // their cache entry alive, like OutlineEffect's scene.traverse). Anything else
+  // (sprites, points, lines, normal-less meshes) would be drawn a second time with
+  // its own material, doubling the opacity of labels and particles: hide it.
+  const prepare = (o) => {
+    if (o.isMesh === true && o.material !== undefined && o.geometry !== undefined && o.geometry.attributes.normal !== undefined) {
+      swapped.push(o);
+      originals.push(o.material);
+      hooks.push(o.onBeforeRender);
+      o.material = Array.isArray(o.material) ? outlineArray(o.material) : outlineFor(o.material);
+      o.onBeforeRender = noHook;
+    } else if (o.visible && (o.isSprite || o.isPoints || o.isLine || (o.isMesh && o.children.length === 0))) {
+      o.visible = false;
+      hidden.push(o);
+    }
+  };
+
+  function evict() {
+    for (const [o, e] of cache) {
+      if (frame - e.frame > EVICT_FRAMES) {
+        e.material.dispose();
+        cache.delete(o);
+      }
+    }
+    for (const [list, e] of arrays) if (frame - e.frame > EVICT_FRAMES) arrays.delete(list);
+  }
+
+  const pass = {
+    enabled: true,
+    autoClear: renderer.autoClear,
+    renderOutline(scene, camera) {
+      frame++;
+      const autoClear = renderer.autoClear;
+      const autoUpdate = scene.matrixWorldAutoUpdate;
+      const background = scene.background;
+      const shadows = renderer.shadowMap.enabled;
+      scene.matrixWorldAutoUpdate = false; // matrices are fresh from the colour pass
+      scene.background = null;
+      renderer.autoClear = false;
+      renderer.shadowMap.enabled = false;
+      try {
+        scene.traverse(prepare);
+        renderer.render(scene, camera);
+      } finally {
+        for (let i = 0; i < swapped.length; i++) {
+          swapped[i].material = originals[i];
+          swapped[i].onBeforeRender = hooks[i];
+        }
+        for (let i = 0; i < hidden.length; i++) hidden[i].visible = true;
+        swapped.length = originals.length = hooks.length = hidden.length = 0;
+        scene.matrixWorldAutoUpdate = autoUpdate;
+        scene.background = background;
+        renderer.autoClear = autoClear;
+        renderer.shadowMap.enabled = shadows;
+      }
+      if (frame % EVICT_FRAMES === 0) evict();
+    },
+    /** Bookkeeping sizes, for tests. */
+    stats() {
+      return { cache: cache.size, arrays: arrays.size, pending: swapped.length + hidden.length, frame };
+    },
+  };
+  outlinePasses.set(renderer, pass);
+  return pass;
+}
+
+/** Outline bookkeeping sizes of a renderer made by createRenderer (for tests and debugging). */
+export function outlineStats(renderer) {
+  const pass = outlinePasses.get(renderer);
+  return pass ? pass.stats() : null;
+}
+
+// ---------------------------------------------------------------------------
 // Renderer
 // ---------------------------------------------------------------------------
 export function createRenderer(canvas) {
@@ -22,19 +244,7 @@ export function createRenderer(canvas) {
   renderer.setPixelRatio(ratio());
   renderer.outputColorSpace = THREE.SRGBColorSpace;
   renderer.toneMapping = THREE.NoToneMapping; // keep cartoon colours exact
-  const effect = new OutlineEffect(renderer, { defaultThickness: OUTLINE_THICKNESS, defaultColor: INK });
-  // OutlineEffect only swaps materials on meshes with normals; everything else
-  // (sprites, points, lines, normal-less meshes) would be drawn a second time by
-  // the outline pass, doubling the opacity of labels and particles. Hide them for
-  // that pass. (Reused list and callback: no per-frame allocation.)
-  const hidden = [];
-  const hideForOutline = (o) => {
-    const bareMesh = o.isMesh && !(o.geometry && o.geometry.attributes.normal) && o.children.length === 0;
-    if (o.isSprite || o.isPoints || o.isLine || bareMesh) {
-      o.visible = false;
-      hidden.push(o);
-    }
-  };
+  const effect = createOutlinePass(renderer, { thickness: OUTLINE_THICKNESS, color: INK });
   return {
     renderer,
     effect,
@@ -51,10 +261,7 @@ export function createRenderer(canvas) {
       renderer.autoClear = effect.autoClear;
       renderer.render(scene, camera);
       renderer.autoClear = autoClear;
-      scene.traverseVisible(hideForOutline);
       effect.renderOutline(scene, camera);
-      for (let i = 0; i < hidden.length; i++) hidden[i].visible = true;
-      hidden.length = 0;
     },
   };
 }

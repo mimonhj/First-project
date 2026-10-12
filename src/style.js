@@ -5,8 +5,9 @@ import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 //
 // - Surfaces use MeshToonMaterial with a shared 3-tone gradient, so lighting
 //   falls into hard bands like a hand-painted cartoon.
-// - Dark ink outlines come from three's OutlineEffect (see scenery.js). Each
-//   material can tune or disable its outline via `material.userData.outlineParameters`.
+// - Dark ink outlines come from the outline pass in scenery.js (three's OutlineEffect
+//   shader). Each material can tune or disable its outline via
+//   `material.userData.outlineParameters` (thickness, color, alpha, visible).
 // - Prefer rounded, smooth-normal geometry (spheres, capsules, lathes, cylinders,
 //   RoundedBoxGeometry). Hard boxes have split normals, which crack the outline at corners.
 
@@ -78,7 +79,6 @@ export function setOutline(material, outline = true) {
       color: o.color ?? INK,
       alpha: 1,
       visible: true,
-      keepAlive: true,
     };
   }
   return material;
@@ -90,10 +90,27 @@ export function noOutline(material) {
 }
 
 /**
+ * Give a non-indexed geometry the trivial index 0..n-1 (in place; returns it).
+ * mergeGeometries needs every part indexed or none, so this lets indexed parts
+ * stay indexed (shared vertices stored once) instead of de-indexing them all.
+ */
+export function ensureIndex(g) {
+  if (!g.index) {
+    const n = g.attributes.position.count;
+    const index = new (n > 65535 ? Uint32Array : Uint16Array)(n);
+    for (let i = 0; i < n; i++) index[i] = i;
+    g.setIndex(new THREE.BufferAttribute(index, 1));
+  }
+  return g;
+}
+
+/**
  * Merge all static meshes under `root` that share a material into one mesh per
  * material, to cut draw calls. Meshes with `userData.keep = true` (animated
  * parts), and anything under such a node, are left alone. Returns `root`.
  * Call once after building a static prop or environment.
+ * Each part keeps its own vertices and normals (hard edges stay hard, smooth parts
+ * stay smooth for the outline); the merged mesh stays indexed.
  */
 export function mergeStatic(root) {
   root.updateMatrixWorld(true);
@@ -104,13 +121,18 @@ export function mergeStatic(root) {
     if (obj === root) return;
     for (let p = obj; p && p !== root; p = p.parent) if (p.userData.keep) return;
     if (!obj.isMesh || obj.isInstancedMesh || Array.isArray(obj.material)) return;
-    const g = obj.geometry.index ? obj.geometry.toNonIndexed() : obj.geometry.clone();
+    let g = obj.geometry.clone();
     // Merged geometries must share attribute sets.
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
+    if (!g.attributes.normal) {
+      // flat-shaded, as a part without normals always was
+      if (g.index) g = g.toNonIndexed();
+      g.computeVertexNormals();
+    }
     if (!g.attributes.uv) {
       g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
     }
-    if (!g.attributes.normal) g.computeVertexNormals();
+    ensureIndex(g);
     g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, obj.matrixWorld));
     const list = groups.get(obj.material) || [];
     list.push(g);

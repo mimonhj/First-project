@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { toon, setOutline, noOutline, mergeStatic, gradientMap } from '../style.js';
-import { waveHeight } from '../scenery.js';
+import * as scenery from '../scenery.js';
 
 // Level 2: "Bali Islands". A warm turquoise lagoon dotted with jungle islands,
 // a Balinese temple (split gate, meru towers, tiki torches), a rice-terrace
@@ -152,13 +152,21 @@ const SEA_ROCKS = [
   [74, -84, 2.6, 5, 'stack'],
 ];
 
+// Coral reefs (shallows that slow deep hulls). Every wave spawns 58-92 units from
+// START and sails at the player, so the fights happen in the southern half: five
+// reefs sit on the lanes between START, the spawn ring and the islands there
+// (dead ahead, south-west, south-east, east, west), with clear channels of 13+
+// units to the nearest land. Two more dress the lagoon in the north. Each reef
+// edge is >= 15 from START and <= WORLD_R - 10 from the centre; computeSpawns
+// keeps the spawns >= 8 off every reef edge.
 const REEFS = [
-  { x: -6, z: -46, r: 10 },
+  { x: 2, z: -62, r: 9 }, // dead ahead of START, on the lane to the northern spawns
+  { x: -38, z: -96, r: 10 }, // south-west, between START and the SW islet
+  { x: 40, z: -98, r: 10 }, // south-east, between START and the sea stacks
+  { x: 62, z: -60, r: 9 }, // east, between the S islet, the stacks and the E islet
+  { x: -57, z: -33, r: 9 }, // west, between the temple island and the SW islet
   { x: 13, z: 25, r: 10 },
-  { x: -54, z: -28, r: 9 },
-  { x: 80, z: -2, r: 10 },
   { x: -44, z: 47, r: 9 },
-  { x: 52, z: 84, r: 8 },
 ];
 
 // ---------------------------------------------------------------------------
@@ -962,36 +970,47 @@ function coralFanGeometry() {
   });
 }
 
-function addCoral(parent, x, z, rng, kind) {
+// Ships sail right over the reefs, so the coral there stays low: nothing rises above
+// CORAL_TOP (a deck sits at hull + 1.2 and the hull rides the swell within +-0.48,
+// so the lowest a deck gets is ~0.7). The heads break the surface in the wave
+// troughs and are washed over at the crests. Tall coral (tall = true) only grows
+// where ships can't reach, out on the barrier reef.
+const CORAL_TOP = 0.45;
+const _coralBox = new THREE.Box3();
+
+function addCoral(parent, x, z, rng, kind, tall = false) {
   const col = C.coral[Math.floor(rng() * C.coral.length)];
-  const base = -1.4;
+  const g = new THREE.Group(); // one coral head, lowered as a whole if it pokes up too far
+  parent.add(g);
+  const base = tall ? -1.4 : -1.1;
   if (kind === 'brain') {
-    // brain coral: a lumpy little cluster of domes
-    const r = 0.75 + rng() * 0.4;
-    const m = mesh(parent, bumpyRock(rng, true), toon(col), x, base + 1.0 + r * 0.25, z);
-    m.scale.set(r, r * 0.75, r);
+    // brain coral: a lumpy little cluster of domes (broad and flat on the reef)
+    const r = tall ? 0.75 + rng() * 0.4 : 0.85 + rng() * 0.4;
+    const fl = tall ? 0.75 : 0.55;
+    const m = mesh(g, bumpyRock(rng, true), toon(col), x, base + 1.0 + r * 0.25, z);
+    m.scale.set(r, r * fl, r);
     for (let i = 0; i < 2; i++) {
       const a = rng() * Math.PI * 2;
       const rr = r * (0.5 + rng() * 0.2);
-      const b = mesh(parent, bumpyRock(rng, true), toon(col), x + Math.cos(a) * r * 0.8, base + 0.9 + rr * 0.2, z + Math.sin(a) * r * 0.8);
-      b.scale.set(rr, rr * 0.75, rr);
+      const b = mesh(g, bumpyRock(rng, true), toon(col), x + Math.cos(a) * r * 0.8, base + 0.9 + rr * 0.2, z + Math.sin(a) * r * 0.8);
+      b.scale.set(rr, rr * fl, rr);
     }
   } else if (kind === 'fan') {
     // sea fan: a frilly half-disc on a short stalk
-    const s = 1.0 + rng() * 0.3;
-    const fan = mesh(parent, coralFanGeometry(), toon(col), x, -0.35, z, rng() * Math.PI);
+    const s = tall ? 1.0 + rng() * 0.3 : 0.85 + rng() * 0.3;
+    const fan = mesh(g, coralFanGeometry(), toon(col), x, -0.35, z, rng() * Math.PI);
     fan.scale.set(s, s, 1);
-    const st = mesh(parent, geo('fanStalk', () => new THREE.CylinderGeometry(0.12, 0.2, 1, 6)), toon(col), x, -0.8, z);
+    const st = mesh(g, geo('fanStalk', () => new THREE.CylinderGeometry(0.12, 0.2, 1, 6)), toon(col), x, -0.8, z);
     st.scale.set(1, 1.2, 1);
   } else if (kind === 'stag') {
-    // staghorn: branches fanning up
+    // staghorn: branches fanning up (and out, on the reef flats)
     const n = 3 + Math.floor(rng() * 3);
     const br = geo('coralBranch', () => new THREE.CapsuleGeometry(0.27, 1.2, 3, 7));
     for (let i = 0; i < n; i++) {
       const a = (i / n) * Math.PI * 2 + rng();
-      const tilt = 0.25 + rng() * 0.4;
-      const len = 0.85 + rng() * 0.45;
-      const m = mesh(parent, br, toon(col), x + Math.cos(a) * 0.5, base + 1.3 + len * 0.25, z + Math.sin(a) * 0.5);
+      const tilt = tall ? 0.25 + rng() * 0.4 : 0.55 + rng() * 0.4;
+      const len = tall ? 0.85 + rng() * 0.45 : 0.75 + rng() * 0.3;
+      const m = mesh(g, br, toon(col), x + Math.cos(a) * 0.5, base + 1.3 + len * 0.25, z + Math.sin(a) * 0.5);
       m.rotation.order = 'YXZ';
       m.rotation.y = -a + Math.PI / 2;
       m.rotation.x = tilt;
@@ -1007,14 +1026,22 @@ function addCoral(parent, x, z, rng, kind) {
     for (let i = 0; i < n; i++) {
       const a = rng() * Math.PI * 2;
       const d = i === 0 ? 0 : 0.55 + rng() * 0.3;
-      const h = (i === 0 ? 2.6 : 2.0) + rng() * 0.6;
+      const h = tall ? (i === 0 ? 2.6 : 2.0) + rng() * 0.6 : (i === 0 ? 1.45 : 1.15) + rng() * 0.25;
       const px = x + Math.cos(a) * d;
       const pz = z + Math.sin(a) * d;
-      const m = mesh(parent, tube, toon(col), px, base, pz);
+      const m = mesh(g, tube, toon(col), px, base, pz);
       m.scale.set(1, h, 1);
-      mesh(parent, mouth, toon(0x4a2140, { outline: false }), px, base + h * 0.9 + 0.01, pz);
+      mesh(g, mouth, toon(0x4a2140, { outline: false }), px, base + h * 0.9 + 0.01, pz);
     }
   }
+  if (!tall) {
+    // keep the whole head under the cap (a little lower at random, so the tops vary)
+    g.updateMatrixWorld(true);
+    const top = _coralBox.setFromObject(g, true).max.y;
+    const cap = CORAL_TOP - rng() * 0.15;
+    if (top > cap) g.position.y -= top - cap;
+  }
+  return g;
 }
 
 // ---------------------------------------------------------------------------
@@ -1193,11 +1220,55 @@ function buildMountains() {
 }
 
 // ---------------------------------------------------------------------------
-// Reef surface: translucent shallow patches with a bright rim that ride the
-// waves (positions follow scenery.waveHeight every frame), plus small foam
-// rings around the coral heads.
+// Reef waves on the GPU. The reef patches must ride exactly the same swell as
+// the ocean shader, so their vertex shader evaluates the same height field.
+// scenery.js's WAVE_GLSL is used when it is exported; otherwise this mirror of
+// its WAVES table (same constants, same rounding, same GLSL) is used, and
+// checkReefWaves() verifies it against scenery.waveHeight() once.
 // ---------------------------------------------------------------------------
-function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
+const r6 = (v) => Number(v.toFixed(6));
+const REEF_WAVES = [
+  { deg: 37, len: 52, a: 0.22, ph: 0.0 },
+  { deg: 117, len: 33, a: 0.16, ph: 1.3 },
+  { deg: -14, len: 22, a: 0.12, ph: 2.7 },
+  { deg: 233, len: 16, a: 0.1, ph: 4.1 },
+].map(({ deg, len, a, ph }) => {
+  const k = (2 * Math.PI) / len;
+  const ang = (deg * Math.PI) / 180;
+  return { kx: r6(Math.cos(ang) * k), kz: r6(Math.sin(ang) * k), w: r6(0.8 * Math.sqrt(9.8 * k)), a, ph };
+});
+const glslNum = (v) => {
+  const s = Number(v).toFixed(6);
+  return s.includes('.') ? s : s + '.0';
+};
+const HAS_SCENERY_WAVES = typeof scenery.WAVE_GLSL === 'string' && scenery.WAVE_GLSL.includes('float waveH(');
+const REEF_WAVE_GLSL = HAS_SCENERY_WAVES
+  ? scenery.WAVE_GLSL
+  : `float waveH(vec2 p, float t, float amp) {
+  float h = 0.0;
+${REEF_WAVES.map((w) => `  h += ${glslNum(w.a)} * sin(${glslNum(w.kx)} * p.x + ${glslNum(w.kz)} * p.y - ${glslNum(w.w)} * t + ${glslNum(w.ph)});`).join('\n')}
+  return h * amp;
+}`;
+let reefWavesChecked = false;
+function checkReefWaves() {
+  if (reefWavesChecked || HAS_SCENERY_WAVES) return;
+  reefWavesChecked = true;
+  for (const [x, z, t] of [[0, 0, 0], [13.7, -42.1, 3.3], [-97.2, 55.5, 41.9], [120.4, 8.8, 777.7], [-3.1, -131, 12345.6]]) {
+    let h = 0;
+    for (const w of REEF_WAVES) h += w.a * Math.sin(w.kx * x + w.kz * z - w.w * t + w.ph);
+    if (Math.abs(h * 0.8 - scenery.waveHeight(x, z, t, 0.8)) > 1e-6) {
+      console.error('bali.js: REEF_WAVES no longer matches scenery.js WAVES; export WAVE_GLSL from scenery.js or update the mirror');
+      return;
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Reef surface: translucent shallow patches with a bright rim that ride the
+// waves (displaced in the vertex shader, see REEF_WAVE_GLSL), plus small foam
+// rings around the coral heads. The geometry itself is static.
+// ---------------------------------------------------------------------------
+function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU, ampU) {
   const bx = [];
   const bz = [];
   const lift = [];
@@ -1274,7 +1345,6 @@ function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
   // barrier-reef arcs around the lagoon edge: [centre deg, half-width deg, inner r, outer r]
   // Lagoon side: pale water fading in softly. Sea side: a thick white breaker whose
   // scalloped (cloud-like) inner edge is drawn per pixel by the material (see aArc).
-  const arcStart = bx.length;
   for (const [deg, half, r0, r1] of arcs) {
     const span = ((half * 2 * Math.PI) / 180) * ((r0 + r1) / 2);
     const COLS = Math.max(16, Math.round(span / 1.4));
@@ -1313,7 +1383,6 @@ function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
     }
   }
   // foam collars around coral outcrops and barrier rocks that break the surface
-  // (the barrier ones live in the far range, which is synced less often)
   const collars = (spots) => {
     for (const [x, z, r] of spots) {
       const SEG = r > 1.8 ? 18 : 14;
@@ -1333,16 +1402,18 @@ function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
     }
   };
   collars(farSpots);
-  const arcEnd = bx.length;
   collars(coralSpots);
+  // Static geometry: x, z in world space (the env root sits at the origin) and the
+  // per-vertex lift above the swell in y. The vertex shader adds the wave height.
   const n = bx.length;
   const g = new THREE.BufferGeometry();
   const pos = new Float32Array(n * 3);
   for (let i = 0; i < n; i++) {
     pos[i * 3] = bx[i];
+    pos[i * 3 + 1] = lift[i];
     pos[i * 3 + 2] = bz[i];
   }
-  g.setAttribute('position', new THREE.BufferAttribute(pos, 3).setUsage(THREE.DynamicDrawUsage));
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
   g.setAttribute('color', new THREE.Float32BufferAttribute(col, 4));
   g.setAttribute('aArc', new THREE.Float32BufferAttribute(arcA, 3));
   g.setIndex(index);
@@ -1352,9 +1423,29 @@ function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
   noOutline(m);
   m.onBeforeCompile = (sh) => {
     sh.uniforms.uTime = timeU;
+    sh.uniforms.uAmp = ampU;
     sh.vertexShader = sh.vertexShader
-      .replace('#include <common>', '#include <common>\nattribute vec3 aArc;\nvarying vec3 vArc;')
-      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvArc = aArc;');
+      .replace(
+        '#include <common>',
+        `#include <common>
+uniform float uTime;
+uniform float uAmp;
+attribute vec3 aArc;
+varying vec3 vArc;
+${REEF_WAVE_GLSL}`,
+      )
+      .replace(
+        '#include <begin_vertex>',
+        `#include <begin_vertex>
+vArc = aArc;
+{
+  // ride the ocean swell; 0.07 clears the water, and the ocean mesh gets coarser
+  // away from the camera, so lift a little more there (position.y = per-vertex lift)
+  vec2 wxz = (modelMatrix * vec4(position.x, 0.0, position.z, 1.0)).xz;
+  float far = abs(wxz.x - cameraPosition.x) + abs(wxz.y - cameraPosition.z);
+  transformed.y = waveH(wxz, uTime, uAmp) + 0.07 + position.y + far * 0.0013;
+}`,
+      );
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', '#include <common>\nuniform float uTime;\nvarying vec3 vArc;')
       .replace(
@@ -1372,12 +1463,12 @@ function buildReefSurface(reefs, rng, coralSpots, arcs, farSpots, timeU) {
         }`,
       );
   };
-  m.customProgramCacheKey = () => 'bali-reef-v2';
+  m.customProgramCacheKey = () => (HAS_SCENERY_WAVES ? 'bali-reef-v3s' : 'bali-reef-v3');
   const me = new THREE.Mesh(g, m);
   me.userData.keep = true;
-  me.frustumCulled = false;
+  me.frustumCulled = false; // displaced on the GPU, so the bounding sphere is only approximate
   me.renderOrder = 2;
-  return { mesh: me, bx, bz, lift, arcStart, arcEnd };
+  return { mesh: me };
 }
 
 // ---------------------------------------------------------------------------
@@ -1426,7 +1517,7 @@ function computeSpawns(colliders, reefs, start, R) {
       const dS = Math.hypot(x - start.x, z - start.z);
       if (dS < 58 || dS > 92) continue;
       if (colliders.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + 12)) continue;
-      if (reefs.some((r) => Math.hypot(x - r.x, z - r.z) < r.r + 4)) continue;
+      if (reefs.some((r) => Math.hypot(x - r.x, z - r.z) < r.r + 8)) continue;
       cands.push({ x, z });
     }
   }
@@ -1758,9 +1849,12 @@ export function build(scene, ctx = {}) {
       const z = rf.z + Math.sin(a) * d;
       if (clusters.some((c) => Math.hypot(c[0] - x, c[1] - z) < 5.4)) continue;
       clusters.push([x, z]);
+      // a pale reef-rock mound just awash (flatter and lower than a sea rock: ships sail over it)
       const mr = 0.85 + rng() * 0.35;
       const mound = mesh(statics, bumpyRock(rng, true), toon(C.reefRock), x, -0.4, z, rng() * 6);
-      mound.scale.set(mr * 1.45, mr, mr * 1.25);
+      mound.scale.set(mr * 1.45, mr * 0.7, mr * 1.25);
+      mound.updateMatrixWorld(true);
+      mound.position.y -= Math.max(0, _coralBox.setFromObject(mound, true).max.y - (CORAL_TOP - 0.1));
       const nh = 3 + Math.floor(rng() * 2);
       const a0 = rng() * 6.28;
       const k0 = Math.floor(rng() * 4);
@@ -1792,9 +1886,16 @@ export function build(scene, ctx = {}) {
       const rk = mesh(statics, rockTag(bumpyRock(rng, true), k === 1 ? 0.2 : 0.5, 0), rockMat, px, -0.7, pz, rng() * 6);
       rk.scale.set(1.1 + rng() * 0.8, 1.2 + rng() * 0.6, 1.0 + rng() * 0.7);
       rockSpots.push([px, pz, Math.max(rk.scale.x, rk.scale.z) * 0.95]);
+      if (k !== 1) {
+        // the tall tube sponges and staghorn grow out here, beside the outer rocks,
+        // where no ship can reach (ships stop at WORLD_R; these sit at 149+)
+        const off = (k === 0 ? -1 : 1) * (2.3 + rng() * 0.7);
+        addCoral(statics, px - Math.sin(aa) * off, pz + Math.cos(aa) * off, rng, (i + k / 2) % 2 ? 'tube' : 'stag', true);
+      }
     }
   }
-  const reefSurf = buildReefSurface(REEFS, rng, coralSpots, arcs, rockSpots, timeU);
+  checkReefWaves();
+  const reefSurf = buildReefSurface(REEFS, rng, coralSpots, arcs, rockSpots, timeU, { value: palette.waveAmp });
   root.add(reefSurf.mesh);
   ownMats.push(reefSurf.mesh.material);
 
@@ -1824,47 +1925,9 @@ export function build(scene, ctx = {}) {
   const reefs = REEFS.map((r) => ({ ...r }));
   const enemySpawns = computeSpawns(colliders, reefs, START, WORLD_R);
 
-  // Reef patches ride the same waves as the ocean (update() gets the same t as
-  // ocean.update). The arena reefs and coral foam are synced every frame; the far
-  // barrier-reef arcs and their rocks' foam collars a third at a time (the swell
-  // moves < 0.02 units per frame there).
-  const amp = palette.waveAmp;
-  const rp = reefSurf.mesh.geometry.attributes.position;
-  const rpa = rp.array;
-  const { bx, bz, lift: rlift, arcStart, arcEnd } = reefSurf;
-  let lastT = 0;
-  let camX = START.x;
-  let camZ = START.z;
-  let frameNo = 0;
-  const syncRange = (i0, i1, step = 1) => {
-    for (let i = i0; i < i1; i += step) {
-      const x = bx[i];
-      const z = bz[i];
-      // the ocean mesh gets coarser away from its focus; lift a bit more there
-      const far = Math.abs(x - camX) + Math.abs(z - camZ);
-      rpa[i * 3 + 1] = waveHeight(x, z, lastT, amp) + 0.07 + rlift[i] + far * 0.0013;
-    }
-  };
-  const syncReef = (all) => {
-    syncRange(0, arcStart);
-    syncRange(arcEnd, rp.count);
-    if (all) syncRange(arcStart, arcEnd);
-    else syncRange(arcStart + (frameNo % 3), arcEnd, 3);
-    frameNo++;
-    rp.needsUpdate = true;
-  };
-  // remember where the camera is (the ocean is finest around it)
-  reefSurf.mesh.onBeforeRender = (renderer, sc, camera) => {
-    camX = camera.position.x;
-    camZ = camera.position.z;
-  };
-  syncReef(true);
-
   function update(t, dt) {
+    // reef patches ride the swell in their vertex shader (same t as ocean.update)
     timeU.value = t;
-    const jump = Math.abs(t - lastT) > 0.1; // first frame, or time jumped: sync everything
-    lastT = t;
-    syncReef(jump);
     for (const b of birds) {
       const a = b.ph + t * b.w;
       const x = b.x + Math.cos(a) * b.r;

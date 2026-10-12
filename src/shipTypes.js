@@ -32,7 +32,7 @@ export const SHIP_TYPES = {
   // Level 2: Bali
   prahu: {
     name: 'Prahu Raider',
-    hp: 35, len: 8, wid: 3.2, maxSpeed: 12, accel: 3.6, turn: 1.5, reload: 2.4, guns: 2, dmg: 5,
+    hp: 35, len: 8, wid: 3.2, maxSpeed: 11, accel: 3.6, turn: 1.5, reload: 2.4, guns: 2, dmg: 4,
     gold: 4, engage: 18, spread: 0.1,
     shallow: true, // shallow draft: not slowed by reefs
   },
@@ -56,7 +56,7 @@ export const SHIP_TYPES = {
   inferno: {
     name: 'The Molten Maw',
     boss: true,
-    hp: 280, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.9, guns: 6, dmg: 3,
+    hp: 280, len: 16, wid: 5.2, maxSpeed: 6, accel: 1.8, turn: 0.55, reload: 2.6, guns: 6, dmg: 4,
     gold: 20, engage: 25, spread: 0.07,
   },
 };

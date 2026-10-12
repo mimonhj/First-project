@@ -111,6 +111,8 @@ async function shotColours(page) {
   const cards = await page.$$eval('.level-card', (els) => els.map((e) => ({ text: e.textContent, locked: e.disabled })));
   check(cards.length === 3, `3 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
   check(!cards[0].locked && cards[1].locked && cards[2].locked, 'only level 1 is unlocked at first');
+  check(/Easy/.test(cards[0].text) && /Medium/.test(cards[1].text) && /Hard/.test(cards[2].text), 'level cards show the difficulty');
+  check(await page.evaluate(() => window.__gameReady === true), 'startup sets the ready flag');
 
   // ---- Level 1.
   await page.click('#start-btn');
@@ -121,6 +123,11 @@ async function shotColours(page) {
   check(l1.enemies.join() === 'cutter,cutter', `level 1 opens with corsair cutters (${l1.enemies})`);
   check(l1.colliders > 3, `level 1 has land to steer around (${l1.colliders} colliders)`);
   check(await page.isVisible('.hud-top'), 'HUD is visible');
+  check((await g(page, 'state.sail')) === 2, 'the voyage starts at cruising speed');
+  // On a fresh profile, level 1 shows control hints once the fly-in is over.
+  await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
+  await page.waitForFunction(() => !document.getElementById('hint').classList.contains('hidden'), null, { timeout: 60000 }).catch(() => {});
+  check(/Steer/i.test(await page.textContent('#hint')), `first-voyage hint is shown ("${(await page.textContent('#hint')).trim()}")`);
   await page.screenshot({ path: path.join(OUT, '2a-europe-intro.png') });
   await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
   await page.screenshot({ path: path.join(OUT, '2-europe.png') });
@@ -190,6 +197,35 @@ async function shotColours(page) {
     check(res > 0, `broadside hits an enemy ${dist} units away (${res} damage)`);
   }
 
+  // ---- Feedback: the starboard gun lights up when a pirate is in its arc, and hits pop a marker.
+  const feedback = await page.evaluate(() => {
+    const G = window.__game;
+    const p = G.player;
+    p.x = 0; p.z = 0; p.h = 0; p.speed = 0; p.reload.star = 0;
+    G.colliders.forEach((c) => (c.x += 5000));
+    G.enemies.forEach((o, k) => { o.x = 60 + k * 20; o.z = 60; });
+    const e = G.enemies[0];
+    e.x = -18; e.z = 0; e.h = 0; e.speed = 0; e.hp = e.maxHp; e.sinking = 0;
+    return { inArc: G.inArc(p, e, 1), wrongSide: G.inArc(p, e, -1) };
+  });
+  await page.evaluate(() => { window.__game.state.mode = 'playing'; });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const gunLit = await page.evaluate(() => document.getElementById('gun-star').classList.contains('target'));
+  await freeze(page);
+  check(feedback.inArc && !feedback.wrongSide && gunLit, 'the starboard gun lights up when a pirate is in its firing arc');
+  await page.evaluate(() => {
+    const G = window.__game;
+    const p = G.player;
+    const e = G.enemies[0];
+    G.state.mode = 'playing';
+    G.playerFire(1);
+    for (let i = 0; i < 240; i++) { e.x = -18; e.z = 0; e.speed = 0; p.speed = 0; p.x = 0; p.z = 0; G.step(1 / 120); }
+    G.colliders.forEach((c) => (c.x -= 5000));
+    G.state.mode = 'paused';
+  });
+  const mark = await page.evaluate(() => ({ text: document.getElementById('hitmark').textContent, cls: document.getElementById('hitmark').className }));
+  check(/HIT|SUNK/.test(mark.text) && /pop/.test(mark.cls) && /right/.test(mark.cls), `a hit pops a marker on the firing side ("${mark.text}", ${mark.cls})`);
+
   // ---- Sinking drops gold; collecting it adds to the total.
   const loot = await page.evaluate(() => {
     const G = window.__game;
@@ -211,6 +247,14 @@ async function shotColours(page) {
   const wave2 = await page.evaluate(() => ({ wave: window.__game.state.wave, ships: window.__game.enemies.filter((e) => e.hp > 0).map((e) => e.typeName) }));
   check(wave2.wave === 1 && wave2.ships.includes('privateer'), `second wave sails in (${wave2.ships})`);
   await sinkAll(page);
+  await page.evaluate(() => {
+    const G = window.__game;
+    G.state.mode = 'playing';
+    for (let i = 0; i < 12; i++) G.step(1 / 120); // let the clear timer start
+    G.damage(G.player, 9999); // a late enemy shot
+    G.state.mode = 'paused';
+  });
+  check((await g(page, 'player.hp')) > 0, 'a late shot cannot sink you once the level is won');
   check((await simulate(page, 8)) === 'levelDone', 'sinking the last wave clears the level');
   check(await page.isVisible('#level-screen'), 'level-cleared screen is shown');
   check(/Bali/.test(await page.textContent('#next-btn')), 'next button names the next destination');
@@ -261,6 +305,20 @@ async function shotColours(page) {
   check((await g(page, 'player.z')) === pz, 'world is frozen while paused');
   await page.keyboard.press('Escape');
   check((await g(page, 'state.mode')) === 'playing', 'Escape resumes');
+  await page.keyboard.down('p');
+  await page.evaluate(() => {
+    // Simulate key auto-repeat while P is held.
+    for (let i = 0; i < 5; i++) window.dispatchEvent(new KeyboardEvent('keydown', { key: 'p', repeat: true }));
+  });
+  await page.keyboard.up('p');
+  check((await g(page, 'state.mode')) === 'paused', 'holding P pauses once instead of flickering');
+  await page.keyboard.press('p');
+  const muted0 = await page.evaluate(() => window.__game.audio.muted);
+  await page.keyboard.press('m');
+  const muted1 = await page.evaluate(() => ({ m: window.__game.audio.muted, stored: localStorage.getItem('pirates-ahoy-muted'), btn: document.getElementById('mute-btn').classList.contains('muted') }));
+  check(muted1.m === !muted0 && muted1.btn, `M toggles sound and the mute button (${JSON.stringify(muted1)})`);
+  await page.keyboard.press('m');
+  check(await page.evaluate(() => { try { const G = window.__game; for (const n of ['cannon', 'splash', 'hit', 'coin', 'bombBoom']) G.audio.play(n, { distance: 10, pan: 0.5 }); G.audio.play('bombWhistle').stop(); return true; } catch (e) { return String(e); } }), 'sound effects play without errors');
   await page.click('#pause-btn');
   await page.click('#resume-btn');
   await page.keyboard.press('Space');
@@ -278,7 +336,8 @@ async function shotColours(page) {
     const e = G.enemies[0];
     e.x = 18; e.z = 0; e.h = 0; e.speed = 0;
     G.state.mode = 'playing';
-    G.state.time = 10;
+    G.state.intro = 0;
+    G.state.combatTime = 10; // past the start-of-level grace period
     for (let i = 0; i < 120 * 12 && p.hp === p.maxHp; i++) G.step(1 / 120);
     G.colliders.forEach((c) => (c.x -= 5000));
     G.reefs.forEach((r) => (r.x -= 5000));
@@ -297,6 +356,7 @@ async function shotColours(page) {
   check(await page.isVisible('#over-screen'), 'game-over screen shown');
   await page.keyboard.press('Enter');
   check((await g(page, 'state.level')) === 2 && (await g(page, 'state.mode')) === 'playing', 'Enter retries the same level');
+  check((await g(page, 'state.intro')) === 0, 'retrying skips the camera fly-in');
   check((await g(page, 'state.gold')) === goldAtStart, 'retry restores gold from the start of the level');
 
   // ---- Level 3: the volcano, lava bombs and the boss.
@@ -457,6 +517,12 @@ async function shotColours(page) {
   await page.evaluate(() => window.__game.showMenu());
   const unlockedCards = await page.$$eval('.level-card', (els) => els.filter((e) => !e.disabled).length);
   check(unlockedCards === 3, 'all levels unlocked on the menu after winning');
+  // Keyboard users: Enter on a focused level card starts that level (not the default level 1).
+  await page.focus('.level-card.lvl-3');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => window.__game.state.mode === 'playing', null, { timeout: 60000 }).catch(() => {});
+  check((await g(page, 'state.level')) === 3, 'Enter on a focused level card starts that level');
+  await page.evaluate(() => window.__game.showMenu());
   check(!(await page.isVisible('#touch')), 'desktop: touch controls hidden');
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
