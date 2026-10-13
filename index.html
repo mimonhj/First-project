@@ -119,9 +119,9 @@
     </div>
   </div>
 
-  <div id="pause-screen" class="overlay hidden">
+  <div id="pause-screen" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pause-title">
     <div class="panel">
-      <h2>Paused</h2>
+      <h2 id="pause-title">Paused</h2>
       <button id="resume-btn" class="btn" type="button">Resume</button>
       <ul class="controls">
         <li><kbd>A</kbd><kbd>D</kbd> steer</li>
@@ -135,6 +135,15 @@
         <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot sideways</li>
       </ul>
       <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
+    </div>
+  </div>
+
+  <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues. -->
+  <div id="recover-screen" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="recover-title" aria-describedby="recover-msg">
+    <div class="panel" tabindex="-1">
+      <h2 id="recover-title">Graphics paused</h2>
+      <p id="recover-msg" role="status" aria-live="polite">Waiting for the graphics to come back&hellip;</p>
+      <button id="recover-btn" class="btn hidden" type="button">Continue</button>
     </div>
   </div>
 

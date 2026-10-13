@@ -151,6 +151,10 @@ const ui = {
   wonBest: $('won-best'),
   best: $('best'),
   error: $('error-screen'),
+  recover: $('recover-screen'),
+  recoverTitle: $('recover-title'),
+  recoverMsg: $('recover-msg'),
+  recoverBtn: $('recover-btn'),
 };
 const mm = ui.minimap.getContext ? ui.minimap.getContext('2d') : null;
 
@@ -169,12 +173,26 @@ function retrigger(el, cls) {
   el.classList.add(cls);
 }
 
-function loadNumber(key) {
+// Saved records are plain decimal integers in [min, max]. Anything else (missing, garbage, NaN,
+// Infinity, negative, fractional, absurdly large) falls back to `fallback`; integers outside the
+// range are clamped (e.g. progress saved by a version with more levels). Bad records are rewritten.
+const MAX_GOLD = 1_000_000;
+function loadInt(key, min, max, fallback) {
+  let raw;
   try {
-    return Number(localStorage.getItem(key)) || 0;
+    raw = localStorage.getItem(key);
   } catch {
-    return 0;
+    return fallback; // storage blocked
   }
+  if (raw === null) return fallback;
+  const text = raw.trim();
+  let value = fallback;
+  if (/^-?\d{1,16}$/.test(text)) {
+    const n = Number(text);
+    if (Number.isSafeInteger(n)) value = clamp(n, min, max);
+  }
+  if (String(value) !== raw) saveNumber(key, value);
+  return value;
 }
 
 function saveNumber(key, v) {
@@ -357,9 +375,9 @@ const state = {
   gold: 0,
   goldAtLevelStart: 0,
   sunk: 0, // ships sunk this level
-  best: loadNumber(BEST_KEY),
-  unlocked: Math.max(1, loadNumber(PROGRESS_KEY)),
-  tutorialDone: loadNumber(TUTOR_KEY) > 0,
+  best: loadInt(BEST_KEY, 0, MAX_GOLD, 0),
+  unlocked: loadInt(PROGRESS_KEY, 1, LEVELS.length, 1),
+  tutorialDone: loadInt(TUTOR_KEY, 0, 1, 0) === 1,
   time: 0, // simulated seconds since level start
   combatTime: 0, // simulated seconds since the fly-in ended
   sail: 2,
@@ -370,6 +388,7 @@ const state = {
   bombWarned: false,
   shake: 0,
   bannerTimer: 0,
+  contextLost: false, // the WebGL context is gone (see onContextLost)
   intro: 0, // seconds left of the level fly-in
   introRate: 1, // > 1 while the player skips the fly-in
   hurtBy: {}, // damage the player took this level, by source
@@ -792,6 +811,7 @@ function controlsLine() {
 }
 
 function startLevel(n, { retry = false } = {}) {
+  if (activeModal() && !state.contextLost) closeModal(modal);
   clearLevelEntities();
   if (menuShipMesh) {
     disposeShip(menuShipMesh);
@@ -815,7 +835,7 @@ function startLevel(n, { retry = false } = {}) {
   state.hint = { step: 0, t: 0, offBeam: 0, hits: 0, text: '' };
   if (!retry) state.bombWarned = false;
   state.goldAtLevelStart = state.gold;
-  input.left = input.right = false;
+  clearSteering();
 
   loadEnvironment(n);
   const def = LEVELS[n - 1];
@@ -1670,19 +1690,150 @@ function changeSail(d) {
   if (state.sail !== before) audio.play(d > 0 ? 'sailUp' : 'sailDown');
 }
 
-function togglePause() {
-  if (state.mode === 'playing') {
-    state.mode = 'paused';
-    input.left = input.right = false;
-    audio.stopAll(0.2);
-    audio.setMusicVolume(0.35);
-    show(ui.pause, true);
-  } else if (state.mode === 'paused') {
-    state.mode = 'playing';
-    show(ui.pause, false);
-    audio.setMusicVolume(1);
+// ---------------------------------------------------------------------------
+// Steering: each direction stays on while ANY of its sources is held (each key,
+// each touch pointer, a keyboard-held on-screen button), so releasing one binding
+// never cancels another. `input.left/right` stay plain booleans for the bot/tests.
+// ---------------------------------------------------------------------------
+const steerSources = { left: new Set(), right: new Set() };
+const holdButtons = [...document.querySelectorAll('[data-hold]')];
+
+function steerPress(dir, source) {
+  steerSources[dir].add(source);
+  input[dir] = true;
+  syncHoldButtons();
+}
+function steerRelease(dir, source) {
+  steerSources[dir].delete(source);
+  input[dir] = steerSources[dir].size > 0;
+  syncHoldButtons();
+}
+function clearSteering() {
+  steerSources.left.clear();
+  steerSources.right.clear();
+  input.left = input.right = false;
+  syncHoldButtons();
+}
+// An on-screen steering button looks pressed while one of its own sources is active.
+function syncHoldButtons() {
+  for (const btn of holdButtons) {
+    const dir = btn.dataset.hold;
+    const pressed = [...steerSources[dir]].some((src) => src.startsWith('btn:'));
+    btn.classList.toggle('active', pressed);
   }
 }
+
+// ---------------------------------------------------------------------------
+// Modal dialogs (pause, graphics recovery): focus moves into the dialog, the HUD
+// behind it is inert, Tab cycles inside it, and focus returns to the game on close.
+// ---------------------------------------------------------------------------
+let modal = null;
+// The open dialog, if it is still showing (a level change or menu may have hidden it).
+function activeModal() {
+  if (modal && modal.classList.contains('hidden')) {
+    modal = null;
+    ui.hud.inert = false;
+  }
+  return modal;
+}
+function focusables(el) {
+  return [...el.querySelectorAll('button, [href], [tabindex]:not([tabindex="-1"])')].filter(
+    (b) => !b.disabled && b.offsetParent !== null
+  );
+}
+function focusInto(el) {
+  const target = focusables(el)[0] || el.querySelector('[tabindex="-1"]') || el;
+  if (target.focus) target.focus({ preventScroll: true });
+}
+function openModal(el) {
+  show(el, true);
+  modal = el;
+  ui.hud.inert = true;
+  focusInto(el);
+}
+function closeModal(el) {
+  show(el, false);
+  if (modal === el) modal = null;
+  if (!modal) ui.hud.inert = false;
+  // Back to the page itself, so game keys work at once (Space fires, not a stale button).
+  if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
+    document.activeElement.blur();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Pause
+// ---------------------------------------------------------------------------
+function pauseGame() {
+  state.mode = 'paused';
+  clearSteering();
+  audio.stopAll(0.2);
+  audio.setMusicVolume(0.35);
+}
+function resumeGame() {
+  state.mode = 'playing';
+  audio.setMusicVolume(1);
+}
+
+function togglePause() {
+  // While the graphics are being recovered, that dialog decides when play continues.
+  if (activeModal() === ui.recover) {
+    if (!state.contextLost) continueAfterRecovery();
+    return;
+  }
+  if (state.mode === 'playing') {
+    pauseGame();
+    openModal(ui.pause);
+  } else if (state.mode === 'paused') {
+    closeModal(ui.pause);
+    resumeGame();
+  }
+}
+
+// ---------------------------------------------------------------------------
+// WebGL context loss: the 3D view is gone (driver reset, GPU memory pressure, too
+// many tabs). Stop the fight so nothing can hit you while you can't see, say so,
+// and only carry on when the player says so after the graphics come back.
+// ---------------------------------------------------------------------------
+const recovery = { resume: false, pauseWasOpen: false };
+function onContextLost() {
+  state.contextLost = true;
+  pausedDrawn = false;
+  clearSteering();
+  recovery.pauseWasOpen = activeModal() === ui.pause;
+  recovery.resume = state.mode === 'playing';
+  if (recovery.resume) pauseGame();
+  if (recovery.pauseWasOpen) closeModal(ui.pause);
+  ui.recoverTitle.textContent = 'Graphics paused';
+  ui.recoverMsg.textContent =
+    'Your device reset the 3D graphics. The voyage is paused and your progress is safe. Waiting for the graphics to come back…';
+  show(ui.recoverBtn, false);
+  openModal(ui.recover);
+}
+function onContextRestored() {
+  state.contextLost = false;
+  pausedDrawn = false;
+  resize();
+  if (recovery.resume) {
+    // The player was mid-fight: wait for them to choose to continue.
+    ui.recoverTitle.textContent = 'Graphics restored';
+    ui.recoverMsg.textContent = 'The view is back. Your ship is waiting right where you left it.';
+    show(ui.recoverBtn, true);
+    focusInto(ui.recover);
+  } else {
+    closeModal(ui.recover);
+    if (recovery.pauseWasOpen) openModal(ui.pause); // it was paused before: stay paused
+  }
+}
+function continueAfterRecovery() {
+  if (state.contextLost) return;
+  closeModal(ui.recover);
+  if (recovery.resume && state.mode === 'paused') resumeGame();
+  recovery.resume = false;
+}
+ui.canvas.addEventListener('webglcontextlost', onContextLost);
+ui.canvas.addEventListener('webglcontextrestored', onContextRestored);
+ui.recoverBtn.addEventListener('click', continueAfterRecovery);
 
 // Any input during the fly-in fast-forwards it to the chase camera.
 function skipIntro() {
@@ -1696,11 +1847,25 @@ const KEYMAP = {
 
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
-  // Outside play, a focused button handles Enter/Space itself (keyboard users picking a level or menu item).
+  // Keep keyboard focus inside an open dialog.
+  const open = activeModal();
+  if (k === 'tab' && open) {
+    e.preventDefault();
+    const list = focusables(open);
+    if (!list.length) {
+      focusInto(open);
+      return;
+    }
+    const i = list.indexOf(document.activeElement);
+    const next = e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i + 1) % list.length;
+    list[next].focus();
+    return;
+  }
+  // Outside play (menus, dialogs), a focused button handles Enter/Space itself.
   const focused = document.activeElement;
   if (
     (k === 'enter' || k === ' ') &&
-    state.mode !== 'playing' &&
+    (state.mode !== 'playing' || open) &&
     focused instanceof HTMLButtonElement &&
     !focused.disabled &&
     focused.offsetParent
@@ -1710,7 +1875,7 @@ window.addEventListener('keydown', (e) => {
   if (['arrowleft', 'arrowright', 'arrowup', 'arrowdown', ' '].includes(k)) e.preventDefault();
 
   if (k === 'enter' || (k === ' ' && state.mode === 'menu')) {
-    if (e.repeat) return;
+    if (e.repeat || open) return;
     if (state.mode === 'menu') newGame();
     else if (state.mode === 'won') showMenu();
     else if (state.mode === 'levelDone') nextLevel();
@@ -1728,7 +1893,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (state.mode !== 'playing') return;
   skipIntro();
-  if (KEYMAP[k]) input[KEYMAP[k]] = true;
+  if (KEYMAP[k]) steerPress(KEYMAP[k], `key:${k}`);
   else if (!e.repeat && (k === 'w' || k === 'arrowup')) changeSail(1);
   else if (!e.repeat && (k === 's' || k === 'arrowdown')) changeSail(-1);
   // Holding a fire key keeps firing whenever the guns reload.
@@ -1742,16 +1907,15 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
   const k = e.key.toLowerCase();
-  if (KEYMAP[k]) input[KEYMAP[k]] = false;
+  if (KEYMAP[k]) steerRelease(KEYMAP[k], `key:${k}`);
 });
 
-// Releasing keys while the window is unfocused would otherwise leave the ship turning forever.
-window.addEventListener('blur', () => {
-  input.left = input.right = false;
-});
+// Keys released while the window is unfocused never send keyup: forget everything held.
+window.addEventListener('blur', clearSteering);
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
+    clearSteering();
     if (state.mode === 'playing') togglePause();
   } else {
     resetPerfWindow(1);
@@ -1760,25 +1924,57 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-// Touch buttons.
-for (const btn of document.querySelectorAll('[data-hold]')) {
-  const key = btn.dataset.hold;
-  const on = (e) => {
-    e.preventDefault();
+// On-screen steering buttons: held by touch/mouse (pointer capture, so sliding off
+// still releases them), by Enter/Space while focused, or nudged by a plain click
+// (assistive technology, scripted clicks).
+for (const btn of holdButtons) {
+  const dir = btn.dataset.hold;
+  const press = (src) => {
     if (state.mode !== 'playing') return;
     skipIntro();
-    input[key] = true;
-    btn.classList.add('active');
+    steerPress(dir, src);
   };
-  const off = () => {
-    input[key] = false;
-    btn.classList.remove('active');
+  let pointerUpAt = -Infinity;
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault();
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic events have no capturable pointer; release still works.
+    }
+    press(`btn:ptr${e.pointerId}`);
+  });
+  const releasePointer = (e) => {
+    pointerUpAt = performance.now();
+    steerRelease(dir, `btn:ptr${e.pointerId}`);
   };
-  btn.addEventListener('pointerdown', on);
-  btn.addEventListener('pointerup', off);
-  btn.addEventListener('pointercancel', off);
-  btn.addEventListener('pointerleave', off);
+  btn.addEventListener('pointerup', releasePointer);
+  btn.addEventListener('pointercancel', releasePointer);
+  btn.addEventListener('lostpointercapture', releasePointer);
+  btn.addEventListener('keydown', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault(); // no synthetic click on top of the hold
+    e.stopPropagation(); // and not the global Enter/Space shortcuts
+    if (!e.repeat) press('btn:key');
+  });
+  btn.addEventListener('keyup', (e) => {
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.preventDefault();
+    e.stopPropagation();
+    steerRelease(dir, 'btn:key');
+  });
+  btn.addEventListener('blur', () => steerRelease(dir, 'btn:key'));
+  btn.addEventListener('click', () => {
+    if (performance.now() - pointerUpAt < 600) return; // the click that ends a tap/hold: already handled
+    press('btn:click');
+    setTimeout(() => steerRelease(dir, 'btn:click'), 350);
+  });
 }
+
+// On-screen sail and fire buttons. A tap acts on touch-down (no click delay in a
+// fight) and the click that follows its release is skipped, so one tap = one action.
+// Keyboard, assistive technology and scripted clicks arrive as plain clicks and act.
+// (Click `detail` can't tell them apart: Chrome reports 0 for some tap clicks too.)
 const TAP_ACTIONS = {
   sailUp: () => changeSail(1),
   sailDown: () => changeSail(-1),
@@ -1786,10 +1982,34 @@ const TAP_ACTIONS = {
   fireStar: () => playerFire(1),
 };
 for (const btn of document.querySelectorAll('[data-tap]')) {
-  btn.addEventListener('pointerdown', (e) => {
-    e.preventDefault();
+  const act = () => {
     skipIntro();
     TAP_ACTIONS[btn.dataset.tap]();
+  };
+  let pointerActed = false;
+  let pointerUpAt = -Infinity;
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); // keep focus and selection where they are
+    pointerActed = true;
+    act();
+  });
+  btn.addEventListener('pointerup', () => {
+    pointerUpAt = performance.now();
+  });
+  btn.addEventListener('pointercancel', () => {
+    pointerActed = false; // no click will follow
+  });
+  btn.addEventListener('click', () => {
+    if (pointerActed && performance.now() - pointerUpAt < 600) {
+      pointerActed = false; // this tap's own click
+      return;
+    }
+    pointerActed = false;
+    act();
+  });
+  // Enter/Space on a focused button activate it (native click), not the global shortcuts.
+  btn.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
   });
 }
 
@@ -1801,9 +2021,10 @@ $('menu-btn').addEventListener('click', showMenu);
 $('again-btn').addEventListener('click', showMenu);
 for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
   btn.addEventListener('click', (e) => {
-    if (e.currentTarget === ui.muteBtn || e.currentTarget === ui.menuMute) toggleMute();
+    const target = e.currentTarget;
+    target.blur(); // so Space doesn't re-press the button
+    if (target === ui.muteBtn || target === ui.menuMute) toggleMute();
     else togglePause();
-    e.currentTarget.blur(); // so Space doesn't re-press the button
   });
 }
 
@@ -1829,6 +2050,7 @@ function renderLevelCards() {
 }
 
 function showMenu() {
+  if (activeModal() && !state.contextLost) closeModal(modal);
   blurActive();
   clearLevelEntities();
   for (const el of [ui.pause, ui.levelDone, ui.over, ui.won, ui.hud, ui.banner, ui.boss, ui.hint]) show(el, false);
@@ -2179,6 +2401,7 @@ function updateCamera(dt, paused) {
 function frame() {
   requestAnimationFrame(frame);
   const rawDt = clock.getDelta();
+  if (state.contextLost) return; // nothing can be drawn; the game is paused (see onContextLost)
   trackPerformance(rawDt);
   const dt = Math.min(rawDt, MAX_FRAME_DT);
   audio.update(dt);

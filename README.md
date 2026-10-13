@@ -66,20 +66,52 @@ when you haven't been hit for a few seconds.
 
 ## Tests
 
-`tests/smoke.cjs` serves the game and drives it in headless Chromium with Playwright. It checks:
+Three suites run in headless Chromium with Playwright (`npm test` runs them all, in this order):
 
-- rendering, the level-select screen, sails, steering and broadsides
-- hits at different ranges, loot, waves and hull repair
-- reefs, lava bombs, the boss and its health bar
-- level unlocking, game over, retrying and winning
-- that every level spawns ships in open water and keeps draw calls reasonable
-- the touch controls
-- keyboard focus, pause/mute keys, hit and aim feedback, first-voyage hints, adaptive resolution
-- a bot captain playing all three levels with simulated controls, to show every level can be won
+- `tests/server.test.cjs` (`npm run test:server`): the small static server the browser tests use.
+  It only listens on 127.0.0.1, answers malformed URLs with 400 and never serves files outside
+  the project (including `../` tricks, similarly named sibling folders and symlinks). Throwaway
+  temp folders only.
+- `tests/smoke.cjs` (`npm run test:smoke`): the whole game.
+  - rendering, the level-select screen, sails, steering and broadsides
+  - hits at different ranges, loot, waves and hull repair
+  - reefs, lava bombs, the boss and its health bar
+  - level unlocking, game over, retrying and winning
+  - that every level spawns ships in open water and keeps draw calls reasonable
+  - touch controls, keyboard focus, pause/mute keys, hit and aim feedback, first-voyage hints,
+    adaptive resolution
+  - sound calls that must succeed (a failing call is reported, not hidden), plus short offline
+    renders that must produce finite, non-silent stereo audio
+  - a bot captain playing all three levels with simulated controls, to show every level can be won
+- `tests/controls.cjs` (`npm run test:controls`): focused regressions.
+  - small-screen layouts (320x480 to desktop) keep every HUD control on screen and the hint readable
+  - small text on the parchment cards has at least 4.5:1 contrast
+  - the touch sail and fire buttons work by tap (exactly once), Enter, Space and native click
+  - steering: overlapping keys, keyboard-held and touch-held buttons, blur and pause release
+  - the pause dialog keeps keyboard focus inside and hands it back to the game
+  - saved best score, progress and tutorial records are validated (Infinity, negative, garbage...)
+  - losing the WebGL context pauses the fight and waits for the player when the view comes back
+    (uses the browser's `WEBGL_lose_context`; reported as skipped if it isn't available)
+
+### Setting up the tests
+
+You need Node.js 18 or newer (developed with Node 22.22.0) and a Chromium build for Playwright:
 
 ```sh
-npm install
+npm install                          # http-server and Playwright (see package.json)
+npx playwright install chromium      # downloads the browser Playwright drives
 npm test
 ```
 
-Screenshots from the run are written to `tests/screenshots/`.
+On Linux, Chromium also needs some system libraries. If the browser fails to launch with a
+missing-library error, install them with `npx playwright install-deps chromium` (needs root),
+or use `npx playwright install --with-deps chromium` instead of the second step.
+
+The tests render with software WebGL (SwiftShader), which is slow: a full run takes several
+minutes, and a single frame of the 3D scene can take seconds. Screenshots therefore get a
+120-second timeout (instead of Playwright's 30-second default); they are saved to
+`tests/screenshots/` (set `SCREENSHOT_DIR` to put them elsewhere).
+
+Versions used for the runs recorded in this repository: Node 22.22.0, Playwright 1.56.1 with its
+Chromium build 1194 (Chrome 141), http-server 14.1.1. There is no lockfile, so `npm install`
+resolves the newest versions within the ranges in `package.json`.

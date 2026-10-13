@@ -3,9 +3,15 @@
   "version": "1.0.0",
   "private": true,
   "description": "A cartoon 3D pirate adventure for the browser, built with three.js",
+  "engines": {
+    "node": ">=18"
+  },
   "scripts": {
     "start": "npx http-server -p 8080 -c-1 .",
-    "test": "node tests/smoke.cjs"
+    "test": "node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs",
+    "test:server": "node tests/server.test.cjs",
+    "test:smoke": "node tests/smoke.cjs",
+    "test:controls": "node tests/controls.cjs"
   },
   "devDependencies": {
     "http-server": "^14.1.1",

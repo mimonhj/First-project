@@ -1,36 +1,30 @@
 // End-to-end test: serves the game, drives it in headless Chromium and checks
 // rendering, controls, combat, waves, hazards, level flow and that every level is winnable.
 // Run with `npm test` (needs the `playwright` package and a Chromium build).
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
 
 const ROOT = path.join(__dirname, '..');
 const OUT = process.env.SCREENSHOT_DIR || path.join(ROOT, 'tests', 'screenshots');
-const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css' };
-
-function serve() {
-  const server = http.createServer((req, res) => {
-    const url = decodeURIComponent(req.url.split('?')[0]);
-    const file = path.join(ROOT, url === '/' ? 'index.html' : url);
-    if (!file.startsWith(ROOT) || !fs.existsSync(file) || fs.statSync(file).isDirectory()) {
-      res.writeHead(404).end('not found');
-      return;
-    }
-    res.writeHead(200, { 'Content-Type': TYPES[path.extname(file)] || 'application/octet-stream' });
-    fs.createReadStream(file).pipe(res);
-  });
-  return new Promise((resolve) => server.listen(0, () => resolve(server)));
-}
+const { serve } = require('./server.cjs');
 
 let failures = 0;
 function check(cond, msg) {
   console.log(`${cond ? 'PASS' : 'FAIL'}  ${msg}`);
   if (!cond) failures++;
 }
+// For page probes that report success as exactly `true` (anything else, e.g. an error message, fails).
+function checkTrue(result, msg) {
+  check(result === true, result === true ? msg : `${msg}: ${result}`);
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// Screenshots are diagnostic artifacts. In software WebGL (SwiftShader) a single frame of the
+// full scene can take seconds, and a screenshot waits for a fresh frame, so Playwright's default
+// 30 s action timeout was hit on slow CI machines. Allow 120 s; a real hang still fails the run.
+const SCREENSHOT_TIMEOUT = 120000;
+const snap = (page, name) => page.screenshot({ path: path.join(OUT, name), timeout: SCREENSHOT_TIMEOUT });
 const g = (page, expr) => page.evaluate(`window.__game.${expr}`);
 
 // Freeze the real-time loop so the test can drive the simulation deterministically.
@@ -39,6 +33,7 @@ const freeze = (page) => page.evaluate(() => {
   const G = window.__game;
   if (G.state.mode === 'playing') G.togglePause();
   document.getElementById('pause-screen').classList.add('hidden');
+  document.getElementById('hud').inert = false;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 });
 // Step the simulation `seconds` while the page is frozen.
@@ -62,7 +57,7 @@ const simTime = (page) => page.evaluate(() => window.__game.state.time);
 const sinkAll = (page) => page.evaluate(() => window.__game.enemies.forEach((e) => window.__game.damage(e, 9999)));
 
 async function shotColours(page) {
-  const shot = (await page.screenshot()).toString('base64');
+  const shot = (await page.screenshot({ timeout: SCREENSHOT_TIMEOUT })).toString('base64');
   return page.evaluate(async (b64) => {
     const img = new Image();
     img.src = 'data:image/png;base64,' + b64;
@@ -80,8 +75,8 @@ async function shotColours(page) {
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
-  const server = await serve();
-  const url = `http://localhost:${server.address().port}/`;
+  const server = await serve(ROOT);
+  const url = `http://127.0.0.1:${server.address().port}/`;
   const browser = await chromium.launch({
     args: ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'],
   });
@@ -96,7 +91,7 @@ async function shotColours(page) {
   await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 120000 });
   await page.waitForFunction(() => window.__game && window.__game.env, null, { timeout: 120000 });
   await sleep(1500);
-  await page.screenshot({ path: path.join(OUT, '1-menu.png') });
+  await snap(page, '1-menu.png');
   check(await page.isVisible('#menu-screen'), 'title screen is shown');
   check((await g(page, 'state.mode')) === 'menu', 'game starts in menu mode');
 
@@ -131,9 +126,9 @@ async function shotColours(page) {
   await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
   await page.waitForFunction(() => !document.getElementById('hint').classList.contains('hidden'), null, { timeout: 60000 }).catch(() => {});
   check(/Steer/i.test(await page.textContent('#hint')), `first-voyage hint is shown ("${(await page.textContent('#hint')).trim()}")`);
-  await page.screenshot({ path: path.join(OUT, '2a-europe-intro.png') });
+  await snap(page, '2a-europe-intro.png');
   await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
-  await page.screenshot({ path: path.join(OUT, '2-europe.png') });
+  await snap(page, '2-europe.png');
 
   // ---- Sails and steering.
   await page.keyboard.press('w');
@@ -261,7 +256,7 @@ async function shotColours(page) {
   check((await simulate(page, 8)) === 'levelDone', 'sinking the last wave clears the level');
   check(await page.isVisible('#level-screen'), 'level-cleared screen is shown');
   check(/Bali/.test(await page.textContent('#next-btn')), 'next button names the next destination');
-  await page.screenshot({ path: path.join(OUT, '3-level-cleared.png') });
+  await snap(page, '3-level-cleared.png');
   check(Number(await page.evaluate(() => localStorage.getItem('pirates-ahoy-unlocked'))) === 2, 'level 2 is unlocked and saved');
 
   // ---- Level 2: Bali.
@@ -272,7 +267,7 @@ async function shotColours(page) {
   check(l2.reefs > 0, `Bali has coral reefs (${l2.reefs})`);
   check(l2.hp === 120, 'hull is repaired between levels');
   await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
-  await page.screenshot({ path: path.join(OUT, '4-bali.png') });
+  await snap(page, '4-bali.png');
 
   // Reefs slow deep hulls but not the shallow-draft prahus.
   await freeze(page);
@@ -322,7 +317,35 @@ async function shotColours(page) {
   const muted1 = await page.evaluate(() => ({ m: window.__game.audio.muted, stored: localStorage.getItem('pirates-ahoy-muted'), btn: document.getElementById('mute-btn').classList.contains('muted') }));
   check(muted1.m === !muted0 && muted1.btn, `M toggles sound and the mute button (${JSON.stringify(muted1)})`);
   await page.keyboard.press('m');
-  check(await page.evaluate(() => { try { const G = window.__game; for (const n of ['cannon', 'splash', 'hit', 'coin', 'bombBoom']) G.audio.play(n, { distance: 10, pan: 0.5 }); G.audio.play('bombWhistle').stop(); return true; } catch (e) { return String(e); } }), 'sound effects play without errors');
+  // Sound: every call must succeed; the probe returns exactly `true` or the error message.
+  const audioProbe = (simulateFailure) => {
+    const G = window.__game;
+    const audio = simulateFailure ? { play() { throw new Error('simulated audio failure'); } } : G.audio;
+    try {
+      for (const n of ['cannon', 'splash', 'hit', 'coin', 'bombBoom']) audio.play(n, { distance: 10, pan: 0.5 });
+      audio.play('bombWhistle').stop();
+      return true;
+    } catch (e) {
+      return String(e);
+    }
+  };
+  checkTrue(await page.evaluate(audioProbe, false), 'sound effects play without errors');
+  // Regression: the same probe with a failing audio module must not count as a pass.
+  const simulated = await page.evaluate(audioProbe, true);
+  check(simulated !== true && /simulated audio failure/.test(simulated), `a failing sound call is reported as a failure ("${simulated}")`);
+  // Short offline renders: finite, non-silent stereo waveforms (not a judgement of how it sounds).
+  const wave = await page.evaluate(async () => {
+    const { __audioTest } = await import('/src/audio.js');
+    const out = {};
+    for (const sfx of ['cannon', 'splash', 'coin']) {
+      const r = await __audioTest.renderOffline({ sfx, seconds: 1, music: false, ambience: false });
+      let peak = 0, finite = true;
+      for (const ch of r.channels) for (const v of ch) { if (!Number.isFinite(v)) finite = false; peak = Math.max(peak, Math.abs(v)); }
+      out[sfx] = { finite, peak: +peak.toFixed(3), channels: r.channels.length };
+    }
+    return out;
+  });
+  check(Object.values(wave).every((w) => w.finite && w.peak > 0.01 && w.peak <= 1 && w.channels === 2), `offline-rendered sounds are finite, stereo and not silent (${JSON.stringify(wave)})`);
   await page.click('#pause-btn');
   await page.click('#resume-btn');
   await page.keyboard.press('Space');
@@ -369,9 +392,9 @@ async function shotColours(page) {
   check(/Volcano/i.test(l3.name) && l3.volcano && l3.volcano.craterY > 10, `level 3 is the volcano (${l3.name}, crater at ${l3.volcano && Math.round(l3.volcano.craterY)})`);
   check(!l3.enemies.includes('inferno'), `the boss waits for the second wave (${l3.enemies})`);
   await waitSim(page, 1.2);
-  await page.screenshot({ path: path.join(OUT, '5a-volcano-intro.png') });
+  await snap(page, '5a-volcano-intro.png');
   await page.waitForFunction(() => window.__game.state.intro === 0, null, { timeout: 120000 });
-  await page.screenshot({ path: path.join(OUT, '5-volcano.png') });
+  await snap(page, '5-volcano.png');
 
   await freeze(page);
   const bomb = await page.evaluate(() => {
@@ -410,7 +433,7 @@ async function shotColours(page) {
   });
   await page.waitForSelector('#boss', { state: 'visible', timeout: 60000 }).catch(() => {});
   check(await page.isVisible('#boss'), 'boss health bar is shown');
-  await page.screenshot({ path: path.join(OUT, '6-boss.png') });
+  await snap(page, '6-boss.png');
   await freeze(page);
   await sinkAll(page);
   check((await simulate(page, 8)) === 'won', 'sinking the boss fleet wins the game');
@@ -557,7 +580,7 @@ async function shotColours(page) {
   const mTurn = ((((mh2 - mh + Math.PI) % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI)) - Math.PI;
   check(mTurn > 0.05 && !(await g(mobile, 'input.left')), `mobile: holding the turn button steers (${mTurn.toFixed(2)} rad)`);
   await sleep(1500);
-  await mobile.screenshot({ path: path.join(OUT, '7-mobile.png') });
+  await snap(mobile, '7-mobile.png');
 
   await page.setViewportSize({ width: 800, height: 900 });
   await page.waitForFunction(() => window.innerWidth === 800, null, { timeout: 60000 });
