@@ -3,6 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
 import { toon, mergeStatic, ensureIndex } from './style.js';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
+import { findLook, maxTier } from './upgrades.js';
 
 // Cartoon ship models.
 //
@@ -938,17 +939,24 @@ function squareRig(S, mastGroup, sails, o = {}) {
   mastGroup.add(rig);
   for (const s of sails) {
     const def = squareDef(s.h, s.wt, s.wb, s.belly, s);
+    // s.trim = { mat, w }: a band of another colour along the foot (w = fraction of the height)
+    const foot = s.trim ? 1 - (s.trim.w ?? 0.15) : 1;
     if (s.stripes) {
       const n = s.stripes.n;
       for (let k = 0; k < n; k++) {
-        const geo = pillowGeometry(def, k / n, (k + 1) / n, 0, 1);
+        const geo = pillowGeometry(def, k / n, (k + 1) / n, 0, foot);
         geo.translate(0, s.y, 0);
         parts.push({ geo, material: k % 2 ? s.stripes.mat : s.mat });
       }
     } else {
-      const geo = pillowGeometry(def);
+      const geo = pillowGeometry(def, 0, 1, 0, foot);
       geo.translate(0, s.y, 0);
       parts.push({ geo, material: s.mat });
+    }
+    if (s.trim) {
+      const geo = pillowGeometry(def, 0, 1, foot, 1);
+      geo.translate(0, s.y, 0);
+      parts.push({ geo, material: s.trim.mat });
     }
     for (const d of s.decals || []) {
       for (const side of d.sides || [1, -1]) {
@@ -1038,8 +1046,8 @@ function jibSail(S, head, tip, clew, belly, partsFn, stay) {
 }
 
 /** Cannon barrel pointing along +z (local), base at the origin. */
-function cannonGeo(len = 0.75, r = 0.13) {
-  return lathe(`can${len},${r}`, [
+function cannonGeo(len = 0.75, r = 0.13, seg = 8) {
+  return lathe(`can${len},${r},${seg}`, [
     [0.0001, -0.12],
     [r * 0.7, -0.1],
     [r * 1.05, 0],
@@ -1049,7 +1057,7 @@ function cannonGeo(len = 0.75, r = 0.13) {
     [r * 1.22, len],
     [r * 0.55, len + 0.01],
     [0.0001, len - 0.02],
-  ], 8);
+  ], seg);
 }
 
 /** Gun port + barrel on the hull side at (z, y). style: 'square' | 'round' | 'hot' */
@@ -1070,8 +1078,10 @@ function gun(S, hull, z, y, side, o = {}) {
     add(holder, rbox(0.46 * s, 0.4 * s, 0.16, 0.06), hole, [0, 0, 0.03]);
   }
   if (o.barrel !== false) {
-    const b = add(holder, cannonGeo(0.62 * s, 0.12 * s), mat(o.iron ?? 0x2d2a33), [0, 0, -0.1]);
+    const bs = s * (o.barrelScale ?? 1); // heavier guns: bigger barrels in the same port
+    const b = add(holder, cannonGeo(0.62 * bs, 0.12 * bs, o.barrelSeg ?? 8), mat(o.iron ?? 0x2d2a33), [0, 0, -0.1]);
     b.rotation.x = PI / 2;
+    if (o.ring != null) add(holder, torus(0.12 * bs * 1.02, 0.035 * bs, 16, 6), mat(o.ring, { outline: THIN }), [0, 0, -0.1 + 0.62 * bs * 0.52]);
   }
   return holder;
 }
@@ -1400,18 +1410,269 @@ function shrouds(S, hull, mastZ, topY, o = {}) {
 const WOOD = 0x8a5530;
 const IRON = 0x2d2a33;
 
-function buildPlayer(S, T) {
+// ---------------------------------------------------------------------------
+// The player's ship: paint (opts.look) and visible shipyard upgrades (opts.upgrades)
+// ---------------------------------------------------------------------------
+
+// Upgrade props reuse the stock ship's colours where they can (fewer materials = fewer draw calls).
+const BRONZE = 0xd0903f; // heavy-shot cannon barrels
+const GOLD = 0xffd23f; // the stock ship's yellow (crest ring, flowers)
+const BAND_IRON = 0x4d4a5c; // iron bands, armour and cannonballs (lighter than IRON, so the cel bands show)
+const STEEL = 0xb9bdca; // rivet heads, saw blades
+const PROP_RED = 0xd8402e; // toolbox, powder keg bands
+const ROPE = 0xd9c39a; // the stock rope coil
+const STAVE = 0x9a6233; // the stock barrels
+const FRESH = 0xe2b77c; // the stock deck: fresh planks and patches
+
+/** Resolve buildShip opts for the player: paint entries (defaults for unknown ids) and upgrade tiers. */
+function playerSetup(opts) {
+  const o = opts && typeof opts === 'object' ? opts : {};
+  const look = o.look && typeof o.look === 'object' ? o.look : {};
+  const up = o.upgrades && typeof o.upgrades === 'object' ? o.upgrades : {};
+  const tier = (id) => (Number.isInteger(up[id]) ? clamp(up[id], 0, maxTier(id)) : 0);
+  return {
+    paint: findLook('hull', look.hull),
+    sails: findLook('sails', look.sails),
+    flag: findLook('flag', look.flag),
+    up: { guns: tier('guns'), shot: tier('shot'), crew: tier('crew'), hull: tier('hull'), sails: tier('sails'), carpenter: tier('carpenter') },
+  };
+}
+
+/** Exact point on a hull's outer skin at (u, y) on one side, with its outward normal. */
+function hullPoint(hull, u, y, side, off = 0) {
+  const e = 0.002;
+  const P = (uu, yy) => V3(hull.xAt(clamp(uu, 0, 1), yy) * side, yy, hull.zAt(clamp(uu, 0, 1), yy));
+  const p = P(u, y);
+  const du = V3().subVectors(P(u + e, y), P(u - e, y));
+  const dy = V3().subVectors(P(u, y + e), P(u, y - e));
+  const n = du.cross(dy).normalize();
+  if (n.x * side < 0) n.negate();
+  return { p: p.addScaledVector(n, off), n };
+}
+
+/** u (0 stern .. 1 bow) of the hull station that sits at z on the waterline-ish height y. */
+function hullU(hull, z, y) {
+  let u = hull.uAt(z);
+  for (let i = 0; i < 6; i++) u = clamp(u - (hull.zAt(u, y) - z) / hull.L, 0, 1);
+  return u;
+}
+
+/** A rivet head: a squashed little dome, cheap (merged with the rest). */
+const rivetGeo = () => cached('rivet', () => new THREE.SphereGeometry(1, 8, 5));
+function rivet(parent, m, p, n, r = 0.045) {
+  const mesh = add(parent, rivetGeo(), m, [p.x, p.y, p.z], null, [r, r, r * 0.6]);
+  mesh.quaternion.setFromUnitVectors(FWD, n);
+  return mesh;
+}
+
+/** Iron hoop strapped round the hull side from under the rail down to the waterline at z. */
+function hullBand(S, hull, z, side, yTop, o = {}) {
+  const pts = [];
+  const nrm = [];
+  const y0 = o.y0 ?? 0.06;
+  const N = 10;
+  for (let i = 0; i <= N; i++) {
+    const y = lerp(yTop, y0, i / N);
+    const u = hullU(hull, z, y);
+    const { p, n } = hullPoint(hull, u, y, side, 0.035);
+    pts.push(p);
+    nrm.push(n);
+  }
+  const m = mat(BAND_IRON);
+  add(S.group, taperTube(pts, () => o.r ?? 0.06, 16, 8), m);
+  if (o.rivets) {
+    const rm = mat(STEEL, { outline: THIN });
+    for (let i = 1; i < N; i += 2) rivet(S.group, rm, pts[i].clone().addScaledVector(nrm[i], 0.05), nrm[i]);
+  }
+}
+
+/** Armoured bow: riveted iron plates over both bow cheeks, an iron-shod stem and edge straps. */
+function armouredBow(S, hull) {
+  const plate = mat(BAND_IRON);
+  const strap = mat(IRON);
+  const rm = mat(STEEL, { outline: THIN });
+  const u0 = 0.83;
+  const yLo = 0.06;
+  const yHi = (u) => Math.min(hull.rail(u) - 0.42, 1.55);
+  const NU = 12;
+  const NY = 6;
+  for (const side of [-1, 1]) {
+    const pts = [];
+    for (let i = 0; i <= NU; i++) {
+      const u = lerp(u0, 0.995, i / NU);
+      for (let j = 0; j <= NY; j++) pts.push(hullPoint(hull, u, lerp(yHi(u), yLo, j / NY), side, 0.03).p);
+    }
+    add(S.group, gridGeometry(pts, NU + 1, NY + 1, (p) => V3(p.x, 0, 0.3)), plate);
+    // straps round the plate's edges, with rivets
+    const top = [];
+    const bot = [];
+    const back = [];
+    for (let i = 0; i <= NU; i++) {
+      const u = lerp(u0, 0.995, i / NU);
+      top.push(hullPoint(hull, u, yHi(u), side, 0.045));
+      bot.push(hullPoint(hull, u, yLo + 0.02, side, 0.045));
+    }
+    for (let j = 0; j <= NY; j++) back.push(hullPoint(hull, u0, lerp(yHi(u0), yLo, j / NY), side, 0.045));
+    for (const line of [top, bot, back]) {
+      add(S.group, taperTube(line.map((q) => q.p), () => 0.065, 16, 8), strap);
+      for (let i = 1; i < line.length - 1; i += 2) rivet(S.group, rm, line[i].p.clone().addScaledVector(line[i].n, 0.055), line[i].n, 0.05);
+    }
+    // rivet rows across the plate
+    for (let i = 2; i < NU; i += 3) {
+      const u = lerp(u0, 0.995, i / NU);
+      for (let j = 1; j < NY; j += 2) {
+        const { p, n } = hullPoint(hull, u, lerp(yHi(u), yLo, j / NY), side, 0.04);
+        rivet(S.group, rm, p, n, 0.04);
+      }
+    }
+  }
+  // iron-shod stem (a bigger iron cutwater with a rounded ram foot)
+  const stem = hull.stem(10);
+  add(S.group, taperTube(stem, (t) => 0.15 * (0.85 + 0.35 * t), 16, 8), strap);
+  add(S.group, sphere(), strap, stem[0].toArray(), null, [0.2, 0.18, 0.28]);
+}
+
+/** Pyramid of cannonballs in a red shot box. */
+function shotPyramid(S, x, y, z, yaw = 0, s = 1) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  S.group.add(g);
+  const r = 0.1 * s;
+  const d = r * 2.04;
+  const w = d * 3 + 0.1 * s;
+  add(g, rbox(w, 0.12 * s, w, 0.05), mat(PROP_RED), [0, 0.06 * s, 0]);
+  const ball = mat(BAND_IRON);
+  for (let layer = 0; layer < 3; layer++) {
+    const n = 3 - layer;
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        add(g, sphere(), ball, [(i - (n - 1) / 2) * d, 0.1 * s + r + layer * r * 1.44, (j - (n - 1) / 2) * d], null, r);
+      }
+    }
+  }
+}
+
+/** Powder keg: a small barrel with a red band. */
+function powderKeg(S, x, y, z, s = 0.6) {
+  barrel(S, x, y, z, WOOD, 0x3a2a24, s);
+  add(S.group, torus(0.302, 0.05, 16, 6), mat(PROP_RED), [x, y + 0.3 * s, z], [PI / 2, 0, 0], [s, s, s]);
+}
+
+/** Fife rail round a mast: a ring rail on posts holding rammers and sponges for the gun crews. */
+function fifeRail(S, z, y, o = {}) {
+  const wood = mat(WOOD);
+  const R = 0.46;
+  const h = 0.55;
+  add(S.group, torus(R, 0.06, 28, 6), wood, [0, y + h, z], [PI / 2, 0, 0]);
+  for (let k = 0; k < 4; k++) {
+    const a = PI / 4 + (k * PI) / 2;
+    rod(S.group, wood, V3(Math.cos(a) * R, y, z + Math.sin(a) * R), V3(Math.cos(a) * R, y + h, z + Math.sin(a) * R), 0.055, 6);
+  }
+  // rammers and sponges stand in the rail, leaning on the mast (aft half, clear of the sail)
+  const pole = mat(STAVE);
+  const ramHead = mat(WOOD);
+  const sponge = mat(ROPE);
+  const n = o.n ?? 4;
+  for (let k = 0; k < n; k++) {
+    const a = PI + 0.5 + (k * (PI - 1.0)) / Math.max(1, n - 1); // spread round the aft side
+    const base = V3(Math.cos(a) * (R + 0.02), y + 0.02, z + Math.sin(a) * (R + 0.02));
+    const top = V3(Math.cos(a) * 0.3, y + 1.32, z + Math.sin(a) * 0.3);
+    rod(S.group, pole, base, top, 0.03, 6);
+    if (k % 2) add(S.group, sphere(), sponge, [top.x, top.y + 0.1, top.z], null, [0.09, 0.15, 0.09]);
+    else add(S.group, cyl(0.075, 0.075, 0.16, 10), ramHead, [top.x, top.y + 0.06, top.z]);
+  }
+  if (o.bell) {
+    // brass drill bell hanging off the front of the rail
+    const brass = mat(GOLD);
+    const bz = z + R + 0.02;
+    rod(S.group, wood, V3(0, y + h, z + R - 0.02), V3(0, y + h + 0.62, bz), 0.045, 6);
+    rod(S.group, mat(IRON), V3(0, y + h + 0.62, bz), V3(0, y + h + 0.62, bz + 0.22), 0.03, 6);
+    add(S.group, lathe('bell', [
+      [0.0001, -0.03],
+      [0.15, -0.05],
+      [0.16, -0.02],
+      [0.12, 0.04],
+      [0.1, 0.14],
+      [0.07, 0.2],
+      [0.0001, 0.21],
+    ], 14), brass, [0, y + h + 0.36, bz + 0.22], null, 1.25);
+    add(S.group, sphere(), mat(IRON), [0, y + h + 0.32, bz + 0.22], null, 0.04);
+  }
+}
+
+/** Carpenter's toolbox with a saw sticking out and a mallet beside it. */
+function toolbox(S, x, y, z, yaw = 0) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  S.group.add(g);
+  const red = mat(PROP_RED);
+  const wood = mat(WOOD);
+  add(g, rbox(0.62, 0.28, 0.34, 0.06), red, [0, 0.14, 0]);
+  add(g, rbox(0.66, 0.06, 0.38, 0.03), wood, [0, 0.3, 0]);
+  add(g, torus(0.16, 0.03, 12, 6, PI), wood, [0, 0.32, 0]);
+  // saw: steel blade with teeth edge and a wooden grip
+  add(g, rbox(0.5, 0.16, 0.025, 0.01), mat(STEEL, { outline: THIN }), [0.12, 0.42, 0.06], [0, 0, -0.55]);
+  add(g, rbox(0.12, 0.14, 0.06, 0.03), wood, [0.36, 0.3, 0.06], [0, 0, -0.55]);
+  // mallet lying on the deck
+  rod(g, mat(STAVE), V3(-0.32, 0.05, 0.3), V3(0.05, 0.05, 0.42), 0.03, 6);
+  add(g, cyl(0.07, 0.07, 0.2, 10), wood, [-0.38, 0.07, 0.28], [0, 0.3, PI / 2]);
+}
+
+/** Spare planks stacked on the hatch, lashed with rope. */
+function plankStack(S, x, y, z) {
+  const a = mat(FRESH);
+  const b = mat(STAVE);
+  const rope = mat(ROPE);
+  const len = 1.3;
+  for (let i = 0; i < 3; i++) add(S.group, rbox(0.22, 0.07, len, 0.03), i % 2 ? b : a, [x + (i - 1) * 0.24, y + 0.035, z]);
+  for (let i = 0; i < 2; i++) add(S.group, rbox(0.22, 0.07, len - 0.12, 0.03), i % 2 ? a : b, [x + (i - 0.5) * 0.24, y + 0.105, z + 0.04]);
+  for (const dz of [-0.4, 0.4]) add(S.group, rbox(0.8, 0.2, 0.06, 0.03), rope, [x, y + 0.08, z + dz]);
+}
+
+/** Sawhorse with a plank half sawn through. */
+function sawhorse(S, x, y, z, yaw = 0) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  S.group.add(g);
+  const wood = mat(WOOD);
+  add(g, rbox(0.12, 0.1, 0.78, 0.04), wood, [0, 0.5, 0]);
+  for (const dz of [-0.3, 0.3]) {
+    for (const sx of [-1, 1]) rod(g, wood, V3(sx * 0.22, 0, dz), V3(sx * 0.03, 0.48, dz), 0.04, 6);
+  }
+  add(g, rbox(0.9, 0.06, 0.24, 0.03), mat(FRESH), [0.12, 0.59, 0.05], [0, 0.12, 0]);
+  // a saw stuck in the plank's end
+  add(g, rbox(0.42, 0.14, 0.02, 0.01), mat(STEEL, { outline: THIN }), [0.5, 0.7, 0.1], [0, 0.12, 0.35]);
+  add(g, rbox(0.1, 0.13, 0.06, 0.03), wood, [0.7, 0.8, 0.12], [0, 0.12, 0.35]);
+}
+
+/** A planked patch nailed onto the hull side at (z, y). */
+function hullPatch(S, hull, z, y, side, o = {}) {
+  const u = hullU(hull, z, y);
+  const { p, n } = hullPoint(hull, u, y, side, 0.02);
+  const g = new THREE.Group();
+  g.position.copy(p);
+  g.quaternion.setFromUnitVectors(FWD, n);
+  g.rotateZ(o.tilt ?? 0);
+  S.group.add(g);
+  const w = o.w ?? 0.76;
+  const h = o.h ?? 0.4;
+  // two boards side by side, nailed at the corners
+  const wood = mat(o.color ?? FRESH);
+  add(g, rbox(w, h / 2 - 0.01, 0.07, 0.03), wood, [0, h / 4, 0]);
+  add(g, rbox(w * 0.9, h / 2 - 0.01, 0.07, 0.03), wood, [w * 0.04, -h / 4, 0]);
+  const nail = mat(IRON);
+  for (const sx of [-1, 1]) for (const sy of [-1, 1]) add(g, sphere(), nail, [sx * (w / 2 - 0.07), sy * (h / 2 - 0.07), 0.04], null, 0.03);
+}
+
+function buildPlayer(S, T, opts) {
   S.brace = 0.32;
+  const { paint: P, sails: SL, flag: FL, up: UP } = playerSetup(opts);
   const C = {
-    honey: 0xf3b23f,
-    honeyDark: 0xc9782f,
-    teal: 0x16a5a2,
-    tealDark: 0x0d7c7e,
     deck: 0xe2b77c,
     plank: 0xbf8a52,
-    rim: 0x7a4426,
-    sail: 0xfff3d6,
-    pennant: 0x2f86ea,
   };
   const hull = makeHull({
     L: T.len,
@@ -1436,18 +1697,17 @@ function buildPlayer(S, T) {
     breaks: [{ rel: -0.36 }, { rel: -0.42 }],
   });
   addHull(S, hull, {
-    bands: [mat(C.teal), mat(C.tealDark), mat(C.honey)],
-    rim: mat(C.rim),
-    wall: mat(C.honeyDark),
+    bands: [mat(P.top), mat(P.stripe), mat(P.bottom)],
+    rim: mat(P.rim),
+    wall: mat(P.wall),
     deck: mat(C.deck),
   });
   deckPlanks(S, hull, C.plank, -3.0, 4.2, 5);
-  cutwater(S, hull, C.rim, 0.12);
+  if (UP.hull < 3) cutwater(S, hull, P.rim, 0.12);
 
   // stern cabin
-  const L2 = T.len / 2;
-  const cab = sternCastle(S, hull, { z1: -2.75, y0: 1.0, y1: 2.5, color: C.honey, cap: C.teal, top: C.deck, r: 0.28, over: 0.12 });
-  windows(S, S.group, [-0.85, 0, 0.85], 1.53, cab.z0, -1, { w: 0.46, h: 0.6, frame: C.tealDark });
+  const cab = sternCastle(S, hull, { z1: -2.75, y0: 1.0, y1: 2.5, color: P.cabin, cap: P.cap, top: C.deck, r: 0.28, over: 0.12 });
+  windows(S, S.group, [-0.85, 0, 0.85], 1.53, cab.z0, -1, { w: 0.46, h: 0.6, frame: P.trim });
   // little round side windows
   for (const sd of [-1, 1]) {
     for (const z of [-4.15, -3.35]) {
@@ -1455,32 +1715,32 @@ function buildPlayer(S, T) {
       holder.position.set(sd * (cab.w / 2 + 0.01), 1.8, z);
       holder.rotation.y = sd * PI / 2;
       S.group.add(holder);
-      add(holder, torus(0.15, 0.05, 16, 6), mat(C.tealDark));
+      add(holder, torus(0.15, 0.05, 16, 6), mat(P.trim));
       add(holder, cyl(0.14, 0.14, 0.06, 12), glow(S, 0xffc65a, 1), [0, 0, -0.01], [PI / 2, 0, 0]);
     }
   }
   // cabin door at the front
-  add(S.group, rbox(0.7, 1.0, 0.12, 0.1), mat(C.rim), [0, 1.62, cab.z1 + 0.02]);
-  add(S.group, sphere(), mat(0xffd23f), [0.22, 1.6, cab.z1 + 0.1], null, 0.06);
+  add(S.group, rbox(0.7, 1.0, 0.12, 0.1), mat(P.rim), [0, 1.62, cab.z1 + 0.02]);
+  add(S.group, sphere(), mat(P.accent), [0.22, 1.6, cab.z1 + 0.1], null, 0.06);
   // quarterdeck rails and lanterns
   const yq = cab.y1 + 0.1;
   for (const sd of [-1, 1]) {
-    rail(S, V3(sd * (cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(sd * (cab.w / 2 - 0.12), yq, cab.z1 - 0.15), 0.42, C.rim, 3);
-    rod(S.group, mat(C.rim), V3(sd * (cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(sd * (cab.w / 2 - 0.12), yq + 1.0, cab.z0 + 0.15), 0.06, 8);
+    rail(S, V3(sd * (cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(sd * (cab.w / 2 - 0.12), yq, cab.z1 - 0.15), 0.42, P.rim, 3);
+    rod(S.group, mat(P.rim), V3(sd * (cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(sd * (cab.w / 2 - 0.12), yq + 1.0, cab.z0 + 0.15), 0.06, 8);
     rod(S.group, mat(IRON), V3(sd * (cab.w / 2 - 0.12), yq + 1.0, cab.z0 + 0.15), V3(sd * (cab.w / 2 + 0.12), yq + 1.0, cab.z0 + 0.05), 0.04, 6);
     lantern(S, S.group, sd * (cab.w / 2 + 0.14), yq + 0.72, cab.z0 + 0.05, { s: 1.0 });
   }
-  rail(S, V3(-(cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(cab.w / 2 - 0.12, yq, cab.z0 + 0.15), 0.42, C.rim, 4);
-  wheel(S, 0, yq, cab.z1 - 0.55, C.rim, 0.9);
+  rail(S, V3(-(cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(cab.w / 2 - 0.12, yq, cab.z0 + 0.15), 0.42, P.rim, 4);
+  wheel(S, 0, yq, cab.z1 - 0.55, P.rim, 0.9);
 
   // stern charm (this is the view the player sees all game):
-  // a teal rubbing band ties the cabin into the hull stripe ...
-  add(S.group, rbox(cab.w + 0.12, 0.22, cab.z1 - cab.z0 + 0.12, 0.09), mat(C.tealDark), [0, 1.13, (cab.z0 + cab.z1) / 2]);
+  // a rubbing band ties the cabin into the hull stripe ...
+  add(S.group, rbox(cab.w + 0.12, 0.22, cab.z1 - cab.z0 + 0.12, 0.09), mat(P.trim), [0, 1.13, (cab.z0 + cab.z1) / 2]);
   // ... flower boxes under the windows ...
-  const yellow = mat(0xffd23f);
+  const yellow = mat(P.accent);
   const white = mat(0xffffff);
   for (const [i, x] of [-0.85, 0, 0.85].entries()) {
-    add(S.group, rbox(0.56, 0.16, 0.22, 0.06), mat(C.tealDark), [x, 1.36, cab.z0 - 0.1]);
+    add(S.group, rbox(0.56, 0.16, 0.22, 0.06), mat(P.trim), [x, 1.36, cab.z0 - 0.1]);
     for (let k = 0; k < 3; k++) {
       add(S.group, sphere(), (k + i) % 2 ? white : yellow, [x + (k - 1) * 0.16, 1.47 + (k === 1 ? 0.03 : 0), cab.z0 - 0.14], null, 0.08);
     }
@@ -1490,16 +1750,20 @@ function buildPlayer(S, T) {
   crest.position.set(0, yq + 0.5, cab.z0 + 0.1);
   crest.rotation.y = PI; // faces aft, towards the chase cam
   S.group.add(crest);
-  add(crest, cyl(0.4, 0.4, 0.12, 20), mat(C.teal), [0, 0, 0], [PI / 2, 0, 0]);
+  add(crest, cyl(0.4, 0.4, 0.12, 20), mat(P.cap), [0, 0, 0], [PI / 2, 0, 0]);
   add(crest, torus(0.4, 0.065, 24, 8), yellow, [0, 0, 0.02]);
-  add(crest, sphere(), mat(C.honey), [0, 0, 0.08], null, [0.27, 0.27, 0.07]);
+  add(crest, sphere(), mat(P.crest), [0, 0, 0.08], null, [0.27, 0.27, 0.07]);
   for (const [cx, cy] of [[-0.1, 0.08], [0.11, 0.1], [0.02, -0.04], [-0.09, -0.13], [0.12, -0.11]]) {
-    add(crest, sphere(), mat(C.rim), [cx, cy, 0.14], null, [0.045, 0.045, 0.025]);
+    add(crest, sphere(), mat(P.rim), [cx, cy, 0.14], null, [0.045, 0.045, 0.025]);
   }
 
-  // guns in round brass/teal portholes
+  // guns in round portholes; heavy shot = bronze barrels that grow with each tier
+  const gunOpts = { style: 'round', frame: P.trim, hole: 0x2a1c14, scale: 1.05 };
+  if (UP.shot > 0) Object.assign(gunOpts, { iron: BRONZE, barrelSeg: 12, barrelScale: [1, 1.1, 1.2, 1.32][UP.shot], ring: UP.shot >= 2 ? GOLD : null });
+  const gunZ = [];
   for (let i = 0; i < T.guns; i++) {
-    for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.8, sd, { style: 'round', frame: C.tealDark, hole: 0x2a1c14, scale: 1.05 });
+    gunZ.push(gunOffset(T, i));
+    for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.8, sd, gunOpts);
   }
 
   // masts + sails: a stubby, chubby rig (wide sails, short masts). Besides the
@@ -1509,33 +1773,167 @@ function buildPlayer(S, T) {
   const main = mast(S, -0.85, 1.0, 7.75, 0.2, WOOD);
   // the player's cloth gets its own material instances, so the game can fade the
   // sails (e.g. when they block the chase cam) without touching enemy ships
-  const sail = mat(C.sail).clone();
-  const anchorM = mat(C.teal, { outline: THIN }).clone();
+  const sail = mat(SL.cloth).clone();
+  const anchorM = mat(SL.emblem ?? P.emblem, { outline: THIN }).clone();
   S.cloth = [sail, anchorM];
+  // racing sails: a bold trim band along the foot of every sail (tier 1+)
+  let trim;
+  if (UP.sails >= 1) {
+    const trimM = mat(SL.trim).clone();
+    S.cloth.push(trimM);
+    trim = { mat: trimM, w: 0.15 };
+  }
   shrouds(S, hull, -0.85, 6.85);
   shrouds(S, hull, 2.05, 6.25, { n: 2 });
   squareRig(S, main, [
-    { y: 6.95, h: 1.7, wt: 3.0, wb: 3.75, belly: 0.5, mat: sail },
-    { y: 5.0, h: 2.35, wt: 3.95, wb: 4.55, belly: 0.75, mat: sail, decals: [{ shapes: anchorShapes(), size: 1.45, cy: -1.2, mat: anchorM }] },
+    { y: 6.95, h: 1.7, wt: 3.0, wb: 3.75, belly: 0.5, mat: sail, trim },
+    { y: 5.0, h: 2.35, wt: 3.95, wb: 4.55, belly: 0.75, mat: sail, trim, decals: [{ shapes: anchorShapes(), size: 1.45, cy: -1.2, mat: anchorM }] },
   ], { spar: WOOD });
   squareRig(S, fore, [
-    { y: 6.4, h: 1.55, wt: 2.7, wb: 3.35, belly: 0.45, mat: sail },
-    { y: 4.6, h: 2.1, wt: 3.5, wb: 4.1, belly: 0.65, mat: sail, decals: [{ shapes: anchorShapes(), size: 1.12, cy: -1.08, mat: anchorM }] },
+    { y: 6.4, h: 1.55, wt: 2.7, wb: 3.35, belly: 0.45, mat: sail, trim },
+    { y: 4.6, h: 2.1, wt: 3.5, wb: 4.1, belly: 0.65, mat: sail, trim, decals: [{ shapes: anchorShapes(), size: 1.12, cy: -1.08, mat: anchorM }] },
   ], { spar: WOOD });
+  // fore-and-aft sails with an optional trim band along the foot (b = 1 edge)
+  const footParts = (d, w = 0.13) =>
+    trim ? [{ geo: pillowGeometry(d, 0, 1, 0, 1 - w), material: sail }, { geo: pillowGeometry(d, 0, 1, 1 - w, 1), material: trim.mat }] : [{ geo: pillowGeometry(d), material: sail }];
 
   // bowsprit, jib and figurehead
   const tip = bowsprit(S, hull, 2.3, 0.32, WOOD, 0.13);
-  jibSail(S, [2.2, 6.15], tip, [2.5, 2.55], 0.38, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: 0x3b2a22 });
+  jibSail(S, [2.2, 6.15], tip, [2.5, 2.55], 0.38, (d) => footParts(d), { color: 0x3b2a22 });
+  if (UP.sails >= 2) {
+    // extra canvas: a flying jib out on a jib-boom, and a gaff spanker abaft the main mast.
+    // Both sit in the centre plane, so the chase camera (dead astern) sees them edge-on.
+    const dir = V3(0, Math.sin(0.25), Math.cos(0.25));
+    const boomTip = tip.clone().addScaledVector(dir, 1.25);
+    const wm = mat(WOOD);
+    spar(S.group, wm, tip.clone().addScaledVector(dir, -0.6), boomTip, 0.085, 0.06, 8);
+    add(S.group, sphere(), wm, boomTip.toArray(), null, 0.075);
+    jibSail(S, [2.25, 6.85], boomTip, [4.55, 4.7], 0.3, (d) => footParts(d, 0.16), { color: 0x3b2a22, r: 0.03 });
+    const mz = -0.85;
+    const throat = [mz - 0.24, 5.55];
+    const peak = [mz - 1.95, 6.45];
+    const clew = [mz - 1.95, 3.35];
+    const tack = [mz - 0.24, 3.2];
+    const spanker = quadDef(throat, peak, clew, tack, 0.15, { nu: 12, nv: 12, leechBow: 0.12 });
+    foreAftSail(S, S.group, spanker, (d) => footParts(d, 0.14), { p: V3() });
+    rod(S.group, wm, V3(0, 5.57, mz - 0.18), V3(0, 6.5, mz - 2.05), 0.07, 8); // gaff
+    rod(S.group, wm, V3(0, 3.15, mz - 0.18), V3(0, 3.27, mz - 2.12), 0.08, 8); // boom
+  }
   const head = hull.stem(4).at(-1);
   seagull(S, V3(0, head.y - 0.35, head.z + 0.18), -0.25, 0.95);
 
-  // pennant + deck props
-  flagMesh(S, { p: V3(0, 8.05, -0.85), len: 2.4, h: 0.7, shape: 'pennant', mat: mat(C.pennant), yaw: -0.25, staff: WOOD, finial: 0xffd23f, staffDown: 0.5 });
+  // flag on the main truck: a pennant, or the Jolly Roger (no taller than the pennant)
+  if (FL.kind === 'jolly') {
+    flagMesh(S, {
+      p: V3(0, 7.86, -0.85),
+      len: 1.8,
+      h: 1.08,
+      shape: 'swallow',
+      mat: mat(FL.color),
+      decal: { shapes: jollyRogerShapes(), size: 0.5, cx: 0.37, cy: 0.02, mat: mat(FL.emblem ?? 0xf6f1e4, { outline: false }) },
+      yaw: -0.25,
+      staff: WOOD,
+      finial: P.accent,
+      staffDown: 0.12,
+      amp: 0.16,
+    });
+  } else {
+    flagMesh(S, { p: V3(0, 8.05, -0.85), len: 2.4, h: 0.7, shape: 'pennant', mat: mat(FL.color), yaw: -0.25, staff: WOOD, finial: P.accent, staffDown: 0.5 });
+  }
+
+  // deck props
   barrel(S, 1.05, 1.2, 0.6);
   barrel(S, 0.95, 1.2, 1.25, 0x9a6233, 0x3a2a24, 0.85);
-  add(S.group, rbox(1.2, 0.3, 1.0, 0.1), mat(C.rim), [0, 1.33, 0.75]);
+  add(S.group, rbox(1.2, 0.3, 1.0, 0.1), mat(P.rim), [0, 1.33, 0.75]);
   add(S.group, rbox(0.9, 0.12, 0.7, 0.05), mat(IRON), [0, 1.5, 0.75]);
   add(S.group, torus(0.28, 0.1, 16, 8), mat(0xd9c39a), [-1.0, 1.32, -1.9], [PI / 2, 0, 0]);
+
+  // --- visible shipyard upgrades ------------------------------------------------
+  // Deck props only go in fixed zones that stay clear of the crew's standing spots below.
+  const D = hull.D;
+  const block = (x, z, r) => S.blockers.push({ x, z, r });
+  block(0, -0.85, 0.22); // main mast
+  block(0, 2.05, 0.2); // fore mast
+  block(1.05, 0.6, 0.31); // barrels
+  block(0.95, 1.25, 0.27);
+  block(-1.0, -1.9, 0.39); // rope coil
+  S.blockers.push({ x: 0, z: 0.75, hx: 0.62, hz: 0.52 }); // hatch
+  // heavy shot: cannonball pyramids
+  const pyramids = [[0.62, 2.78, 0.35], [1.0, -1.45, 0.1], [-0.95, -0.98, -0.1]];
+  for (const [x, z, yaw] of pyramids.slice(0, UP.shot)) {
+    shotPyramid(S, x, D, z, yaw);
+    block(x, z, 0.4);
+  }
+  // gun crew drills: powder kegs, then a fife rail of rammers and sponges, then more kegs and a drill bell
+  if (UP.crew >= 1) {
+    powderKeg(S, 1.04, D, -2.28, 0.72);
+    powderKeg(S, 0.6, D, -2.48, 0.62);
+    block(1.04, -2.28, 0.25);
+    block(0.6, -2.48, 0.22);
+  }
+  if (UP.crew >= 2) {
+    fifeRail(S, -0.85, D, { bell: UP.crew >= 3 });
+    block(0, -0.85, 0.53);
+  }
+  if (UP.crew >= 3) {
+    powderKeg(S, 0.86, D, 1.8, 0.66);
+    powderKeg(S, 0.78, D, 2.22, 0.66);
+    powderKeg(S, 0.83, D + 0.41, 2.01, 0.6);
+    block(0.86, 1.8, 0.21);
+    block(0.78, 2.22, 0.21);
+  }
+  // ship's carpenter: toolbox and spare planks, then a sawhorse and patched planks on the hull
+  if (UP.carpenter >= 1) {
+    toolbox(S, -0.6, D, 2.8, -0.35);
+    block(-0.6, 2.8, 0.38);
+    plankStack(S, 0, 1.56, 0.75);
+  }
+  if (UP.carpenter >= 2) {
+    sawhorse(S, -0.82, D, 1.78, 0.08);
+    block(-0.82, 1.78, 0.42);
+    // patches sit right under or over a gun port, so they never meet the iron hoops between the ports
+    const zs = gunZ;
+    const last = zs.length - 1;
+    hullPatch(S, hull, zs[0] + 0.1, 0.27, -1, { tilt: 0.08 });
+    hullPatch(S, hull, zs[last] - 0.08, 0.27, -1, { tilt: -0.1, w: 0.66 });
+    hullPatch(S, hull, zs[1], 1.52, -1, { tilt: 0.06, w: 0.62, h: 0.34, color: STAVE });
+    hullPatch(S, hull, zs[0] - 0.05, 0.27, 1, { tilt: -0.07 });
+    hullPatch(S, hull, zs[1] + 0.06, 0.28, 1, { tilt: 0.09, w: 0.7 });
+    hullPatch(S, hull, zs[last], 1.5, 1, { tilt: 0.1, w: 0.56, h: 0.34, color: STAVE });
+  }
+  // iron-banded hull: hoops between the gun ports, then more hoops with rivets, then an armoured bow
+  if (UP.hull >= 1) {
+    const zs = [];
+    for (let i = 0; i < gunZ.length - 1; i++) zs.push((gunZ[i] + gunZ[i + 1]) / 2);
+    if (UP.hull >= 2) zs.push(gunZ[0] - 0.85); // stern hoop
+    if (UP.hull === 2) zs.push(gunZ[gunZ.length - 1] + 0.95); // bow hoop (the armour plates take over at tier 3)
+    for (const z of zs) {
+      for (const side of [-1, 1]) {
+        const top = z < cab.z1 + 0.05 ? cab.y0 - 0.06 : hull.railAt(z) - hull.rb - 0.04;
+        hullBand(S, hull, z, side, top, { rivets: UP.hull >= 2 });
+      }
+    }
+  }
+  if (UP.hull >= 3) armouredBow(S, hull);
+
+  // Free standing spots for deck hands (ship-local; y = deck height; h = facing yaw) and
+  // hull spots for a scrubber at the waterline. Kept clear of every prop above.
+  S.deckSpots = [
+    { x: 0.1, y: D, z: -1.95, h: PI / 2 },
+    { x: 0, y: D, z: 3.45, h: PI },
+    { x: 0.85, y: D, z: -0.15, h: -PI / 2 },
+    { x: -0.8, y: D, z: -0.15, h: PI / 2 },
+    { x: 0.85, y: cab.y1, z: -4.05, h: PI }, // on the quarterdeck
+    { x: -0.85, y: cab.y1, z: -4.05, h: PI },
+  ];
+  S.hullSpots = [];
+  for (const z of [-1.2, 1.2]) {
+    for (const side of [1, -1]) {
+      const y = 0.35;
+      const { p } = hullPoint(hull, hullU(hull, z, y), y, side, 0);
+      S.hullSpots.push({ x: r3(p.x), y, z: r3(p.z), side, h: -side * PI / 2 });
+    }
+  }
 }
 
 function buildCutter(S, T) {
@@ -2368,19 +2766,31 @@ const BUILDERS = {
 
 /**
  * Build the cartoon model for SHIP_TYPES[typeKey].
+ * opts (player only; other types ignore it, and no opts = the stock ship):
+ *   type: the upgraded ship type (playerType() in upgrades.js); its gun count places the gun ports
+ *   look: { hull, sails, flag } paint ids from LOOKS (unknown ids -> the default paint)
+ *   upgrades: { guns, shot, crew, hull, sails, carpenter } tiers, each shown on the model
  * group.userData = { type, sails: Mesh[], flags: Mesh[], glows: [{material, base, amt, f, ph}],
  *                    fx: [{kind, obj, ...}], cloth: Material[] (player only), phase }
+ * The player also gets deckSpots: [{x, y, z, h}] (free standing spots on deck, ship-local, h = facing
+ * yaw, clear of every prop for all upgrades), hullSpots: [{x, y, z, side, h}] (on the hull sides just
+ * above the waterline, h = yaw facing the hull) and blockers: [{x, z, r} | {x, z, hx, hz}] (deck props).
  * Materials are shared toon() materials except userData.glows / userData.cloth
  * (per-ship clones), so don't mutate or dispose the others; see disposeShip().
  */
-export function buildShip(typeKey) {
-  const T = SHIP_TYPES[typeKey];
+export function buildShip(typeKey, opts = {}) {
+  let T = SHIP_TYPES[typeKey];
   const build = BUILDERS[typeKey];
   if (!T || !build) throw new Error(`buildShip: unknown ship type "${typeKey}"`);
+  const o = opts && typeof opts === 'object' ? opts : {};
+  // the player's upgraded type (playerType() in upgrades.js) decides the gun count
+  if (typeKey === 'player' && o.type && Number.isInteger(o.type.guns) && o.type.guns !== T.guns) {
+    T = { ...T, guns: clamp(o.type.guns, 1, 8) };
+  }
   const group = new THREE.Group();
   group.name = `ship:${typeKey}`;
-  const S = { group, sails: [], flags: [], glows: [], glowCache: new Map(), fx: [], cloth: null };
-  build(S, T);
+  const S = { group, sails: [], flags: [], glows: [], glowCache: new Map(), fx: [], cloth: null, blockers: [], deckSpots: null, hullSpots: null };
+  build(S, T, o);
   mergeStatic(group);
   group.userData = {
     type: typeKey,
@@ -2391,6 +2801,11 @@ export function buildShip(typeKey) {
     cloth: S.cloth || [],
     phase: Math.random() * TAU,
   };
+  if (S.deckSpots) {
+    group.userData.deckSpots = S.deckSpots;
+    group.userData.hullSpots = S.hullSpots;
+    group.userData.blockers = S.blockers;
+  }
   return group;
 }
 
