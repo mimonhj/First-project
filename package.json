@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "npx http-server -p 8080 -c-1 .",
-    "test": "node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs",
+    "test": "node tests/upgrades.test.cjs && node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs",
+    "test:upgrades": "node tests/upgrades.test.cjs",
     "test:server": "node tests/server.test.cjs",
     "test:smoke": "node tests/smoke.cjs",
     "test:controls": "node tests/controls.cjs"

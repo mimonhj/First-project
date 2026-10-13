@@ -101,7 +101,13 @@
       <h1>Pirates <span>Ahoy!</span></h1>
       <p class="tagline">Captain the <b>Sea Biscuit</b> from the coast of Europe to the islands of Bali and the fiery volcano seas. Sink every pirate fleet and plunder their gold!</p>
       <div id="level-cards" class="level-cards"></div>
-      <button id="start-btn" class="btn" type="button">Set sail!</button>
+      <div class="menu-actions">
+        <button id="start-btn" class="btn" type="button">Set sail!</button>
+        <button id="menu-dock-btn" class="btn alt dock-link" type="button" aria-label="Shipyard: visit Sparrow's Floating Island">
+          <svg class="anchor" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="2.4" /><path d="M12 7.4V21M7.5 11h9M4.5 14.5c.6 3.6 3.6 6.5 7.5 6.5s6.9-2.9 7.5-6.5" /></svg>
+          Shipyard
+        </button>
+      </div>
       <ul class="controls">
         <li><kbd>A</kbd><kbd>D</kbd> or <kbd>&larr;</kbd><kbd>&rarr;</kbd> steer</li>
         <li><kbd>W</kbd><kbd>S</kbd> sails up / down (speed)</li>
@@ -115,7 +121,7 @@
         <li><b>II</b> pause</li>
       </ul>
       <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
-      <p class="best">Best plunder: <span id="best">0</span> gold</p>
+      <p class="best">Best plunder: <span id="best">0</span> gold &middot; Treasure chest: <span id="menu-chest">0</span> gold</p>
     </div>
   </div>
 
@@ -143,7 +149,11 @@
       <h2 id="level-title">Level cleared!</h2>
       <p id="level-summary"></p>
       <button id="next-btn" class="btn" type="button">Next level</button>
-      <p class="hint">Press <kbd>Enter</kbd></p>
+      <div class="more-actions">
+        <button id="dock-btn" class="btn alt" type="button">Visit Sparrow's Floating Island</button>
+        <button id="exit-btn" class="btn alt" type="button">Main menu</button>
+      </div>
+      <p class="hint">Press <kbd>Enter</kbd> to sail on &middot; spend your treasure at the shipyard</p>
     </div>
   </div>
 
@@ -152,7 +162,10 @@
       <h2>Shipwrecked!</h2>
       <p id="over-summary"></p>
       <button id="retry-btn" class="btn" type="button">Try again</button>
-      <button id="menu-btn" class="btn alt" type="button">Main menu</button>
+      <div class="more-actions">
+        <button id="over-dock-btn" class="btn alt" type="button">Visit the dock</button>
+        <button id="menu-btn" class="btn alt" type="button">Main menu</button>
+      </div>
       <p class="hint">Press <kbd>Enter</kbd> to try again</p>
     </div>
   </div>
@@ -163,9 +176,47 @@
       <p>The Molten Maw is sunk and every pirate fleet is at the bottom of the sea. The seas are yours, Captain!</p>
       <p class="final">Plunder: <strong id="won-gold">0</strong> gold</p>
       <p id="won-best" class="new-best hidden">New best!</p>
+      <p id="won-chest" class="chest-line"></p>
       <button id="again-btn" class="btn" type="button">Main menu</button>
+      <button id="won-dock-btn" class="btn alt" type="button">Visit the dock</button>
     </div>
   </div>
+
+  <!-- The shipyard on Sparrow's Floating Island (main.js builds the rows and the exits). The overlay lets
+       pointer events through to the 3D view, which can be dragged to turn the camera. -->
+  <section id="dock-screen" class="overlay dock hidden" aria-labelledby="dock-title">
+    <div id="dock-panel" class="panel dock-panel">
+      <header class="dock-head">
+        <p class="dock-kicker">Shipyard</p>
+        <h2 id="dock-title">Sparrow's Floating Island</h2>
+        <p id="dock-chest" class="dock-chest" aria-live="polite" aria-atomic="true">
+          <svg class="chest-ico" viewBox="0 0 32 28" aria-hidden="true" focusable="false">
+            <path d="M3.5 12.5C3.5 6 8 3.5 16 3.5S28.5 6 28.5 12.5z" fill="#c07b3a" />
+            <rect x="3.5" y="12.5" width="25" height="12.5" rx="2.5" fill="#8b5a2b" />
+            <path d="M9 3.9v8.6M23 3.9v8.6M9 12.5V25M23 12.5V25" stroke-width="2.6" stroke="#ffc93c" />
+            <rect x="12.6" y="10" width="6.8" height="7.6" rx="1.8" fill="#ffc93c" />
+            <circle cx="16" cy="13.4" r="1.2" fill="#1d1330" stroke="none" />
+          </svg>
+          <span><span class="chest-label">Treasure chest: </span><b id="dock-chest-gold">0</b> gold</span>
+        </p>
+      </header>
+      <div class="dock-tabs" role="tablist" aria-label="Shipyard">
+        <button id="dock-tab-up" type="button" role="tab" data-tab="up" aria-selected="true" aria-controls="dock-up">Upgrades</button>
+        <button id="dock-tab-paint" type="button" role="tab" data-tab="paint" aria-selected="false" aria-controls="dock-paint" tabindex="-1">Paint</button>
+      </div>
+      <div class="dock-body">
+        <div id="dock-up" role="tabpanel" aria-labelledby="dock-tab-up">
+          <ul id="dock-up-list" class="up-list"></ul>
+        </div>
+        <div id="dock-paint" role="tabpanel" aria-labelledby="dock-tab-paint" hidden>
+          <p class="paint-note">Paint is free! Pick colours for your ship.</p>
+          <div id="dock-paint-groups"></div>
+        </div>
+      </div>
+      <div id="dock-exits" class="dock-exits"></div>
+      <p id="dock-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
 
   <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues.
        It comes after the other game overlays so it paints on top of an end screen that is already showing. -->

@@ -1,5 +1,5 @@
 // End-to-end test: serves the game, drives it in headless Chromium and checks
-// rendering, controls, combat, waves, hazards, level flow and that every level is winnable.
+// rendering, controls, combat, waves, hazards, level flow, the shipyard and that every level is winnable.
 // Run with `npm test` (needs the `playwright` package and a Chromium build).
 const fs = require('fs');
 const path = require('path');
@@ -29,12 +29,13 @@ const snap = (page, name) => page.screenshot({ path: path.join(OUT, name), timeo
 const g = (page, expr) => page.evaluate(`window.__game.${expr}`);
 
 // Freeze the real-time loop so the test can drive the simulation deterministically.
-// The pause overlay is hidden again so it doesn't sit over the screens checked later.
+// The pause overlay is hidden again so it doesn't sit over the screens checked later, and the
+// HUD and the other screens it made inert are usable again (as when the game closes the dialog).
 const freeze = (page) => page.evaluate(() => {
   const G = window.__game;
   if (G.state.mode === 'playing') G.togglePause();
   document.getElementById('pause-screen').classList.add('hidden');
-  document.getElementById('hud').inert = false;
+  for (const el of [document.getElementById('hud'), ...document.querySelectorAll('.overlay')]) el.inert = false;
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 });
 // Step the simulation `seconds` while the page is frozen.
@@ -469,6 +470,36 @@ async function shotColours(page) {
   check(await page.isVisible('#won-screen'), 'victory screen shown');
   const best = await page.evaluate(() => Number(localStorage.getItem('pirates-ahoy-best')));
   check(best > 0 && best === (await g(page, 'state.gold')), `best plunder saved (${best})`);
+
+  // ---- The shipyard on Sparrow's Floating Island, visited from the victory screen.
+  const chestAtWin = await g(page, 'state.purse');
+  check(chestAtWin > 0 && Number(await page.evaluate(() => localStorage.getItem('pirates-ahoy-purse'))) === chestAtWin, `cleared levels banked their gold in the treasure chest (${chestAtWin} gold)`);
+  await page.click('#won-dock-btn');
+  await page.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 60000 }).catch(() => {});
+  await sleep(1500);
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const dock = await page.evaluate(() => {
+    const G = window.__game;
+    let crew = 0;
+    if (G.dock.ship) G.dock.ship.traverse((o) => { if (o.userData && o.userData.keep && o.userData.kind) crew++; });
+    return {
+      mode: G.state.mode,
+      from: G.dock.from,
+      people: G.env.peopleCount,
+      crew,
+      calls: G.renderInfo.calls,
+      chest: document.getElementById('dock-chest-gold').textContent,
+      exits: [...document.querySelectorAll('#dock-exits button')].map((b) => b.textContent.trim()).join(' | '),
+    };
+  });
+  check(dock.mode === 'dock' && dock.from === 'won' && dock.crew >= 5 && dock.people >= 20, `"Visit the dock" opens Sparrow's Floating Island: ${dock.crew} crew cleaning the ship, ${dock.people} people in all`);
+  check(dock.chest === String(chestAtWin) && dock.exits === 'Back to the title', `the shipyard shows the chest (${dock.chest} gold) and the way back (${dock.exits})`);
+  check(dock.calls > 0 && dock.calls <= 450, `draw calls at the dock stay within the budget (${dock.calls} of 450)`);
+  await snap(page, '8-dock.png');
+  const dockColours = await shotColours(page);
+  check(dockColours > 40, `the dock renders with rich colour (${dockColours} colour buckets)`);
+  if (await page.isVisible('#dock-title-btn')) await page.click('#dock-title-btn');
+  check((await g(page, 'state.mode')) === 'menu' && (await page.isVisible('#menu-screen')), '"Back to the title" leaves the dock');
 
   // ---- Level layouts are sane.
   const layouts = await page.evaluate(() => {

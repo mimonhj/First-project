@@ -4,9 +4,22 @@ import { buildShip, animateShip, disposeShip } from './ships.js';
 import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
 import { toon, noOutline, gradientMap } from './style.js';
 import { createAudio } from './audio.js';
+import { animatePerson } from './people.js';
 import * as europe from './env/europe.js';
 import * as bali from './env/bali.js';
 import * as volcano from './env/volcano.js';
+import * as sparrow from './env/sparrow.js';
+import {
+  UPGRADES,
+  LOOKS,
+  defaultShipConfig,
+  parseShipConfig,
+  serializeShipConfig,
+  maxTier,
+  nextCost,
+  playerType,
+  statText,
+} from './upgrades.js';
 
 // ---------------------------------------------------------------------------
 // Tuning
@@ -22,8 +35,8 @@ const MAX_FRAME_DT = 0.1;
 const SAIL_LEVELS = [0, 0.35, 0.7, 1];
 const SAIL_NAMES = ['Stopped', 'Slow', 'Cruising', 'Full sail'];
 const COIN_VALUE = 10;
-const REGEN_DELAY = 5; // seconds without damage before the hull repairs itself
-const REGEN_RATE = 2; // hp per second
+const REGEN_DELAY = 5; // seconds without damage before the hull repairs itself (ships without their own value)
+const REGEN_RATE = 2; // hp per second (ships without their own value; the player's comes from the carpenter upgrade)
 const WAIT_DIST = 50; // distance waiting pirates keep from the player
 const WAVE_REPAIR = 0.35; // fraction of the hull your crew patches when reinforcements arrive
 const REEF_SLOW = 0.45; // speed multiplier for deep-hulled ships on a reef
@@ -38,6 +51,8 @@ const CHASE_AHEAD = 8; // chase camera: look this far ahead of the ship
 const BEST_KEY = 'pirates-ahoy-best';
 const PROGRESS_KEY = 'pirates-ahoy-unlocked';
 const TUTOR_KEY = 'pirates-ahoy-tutorial-done';
+const PURSE_KEY = 'pirates-ahoy-purse'; // the treasure chest: banked gold to spend at the shipyard
+const SHIP_KEY = 'pirates-ahoy-ship'; // the player's upgrades and paint (see upgrades.js)
 
 // Each level: its environment, enemy waves (the next wave sails in once
 // `nextWaveAt` or fewer ships of the current one are left) and difficulty knobs.
@@ -149,7 +164,18 @@ const ui = {
   won: $('won-screen'),
   wonGold: $('won-gold'),
   wonBest: $('won-best'),
+  wonChest: $('won-chest'),
   best: $('best'),
+  menuChest: $('menu-chest'),
+  dock: $('dock-screen'),
+  dockPanel: $('dock-panel'),
+  dockChest: $('dock-chest'),
+  dockChestGold: $('dock-chest-gold'),
+  dockTabs: [...document.querySelectorAll('#dock-screen [role="tab"]')],
+  dockUpList: $('dock-up-list'),
+  dockPaint: $('dock-paint-groups'),
+  dockExits: $('dock-exits'),
+  dockLive: $('dock-live'),
   error: $('error-screen'),
   recover: $('recover-screen'),
   recoverTitle: $('recover-title'),
@@ -200,6 +226,28 @@ function saveNumber(key, v) {
     localStorage.setItem(key, String(v));
   } catch {
     // Storage blocked: progress just won't persist.
+  }
+}
+
+// The ship's upgrades and paint. parseShipConfig() validates field by field (bad tiers or unknown
+// paints fall back to the defaults) and never throws; a record that needed fixing is rewritten.
+function loadShipConfig() {
+  let raw;
+  try {
+    raw = localStorage.getItem(SHIP_KEY);
+  } catch {
+    return defaultShipConfig(); // storage blocked
+  }
+  const config = parseShipConfig(raw);
+  if (raw !== null && serializeShipConfig(config) !== raw) saveShipConfig(config);
+  return config;
+}
+
+function saveShipConfig(config) {
+  try {
+    localStorage.setItem(SHIP_KEY, serializeShipConfig(config));
+  } catch {
+    // Storage blocked: the shipyard work just won't persist.
   }
 }
 
@@ -302,13 +350,19 @@ function resize() {
     view.renderer.setPixelRatio(view.renderer.getPixelRatio() * q);
     view.renderer.setSize(window.innerWidth, window.innerHeight, false);
   }
+  setLens();
+  pausedDrawn = false;
+  menuLayout = null;
+  dockLayout = null;
+}
+
+// The game's normal lens for the window (the shipyard view sets its own, see dockFraming()).
+function setLens() {
   camera.aspect = window.innerWidth / window.innerHeight;
   // Keep enough sideways view on portrait screens to see a broadside target.
   const minFov = (2 * Math.atan(Math.tan((35 * Math.PI) / 180) / camera.aspect) * 180) / Math.PI;
   camera.fov = clamp(minFov, 55, 90);
   camera.updateProjectionMatrix();
-  pausedDrawn = false;
-  menuLayout = null;
 }
 window.addEventListener('resize', resize);
 
@@ -368,14 +422,18 @@ function trackPerformance(rawDt) {
 // ---------------------------------------------------------------------------
 // Game state
 // ---------------------------------------------------------------------------
+let shipConfig = loadShipConfig(); // upgrades bought and paint chosen at the shipyard
+
 const state = {
-  mode: 'menu', // menu | playing | paused | levelDone | over | won
+  mode: 'menu', // menu | playing | paused | levelDone | over | won | dock
   level: 1,
   wave: 0,
   gold: 0,
   goldAtLevelStart: 0,
   sunk: 0, // ships sunk this level
   best: loadInt(BEST_KEY, 0, MAX_GOLD, 0),
+  purse: loadInt(PURSE_KEY, 0, MAX_GOLD, 0), // the treasure chest: gold banked from cleared levels
+  banked: 0, // gold banked when the last level was cleared
   unlocked: loadInt(PROGRESS_KEY, 1, LEVELS.length, 1),
   tutorialDone: loadInt(TUTOR_KEY, 0, 1, 0) === 1,
   time: 0, // simulated seconds since level start
@@ -590,9 +648,18 @@ function tagHeight(typeName, mesh) {
 // ---------------------------------------------------------------------------
 // Entities
 // ---------------------------------------------------------------------------
+// The player's ship with the upgrades bought at the shipyard: gameplay stats and model.
+function playerStats() {
+  return playerType(SHIP_TYPES.player, shipConfig);
+}
+function buildPlayerMesh(type = playerStats()) {
+  return buildShip('player', { type, look: shipConfig.look, upgrades: shipConfig.up });
+}
+
 function createShip(typeName, kind, x, z, h) {
-  const type = SHIP_TYPES[typeName];
-  const mesh = buildShip(typeName);
+  const isPlayer = kind === 'player' && typeName === 'player';
+  const type = isPlayer ? playerStats() : SHIP_TYPES[typeName];
+  const mesh = isPlayer ? buildPlayerMesh(type) : buildShip(typeName);
   const ship = {
     kind,
     typeName,
@@ -690,16 +757,20 @@ function clearLevelEntities() {
 // Levels
 // ---------------------------------------------------------------------------
 function loadEnvironment(n) {
+  setEnvironment(LEVELS[n - 1].env, n * 7919 + 13);
+}
+
+// Build an environment module (a level, or Sparrow's Floating Island for the shipyard).
+function setEnvironment(mod, seed) {
   if (env) env.dispose();
-  const def = LEVELS[n - 1];
-  env = def.env.build(scene, { rng: mulberry32(n * 7919 + 13) });
+  env = mod.build(scene, { rng: mulberry32(seed) });
   colliders.length = 0;
   for (const c of env.colliders) colliders.push({ h: 3, ...c });
   reefs.length = 0;
   if (env.reefs) reefs.push(...env.reefs);
   ocean.setFoam(colliders);
-  applyPalette(scene, def.env.palette, { ocean, sky, clouds, lights });
-  foamColor = def.env.palette.waterFoam ?? 0xffffff;
+  applyPalette(scene, mod.palette, { ocean, sky, clouds, lights });
+  foamColor = mod.palette.waterFoam ?? 0xffffff;
   resetPerfWindow(1.5);
 }
 
@@ -812,6 +883,7 @@ function controlsLine() {
 
 function startLevel(n, { retry = false } = {}) {
   if (activeModal() && !state.contextLost) closeModal(modal);
+  closeDock();
   clearLevelEntities();
   if (menuShipMesh) {
     disposeShip(menuShipMesh);
@@ -849,7 +921,7 @@ function startLevel(n, { retry = false } = {}) {
 
   state.mode = 'playing';
   pausedDrawn = false;
-  for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won]) show(el, false);
+  for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won, ui.dock]) show(el, false);
   show(ui.hud, true);
   show(ui.hint, false);
   audio.setScene(LEVEL_SCENES[n - 1]);
@@ -904,6 +976,11 @@ function finishLevel() {
   state.gold += def.bonus;
   show(ui.banner, false);
   show(ui.hint, false);
+  // This level's earnings (loot and bonus) go into the treasure chest for the shipyard.
+  // (Gold from an attempt that is lost is never banked: a retry restores the voyage gold.)
+  bankGold(state.gold - state.goldAtLevelStart);
+  const banked =
+    `Banked <b>+${state.banked}</b> gold &middot; Treasure chest: <b>${state.purse}</b> gold`;
 
   if (state.level >= LEVELS.length) {
     state.mode = 'won';
@@ -913,6 +990,7 @@ function finishLevel() {
       saveNumber(BEST_KEY, state.best);
     }
     ui.wonGold.textContent = state.gold;
+    ui.wonChest.innerHTML = banked;
     show(ui.wonBest, isBest);
     show(ui.won, true);
   } else {
@@ -925,12 +1003,32 @@ function finishLevel() {
     ui.levelTitle.textContent = `${def.env.meta.name} cleared!`;
     ui.levelSummary.innerHTML =
       `Ships sunk: <b>${state.sunk}</b> &middot; Level bonus: <b>+${def.bonus}</b> gold<br>` +
-      `Total plunder: <b>${state.gold}</b> gold`;
+      `Total plunder: <b>${state.gold}</b> gold` +
+      `<small class="chest-line">${banked}</small>`;
     ui.nextBtn.textContent = `Sail to ${next.name}`;
     show(ui.levelDone, true);
   }
   renderLevelCards();
   updateHud(true);
+}
+
+// Put gold into the treasure chest (and save it).
+function bankGold(amount) {
+  const n = Math.max(0, Math.round(Number(amount) || 0));
+  const before = state.purse;
+  state.purse = clamp(state.purse + n, 0, MAX_GOLD);
+  state.banked = state.purse - before;
+  saveNumber(PURSE_KEY, state.purse);
+}
+
+// Leave the voyage between levels for the title screen: progress and the chest are already
+// saved; the plunder so far counts for the best score, as it does when the ship is sunk.
+function exitVoyage() {
+  if (state.gold > state.best) {
+    state.best = state.gold;
+    saveNumber(BEST_KEY, state.best);
+  }
+  showMenu();
 }
 
 function playerSunk() {
@@ -1255,8 +1353,8 @@ function updatePlayer(dt) {
   const target = SAIL_LEVELS[state.sail] * speedCap(p);
   p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
 
-  if (state.time - state.lastHit > REGEN_DELAY && p.hp < p.maxHp) {
-    p.hp = Math.min(p.maxHp, p.hp + REGEN_RATE * dt);
+  if (state.time - state.lastHit > (t.regenDelay ?? REGEN_DELAY) && p.hp < p.maxHp) {
+    p.hp = Math.min(p.maxHp, p.hp + (t.regen ?? REGEN_RATE) * dt);
     if (!state.regenShown && state.bannerTimer <= 0 && state.clearTimer <= 0) {
       state.regenShown = true;
       showBanner('Repairing!<small>Out of the fight, your crew patches the hull</small>', 2.2);
@@ -1836,6 +1934,7 @@ function onContextRestored() {
   } else {
     closeModal(ui.recover);
     if (recovery.pauseWasOpen) openModal(ui.pause); // it was paused before: stay paused
+    else if (state.mode === 'dock') dockTab(dock.tab).focus({ preventScroll: true }); // back to the shipyard panel
   }
 }
 function continueAfterRecovery() {
@@ -1875,6 +1974,17 @@ window.addEventListener('keydown', (e) => {
     const i = list.indexOf(document.activeElement);
     const next = e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i + 1) % list.length;
     list[next].focus();
+    return;
+  }
+  // At the shipyard the panel's buttons (and the browser) handle the keys: P, Escape and a bare
+  // Enter do nothing, arrows scroll the panel. With nothing focused, ←/→ (or A/D) turn the view.
+  if (state.mode === 'dock' && !open) {
+    if (k === 'm') {
+      if (!e.repeat) toggleMute();
+    } else if (KEYMAP[k] && !ui.dock.contains(document.activeElement)) {
+      e.preventDefault();
+      nudgeDockView(KEYMAP[k] === 'left' ? -1 : 1);
+    }
     return;
   }
   // Outside play (menus, dialogs), a focused button handles Enter/Space itself.
@@ -2055,6 +2165,11 @@ $('next-btn').addEventListener('click', nextLevel);
 $('retry-btn').addEventListener('click', retryLevel);
 $('menu-btn').addEventListener('click', showMenu);
 $('again-btn').addEventListener('click', showMenu);
+$('exit-btn').addEventListener('click', exitVoyage);
+$('dock-btn').addEventListener('click', () => openDock('levelDone'));
+$('over-dock-btn').addEventListener('click', () => openDock('over'));
+$('won-dock-btn').addEventListener('click', () => openDock('won'));
+$('menu-dock-btn').addEventListener('click', () => openDock('menu'));
 for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
   btn.addEventListener('click', (e) => {
     const target = e.currentTarget;
@@ -2067,6 +2182,7 @@ for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
 // Level select cards on the title screen.
 function renderLevelCards() {
   ui.best.textContent = state.best;
+  ui.menuChest.textContent = state.purse;
   ui.levelCards.innerHTML = '';
   LEVELS.forEach((def, i) => {
     const n = i + 1;
@@ -2088,8 +2204,9 @@ function renderLevelCards() {
 function showMenu() {
   if (activeModal() && !state.contextLost) closeModal(modal);
   blurActive();
+  closeDock();
   clearLevelEntities();
-  for (const el of [ui.pause, ui.levelDone, ui.over, ui.won, ui.hud, ui.banner, ui.boss, ui.hint]) show(el, false);
+  for (const el of [ui.pause, ui.levelDone, ui.over, ui.won, ui.dock, ui.hud, ui.banner, ui.boss, ui.hint]) show(el, false);
   state.mode = 'menu';
   audio.stopAll();
   audio.setScene('menu');
@@ -2105,8 +2222,623 @@ let menuShipMesh = null;
 let menuLayout = null; // cached panel position, recomputed after resize
 function menuShip() {
   if (menuShipMesh) disposeShip(menuShipMesh);
-  menuShipMesh = buildShip('player');
+  menuShipMesh = buildPlayerMesh();
   scene.add(menuShipMesh);
+}
+
+// ---------------------------------------------------------------------------
+// The shipyard on Sparrow's Floating Island. The ship lies at its berth while a crew scrubs it,
+// the camera sways slowly around it (drag the view, or ←/→, to turn it) and the panel sells
+// upgrades (paid from the treasure chest) and paint (free). Every change rebuilds the ship.
+// ---------------------------------------------------------------------------
+const DOCK_FROM = ['menu', 'levelDone', 'over', 'won'];
+// Ways out of the dock, by where the player came from; the first one is the main action.
+const DOCK_EXITS = { levelDone: ['next', 'menu'], over: ['retry', 'menu'], menu: ['title'], won: ['title'] };
+const PAINT_PARTS = [
+  ['hull', 'Hull paint'],
+  ['sails', 'Sails'],
+  ['flag', 'Flag'],
+];
+const dock = {
+  open: false,
+  from: 'menu',
+  ship: null,
+  sup: null, // support points of every docked ship so far (frames the view, see measureDockShip())
+  tab: 'up',
+  built: false,
+  a: 0, // orbit angle of the camera
+  phase: 0, // auto-sway phase
+  idle: 0, // seconds since the player last turned the view
+  drag: null, // { id, x } while a pointer drags the view
+  shownPurse: -1, // chest total the panel shows
+  cheerUntil: 0, // the crew aboard cheers a new upgrade until this (visual) time
+  cheering: [],
+  lastBuy: { id: '', at: -Infinity },
+};
+let dockLayout = null; // framing beside the panel, recomputed after resize
+
+// Small cartoon icons for the upgrade rows (ink outlines like the 3D art).
+const INK_SVG = 'stroke="#1d1330" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"';
+const UP_ICONS = {
+  guns:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}><path d="M4.5 18.5l17-7.6c2.6-1.1 4.9-.4 5.6 1.3.7 1.7-.4 3.8-3 5L8 24z" fill="#4a4458"/>` +
+    '<path d="M24.5 11.6c1.4.4 2.4 1.8 2.6 3.2" fill="none"/><rect x="5" y="20" width="15" height="5.5" rx="2" fill="#b0703a"/>' +
+    '<circle cx="8.6" cy="25.6" r="3.4" fill="#e0a052"/><circle cx="17.4" cy="25.6" r="3.4" fill="#e0a052"/></g>' +
+    '<circle cx="8.6" cy="25.6" r="1" fill="#1d1330"/><circle cx="17.4" cy="25.6" r="1" fill="#1d1330"/></svg>',
+  shot:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG} fill="#3a3443"><circle cx="10" cy="22" r="6"/><circle cx="22" cy="22" r="6"/><circle cx="16" cy="12" r="6"/></g>` +
+    '<g fill="#fff" opacity=".75"><circle cx="8" cy="19.6" r="1.6"/><circle cx="20" cy="19.6" r="1.6"/><circle cx="14" cy="9.6" r="1.6"/></g></svg>',
+  crew:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}><path d="M24.5 3.5L13 18" fill="none" stroke-width="2.6"/><rect x="21.6" y="1.6" width="5" height="5" rx="2.2" fill="#f2e6c8" transform="rotate(38 24.1 4.1)"/>` +
+    '<path d="M8 9.5h14c1.6 3.3 1.6 15.7 0 19H8c-1.6-3.3-1.6-15.7 0-19z" fill="#c07b3a"/><path d="M7.1 14h15.8M7.1 24h15.8" fill="none"/>' +
+    '<rect x="11.5" y="16.6" width="7" height="5" rx="1.4" fill="#fff4d6"/></g><path d="M13.6 18.1h2.8M13.6 20h2" stroke="#1d1330" stroke-width="1.4"/></svg>',
+  hull:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}><path d="M16 3.5l10.5 4v8.3c0 6.4-4.3 10.4-10.5 12.7C9.8 26.2 5.5 22.2 5.5 15.8V7.5z" fill="#93a4b8"/>` +
+    '<path d="M5.6 13.4h20.8v4.4H5.6z" fill="#5d6b7d"/></g><g fill="#1d1330"><circle cx="10" cy="15.6" r="1.1"/><circle cx="16" cy="15.6" r="1.1"/><circle cx="22" cy="15.6" r="1.1"/></g>' +
+    '<path d="M11 7.6l4-1.4" stroke="#fff" stroke-width="1.6" stroke-linecap="round" opacity=".8"/></svg>',
+  sails:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}><path d="M9 2.5v27" fill="none" stroke-width="2.4"/><path d="M9.5 3.5l8 3-8 3z" fill="#e63946"/>` +
+    '<path d="M10 10.5c7 0 13 1.4 16.5 2.4-1.5 4.6-1.5 9.2 0 13.8C23 27.5 17 28.5 10 28.5z" fill="#fff4d6"/>' +
+    '<path d="M10 25c6 0 11.5-.6 15.6-1.6l.9 3.3C23 27.6 17 28.5 10 28.5z" fill="#e63946"/></g></svg>',
+  carpenter:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}><rect x="3.5" y="21" width="25" height="6.5" rx="2" fill="#d9a066"/>` +
+    '<path d="M9 24.2h4M17 24.2h6" fill="none" stroke-width="1.4"/><path d="M21.5 6.5L11 19" fill="none" stroke-width="3.6" stroke="#1d1330"/>' +
+    '<path d="M21.5 6.5L11 19" fill="none" stroke-width="1.6" stroke="#e0a052"/><path d="M15.8 5.2l5.6-3.2 6 6.8-4.4 4.4z" fill="#6c7688"/></g></svg>',
+};
+
+function hexColor(n) {
+  return `#${(n >>> 0).toString(16).padStart(6, '0')}`;
+}
+
+// Polite live region for shipyard news (purchases, paint, why a Buy button is out of reach).
+function announce(text) {
+  // A repeated message is changed slightly so screen readers read it again.
+  ui.dockLive.textContent = ui.dockLive.textContent === text ? `${text} ` : text;
+}
+
+function openDock(from) {
+  if (state.mode === 'dock') return true;
+  if (!DOCK_FROM.includes(from)) from = DOCK_FROM.includes(state.mode) ? state.mode : 'menu';
+  if (from === 'levelDone' && state.level >= LEVELS.length) from = 'won';
+  if (activeModal() && !state.contextLost) closeModal(modal);
+  blurActive();
+  clearLevelEntities();
+  if (menuShipMesh) {
+    disposeShip(menuShipMesh);
+    menuShipMesh = null;
+  }
+  clearSteering();
+  for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won, ui.hud, ui.banner, ui.boss, ui.hint]) show(el, false);
+  state.bannerTimer = 0;
+  state.shake = 0;
+  state.mode = 'dock';
+  dock.from = from;
+  dock.open = true;
+  pausedDrawn = false;
+
+  setEnvironment(sparrow, 77);
+  dock.sup = null;
+  placeDockShip(buildPlayerMesh());
+  dock.a = env.view.yaw;
+  dock.phase = 0;
+  dock.idle = 99; // start swaying straight away
+  dock.drag = null;
+  audio.stopAll();
+  audio.setMusicVolume(1);
+  audio.setScene('menu');
+
+  buildDockPanel();
+  renderDockExits();
+  setDockTab('up', false);
+  renderDock();
+  ui.dockLive.textContent = '';
+  show(ui.dock, true);
+  document.body.classList.add('docked');
+  dockLayout = null;
+  // Keyboard focus starts on the Upgrades tab (unless the graphics-recovery dialog is up).
+  if (!activeModal()) dockTab('up').focus({ preventScroll: true });
+  return true;
+}
+
+// Tidy up the dock scene (the caller loads whatever comes next). Safe to call any time.
+function closeDock() {
+  if (!dock.open) return;
+  dock.open = false;
+  dock.cheering = [];
+  dock.cheerUntil = 0;
+  endDockDrag();
+  // Take the cleaning crew off the ship before it is disposed (the environment owns them).
+  if (env && env.setShip) env.setShip(null);
+  if (dock.ship) disposeShip(dock.ship);
+  dock.ship = null;
+  show(ui.dock, false);
+  document.body.classList.remove('docked', 'dragging');
+  camera.clearViewOffset();
+  setLens();
+  dockLayout = null;
+}
+
+function leaveDock(action) {
+  if (state.mode !== 'dock') return false;
+  const exits = DOCK_EXITS[dock.from];
+  if (action === undefined) action = exits[0];
+  if (action === 'menu' && !exits.includes('menu')) action = 'title';
+  if (!exits.includes(action)) return false;
+  if (action === 'next') nextLevel();
+  else if (action === 'retry') retryLevel();
+  else if (action === 'menu') exitVoyage();
+  else showMenu();
+  return true;
+}
+
+// Put a freshly built ship at the berth (replacing and disposing the old one) with the crew aboard.
+function placeDockShip(mesh) {
+  const old = dock.ship;
+  dock.ship = mesh;
+  scene.add(mesh);
+  poseDockShip(visualTime);
+  if (env.setShip) env.setShip(mesh); // moves the crew over from the old ship
+  measureDockShip(mesh); // with the crew (and their rowboat and plank) aboard
+  if (old) disposeShip(old);
+}
+
+// The view is framed on the ship's support points: for each of a fixed set of directions, the point
+// (ship-local, above the water) that reaches furthest that way, over every ship docked so far. That
+// hugs the real shape (a bounding box leaves a lot of empty sea around a ship), the framing never
+// jumps on a paint change and it only widens when an upgrade makes the ship bigger.
+const FRAME_DIRS = new Float64Array(64 * 3);
+for (let i = 0, n = 64; i < n; i++) {
+  const y = 1 - (2 * (i + 0.5)) / n;
+  const r = Math.sqrt(1 - y * y);
+  const a = i * Math.PI * (3 - Math.sqrt(5));
+  FRAME_DIRS.set([Math.cos(a) * r, y, Math.sin(a) * r], i * 3);
+}
+const fitInv = new THREE.Matrix4();
+const fitM = new THREE.Matrix4();
+const fitBox = new THREE.Box3();
+function measureDockShip(mesh) {
+  const n = FRAME_DIRS.length / 3;
+  if (!dock.sup) dock.sup = { d: new Float64Array(n).fill(-Infinity), pts: new Float64Array(n * 3) };
+  const { d, pts } = dock.sup;
+  let grew = false;
+  const take = (x, y, z) => {
+    if (y < -0.1) return; // under water
+    for (let k = 0; k < n; k++) {
+      const s = FRAME_DIRS[k * 3] * x + FRAME_DIRS[k * 3 + 1] * y + FRAME_DIRS[k * 3 + 2] * z;
+      if (s > d[k] + 1e-4) {
+        d[k] = s;
+        pts[k * 3] = x;
+        pts[k * 3 + 1] = y;
+        pts[k * 3 + 2] = z;
+        grew = true;
+      }
+    }
+  };
+  mesh.updateMatrixWorld(true);
+  fitInv.copy(mesh.matrixWorld).invert();
+  mesh.traverseVisible((o) => {
+    const g = o.isMesh && !o.isInstancedMesh ? o.geometry : null;
+    const pos = g && g.attributes.position;
+    if (!pos) return;
+    const e = fitM.multiplyMatrices(fitInv, o.matrixWorld).elements;
+    if (o.isSkinnedMesh) {
+      // A crew member: the corners of the (bind pose) bounds are close enough.
+      if (!g.boundingBox) g.computeBoundingBox();
+      fitBox.copy(g.boundingBox);
+      for (let c = 0; c < 8; c++) {
+        const x = c & 1 ? fitBox.max.x : fitBox.min.x;
+        const y = c & 2 ? fitBox.max.y : fitBox.min.y;
+        const z = c & 4 ? fitBox.max.z : fitBox.min.z;
+        take(e[0] * x + e[4] * y + e[8] * z + e[12], e[1] * x + e[5] * y + e[9] * z + e[13], e[2] * x + e[6] * y + e[10] * z + e[14]);
+      }
+      return;
+    }
+    const a = pos.array;
+    const st = pos.isInterleavedBufferAttribute ? pos.data.stride : pos.itemSize;
+    const off = pos.isInterleavedBufferAttribute ? pos.offset : 0;
+    for (let i = 0; i < pos.count; i++) {
+      const j = i * st + off;
+      const x = a[j];
+      const y = a[j + 1];
+      const z = a[j + 2];
+      take(e[0] * x + e[4] * y + e[8] * z + e[12], e[1] * x + e[5] * y + e[9] * z + e[13], e[2] * x + e[6] * y + e[10] * z + e[14]);
+    }
+  });
+  if (grew) dockLayout = null;
+}
+
+function rebuildDockShip() {
+  if (dock.ship) placeDockShip(buildPlayerMesh());
+}
+
+// Moored: it rises and falls with the water and rolls a little.
+function poseDockShip(t) {
+  const s = dock.ship;
+  const b = env.berth;
+  s.position.set(b.x, ocean.heightAt(b.x, b.z, t), b.z);
+  s.rotation.set(0, b.h, 0);
+  s.rotateX(Math.sin(t * 0.7 + 1.3) * 0.008);
+  s.rotateZ(Math.sin(t * 1.05) * 0.02);
+  animateShip(s, t, 0.12);
+}
+
+function buyUpgrade(id) {
+  if (state.mode !== 'dock') return false;
+  const u = UPGRADES.find((x) => x.id === id);
+  if (!u) return false;
+  const cost = nextCost(shipConfig, id);
+  if (cost === null) {
+    announce(`${u.name} is fully upgraded.`);
+    return false;
+  }
+  if (state.purse < cost) {
+    announce(`${u.name} costs ${cost} gold. You need ${cost - state.purse} more gold.`);
+    return false;
+  }
+  state.purse -= cost;
+  saveNumber(PURSE_KEY, state.purse);
+  shipConfig.up[id] = Math.min(maxTier(id), shipConfig.up[id] + 1);
+  saveShipConfig(shipConfig);
+  rebuildDockShip();
+  renderDock();
+  retrigger(ui.dockChest, 'bump');
+  audio.play('coin');
+  setTimeout(() => audio.play('coin', { pitch: 1.25 }), 110);
+  celebrate(true);
+  const tier = shipConfig.up[id];
+  announce(`Bought ${u.name}. ${u.stat}: ${statText(id, tier)}.`);
+  return true;
+}
+
+function setPaint(part, id) {
+  if (state.mode !== 'dock' || !PAINT_PARTS.some(([p]) => p === part)) return false;
+  const look = LOOKS[part].find((l) => l.id === id);
+  if (!look) return false;
+  if (shipConfig.look[part] !== id) {
+    shipConfig.look[part] = id;
+    saveShipConfig(shipConfig);
+    rebuildDockShip();
+    celebrate(false);
+  }
+  renderDock();
+  announce(`${PAINT_PARTS.find(([p]) => p === part)[1]}: ${look.name}.`);
+  return true;
+}
+
+// A shower of gold sparkles over the deck (and a cheer, if the crew knows how).
+function celebrate(big) {
+  const s = dock.ship;
+  if (!s) return;
+  const n = big ? 16 : 7;
+  puff(s.position.x, 3, s.position.z, n, 0xffd23f, 7, 9, 0.2, 0.9, GRAVITY * 0.45, false, 'glow');
+  puff(s.position.x, 3, s.position.z, Math.round(n / 2), 0xffffff, 6, 8, 0.15, 0.8, GRAVITY * 0.45, false, 'glow');
+  if (!big) return;
+  if (typeof env.cheer === 'function') {
+    env.cheer(1.6);
+  } else {
+    // The crew aboard throws their arms (and mops) in the air for a moment.
+    dock.cheering = [];
+    s.traverse((o) => {
+      if (o.userData && o.userData.keep && o.userData.kind) dock.cheering.push(o);
+    });
+    dock.cheerUntil = visualTime + 1.6;
+  }
+}
+
+// ---- Panel ----
+function dockTab(name) {
+  return ui.dockTabs.find((t) => t.dataset.tab === name) || ui.dockTabs[0];
+}
+
+function setDockTab(name, focus = true) {
+  dock.tab = name === 'paint' ? 'paint' : 'up';
+  for (const t of ui.dockTabs) {
+    const on = t.dataset.tab === dock.tab;
+    t.setAttribute('aria-selected', String(on));
+    t.tabIndex = on ? 0 : -1;
+    const panel = document.getElementById(t.getAttribute('aria-controls'));
+    if (panel) panel.hidden = !on;
+  }
+  const body = ui.dockPanel.querySelector('.dock-body');
+  if (body) body.scrollTop = 0;
+  if (focus) dockTab(dock.tab).focus({ preventScroll: true });
+}
+
+function buildDockPanel() {
+  if (dock.built) return;
+  dock.built = true;
+  for (const u of UPGRADES) {
+    const li = document.createElement('li');
+    li.className = 'up-row';
+    li.dataset.id = u.id;
+    li.innerHTML =
+      `<span class="up-ico" aria-hidden="true">${UP_ICONS[u.id] || ''}</span>` +
+      `<div class="up-head"><h3 class="up-name" id="up-${u.id}-name">${u.name}</h3><span class="pips" role="img"></span></div>` +
+      `<p class="up-stat"><span class="up-statname">${u.stat}:</span> <span class="up-values"></span></p>` +
+      `<p class="up-blurb">${u.blurb}</p>` +
+      '<div class="up-buy">' +
+      `<button type="button" class="buy-btn" data-buy="${u.id}" aria-describedby="up-${u.id}-why"></button>` +
+      `<span class="up-why" id="up-${u.id}-why"></span>` +
+      '</div>';
+    ui.dockUpList.appendChild(li);
+  }
+  for (const [part, title] of PAINT_PARTS) {
+    const group = document.createElement('div');
+    group.className = 'paint-group';
+    group.setAttribute('role', 'group');
+    group.setAttribute('aria-labelledby', `paint-${part}-h`);
+    group.innerHTML = `<h3 id="paint-${part}-h">${title}</h3><div class="swatches"></div>`;
+    const row = group.querySelector('.swatches');
+    for (const look of LOOKS[part]) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = `swatch sw-${part}`;
+      b.dataset.part = part;
+      b.dataset.look = look.id;
+      const [c1, c2 = c1] = look.swatch.map(hexColor);
+      b.innerHTML = `<span class="chip" style="--c1:${c1};--c2:${c2}" aria-hidden="true"></span><span class="sw-name">${look.name}</span>`;
+      row.appendChild(b);
+    }
+    ui.dockPaint.appendChild(group);
+  }
+  ui.dockUpList.addEventListener('click', (e) => {
+    const b = e.target instanceof Element && e.target.closest('[data-buy]');
+    if (!b) return;
+    // A double-click is one purchase, not two.
+    const now = performance.now();
+    if (dock.lastBuy.id === b.dataset.buy && now - dock.lastBuy.at < 400) return;
+    dock.lastBuy = { id: b.dataset.buy, at: now };
+    buyUpgrade(b.dataset.buy);
+  });
+  // A held Enter clicks again on every auto-repeat: one press is one purchase (or one paint).
+  ui.dockPanel.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && e.repeat && e.target instanceof HTMLButtonElement) e.preventDefault();
+  });
+  ui.dockPaint.addEventListener('click', (e) => {
+    const b = e.target instanceof Element && e.target.closest('[data-look]');
+    if (b) setPaint(b.dataset.part, b.dataset.look);
+  });
+  for (const t of ui.dockTabs) {
+    t.addEventListener('click', () => setDockTab(t.dataset.tab));
+    // Tabs: ←/→ (and Home/End) move between them, as in any tab list.
+    t.addEventListener('keydown', (e) => {
+      const i = ui.dockTabs.indexOf(t);
+      const n = ui.dockTabs.length;
+      let j = -1;
+      if (e.key === 'ArrowRight') j = (i + 1) % n;
+      else if (e.key === 'ArrowLeft') j = (i - 1 + n) % n;
+      else if (e.key === 'Home') j = 0;
+      else if (e.key === 'End') j = n - 1;
+      if (j < 0) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setDockTab(ui.dockTabs[j].dataset.tab);
+    });
+  }
+  ui.dockExits.addEventListener('click', (e) => {
+    const b = e.target instanceof Element && e.target.closest('[data-exit]');
+    if (b) leaveDock(b.dataset.exit);
+  });
+}
+
+function renderDockExits() {
+  const next = state.level < LEVELS.length ? LEVELS[state.level].env.meta.name : '';
+  const here = LEVELS[state.level - 1].env.meta.name;
+  const label = {
+    next: `Set sail for ${next}`,
+    retry: `Try again: ${here}`,
+    menu: 'Main menu',
+    title: 'Back to the title',
+  };
+  ui.dockExits.innerHTML = '';
+  DOCK_EXITS[dock.from].forEach((action, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.className = i === 0 ? 'btn' : 'btn alt';
+    b.id = `dock-${action}-btn`;
+    b.dataset.exit = action;
+    b.textContent = label[action];
+    ui.dockExits.appendChild(b);
+  });
+}
+
+// Bring the panel up to date with the chest and the ship (the rows are built once, so focus stays put).
+function renderDock() {
+  dock.shownPurse = state.purse;
+  const gold = String(state.purse);
+  if (ui.dockChestGold.textContent !== gold) ui.dockChestGold.textContent = gold;
+  for (const li of ui.dockUpList.children) {
+    const id = li.dataset.id;
+    const u = UPGRADES.find((x) => x.id === id);
+    const tier = shipConfig.up[id];
+    const max = maxTier(id);
+    const cost = nextCost(shipConfig, id);
+    const pips = li.querySelector('.pips');
+    pips.innerHTML = '<i></i>'.repeat(max);
+    [...pips.children].forEach((p, i) => p.classList.toggle('on', i < tier));
+    pips.setAttribute('aria-label', `Upgraded ${tier} of ${max}`);
+    li.querySelector('.up-values').innerHTML =
+      cost === null
+        ? `<b>${statText(id, tier)}</b> <span class="up-max">(best)</span>`
+        : `<b>${statText(id, tier)}</b> <span class="arrow" aria-hidden="true">&rarr;</span><span class="sr-only"> next: </span> <b class="up-next">${statText(id, tier + 1)}</b>`;
+    const btn = li.querySelector('.buy-btn');
+    const why = li.querySelector('.up-why');
+    let reason = '';
+    if (cost === null) {
+      btn.innerHTML = '<span class="buy-word">Maxed</span>';
+      btn.setAttribute('aria-label', `${u.name}: maxed`);
+      reason = 'Fully upgraded';
+    } else {
+      btn.innerHTML = `<span class="buy-word">Buy</span><span class="buy-cost"><span class="coin" aria-hidden="true"></span>${cost}</span>`;
+      btn.setAttribute('aria-label', `Buy ${u.name} for ${cost} gold`);
+      if (state.purse < cost) reason = `Need ${cost - state.purse} more gold`;
+    }
+    // Out-of-reach buttons stay focusable (aria-disabled) so focus never drops out of the panel
+    // after a purchase, and the reason is read with the button.
+    btn.setAttribute('aria-disabled', String(!!reason));
+    btn.classList.toggle('maxed', cost === null);
+    why.textContent = reason;
+    li.classList.toggle('maxed', cost === null);
+    li.classList.toggle('poor', cost !== null && !!reason);
+  }
+  for (const b of ui.dockPaint.querySelectorAll('[data-look]')) {
+    b.setAttribute('aria-pressed', String(shipConfig.look[b.dataset.part] === b.dataset.look));
+  }
+}
+
+// ---- View: a slow sway across the allowed angles; drag (or ←/→) to turn it ----
+function resumeDockSway() {
+  const v = env.view;
+  const u = clamp((dock.a - v.yaw) / (v.yawRange || 1), -1, 1);
+  // Carry on from here, heading back toward the middle first.
+  dock.phase = u > 0 ? Math.PI - Math.asin(u) : Math.asin(u);
+  dock.idle = 0;
+}
+
+function nudgeDockView(dir) {
+  if (state.mode !== 'dock' || !env.view) return;
+  const v = env.view;
+  dock.a = clamp(dock.a + dir * Math.max(0.06, v.yawRange * 0.25), v.yaw - v.yawRange, v.yaw + v.yawRange);
+  resumeDockSway();
+}
+
+function endDockDrag(e) {
+  if (!dock.drag || (e && e.pointerId !== dock.drag.id)) return;
+  dock.drag = null;
+  document.body.classList.remove('dragging');
+  if (state.mode === 'dock') resumeDockSway();
+}
+
+ui.canvas.addEventListener('pointerdown', (e) => {
+  if (state.mode !== 'dock' || dock.drag || activeModal()) return;
+  if (e.pointerType === 'mouse' && e.button !== 0) return;
+  dock.drag = { id: e.pointerId, x: e.clientX };
+  try {
+    ui.canvas.setPointerCapture(e.pointerId);
+  } catch {
+    // Synthetic events have no capturable pointer.
+  }
+  document.body.classList.add('dragging');
+});
+ui.canvas.addEventListener('pointermove', (e) => {
+  const d = dock.drag;
+  if (!d || e.pointerId !== d.id || state.mode !== 'dock') return;
+  const v = env.view;
+  const dx = e.clientX - d.x;
+  d.x = e.clientX;
+  // Dragging across the whole free area sweeps a bit more than the allowed range.
+  const width = Math.max(240, dockLayout ? dockLayout.fw : window.innerWidth);
+  dock.a = clamp(dock.a - (dx / width) * v.yawRange * 2.4, v.yaw - v.yawRange, v.yaw + v.yawRange);
+  dock.idle = 0;
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) ui.canvas.addEventListener(type, endDockDrag);
+
+// Frame the ship in the free space beside the panel (above it when the panel is a bottom sheet):
+// the camera's full frame is that free area, the canvas shows it plus what lies under the panel.
+const fitT = new THREE.Vector3();
+const fitP = new THREE.Vector3();
+const fitF = new THREE.Vector3();
+const fitR = new THREE.Vector3();
+const fitU = new THREE.Vector3();
+const fitD = new THREE.Vector3();
+const WORLD_UP = new THREE.Vector3(0, 1, 0);
+function dockFraming() {
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  // Layout box of the panel, without the transform of its slide-in animation.
+  const p = ui.dockPanel;
+  const r = { left: p.offsetLeft, top: p.offsetTop, width: p.offsetWidth, height: p.offsetHeight };
+  r.right = r.left + r.width;
+  let fx = 0;
+  let fy = 0;
+  let fw = W;
+  let fh = H;
+  const sheet = r.width > W * 0.7;
+  if (r.width && r.height) {
+    if (sheet) fh = clamp(r.top, H * 0.25, H);
+    else if (r.left > W * 0.3) fw = clamp(r.left, W * 0.3, W);
+    else {
+      fx = r.right;
+      fw = W - r.right;
+    }
+  }
+  // How far the ship reaches from the view axis (tangents), over every angle the camera can take.
+  const v = env.view;
+  const b = env.berth;
+  const sup = dock.sup;
+  fitT.set(v.target[0], v.target[1], v.target[2]);
+  let xMin = Infinity;
+  let xMax = -Infinity;
+  let yMin = Infinity;
+  let yMax = -Infinity;
+  const ch = Math.cos(b.h);
+  const sh = Math.sin(b.h);
+  for (let i = 0; i <= 6 && sup; i++) {
+    const a = v.yaw - v.yawRange + (2 * v.yawRange * i) / 6;
+    fitP.set(fitT.x + Math.sin(a) * v.dist, fitT.y + v.height, fitT.z + Math.cos(a) * v.dist);
+    fitF.subVectors(fitT, fitP).normalize();
+    fitR.crossVectors(fitF, WORLD_UP).normalize();
+    fitU.crossVectors(fitR, fitF);
+    for (let k = 0; k < sup.d.length; k++) {
+      if (sup.d[k] === -Infinity) continue;
+      const lx = sup.pts[k * 3];
+      const ly = sup.pts[k * 3 + 1];
+      const lz = sup.pts[k * 3 + 2];
+      fitD.set(b.x + lx * ch + lz * sh - fitP.x, ly - fitP.y, b.z - lx * sh + lz * ch - fitP.z);
+      const z = fitD.dot(fitF);
+      if (z < 0.5) continue;
+      const x = fitD.dot(fitR) / z;
+      const y = fitD.dot(fitU) / z;
+      xMin = Math.min(xMin, x);
+      xMax = Math.max(xMax, x);
+      yMin = Math.min(yMin, y);
+      yMax = Math.max(yMax, y);
+    }
+  }
+  const aspect = fw / fh;
+  let tanV = Math.tan((50 * Math.PI) / 360);
+  let cx = 0;
+  let cy = 0;
+  if (xMax > xMin && yMax > yMin) {
+    // The ship (at its widest angle) fills most of the free area, centred in it by a lens shift,
+    // big enough to watch the crew at work; the town shows around and behind it. Big views
+    // leave a little more room around it than a phone does.
+    const k = clamp((Math.min(fw, fh * 1.4) - 340) / 460, 0, 1);
+    const fillX = 0.92 - 0.12 * k;
+    const fillY = 0.88 - 0.1 * k;
+    tanV = Math.max((yMax - yMin) / 2 / fillY, (xMax - xMin) / 2 / (aspect * fillX));
+    tanV = clamp(tanV, Math.tan((22 * Math.PI) / 360), Math.tan((80 * Math.PI) / 360));
+    cx = (xMax + xMin) / 2;
+    // Spare height goes mostly above the ship, where the town rises behind it, not to empty sea.
+    const slack = Math.max(0, 2 * tanV - (yMax - yMin));
+    cy = yMax + 0.62 * slack - tanV;
+  }
+  camera.fov = (Math.atan(tanV) * 360) / Math.PI;
+  const offX = (cx / (tanV * aspect)) * (fw / 2) - fx;
+  const offY = -(cy / tanV) * (fh / 2) - fy;
+  camera.setViewOffset(fw, fh, offX, offY, W, H); // also sets camera.aspect = fw / fh
+  dockLayout = { fx, fy, fw, fh, sheet };
+}
+
+const reducedMotionQuery = window.matchMedia?.('(prefers-reduced-motion: reduce)') ?? null;
+const reducedMotion = () => !!reducedMotionQuery?.matches;
+
+function updateDockCamera(dt) {
+  const v = env.view;
+  if (!dockLayout) dockFraming();
+  if (!dock.drag) {
+    dock.idle += dt;
+    // The slow sway is decoration: not for players who asked for less motion.
+    if (dock.idle > 2.5 && !reducedMotion()) {
+      const ramp = Math.min(1, (dock.idle - 2.5) / 2); // ease back into the sway
+      dock.phase += dt * 0.14 * ramp;
+      dock.a = v.yaw + v.yawRange * Math.sin(dock.phase);
+    }
+  }
+  dock.a = clamp(dock.a, v.yaw - v.yawRange, v.yaw + v.yawRange);
+  const [tx, ty, tz] = v.target;
+  camera.position.set(tx + Math.sin(dock.a) * v.dist, ty + v.height, tz + Math.cos(dock.a) * v.dist);
+  camera.lookAt(tx, ty, tz);
 }
 
 // ---------------------------------------------------------------------------
@@ -2407,6 +3139,8 @@ function updateCamera(dt, paused) {
       camera.position.y += (Math.random() - 0.5) * state.shake;
     }
     camera.lookAt(camLook);
+  } else if (state.mode === 'dock' && dock.ship) {
+    updateDockCamera(dt);
   } else if (env) {
     const ps = env.playerStart;
     // Frame the title-screen ship in the free margin beside the menu panel.
@@ -2465,6 +3199,10 @@ function frame() {
 
   if (!paused) updateParticles(dt);
   if (player) syncShip(player, t);
+  if (state.mode === 'dock' && dock.ship) {
+    poseDockShip(t);
+    if (dock.shownPurse !== state.purse) renderDock(); // the chest changed behind the panel's back
+  }
   for (const e of enemies) {
     if (!paused) e.flash = Math.max(0, e.flash - dt);
     syncShip(e, t);
@@ -2493,8 +3231,9 @@ function frame() {
   sky.update(camera);
   clouds.update(paused ? 0 : dt, focusX, focusZ);
   if (env && !paused) env.update(t, dt);
+  if (state.mode === 'dock' && t < dock.cheerUntil) for (const p of dock.cheering) animatePerson(p, t, 'cheer');
 
-  if (state.mode !== 'menu') {
+  if (state.mode !== 'menu' && state.mode !== 'dock') {
     updateHud(false, paused ? 0 : dt);
     drawMinimap();
   }
@@ -2542,6 +3281,29 @@ window.__game = {
   relative,
   launchBomb,
   step,
+  // The shipyard: open('menu' | 'levelDone' | 'over' | 'won'), leave(['next' | 'retry' | 'menu' | 'title'];
+  // default: the main way out for where it was opened from), buy(upgrade id), paint(part, look id).
+  dock: {
+    open: (from) => openDock(from),
+    leave: (action) => leaveDock(action),
+    buy: (id) => buyUpgrade(id),
+    paint: (part, id) => setPaint(part, id),
+    get from() {
+      return state.mode === 'dock' ? dock.from : null;
+    },
+    get ship() {
+      return dock.ship;
+    },
+    // Where the ship is framed: the free area beside (or above) the panel, in CSS pixels.
+    get layout() {
+      return dockLayout ? { ...dockLayout, fov: camera.fov, angle: dock.a } : null;
+    },
+  },
+  camera,
+  scene,
+  get shipConfig() {
+    return parseShipConfig(shipConfig); // a copy
+  },
   get renderInfo() {
     return { ...view.renderer.info.render };
   },
