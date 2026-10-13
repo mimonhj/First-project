@@ -1822,6 +1822,11 @@ function onContextRestored() {
   state.contextLost = false;
   pausedDrawn = false;
   resize();
+  // A voyage in play when the view returns (one started while it was gone, too) waits for Continue.
+  if (state.mode === 'playing') {
+    pauseGame();
+    recovery.resume = true;
+  }
   if (recovery.resume) {
     // The player was mid-fight: wait for them to choose to continue.
     ui.recoverTitle.textContent = 'Graphics restored';

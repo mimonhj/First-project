@@ -562,6 +562,21 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
         const next = await page.evaluate(() => window.__game.state.mode);
         check(back.mode === mode && !back.recover && !back.inert && next === 'playing', `context restored on the ${name} screen: it is usable again and Enter carries on (${JSON.stringify({ ...back, afterEnter: next })})`);
       }
+
+      // A voyage started while the view is gone (only possible through the test API: the dialog
+      // blocks the UI) also waits for Continue when the view comes back.
+      await page.evaluate(() => window.__loseExt.loseContext());
+      await page.waitForFunction(() => window.__game.state.contextLost === true, null, { timeout: 30000 }).catch(() => {});
+      await page.evaluate(() => window.__game.newGame(2));
+      await page.evaluate(() => window.__loseExt.restoreContext());
+      await page.waitForFunction(() => window.__game.state.contextLost === false, null, { timeout: 30000 }).catch(() => {});
+      await frames(page, 3);
+      const started = await page.evaluate(() => ({
+        mode: window.__game.state.mode,
+        recover: !document.getElementById('recover-screen').classList.contains('hidden'),
+        button: !document.getElementById('recover-btn').classList.contains('hidden'),
+      }));
+      check(started.mode === 'paused' && started.recover && started.button, `context restored: a voyage started while the view was gone waits for Continue (${JSON.stringify(started)})`);
     }
     await ctx.close();
   }
