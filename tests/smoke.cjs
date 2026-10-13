@@ -15,8 +15,9 @@ function check(cond, msg) {
   if (!cond) failures++;
 }
 // For page probes that report success as exactly `true` (anything else, e.g. an error message, fails).
-function checkTrue(result, msg) {
-  check(result === true, result === true ? msg : `${msg}: ${result}`);
+// `report` defaults to check(); a regression test can pass its own to capture the verdict.
+function checkTrue(result, msg, report = check) {
+  report(result === true, result === true ? msg : `${msg}: ${result}`);
 }
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -84,6 +85,9 @@ async function shotColours(page) {
   const watch = (p) => {
     p.on('pageerror', (e) => errors.push(e.message));
     p.on('console', (m) => m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text()) && errors.push(m.text()));
+    // The sound module catches its own errors so they can't break the game, and logs them as
+    // warnings starting with "audio:". Count those as errors too.
+    p.on('console', (m) => m.type() === 'warning' && /^audio:/.test(m.text()) && errors.push(m.text()));
   };
   const page = await browser.newPage({ viewport: { width: 1280, height: 720 } });
   watch(page);
@@ -317,27 +321,52 @@ async function shotColours(page) {
   const muted1 = await page.evaluate(() => ({ m: window.__game.audio.muted, stored: localStorage.getItem('pirates-ahoy-muted'), btn: document.getElementById('mute-btn').classList.contains('muted') }));
   check(muted1.m === !muted0 && muted1.btn, `M toggles sound and the mute button (${JSON.stringify(muted1)})`);
   await page.keyboard.press('m');
-  // Sound: every call must succeed; the probe returns exactly `true` or the error message.
-  const audioProbe = (simulateFailure) => {
+  // Sound: every call must succeed and make sound. The probe returns exactly `true`, or a message
+  // saying what went wrong. The sound module catches engine errors itself (sound must never break
+  // the game) but counts them in audio.errors(), so they are failures here too.
+  //   simulate = 'throw':  the sound module's play() itself throws
+  //   simulate = 'engine': the Web Audio engine fails inside the module (caught and counted)
+  const audioProbe = (simulate) => {
     const G = window.__game;
-    const audio = simulateFailure ? { play() { throw new Error('simulated audio failure'); } } : G.audio;
+    const audio = simulate === 'throw' ? { play() { throw new Error('simulated audio failure'); } } : G.audio;
+    const proto = window.BaseAudioContext.prototype;
+    const realCreateGain = proto.createGain;
+    if (simulate === 'engine') proto.createGain = function () { throw new Error('simulated engine failure'); };
+    const before = G.audio.stats();
+    const errorsBefore = G.audio.errors().count;
     try {
       for (const n of ['cannon', 'splash', 'hit', 'coin', 'bombBoom']) audio.play(n, { distance: 10, pan: 0.5 });
       audio.play('bombWhistle').stop();
-      return true;
     } catch (e) {
       return String(e);
+    } finally {
+      proto.createGain = realCreateGain;
     }
+    const errs = G.audio.errors();
+    if (errs.count !== errorsBefore) return `${errs.count - errorsBefore} sound call(s) failed inside the engine (${errs.last})`;
+    const after = G.audio.stats();
+    if (!before || !after) return 'the sound engine never started';
+    if (after.created <= before.created) return `no sound was made (${before.state})`;
+    return true;
   };
-  checkTrue(await page.evaluate(audioProbe, false), 'sound effects play without errors');
-  // Regression: the same probe with a failing audio module must not count as a pass.
-  const simulated = await page.evaluate(audioProbe, true);
-  check(simulated !== true && /simulated audio failure/.test(simulated), `a failing sound call is reported as a failure ("${simulated}")`);
+  checkTrue(await page.evaluate(audioProbe, null), 'sound effects play without errors');
+  // Regression: the same probe and the same assertion must FAIL when sound is broken.
+  for (const [mode, expect] of [['throw', /simulated audio failure/], ['engine', /simulated engine failure/]]) {
+    const result = await page.evaluate(audioProbe, mode);
+    let verdict = null;
+    checkTrue(result, 'probe', (ok) => (verdict = ok));
+    check(verdict === false && expect.test(String(result)), `a failing sound call (${mode}) fails the sound check ("${result}")`);
+  }
+  // The injected engine failure was also logged as an "audio:" warning: seen, then set aside.
+  for (let t = 0; t < 20 && !errors.some((e) => /simulated engine failure/.test(e)); t++) await sleep(100);
+  const injected = errors.filter((e) => /simulated engine failure/.test(e));
+  check(injected.length > 0, `engine errors also reach the console as "audio:" warnings (${injected.length} seen)`);
+  for (let i = errors.length - 1; i >= 0; i--) if (/simulated engine failure/.test(errors[i])) errors.splice(i, 1);
   // Short offline renders: finite, non-silent stereo waveforms (not a judgement of how it sounds).
   const wave = await page.evaluate(async () => {
     const { __audioTest } = await import('/src/audio.js');
     const out = {};
-    for (const sfx of ['cannon', 'splash', 'coin']) {
+    for (const sfx of ['cannon', 'splash', 'hit', 'coin', 'bombBoom', 'bombWhistle']) {
       const r = await __audioTest.renderOffline({ sfx, seconds: 1, music: false, ambience: false });
       let peak = 0, finite = true;
       for (const ch of r.channels) for (const v of ch) { if (!Number.isFinite(v)) finite = false; peak = Math.max(peak, Math.abs(v)); }
@@ -558,6 +587,14 @@ async function shotColours(page) {
   check((await g(page, 'state.level')) === 3, 'Enter on a focused level card starts that level');
   await page.evaluate(() => window.__game.showMenu());
   check(!(await page.isVisible('#touch')), 'desktop: touch controls hidden');
+  await page.setViewportSize({ width: 800, height: 900 });
+  await page.waitForFunction(() => window.innerWidth === 800, null, { timeout: 60000 });
+  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
+  const resized = await page.evaluate(() => ({ w: document.getElementById('game').width, pr: window.__game.quality.pixelRatio }));
+  check(resized.w === Math.round(800 * resized.pr), `canvas resizes with the window (${resized.w}px at pixel ratio ${resized.pr.toFixed(2)})`);
+  // Close the desktop game before the mobile one starts: two software-rendered WebGL pages at
+  // once made each mobile tap wait tens of seconds for a frame on a loaded machine.
+  await page.close();
 
   const mobile = await browser.newPage({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
   watch(mobile);
@@ -582,11 +619,6 @@ async function shotColours(page) {
   await sleep(1500);
   await snap(mobile, '7-mobile.png');
 
-  await page.setViewportSize({ width: 800, height: 900 });
-  await page.waitForFunction(() => window.innerWidth === 800, null, { timeout: 60000 });
-  await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
-  const resized = await page.evaluate(() => ({ w: document.getElementById('game').width, pr: window.__game.quality.pixelRatio }));
-  check(resized.w === Math.round(800 * resized.pr), `canvas resizes with the window (${resized.w}px at pixel ratio ${resized.pr.toFixed(2)})`);
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''}`);
 

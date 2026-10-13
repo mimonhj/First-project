@@ -2063,10 +2063,16 @@ export function createAudio() {
     if (ctx && ctx.state === 'running') eng.pump(ctx.currentTime + LOOKAHEAD);
   }
 
+  // Sound must never break the game, so engine errors are caught here. They are logged and
+  // counted (see errors()), so a test can still tell that a sound call failed.
+  let errorCount = 0;
+  let lastError = null;
   const guard = (fn) => {
     try {
       return fn();
     } catch (err) {
+      errorCount++;
+      lastError = String(err);
       if (win && win.console) console.warn('audio:', err);
       return undefined;
     }
@@ -2143,6 +2149,11 @@ export function createAudio() {
 
     stats() {
       return eng ? eng.stats() : null;
+    },
+
+    // Errors caught by guard() so far (they are only logged otherwise).
+    errors() {
+      return { count: errorCount, last: lastError };
     },
   };
 }

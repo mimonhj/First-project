@@ -80,18 +80,24 @@ Three suites run in headless Chromium with Playwright (`npm test` runs them all,
   - that every level spawns ships in open water and keeps draw calls reasonable
   - touch controls, keyboard focus, pause/mute keys, hit and aim feedback, first-voyage hints,
     adaptive resolution
-  - sound calls that must succeed (a failing call is reported, not hidden), plus short offline
-    renders that must produce finite, non-silent stereo audio
+  - sound calls that must succeed and make sound. The sound module catches its own errors so
+    they can't stop the game, but it counts them (`audio.errors()`) and logs them as `audio:`
+    warnings, and the test fails on either. A regression check makes sure a broken sound call
+    really fails the check. Short offline renders must also give finite, non-silent stereo audio.
   - a bot captain playing all three levels with simulated controls, to show every level can be won
 - `tests/controls.cjs` (`npm run test:controls`): focused regressions.
-  - small-screen layouts (320x480 to desktop) keep every HUD control on screen and the hint readable
-  - small text on the parchment cards has at least 4.5:1 contrast
-  - the touch sail and fire buttons work by tap (exactly once), Enter, Space and native click
-  - steering: overlapping keys, keyboard-held and touch-held buttons, blur and pause release
+  - small-screen layouts (320x480 to desktop, small landscape phones too) keep every HUD control
+    on screen, the hint readable and clear of the level banner, and the boss name whole
+  - small text on the parchment cards, and the white Fire labels, have at least 4.5:1 contrast
+  - the touch sail and fire buttons work by tap (exactly once), Enter, Space and native click,
+    including a touch that slides off and a held Enter
+  - steering: overlapping keys, keyboard-held and touch-held buttons, blur and pause release,
+    a key whose character changes mid-hold
   - the pause dialog keeps keyboard focus inside and hands it back to the game
   - saved best score, progress and tutorial records are validated (Infinity, negative, garbage...)
-  - losing the WebGL context pauses the fight and waits for the player when the view comes back
-    (uses the browser's `WEBGL_lose_context`; reported as skipped if it isn't available)
+  - losing the WebGL context pauses the fight and waits for the player when the view comes back,
+    also after a second loss and on the level-cleared and shipwrecked screens (uses the
+    browser's `WEBGL_lose_context`; reported as skipped if it isn't available)
 
 ### Setting up the tests
 
@@ -110,7 +116,12 @@ or use `npx playwright install --with-deps chromium` instead of the second step.
 The tests render with software WebGL (SwiftShader), which is slow: a full run takes several
 minutes, and a single frame of the 3D scene can take seconds. Screenshots therefore get a
 120-second timeout (instead of Playwright's 30-second default); they are saved to
-`tests/screenshots/` (set `SCREENSHOT_DIR` to put them elsewhere).
+`tests/screenshots/` (set `SCREENSHOT_DIR` to put them elsewhere). Only one game page renders
+at a time: the smoke test closes the desktop page before it opens the mobile one, because two
+software-rendered pages at once made each tap wait for a frame for tens of seconds on a busy
+machine. The adaptive-resolution check expects the slowness to come from rendering pixels; on a
+machine whose CPU is busy with other work it can fail (the game rightly keeps full resolution
+when fewer pixels don't help).
 
 Versions used for the runs recorded in this repository: Node 22.22.0, Playwright 1.56.1 with its
 Chromium build 1194 (Chrome 141), http-server 14.1.1. There is no lockfile, so `npm install`

@@ -1728,11 +1728,16 @@ function syncHoldButtons() {
 // behind it is inert, Tab cycles inside it, and focus returns to the game on close.
 // ---------------------------------------------------------------------------
 let modal = null;
+// Everything a dialog can sit on top of (the error screen stays usable whatever happens).
+const backdrops = [ui.hud, ...document.querySelectorAll('.overlay:not(.error)')];
+function setBackgroundInert(on) {
+  for (const el of backdrops) el.inert = on && el !== modal;
+}
 // The open dialog, if it is still showing (a level change or menu may have hidden it).
 function activeModal() {
   if (modal && modal.classList.contains('hidden')) {
     modal = null;
-    ui.hud.inert = false;
+    setBackgroundInert(false);
   }
   return modal;
 }
@@ -1748,13 +1753,13 @@ function focusInto(el) {
 function openModal(el) {
   show(el, true);
   modal = el;
-  ui.hud.inert = true;
+  setBackgroundInert(true);
   focusInto(el);
 }
 function closeModal(el) {
   show(el, false);
   if (modal === el) modal = null;
-  if (!modal) ui.hud.inert = false;
+  if (!modal) setBackgroundInert(false);
   // Back to the page itself, so game keys work at once (Space fires, not a stale button).
   if (document.activeElement instanceof HTMLElement && document.activeElement !== document.body) {
     document.activeElement.blur();
@@ -1800,10 +1805,13 @@ function onContextLost() {
   state.contextLost = true;
   pausedDrawn = false;
   clearSteering();
-  recovery.pauseWasOpen = activeModal() === ui.pause;
-  recovery.resume = state.mode === 'playing';
-  if (recovery.resume) pauseGame();
-  if (recovery.pauseWasOpen) closeModal(ui.pause);
+  // Lost again before the player pressed Continue: keep what the first loss recorded.
+  if (activeModal() !== ui.recover) {
+    recovery.pauseWasOpen = activeModal() === ui.pause;
+    recovery.resume = state.mode === 'playing';
+  }
+  if (state.mode === 'playing') pauseGame();
+  if (activeModal() === ui.pause) closeModal(ui.pause);
   ui.recoverTitle.textContent = 'Graphics paused';
   ui.recoverMsg.textContent =
     'Your device reset the 3D graphics. The voyage is paused and your progress is safe. Waiting for the graphics to come back…';
@@ -1844,6 +1852,9 @@ const KEYMAP = {
   a: 'left', arrowleft: 'left',
   d: 'right', arrowright: 'right',
 };
+// A held steering key is tracked by its physical key (e.code), so its keyup releases it even
+// if a modifier or layout switch changed e.key in between (Option+A on a Mac reports 'å').
+const keySource = (e) => `key:${e.code || e.key.toLowerCase()}`;
 
 window.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
@@ -1893,7 +1904,7 @@ window.addEventListener('keydown', (e) => {
   }
   if (state.mode !== 'playing') return;
   skipIntro();
-  if (KEYMAP[k]) steerPress(KEYMAP[k], `key:${k}`);
+  if (KEYMAP[k]) steerPress(KEYMAP[k], keySource(e));
   else if (!e.repeat && (k === 'w' || k === 'arrowup')) changeSail(1);
   else if (!e.repeat && (k === 's' || k === 'arrowdown')) changeSail(-1);
   // Holding a fire key keeps firing whenever the guns reload.
@@ -1906,8 +1917,8 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
-  const k = e.key.toLowerCase();
-  if (KEYMAP[k]) steerRelease(KEYMAP[k], `key:${k}`);
+  const src = keySource(e);
+  for (const dir of ['left', 'right']) if (steerSources[dir].has(src)) steerRelease(dir, src);
 });
 
 // Keys released while the window is unfocused never send keyup: forget everything held.
@@ -1923,6 +1934,16 @@ document.addEventListener('visibilitychange', () => {
     pausedDrawn = false;
   }
 });
+
+// Is this click the end of a touch/mouse press that pointerdown already acted on?
+// Where click is a PointerEvent (Chromium-based browsers, for example), its pointerType is
+// 'touch', 'mouse' or 'pen' for a real press and '' for Enter/Space, assistive technology and
+// el.click(). That is decided by the click itself, so a slow frame between pointerup and click
+// can't fool it. Where click is a plain MouseEvent: a click right after a pointerup.
+function clickFromPointer(e, pointerUpAt) {
+  if (typeof e.pointerType === 'string') return e.pointerType !== '';
+  return performance.now() - pointerUpAt < 600;
+}
 
 // On-screen steering buttons: held by touch/mouse (pointer capture, so sliding off
 // still releases them), by Enter/Space while focused, or nudged by a plain click
@@ -1951,23 +1972,29 @@ for (const btn of holdButtons) {
   btn.addEventListener('pointerup', releasePointer);
   btn.addEventListener('pointercancel', releasePointer);
   btn.addEventListener('lostpointercapture', releasePointer);
+  // Enter and Space are separate sources: releasing one while the other is held keeps steering.
   btn.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault(); // no synthetic click on top of the hold
     e.stopPropagation(); // and not the global Enter/Space shortcuts
-    if (!e.repeat) press('btn:key');
+    if (!e.repeat) press(`btn:key:${e.key}`);
   });
   btn.addEventListener('keyup', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.preventDefault();
     e.stopPropagation();
-    steerRelease(dir, 'btn:key');
+    steerRelease(dir, `btn:key:${e.key}`);
   });
-  btn.addEventListener('blur', () => steerRelease(dir, 'btn:key'));
-  btn.addEventListener('click', () => {
-    if (performance.now() - pointerUpAt < 600) return; // the click that ends a tap/hold: already handled
-    press('btn:click');
-    setTimeout(() => steerRelease(dir, 'btn:click'), 350);
+  btn.addEventListener('blur', () => {
+    steerRelease(dir, 'btn:key:Enter');
+    steerRelease(dir, 'btn:key: ');
+  });
+  let nudges = 0;
+  btn.addEventListener('click', (e) => {
+    if (clickFromPointer(e, pointerUpAt)) return; // the click that ends a tap/hold: already handled
+    const src = `btn:click${++nudges}`; // each click gets its own full nudge
+    press(src);
+    setTimeout(() => steerRelease(dir, src), 350);
   });
 }
 
@@ -1999,8 +2026,8 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   btn.addEventListener('pointercancel', () => {
     pointerActed = false; // no click will follow
   });
-  btn.addEventListener('click', () => {
-    if (pointerActed && performance.now() - pointerUpAt < 600) {
+  btn.addEventListener('click', (e) => {
+    if (pointerActed && clickFromPointer(e, pointerUpAt)) {
       pointerActed = false; // this tap's own click
       return;
     }
@@ -2009,7 +2036,11 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   });
   // Enter/Space on a focused button activate it (native click), not the global shortcuts.
   btn.addEventListener('keydown', (e) => {
-    if (e.key === 'Enter' || e.key === ' ') e.stopPropagation();
+    if (e.key !== 'Enter' && e.key !== ' ') return;
+    e.stopPropagation();
+    // A held Enter clicks again on every auto-repeat: one press is one sail step.
+    // (Fire buttons keep repeating, like a held fire key.)
+    if (e.key === 'Enter' && e.repeat && btn.dataset.tap.startsWith('sail')) e.preventDefault();
   });
 }
 

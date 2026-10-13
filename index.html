@@ -138,15 +138,6 @@
     </div>
   </div>
 
-  <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues. -->
-  <div id="recover-screen" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="recover-title" aria-describedby="recover-msg">
-    <div class="panel" tabindex="-1">
-      <h2 id="recover-title">Graphics paused</h2>
-      <p id="recover-msg" role="status" aria-live="polite">Waiting for the graphics to come back&hellip;</p>
-      <button id="recover-btn" class="btn hidden" type="button">Continue</button>
-    </div>
-  </div>
-
   <div id="level-screen" class="overlay hidden">
     <div class="panel">
       <h2 id="level-title">Level cleared!</h2>
@@ -173,6 +164,16 @@
       <p class="final">Plunder: <strong id="won-gold">0</strong> gold</p>
       <p id="won-best" class="new-best hidden">New best!</p>
       <button id="again-btn" class="btn" type="button">Main menu</button>
+    </div>
+  </div>
+
+  <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues.
+       It comes after the other game overlays so it paints on top of an end screen that is already showing. -->
+  <div id="recover-screen" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="recover-title" aria-describedby="recover-msg">
+    <div class="panel" tabindex="-1">
+      <h2 id="recover-title">Graphics paused</h2>
+      <p id="recover-msg" role="status" aria-live="polite">Waiting for the graphics to come back&hellip;</p>
+      <button id="recover-btn" class="btn hidden" type="button">Continue</button>
     </div>
   </div>
 

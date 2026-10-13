@@ -55,6 +55,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     for (const id of ['pause-btn', 'mute-btn']) { const b = R(document.getElementById(id)); if (!b || !inView(b)) out.push(`#${id} off screen`); }
     [...document.querySelectorAll('.hud-top > *')].map(R).filter(Boolean).forEach((b, i) => { if (!inView(b)) out.push(`HUD card ${i} off screen`); });
     const hint = R(document.getElementById('hint'));
+    const banner = R(document.getElementById('banner'));
     const guns = R(document.querySelector('.guns'));
     const mm = R(document.getElementById('minimap'));
     const pads = [...document.querySelectorAll('.touch button')].map(R).filter(Boolean);
@@ -66,38 +67,77 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       if (guns && ov(hint, guns)) out.push('hint covers the gun card');
       if (mm && ov(hint, mm)) out.push('hint covers the minimap');
       if (pads.some((b) => ov(hint, b))) out.push('hint covers a touch button');
+      if (banner && ov(hint, banner)) out.push(`hint overlaps the level banner (${Math.round(ov(hint, banner))}px²)`);
     }
+    if (!banner) out.push('level banner not shown');
     if (guns && !inView(guns)) out.push('gun card off screen');
     pads.forEach((b, i) => { if (!inView(b)) out.push(`touch button ${i} off screen`); if (guns && ov(b, guns)) out.push(`touch button ${i} covers the gun card`); });
     for (let i = 0; i < pads.length; i++) for (let j = i + 1; j < pads.length; j++) if (ov(pads[i], pads[j])) out.push(`touch buttons ${i}/${j} overlap`);
     return out;
   };
-  for (const [w, h, touch] of [[320, 480, true], [360, 480, true], [320, 480, false], [390, 844, true], [844, 390, true], [1280, 720, false]]) {
+  // Finish the pop-in animations (not the endless bobbing) so boxes are measured at rest.
+  const settle = (page) => page.evaluate(() => document.getAnimations().forEach((a) => { if (a.effect.getComputedTiming().iterations !== Infinity) a.finish(); }));
+  // The first-voyage hint shows while the 'Level 1' banner is still up (6 s), so both are on
+  // screen together; the banner is held so a slow software renderer still measures them together.
+  for (const [w, h, touch] of [
+    [320, 480, true], [360, 480, true], [320, 480, false], [390, 844, true], [844, 390, true], [1280, 720, false],
+    [568, 320, true], [640, 360, true], [568, 320, false], [640, 360, false],
+  ]) {
     const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch });
     await startPlaying(page);
+    await page.evaluate(() => { window.__game.state.bannerTimer = 1e9; });
     await page.waitForFunction(() => !document.getElementById('hint').classList.contains('hidden'), null, { timeout: 120000 }).catch(() => {});
+    await settle(page);
     const problems = await page.evaluate(layoutProbe);
     check(problems.length === 0, `layout ${w}x${h}${touch ? ' touch' : ''}: controls on screen, readable hint, nothing overlaps${problems.length ? ' -> ' + problems.join('; ') : ''}`);
+    await ctx.close();
+  }
+
+  // The boss bar on small portrait phones: the full name fits and it stays clear of the minimap.
+  for (const [w, h] of [[320, 480], [360, 480]]) {
+    const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: true, isMobile: true });
+    await page.evaluate(() => {
+      const G = window.__game;
+      G.newGame(3);
+      G.state.intro = 0;
+      G.enemies.forEach((e) => G.damage(e, 9999));
+      // Step until the boss wave arrives; the HUD shows its bar on the next drawn frame.
+      for (let i = 0; i < 120 * 20 && !G.enemies.some((e) => e.type.boss); i++) G.step(1 / 120);
+    });
+    await page.waitForFunction(() => !document.getElementById('boss').classList.contains('hidden'), null, { timeout: 60000 }).catch(() => {});
+    await settle(page);
+    const boss = await page.evaluate(() => {
+      const shown = () => !document.getElementById('boss').classList.contains('hidden');
+      const name = document.getElementById('boss-name') || document.querySelector('.boss-name');
+      const b = document.getElementById('boss').getBoundingClientRect();
+      const m = document.getElementById('minimap').getBoundingClientRect();
+      const overlap = Math.max(0, Math.min(b.right, m.right) - Math.max(b.left, m.left)) * Math.max(0, Math.min(b.bottom, m.bottom) - Math.max(b.top, m.top));
+      return { shown: shown(), text: name.textContent, fits: name.scrollWidth <= name.clientWidth + 1, width: Math.round(b.width), overlap };
+    });
+    check(boss.shown && boss.fits && boss.overlap === 0, `layout ${w}x${h} touch: the boss bar shows its whole name and clears the minimap (${JSON.stringify(boss)})`);
     await ctx.close();
   }
 
   // ------------------------------------------------------------------ F04 small-text contrast
   // Computed colour (with opacity) against the parchment card colour; 4.5:1 for small text,
   // 3:1 only for large text (24px, or 18.66px bold). Limited to the HUD/menu labels checked here.
+  // The Fire labels are white on their own red fill, so they are measured against that fill.
   const contrastProbe = () => {
     const parse = (c) => { const m = c.match(/[\d.]+/g).map(Number); return { r: m[0], g: m[1], b: m[2], a: m.length > 3 ? m[3] : 1 }; };
     const lin = (v) => { v /= 255; return v <= 0.04045 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4; };
     const L = (c) => 0.2126 * lin(c.r) + 0.7152 * lin(c.g) + 0.0722 * lin(c.b);
     const paper = parse(getComputedStyle(document.documentElement).getPropertyValue('--paper').trim().replace(/^#(..)(..)(..)$/, (_, r, g, b) => `rgb(${parseInt(r, 16)},${parseInt(g, 16)},${parseInt(b, 16)})`));
     const out = [];
-    for (const sel of ['.sails', '.tip', '.gold .value', '.new-best', '.label', '.steer-alt', '.best']) {
+    const onFill = ['.fire-tag', '.touch button.fire', '.touch-help b.fire'];
+    for (const sel of ['.sails', '.tip', '.gold .value', '.new-best', '.label', '.steer-alt', '.best', '.hint-bubble b', ...onFill]) {
       for (const el of document.querySelectorAll(sel)) {
         const cs = getComputedStyle(el);
+        const bg = onFill.includes(sel) ? parse(cs.backgroundColor) : paper;
         let alpha = parse(cs.color).a;
         for (let n = el; n && n !== document.documentElement; n = n.parentElement) alpha *= Number(getComputedStyle(n).opacity);
         const c = parse(cs.color);
-        const eff = { r: c.r * alpha + paper.r * (1 - alpha), g: c.g * alpha + paper.g * (1 - alpha), b: c.b * alpha + paper.b * (1 - alpha) };
-        const la = L(eff), lb = L(paper);
+        const eff = { r: c.r * alpha + bg.r * (1 - alpha), g: c.g * alpha + bg.g * (1 - alpha), b: c.b * alpha + bg.b * (1 - alpha) };
+        const la = L(eff), lb = L(bg);
         const ratio = (Math.max(la, lb) + 0.05) / (Math.min(la, lb) + 0.05);
         const size = parseFloat(cs.fontSize);
         const large = size >= 24 || (size >= 18.66 && Number(cs.fontWeight) >= 700);
@@ -110,11 +150,17 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch });
     const menu = await page.evaluate(contrastProbe);
     await startPlaying(page);
+    // Touch hints name the button to press in red ('tap + Sail'): measure them once fully shown.
+    if (touch) {
+      await page.waitForFunction(() => document.querySelector('#hint:not(.hidden) b'), null, { timeout: 120000 }).catch(() => {});
+      await settle(page);
+    }
     const hud = await page.evaluate(contrastProbe);
     const all = [...menu, ...hud];
     const bad = all.filter((r) => r.ratio < r.need);
     const seen = [...new Set(all.map((r) => r.sel))].join(', ');
-    check(all.length > 0 && bad.length === 0, `contrast ${w}x${h}: small text on parchment is at least 4.5:1 (${seen})${bad.length ? ' -> ' + JSON.stringify(bad) : ''}`);
+    const needed = touch ? ['.hint-bubble b', '.touch button.fire'] : ['.sails'];
+    check(all.length > 0 && bad.length === 0 && needed.every((sel) => all.some((r) => r.sel === sel)), `contrast ${w}x${h}: small text on parchment is at least 4.5:1 (${seen})${bad.length ? ' -> ' + JSON.stringify(bad) : ''}`);
     await ctx.close();
   }
 
@@ -178,6 +224,54 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     await page.keyboard.press('Space');
     const both = await reload();
     check(both.port > 0 && both.star > 0, 'Space with nothing focused still fires both broadsides');
+
+    // A touch that slides off − Sail acts once (on touch-down) and no click follows; Enter
+    // pressed straight after still works (the click's own origin decides, not a time window).
+    await page.evaluate(() => { window.__game.state.sail = 3; });
+    await page.focus('[data-tap="sailDown"]');
+    const cdp = await ctx.newCDPSession(page);
+    const box = await page.locator('[data-tap="sailDown"]').boundingBox();
+    const cx = box.x + box.width / 2, cy = box.y + box.height / 2;
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: cx, y: cy }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: cx + 120, y: cy - 200 }] });
+    await cdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+    const afterSlide = await sail();
+    await page.keyboard.press('Enter');
+    check(afterSlide === 2 && (await sail()) === 1, `touch: a slid-off touch acts once and Enter right after still works (3 -> ${afterSlide} -> ${await sail()})`);
+    // Holding Enter on a sail button steps the sails once, not on every key auto-repeat.
+    await page.evaluate(() => { window.__game.state.sail = 3; });
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.down('Enter');
+    await page.keyboard.up('Enter');
+    check((await sail()) === 2, `touch: holding Enter on − Sail lowers the sails one step (3 -> ${await sail()})`);
+    // A tap on ▶ steering, then an assistive-technology click soon after: the click still nudges.
+    await page.evaluate(() => document.activeElement.blur());
+    await page.tap('[data-hold="right"]');
+    const assisted = await page.evaluate(() => { document.querySelector('[data-hold="right"]').click(); return window.__game.input.right; });
+    check(assisted === true, 'touch: a native click straight after a tap on ▶ steering still nudges');
+    // Two clicks 200 ms apart: the second nudge gets its own full length.
+    const twice = await page.evaluate(async () => {
+      const b = document.querySelector('[data-hold="right"]');
+      const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+      await wait(500);
+      b.click();
+      await wait(200);
+      b.click();
+      await wait(250); // 450 ms after the first click, 250 ms after the second
+      const mid = window.__game.input.right;
+      await wait(400);
+      return { mid, end: window.__game.input.right };
+    });
+    check(twice.mid === true && twice.end === false, `touch: a second click on ▶ steering gets its own nudge (${JSON.stringify(twice)})`);
+    // Enter and Space held together on ◀ steering: letting go of one keeps steering.
+    await page.focus('[data-hold="left"]');
+    await page.keyboard.down('Enter');
+    await page.keyboard.down(' ');
+    await page.keyboard.up(' ');
+    const enterStill = await left();
+    await page.keyboard.up('Enter');
+    check(enterStill === true && (await left()) === false, 'touch: releasing Space while Enter still holds ◀ steering keeps turning');
     await ctx.close();
   }
 
@@ -207,6 +301,15 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     check((await inp()).right === false, 'steering: pausing releases held keys');
     await page.keyboard.up('ArrowRight');
     await page.keyboard.press('p');
+    // A modifier or layout switch mid-hold changes e.key (Option+A gives 'å' on a Mac): the keyup
+    // of the same physical key still releases it.
+    const modKey = await page.evaluate(() => {
+      window.dispatchEvent(new KeyboardEvent('keydown', { key: 'a', code: 'KeyA' }));
+      const held = window.__game.input.left;
+      window.dispatchEvent(new KeyboardEvent('keyup', { key: 'å', code: 'KeyA', altKey: true }));
+      return { held, after: window.__game.input.left };
+    });
+    check(modKey.held === true && modKey.after === false, `steering: the key's release counts even if a modifier changed its character (${JSON.stringify(modKey)})`);
     await ctx.close();
   }
 
@@ -387,6 +490,27 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       const resumed = await page.evaluate(() => ({ mode: window.__game.state.mode, calls: window.__game.renderInfo.calls, dialog: !document.getElementById('recover-screen').classList.contains('hidden') }));
       check(resumed.mode === 'playing' && !resumed.dialog && resumed.calls > 0, `context restored: Continue resumes and the scene draws again (${resumed.calls} draw calls)`);
 
+      // Lost, restored, lost again before Continue, restored: still waiting for Continue.
+      const loseRestore = async (lose) => {
+        await page.evaluate((lose) => (lose ? window.__loseExt.loseContext() : window.__loseExt.restoreContext()), lose);
+        await page.waitForFunction((lost) => window.__game.state.contextLost === lost, lose, { timeout: 30000 }).catch(() => {});
+      };
+      await loseRestore(true);
+      await loseRestore(false);
+      await loseRestore(true);
+      await loseRestore(false);
+      await frames(page, 3);
+      const twice = await page.evaluate(() => ({
+        mode: window.__game.state.mode,
+        dialog: !document.getElementById('recover-screen').classList.contains('hidden'),
+        button: !document.getElementById('recover-btn').classList.contains('hidden'),
+        focus: document.activeElement && document.activeElement.id,
+        hudInert: document.getElementById('hud').inert,
+      }));
+      check(twice.mode === 'paused' && twice.dialog && twice.button && twice.focus === 'recover-btn' && twice.hudInert, `context lost twice before Continue: still paused, Continue still offered (${JSON.stringify(twice)})`);
+      await page.keyboard.press('Enter');
+      check((await page.evaluate(() => window.__game.state.mode)) === 'playing', 'context lost twice: Enter on Continue resumes');
+
       // A game the player had paused stays paused through a loss and restore.
       await page.keyboard.press('p');
       await page.evaluate(() => window.__loseExt.loseContext());
@@ -399,6 +523,45 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
         recover: !document.getElementById('recover-screen').classList.contains('hidden'),
       }));
       check(manual.mode === 'paused' && manual.pause && !manual.recover, `context restored: a manually paused game stays paused (${JSON.stringify(manual)})`);
+
+      // On the level-cleared and shipwrecked screens the recovery dialog is on top: the end
+      // screen behind it can't be used while the view is gone, and is back unchanged afterwards.
+      for (const [name, mode, button] of [['level cleared', 'levelDone', 'next-btn'], ['shipwrecked', 'over', 'retry-btn']]) {
+        await page.evaluate((mode) => {
+          const G = window.__game;
+          G.newGame(1);
+          G.state.intro = 0;
+          if (mode === 'over') G.damage(G.player, 9999);
+          for (let i = 0; i < 120 * 30 && G.state.mode === 'playing'; i++) {
+            // Level cleared: sink every pirate as it arrives (later waves included).
+            if (mode === 'levelDone') for (const e of G.enemies) if (e.hp > 0) G.damage(e, 9999);
+            G.step(1 / 120);
+          }
+        }, mode);
+        await page.evaluate(() => window.__loseExt.loseContext());
+        await page.waitForFunction(() => window.__game.state.contextLost === true, null, { timeout: 30000 }).catch(() => {});
+        const covered = await page.evaluate((button) => {
+          const top = document.elementFromPoint(innerWidth / 2, innerHeight / 2);
+          const b = document.getElementById(button).getBoundingClientRect();
+          const atButton = document.elementFromPoint(b.left + b.width / 2, b.top + b.height / 2);
+          return { mode: window.__game.state.mode, top: top && top.closest('.overlay')?.id, atButton: atButton && atButton.closest('.overlay')?.id, inert: document.getElementById(button).closest('.overlay').inert };
+        }, button);
+        await page.keyboard.press('Enter');
+        const b = await page.locator('#' + button).boundingBox();
+        await page.mouse.click(b.x + b.width / 2, b.y + b.height / 2);
+        const stillThere = await page.evaluate(() => window.__game.state.mode);
+        check(covered.mode === mode && covered.top === 'recover-screen' && covered.atButton === 'recover-screen' && covered.inert && stillThere === mode, `context lost on the ${name} screen: the recovery dialog is on top and the screen behind can't be used (${JSON.stringify({ ...covered, afterEnterAndClick: stillThere })})`);
+        await page.evaluate(() => window.__loseExt.restoreContext());
+        await page.waitForFunction(() => window.__game.state.contextLost === false, null, { timeout: 30000 }).catch(() => {});
+        const back = await page.evaluate((button) => ({
+          mode: window.__game.state.mode,
+          recover: !document.getElementById('recover-screen').classList.contains('hidden'),
+          inert: document.getElementById(button).closest('.overlay').inert,
+        }), button);
+        await page.keyboard.press('Enter');
+        const next = await page.evaluate(() => window.__game.state.mode);
+        check(back.mode === mode && !back.recover && !back.inert && next === 'playing', `context restored on the ${name} screen: it is usable again and Enter carries on (${JSON.stringify({ ...back, afterEnter: next })})`);
+      }
     }
     await ctx.close();
   }

@@ -13,6 +13,8 @@
   --sea-text: #1a64a8;  /* 5.6:1 */
   --teal-text: #126b67; /* 5.8:1 */
   --gold-text: #8f5b00; /* 5.2:1 */
+  --red-text: #b8222c;  /* 5.8:1 */
+  --fire: #c0262f;      /* Fire buttons/tags: white text on it is 5.9:1 (on --red only 4.2:1) */
   --orange: #ff9f1c;
   /* The web fonts load without blocking. Until they arrive (or when the font host is unreachable)
      these chunky, rounded system fonts stand in: SF Rounded on Apple (ui-rounded), Arial Rounded on
@@ -265,7 +267,7 @@ html, body {
   line-height: 1.1;
   letter-spacing: 0.04em;
   color: #fff;
-  background: var(--red);
+  background: var(--fire);
   border: 2px solid var(--ink);
   border-radius: 999px;
   white-space: nowrap;
@@ -358,7 +360,7 @@ html, body {
   border-bottom-right-radius: 3px;
   transform: rotate(45deg);
 }
-.hint-bubble b { color: var(--red); }
+.hint-bubble b { color: var(--red-text); } /* names the button to press: small text, needs 4.5:1 */
 .hint-bubble kbd { font-size: 12px; padding: 0 6px; }
 @keyframes hint-in {
   from { opacity: 0; transform: translateY(12px) scale(0.85); }
@@ -576,7 +578,7 @@ p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
   line-height: 1.5;
   text-align: center;
 }
-.touch-help b.fire { background: var(--red); color: #fff; text-shadow: 0 1px 0 var(--ink); }
+.touch-help b.fire { background: var(--fire); color: #fff; text-shadow: 0 1px 0 var(--ink); }
 
 kbd {
   display: inline-block;
@@ -666,7 +668,7 @@ kbd {
   white-space: nowrap;
 }
 .pad.mid button { width: 66px; height: 44px; border-radius: 14px; font-size: 15px; }
-.touch button.fire { font-size: 15px; background: var(--red); color: #fff; text-shadow: 0 2px 0 var(--ink); }
+.touch button.fire { font-size: 15px; background: var(--fire); color: #fff; text-shadow: 0 2px 0 var(--ink); }
 .touch button.active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); filter: brightness(1.1); }
 /* The fire button for a side glows too when that side has a target and is loaded. */
 #hud:has(#gun-port.target.ready) button[data-tap="firePort"],
@@ -842,11 +844,13 @@ kbd {
   .hitmark { top: max(47%, 180px); } /* below the top-right minimap */
 }
 
-/* ---------- Small screens that are both narrow and short (e.g. 320x480, 360x480) ----------
+/* ---------- Small portrait screens that are both narrow and short (e.g. 320x480, 360x480) ----------
    The short-screen rules above are written for wide landscape phones. On a small portrait
    screen they would bring back the wide hull card (pushing Mute/Pause off-screen) and a hint
-   sized for two corner pads (a 20px-wide strip at 320px). Narrow wins here. */
-@media (max-width: 640px) and (max-height: 500px) {
+   sized for two corner pads (a 20px-wide strip at 320px). Narrow wins here. Portrait only:
+   small landscape phones (568x320, 640x360) keep the landscape layout, where the hint sits
+   low, below the level banner. */
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) {
   .hud-top { gap: 5px; }
   .card { padding: 3px 6px 4px; }
   .hull { min-width: 0; flex: 1 1 80px; max-width: 160px; }
@@ -856,15 +860,17 @@ kbd {
   .guns { gap: 5px; padding: 4px 6px 5px; }
   .bar.small { width: 54px; }
 }
-@media (max-width: 640px) and (max-height: 500px) and (hover: hover),
-  (max-width: 640px) and (max-height: 500px) and (pointer: fine) {
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: hover),
+  (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (pointer: fine) {
   /* The minimap sits bottom-right above the gun card: keep the hint above it. */
   .hint-bubble { bottom: calc(80px + var(--mm) + 16px); }
 }
-@media (max-width: 640px) and (max-height: 500px) and (hover: none) and (pointer: coarse) {
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
   /* Pads go back to the portrait arrangement above the gun card (steering left with the sail
      buttons over it, fire right), and the hint sits above the pads. */
   :root { --mm: 84px; }
+  /* Boss bar left of the top-right minimap, as on taller phones, so the boss's name fits. */
+  .boss { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
   .touch { bottom: 62px; row-gap: 6px; }
   .pad { gap: 8px; }
   .touch button { width: 52px; height: 52px; font-size: 17px; }
