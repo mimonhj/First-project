@@ -254,7 +254,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const twice = await page.evaluate(async () => {
       const b = document.querySelector('[data-hold="right"]');
       const wait = (ms) => new Promise((r) => setTimeout(r, ms));
-      await wait(500);
+      await wait(1000); // well clear of the tap above and its nudge
       b.click();
       await wait(200);
       b.click();
