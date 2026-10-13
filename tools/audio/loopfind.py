@@ -96,7 +96,9 @@ def find_loop(x, min_len=30.0, head=1.0, tail=4.0, ctx=3.0):
     # Loud enough: avoid choosing a fade-in/fade-out region.
     loud_ref = np.percentile(env, 75)
     loud = env >= loud_ref - 9
-    a_lo, b_hi = int(head / hop_s) + W, n - int(tail / hop_s)
+    # A needs `head` plus the comparison window before it, and the 4 s that refine() and onset_lag() read.
+    a_lo = max(int(head / hop_s) + W, -(-int(4.0 * SR) // hop))
+    b_hi = n - int(tail / hop_s)
     best = (-1, 0, 0, 0)
     # For each lag L = B - A, the window similarity for every A is a moving sum along that diagonal.
     for L in range(int(min_len / hop_s), b_hi - a_lo):

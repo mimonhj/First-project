@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
 """Cut the raw ElevenLabs downloads into the game's audio files (assets/audio/).
 
-    python3 tools/audio/build.py RAW_DIR          # build every asset listed in tools/audio/assets.json
-    python3 tools/audio/build.py RAW_DIR --check  # only measure the files already in assets/audio/
+    python3 tools/audio/build.py RAW_DIR               # build every asset whose raw download is in RAW_DIR
+    python3 tools/audio/build.py RAW_DIR KEY [KEY...]  # build only these (e.g. music:bali sfx:cannon)
+    python3 tools/audio/build.py --check               # only measure the files already in assets/audio/
 
-RAW_DIR holds the untouched downloads, named as in each entry's "src". Needs ffmpeg (with libmp3lame) and numpy.
+RAW_DIR holds the untouched downloads, named as in each entry's "src" (the raw files are not kept in the repo: the
+flow and generation in assets.json say where to download them again). Needs ffmpeg (with libmp3lame) and numpy.
+For each file it builds it prints the measurements and the line to put in RECORDED in src/audio.js (set the gain
+with `node tests/audio.cjs --calibrate`).
 
 Each entry in assets.json is one of:
   "kind": "loop"     music that repeats: "loop": [A, B] are sample positions in the 48 kHz source. The file is the
@@ -14,7 +18,8 @@ Each entry in assets.json is one of:
   "kind": "oneshot"  a sound or fanfare: starts at "start" seconds (default: the first sound), ends where the
                      sound has died away, with short fades so it never clicks.
 Every file is normalised to its "lufs" target (integrated loudness), with true peaks kept under -1 dBTP,
-and encoded as 48 kHz stereo MP3 (the browsers' decoders give back the exact samples).
+and encoded as 48 kHz stereo MP3. Chromium and Firefox decode these to their exact length; for a decoder that keeps
+the encoder's priming and padding, the game cuts the decode to the loop's "frames" (see fitLength in src/audio.js).
 """
 import json
 import os
@@ -113,12 +118,23 @@ def normalise(x, sr, target):
     return x * np.float32(10 ** (gain_db / 20)), round(gain_db, 2)
 
 
-def build(spec, raw_dir):
+def build(spec, raw_dir, only):
     sr = spec['rate']
     os.makedirs(OUT, exist_ok=True)
     report = []
+    unknown = set(only) - {a['key'] for a in spec['assets']}
+    if unknown:
+        sys.exit(f'not in assets.json: {", ".join(sorted(unknown))}')
     for a in spec['assets']:
-        x = load(os.path.join(raw_dir, a['src']), sr)
+        if only and a['key'] not in only:
+            continue
+        src = os.path.join(raw_dir, a['src'])
+        if not os.path.exists(src):
+            if only:
+                sys.exit(f'{a["key"]}: no raw download at {src}')
+            print(f'# skipped {a["key"]}: no raw download at {src}', file=sys.stderr)
+            continue
+        x = load(src, sr)
         if a['kind'] == 'loop':
             y = make_loop(x, a['loop'][0], a['loop'][1], sr)
         else:
@@ -132,16 +148,20 @@ def build(spec, raw_dir):
 
 def check_file(a, path, sr, expect=None, gain=None):
     y = load(path, sr)
-    info = {'out': a['out'], 'kind': a['kind'], 'seconds': round(len(y) / sr, 3), 'frames': len(y),
+    info = {'key': a['key'], 'out': a['out'], 'kind': a['kind'], 'seconds': round(len(y) / sr, 3), 'frames': len(y),
             'bytes': os.path.getsize(path), **loudness(path)}
     if expect is not None:
         info['frames_expected'] = expect
     if gain is not None:
         info['gain_db'] = gain
+    kind, name = a['key'].split(':')
     if a['kind'] == 'loop':
         info.update(seam_report(y, sr))
+        info['recorded'] = f"RECORDED.{kind}.{name}: {{ file: '{a['out']}', gain: 1, frames: {len(y)} }}"
     else:
         info['duck'] = duck_time(y, sr)
+        duck = f", duck: {info['duck']}" if name in ('levelClear', 'victory', 'defeat') else ''
+        info['recorded'] = f"RECORDED.{kind}.{name}: {{ file: '{a['out']}', gain: 1{duck} }}"
     return info
 
 
@@ -153,7 +173,7 @@ def main():
     else:
         if not args:
             sys.exit(__doc__)
-        report = build(spec, args[0])
+        report = build(spec, args[0], args[1:])
     for r in report:
         print(json.dumps(r))
 

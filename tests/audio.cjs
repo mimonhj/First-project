@@ -138,7 +138,13 @@ async function measureLevels(page) {
       const opts = { sfx: name, seconds: 8, music: false, ambience: false, linear: true, sampleRate: 48000 };
       const synth = await T.renderOffline(opts);
       const rec = await T.renderOffline({ ...opts, recorded: true });
-      out.push({ key: `sfx:${name}`, gain: r.gain, synth: window.__lufs(synth.channels, 48000), rec: window.__lufs(rec.channels, 48000) });
+      out.push({
+        key: `sfx:${name}`,
+        gain: r.gain,
+        synth: window.__lufs(synth.channels, 48000),
+        rec: window.__lufs(rec.channels, 48000),
+        used: rec.statsAfter.recordedPlays === 1 && synth.statsAfter.recordedPlays === 0 ? 'rec' : 'synth',
+      });
     }
     return out;
   });
@@ -173,12 +179,12 @@ async function measureLevels(page) {
         const r = { key: rec.key, status: res.status, type: res.headers.get('content-type') };
         try {
           const raw = await ctx.decodeAudioData(await res.arrayBuffer());
-          const buf = rec.kind === 'sfx' ? raw : T.trimPadding(ctx, raw);
+          const buf = rec.frames ? T.fitLength(ctx, raw, rec.frames) : raw;
           let peak = 0, finite = true;
           for (let c = 0; c < buf.numberOfChannels; c++) {
             for (const v of buf.getChannelData(c)) { if (!Number.isFinite(v)) finite = false; else if (Math.abs(v) > peak) peak = Math.abs(v); }
           }
-          Object.assign(r, { seconds: +buf.duration.toFixed(3), channels: buf.numberOfChannels, peak: +peak.toFixed(3), finite, trimmed: raw.length - buf.length });
+          Object.assign(r, { seconds: +buf.duration.toFixed(3), channels: buf.numberOfChannels, peak: +peak.toFixed(3), finite, decoded: raw.length, frames: rec.frames });
           if (rec.kind !== 'sfx') {
             // Seam: the last 50 ms followed by the first 50 ms, as the loop plays them.
             const n = 2400;
@@ -205,34 +211,52 @@ async function measureLevels(page) {
       if (f.error) continue;
       check(f.channels === 2 && f.finite && f.peak > 0.1 && f.peak < 0.99, `${f.key}: stereo, finite, not silent and not clipping (${f.seconds} s, peak ${f.peak})`);
       if (f.seam) {
-        check(f.trimmed <= 4608 && f.seam.ratio <= 3, `${f.key}: the loop's end runs into its start without a click (step ${f.seam.seam.toFixed(4)} at the seam vs ${f.seam.around.toFixed(4)} around it; ${f.trimmed} padding samples trimmed)`);
+        check(f.decoded === f.frames, `${f.key}: decodes to exactly the length listed in RECORDED (${f.decoded} of ${f.frames} samples)`);
+        check(f.seam.ratio <= 3, `${f.key}: the loop's end runs into its start without a click (step ${f.seam.seam.toFixed(4)} at the seam vs ${f.seam.around.toFixed(4)} around it)`);
       }
     }
 
-    // Padding trimmer: strips decoder padding, never real sound.
-    const trim = await page.evaluate(async () => {
+    // Decoder padding: a decoder that ignores the encoder's gapless info returns the priming (1105 samples of
+    // low-level pre-echo, not silence) and end padding. fitLength must give back exactly the music, also from a
+    // 44.1 kHz context (decodes are resampled) and when only one end is padded.
+    const fit = await page.evaluate(async () => {
       const { __audioTest: T } = await import('/src/audio.js');
-      const ctx = new OfflineAudioContext(2, 48000, 48000);
-      const make = (lead, body, tail) => {
-        const b = ctx.createBuffer(2, lead + body + tail, 48000);
-        for (let c = 0; c < 2; c++) {
-          const d = b.getChannelData(c);
-          for (let i = 0; i < body; i++) d[lead + i] = 0.3 * Math.sin(i * 0.05 + 0.2 + c);
-        }
-        return b;
-      };
-      const padded = T.trimPadding(ctx, make(1105, 40000, 700));
-      const clean = make(0, 40000, 0);
-      const silent = T.trimPadding(ctx, make(0, 0, 40000));
-      return { padded: padded.length, same: T.trimPadding(ctx, clean) === clean, silent: silent.length };
+      const out = {};
+      for (const sr of [48000, 44100]) {
+        const ctx = new OfflineAudioContext(2, sr, sr);
+        const frames = 96000; // at 48 kHz
+        const n = Math.round((frames * sr) / 48000);
+        const prime = Math.round((1105 * sr) / 48000);
+        const music = [0, 1].map((c) => Float32Array.from({ length: n }, (_, i) => 0.3 * Math.sin(i * 0.05 + 0.2 + c) + 0.1 * Math.sin(i * 0.31)));
+        const junk = (len, seed) => Float32Array.from({ length: len }, (_, i) => 0.004 * Math.sin(i * 1.7 + seed));
+        const make = (lead, tail) => {
+          const b = ctx.createBuffer(2, lead + n + tail, sr);
+          for (let c = 0; c < 2; c++) {
+            const d = b.getChannelData(c);
+            d.set(junk(lead, c), 0);
+            d.set(music[c], lead);
+            d.set(junk(tail, c + 5), lead + n);
+          }
+          return b;
+        };
+        const exact = (b) => b.length === n && [0, 1].every((c) => b.getChannelData(c).every((v, i) => v === music[c][i]));
+        const plain = make(0, 0);
+        out[sr] = {
+          both: exact(T.fitLength(ctx, make(prime, 900), frames)),
+          endOnly: exact(T.fitLength(ctx, make(0, 864), frames)),
+          startOnly: exact(T.fitLength(ctx, make(prime, 0), frames)),
+          untouched: T.fitLength(ctx, plain, frames) === plain,
+        };
+      }
+      return out;
     });
-    check(trim.padded === 40000 && trim.same && trim.silent >= 40000 - 2 * 4608, `decoder padding is trimmed exactly, real sound is left alone, a silent file is trimmed at most a few frames (${JSON.stringify(trim)})`);
+    check(Object.values(fit).every((r) => r.both && r.endOnly && r.startOnly && r.untouched), `decoder padding is cut to the exact music: both ends, the end only or the start only padded, at 48 and 44.1 kHz; an exact decode is left alone (${JSON.stringify(fit)})`);
 
     // Levels: each recording plays at the loudness of the synthesised sound it replaces.
     const levels = await measureLevels(page);
     for (const l of levels) {
       const d = l.rec - l.synth;
-      check(Math.abs(d) <= LEVEL_TOLERANCE && (!l.used || l.used === 'rec'), `${l.key}: recording ${l.rec.toFixed(1)} LUFS vs synthesised ${l.synth.toFixed(1)} LUFS (${d >= 0 ? '+' : ''}${d.toFixed(1)} LU)${l.used ? `, scene music: ${l.used}` : ''}`);
+      check(Math.abs(d) <= LEVEL_TOLERANCE && l.used === 'rec', `${l.key}: recording ${l.rec.toFixed(1)} LUFS vs synthesised ${l.synth.toFixed(1)} LUFS (${d >= 0 ? '+' : ''}${d.toFixed(1)} LU; played: ${l.used})`);
     }
 
     // The engine's loop: start a second before the end of each recorded track and listen across the seam.
@@ -269,9 +293,15 @@ async function measureLevels(page) {
       const hold = RECORDED.sfx.levelClear.duck;
       const opts = { scene: 'menu', seconds: hold + 4, ambience: false, recorded: true, sampleRate: 48000, events: [{ at: 1, name: 'levelClear' }] };
       const r = await T.renderOffline({ ...opts, sfxOff: true });
-      return { hold, before: window.__rms(r.channels, 48000, 0.3, 0.9), during: window.__rms(r.channels, 48000, 1.5, 1 + hold - 0.2), after: window.__rms(r.channels, 48000, 1 + hold + 2.5, hold + 4) };
+      return {
+        hold,
+        before: window.__rms(r.channels, 48000, 0.3, 0.9),
+        during: window.__rms(r.channels, 48000, 1.5, 1 + hold - 0.2),
+        end: window.__rms(r.channels, 48000, 1 + hold - 0.4, 1 + hold - 0.1),
+        after: window.__rms(r.channels, 48000, 1 + hold + 2.5, hold + 4),
+      };
     });
-    check(duck.during < duck.before - 6 && duck.after > duck.before - 2, `the recorded level-clear fanfare ducks the recorded music for ${duck.hold} s and lets it back (${duck.before.toFixed(1)} -> ${duck.during.toFixed(1)} -> ${duck.after.toFixed(1)} dB)`);
+    check(duck.during < duck.before - 6 && duck.end < duck.before - 6 && duck.after > duck.before - 2, `the recorded level-clear fanfare ducks the recorded music for ${duck.hold} s and lets it back (${duck.before.toFixed(1)} -> ${duck.during.toFixed(1)}, ${duck.end.toFixed(1)} just before the end -> ${duck.after.toFixed(1)} dB)`);
 
     // Stand-in recordings for sounds that have none yet: a bomb whistle fitted to the flight, an ambience bed.
     const stand = await page.evaluate(async () => {
@@ -287,11 +317,35 @@ async function measureLevels(page) {
         return { first: +loud[0][0].toFixed(2), last: +(loud[loud.length - 1][0] + 0.05).toFixed(2) };
       };
       const amb = await T.renderOffline({ scene: 'bali', seconds: 2, music: false, sampleRate: sr, inject: { 'amb:bali': { channels: tone(3, 300), sampleRate: sr, gain: 1 } } });
-      return { short: await fit(1.0), long: await fit(3.5), amb: { level: window.__rms(amb.channels, sr, 1, 2), emitters: amb.statsAfter.emitters } };
+      // Arriving 2 s into a scene that started synthesised: how much of the output is the stand-in tone (power at
+      // its frequency against all of the power), well before the arrival and once the crossfade is over. 339 Hz
+      // falls between E4 and F4, a note the synthesised tunes never play.
+      const share = (r, f, a, b) => {
+        let re = 0, im = 0, all = 0;
+        const d = r.channels[0];
+        for (let i = Math.floor(a * sr); i < b * sr; i++) {
+          re += d[i] * Math.cos((2 * Math.PI * f * i) / sr);
+          im += d[i] * Math.sin((2 * Math.PI * f * i) / sr);
+          all += d[i] * d[i];
+        }
+        const n = (b - a) * sr;
+        return (2 * (re * re + im * im)) / n / Math.max(all, 1e-12);
+      };
+      const lateMusic = await T.renderOffline({ scene: 'europe', seconds: 6, ambience: false, sampleRate: sr, inject: { 'music:europe': { channels: tone(4, 339), sampleRate: sr, gain: 1 } }, late: { 'music:europe': 2 } });
+      const lateAmb = await T.renderOffline({ scene: 'volcano', seconds: 6, music: false, sampleRate: sr, inject: { 'amb:volcano': { channels: tone(4, 339), sampleRate: sr, gain: 1 } }, late: { 'amb:volcano': 2 } });
+      return {
+        short: await fit(1.0),
+        long: await fit(3.5),
+        amb: { level: window.__rms(amb.channels, sr, 1, 2), emitters: amb.statsAfter.emitters },
+        lateMusic: { before: +share(lateMusic, 339, 0.8, 1.8).toFixed(3), after: +share(lateMusic, 339, 4.5, 5.9).toFixed(3), music: lateMusic.statsAfter.music },
+        lateAmb: { before: +share(lateAmb, 339, 0.8, 1.8).toFixed(3), after: +share(lateAmb, 339, 4.5, 5.9).toFixed(3), ambience: lateAmb.statsAfter.ambience, emitters: lateAmb.statsAfter.emitters },
+      };
     });
     check(stand.short.first <= 0.55 && Math.abs(stand.short.last - 1.5) <= 0.1, `a recorded bomb whistle for a 1 s flight starts at once and ends on the impact (${JSON.stringify(stand.short)})`);
     check(Math.abs(stand.long.last - 4.0) <= 0.1 && stand.long.first > 0.6, `a recorded bomb whistle for a 3.5 s flight starts a little late and ends on the impact (${JSON.stringify(stand.long)})`);
     check(stand.amb.level > -40 && stand.amb.emitters === 0, `a recorded ambience bed replaces the synthesised one (${JSON.stringify(stand.amb)})`);
+    check(stand.lateMusic.before < 0.05 && stand.lateMusic.after > 0.95 && stand.lateMusic.music === 'rec', `recorded music arriving mid-scene takes over from the synthesised tune, which fades out completely (share of the output: ${stand.lateMusic.before} before, ${stand.lateMusic.after} after)`);
+    check(stand.lateAmb.before < 0.05 && stand.lateAmb.after > 0.95 && stand.lateAmb.ambience === 'rec' && stand.lateAmb.emitters === 0, `a recorded ambience bed arriving mid-scene takes over from the synthesised beds and events (share of the output: ${stand.lateAmb.before} before, ${stand.lateAmb.after} after; ${stand.lateAmb.emitters} emitters left)`);
     await page.close();
 
     // ---- The game, with the files as they are.
@@ -306,16 +360,19 @@ async function measureLevels(page) {
       s = await stats(g.page);
       check(s.scene === 'dock' && s.music === 'rec', `the shipyard has its own recorded music (${s.scene}: ${s.music})`);
       const levels = [];
+      const decoded = [];
+      const expect = { 1: 'rec', 2: 'synth', 3: 'rec' };
       for (const n of [1, 2, 3]) {
         await g.page.evaluate((k) => window.__game.startLevel(k), n);
-        await until(g.page, () => ['rec', 'synth'].includes(window.__game.audio.stats().music), null, 10);
+        await until(g.page, (want) => window.__game.audio.stats().music === want, expect[n], 10);
         await sleep(300);
         s = await stats(g.page);
         levels.push(`${s.scene}: ${s.music}`);
+        decoded.push(s.recordings.filter((k) => k.startsWith('music:')).sort().join('+'));
       }
       check(levels.join(', ') === 'europe: rec, bali: synth, volcano: rec', `levels play their recorded music, and the synthesised tune where there is none (${levels.join(', ')})`);
-      const music = s.recordings.filter((k) => k.startsWith('music:'));
-      check(music.length <= 2 && music.includes('music:volcano'), `only the current and the previous scene's music stay decoded (${music.join(', ')})`);
+      // Title -> shipyard -> Europe -> Bali -> Volcano: the last two scenes' music stays decoded, older tracks go.
+      check(decoded.join(', ') === 'music:dock+music:europe, music:europe, music:volcano', `only the current and the previous scene's music stay decoded (after each level: ${decoded.join(', ')})`);
       check(!g.warnings.length && !g.errors.length, `no sound warnings or page errors (${[...g.warnings, ...g.errors].join(' | ')})`);
       await g.page.close();
     }
@@ -326,6 +383,10 @@ async function measureLevels(page) {
       await until(g.page, () => window.__game.audio.stats() && window.__game.audio.stats().music === 'synth', null, 10);
       const s = await stats(g.page);
       check(s.music === 'synth' && !g.requests.length && !s.recordings.length, `?audio=synth: the synthesised soundtrack, no files fetched (${s.music}, ${g.requests.length} requests)`);
+      await g.page.click('#menu-dock-btn');
+      await sleep(500);
+      const dock = await stats(g.page);
+      check(dock.scene === 'menu' && dock.scenes === 1, `?audio=synth: the shipyard keeps the title screen's jig going instead of restarting it (scene ${dock.scene}, ${dock.scenes} scene(s) playing)`);
       await g.page.close();
     }
 
@@ -337,11 +398,36 @@ async function measureLevels(page) {
         return st && st.music === 'synth' && Object.values(st.files).every((v) => v === 'failed');
       }, null, 10);
       const s = await stats(g.page);
-      await g.page.evaluate(() => window.__game.audio.play('levelClear'));
-      await sleep(300);
-      const after = await stats(g.page);
-      check(s.music === 'synth' && Object.values(s.files).every((v) => v === 'failed') && after.created > s.created, `missing files: the synthesised music and fanfare play instead (${s.music}; ${JSON.stringify(s.files)})`);
+      const fanfare = await g.page.evaluate(() => {
+        const a = window.__game.audio;
+        const before = a.stats();
+        a.play('levelClear');
+        const after = a.stats();
+        return { voices: after.sfxVoices - before.sfxVoices, recorded: after.recordedPlays - before.recordedPlays };
+      });
+      check(s.music === 'synth' && Object.values(s.files).every((v) => v === 'failed') && fanfare.voices === 1 && fanfare.recorded === 0, `missing files: the synthesised music and fanfare play instead (${s.music}; fanfare ${JSON.stringify(fanfare)}; ${JSON.stringify(s.files)})`);
       check(g.warnings.length === Object.keys(s.files).length && g.warnings.every((w) => /no recording for/.test(w)) && !g.errors.length, `missing files: one "audio:" warning each, no errors (${g.warnings.length} warnings)`);
+      await g.page.close();
+    }
+
+    // ---- A file that fails while its scene is waiting for it: the synthesised tune starts at once.
+    {
+      let fail;
+      const gate = new Promise((r) => (fail = r));
+      const g = await openGame(browser, base, (p) =>
+        p.route('**/assets/audio/music-menu.mp3', async (r) => {
+          await gate;
+          r.fulfill({ status: 404, body: 'not found' });
+        }),
+      );
+      await until(g.page, () => window.__game.audio.stats() && window.__game.audio.stats().music === 'wait', null, 10);
+      const waiting = await stats(g.page);
+      fail();
+      await until(g.page, () => window.__game.audio.stats().music === 'synth', null, 10);
+      const s = await stats(g.page);
+      // pump() would only give up waiting 2 s (MUSIC_WAIT) after the scene started.
+      check(waiting.music === 'wait' && s.music === 'synth' && s.time - waiting.time < 1, `a file failing while its scene waits: the synthesised tune starts straight away (${(s.time - waiting.time).toFixed(2)} s after the scene was seen waiting)`);
+      check(g.warnings.length === 1 && /music:menu/.test(g.warnings[0]) && !g.errors.length, `a file failing while its scene waits: one warning, no errors (${g.warnings.join(' | ')})`);
       await g.page.close();
     }
 

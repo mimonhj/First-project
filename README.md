@@ -39,22 +39,25 @@ with the game's own synthesised sound (Web Audio API) for everything that has no
 | Level cleared | a brass fanfare | recorded |
 | Victory, shipwrecked | fanfares | synthesised |
 
-The recorded tracks are seamless loops (60 to 80 seconds) and play at the same loudness as the
+The recorded tracks are seamless loops (48 to 80 seconds) and play at the same loudness as the
 synthesised tunes they replace. The sound effects (cannons, splashes, hits, coins, sails, lava bombs...)
 and the ambience (waves, gulls, jungle birds, the volcano's rumble) are synthesised.
 
 - The files are in `assets/audio/` (MP3, about 5 MB in all). They download in the background, the
   title music first. A scene whose track hasn't arrived yet waits up to 2 seconds for it, then plays the
   synthesised tune, and switches to the recording when it comes in. If a file can't be loaded, that
-  part of the soundtrack stays synthesised.
+  part of the soundtrack stays synthesised (and the shipyard keeps the title screen's tune).
 - Add `?audio=synth` to the URL for the synthesised soundtrack only (nothing is downloaded).
 - `tools/audio/assets.json` lists every recording: what it is for, the ElevenLabs prompt and generation,
   and where it was cut. `tools/audio/build.py` turns the raw downloads into the game's files
   (loop with a crossfaded seam, loudness, MP3) and `tools/audio/loopfind.py` finds the loop points
   (they need `ffmpeg` and Python 3 with `numpy`). The level trims (`gain` in `RECORDED`, `src/audio.js`)
-  come from `node tests/audio.cjs --calibrate`.
-- To add a recording (say the Bali music, or a sound effect): generate it, add it to `assets.json`,
-  run the build, add a line to `RECORDED`, calibrate, and run `npm run test:audio`.
+  come from `node tests/audio.cjs --calibrate`. The raw downloads are not kept in the repository.
+- To add a recording (say the Bali music, or a sound effect): generate and download it, add an entry
+  to `assets.json` (for music, find the loop with `loopfind.py`), run
+  `python3 tools/audio/build.py RAW_DIR music:bali` (it builds just that one and prints its line for
+  `RECORDED`), add the line, calibrate the gain, and run `npm run test:audio`. Ambience beds
+  (`RECORDED.amb`) and sound effects (`RECORDED.sfx`) work the same way.
 
 ## Shipyard & Sparrow's Floating Island
 
@@ -240,19 +243,23 @@ Chromium with Playwright:
 - `tests/audio.cjs` (`npm run test:audio`, about two minutes): the recorded audio.
   - every file in `RECORDED` is served as `audio/mpeg`, decodes, and is stereo, finite, not silent and
     not clipping
-  - each loop runs from its end into its start without a click: in the file and played by the engine
-    across the seam (a click is a sample step far above the steps within 1 ms of it; a deliberately
-    clicking loop must be caught) and without a gap
-  - decoder padding is trimmed (as some browsers' MP3 decoders leave it) without cutting real sound
+  - each loop decodes to exactly its listed length and runs from its end into its start without a
+    click: in the file and played by the engine across the seam (a click is a sample step far above the
+    steps within 1 ms of it; a deliberately clicking loop must be caught) and without a gap
+  - an MP3 decode that kept the encoder's priming and padding (as decoders without gapless support do)
+    is cut back to exactly the music: both ends or one end padded, at 48 and 44.1 kHz
   - each recording is within 1 LU of the loudness of the synthesised sound it replaces (BS.1770
     integrated loudness of offline renders through the game's mix)
   - the level-cleared fanfare ducks the music and lets it back up
   - stand-ins for recordings that don't exist yet: a recorded bomb whistle is fitted to the bomb's
-    flight (it ends on the impact), a recorded ambience bed replaces the synthesised one
+    flight (it ends on the impact), a recorded ambience bed replaces the synthesised one, and recorded
+    music or ambience arriving mid-scene takes over from the synthesised version
   - in the game: the title, the shipyard and the levels play their recordings (Bali its synthesised
-    tune), the title music is fetched first, at most two decoded tracks are kept, `?audio=synth`
-    fetches nothing, missing files fall back to the synthesised sound with one warning each, and a
-    slow download goes silent for a moment, then synthesised, then recorded
+    tune), the title music is fetched first, only the last two scenes' tracks stay decoded,
+    `?audio=synth` fetches nothing (and the shipyard keeps the title jig going), missing files fall
+    back to the synthesised sound with one warning each, a file that fails while its scene waits
+    for it starts the synthesised tune straight away, and a slow download goes silent for a moment,
+    then synthesised, then recorded
 
 ### Setting up the tests
 

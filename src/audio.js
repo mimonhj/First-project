@@ -65,13 +65,14 @@ export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano'];
 // music: a seamless loop per scene. amb: a looping ambience bed per scene (replaces the synthesised one).
 // sfx: one-shots and fanfares, by sound name. gain: level trim, set so each recording is as loud as the
 // synthesised version it replaces (measured on offline renders through the same mix, see tests/audio.cjs).
-// duck: seconds a fanfare holds the music down. Anything not listed here is synthesised.
+// duck: seconds a fanfare holds the music down. frames: a loop's exact length in samples at 48 kHz (build.py prints
+// it), so decoder padding can be cut off. Anything not listed here is synthesised.
 export const RECORDED = {
   music: {
-    menu: { file: 'music-menu.mp3', gain: 0.489 },
-    dock: { file: 'music-dock.mp3', gain: 0.483 },
-    europe: { file: 'music-europe.mp3', gain: 0.29 },
-    volcano: { file: 'music-volcano.mp3', gain: 0.658 },
+    menu: { file: 'music-menu.mp3', gain: 0.489, frames: 2880107 },
+    dock: { file: 'music-dock.mp3', gain: 0.483, frames: 2303712 },
+    europe: { file: 'music-europe.mp3', gain: 0.29, frames: 3575076 },
+    volcano: { file: 'music-volcano.mp3', gain: 0.658, frames: 3839872 },
   },
   amb: {},
   sfx: {
@@ -164,27 +165,38 @@ function decodeRecording(ctx, bytes) {
   });
 }
 
-// Some MP3 decoders keep the encoder's padding: a few ms of digital silence at either end, which would put a gap
-// in a loop. The files' own first and last samples are never silent, so trim any near-zero run (capped at a
-// few MP3 frames, so real sound is never cut).
-function trimPadding(ctx, buf) {
-  const ch = [];
-  for (let c = 0; c < buf.numberOfChannels; c++) ch.push(buf.getChannelData(c));
-  const quiet = (i) => ch.every((d) => Math.abs(d[i]) < 2e-4);
-  const cap = Math.min(4608, buf.length >> 3);
-  let s = 0;
-  while (s < cap && quiet(s)) s++;
-  let e = buf.length;
-  while (buf.length - e < cap && quiet(e - 1)) e--;
-  if (s === 0 && e === buf.length) return buf;
-  const out = ctx.createBuffer(buf.numberOfChannels, e - s, buf.sampleRate);
-  for (let c = 0; c < ch.length; c++) out.getChannelData(c).set(ch[c].subarray(s, e));
+// Chromium and Firefox decode these MP3s to their exact length (they read the encoder's gapless info). A decoder
+// that does not also returns the encoder's priming at the start (encoder delay 576 + decoder delay 529 samples:
+// low-level pre-echo, not silence) and padding at the end, which would put a dropout in a loop. Loops know their
+// exact length (`frames` at 48 kHz), so anything beyond it is cut: the priming from the start, the rest from the end.
+const PRIMING = 1105;
+function fitLength(ctx, buf, frames, rate = 48000) {
+  const ratio = buf.sampleRate / rate;
+  const want = Math.round(frames * ratio);
+  const extra = buf.length - want;
+  if (extra <= 1 || want < 1) return buf; // exact (±1 from resampling)
+  let lead = Math.round(PRIMING * ratio);
+  if (extra < lead) lead = quietHead(buf, extra) ? extra : 0; // only one end was padded: the quiet one
+  const out = ctx.createBuffer(buf.numberOfChannels, want, buf.sampleRate);
+  for (let c = 0; c < buf.numberOfChannels; c++) out.getChannelData(c).set(buf.getChannelData(c).subarray(lead, lead + want));
   return out;
+}
+
+// Are the first n samples far (over 20 dB) quieter than the n after them?
+function quietHead(buf, n) {
+  let head = 0;
+  let next = 0;
+  for (let c = 0; c < buf.numberOfChannels; c++) {
+    const d = buf.getChannelData(c);
+    for (let i = 0; i < n; i++) head += d[i] * d[i];
+    for (let i = n; i < Math.min(d.length, 2 * n); i++) next += d[i] * d[i];
+  }
+  return head * 100 < next;
 }
 
 async function loadRecording(ctx, rec) {
   const buf = await decodeRecording(ctx, await fetchRecording(rec.file));
-  return rec.kind === 'sfx' ? buf : trimPadding(ctx, buf);
+  return rec.frames ? fitLength(ctx, buf, rec.frames) : buf;
 }
 
 function audioParam(name) {
@@ -506,7 +518,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   const rng = mulberry32(seed); // music + ambience (deterministic per seed)
   const rand = (a, b) => a + (b - a) * rng();
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
-  const S = { nodes: 0, made: 0, peak: 0, sfx: 0 };
+  const S = { nodes: 0, made: 0, peak: 0, sfx: 0, recPlays: 0 };
 
   // ---- voices: every short-lived node belongs to one, and is disconnected after `end`
   const live = [];
@@ -1399,6 +1411,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   // A recorded one-shot into v.in. The bomb whistle is fitted to the bomb's flight: played a little faster or
   // slower, and started partway in (or a moment late) so that it ends on the impact.
   function playRecording(v, t, p, o, rec) {
+    S.recPlays++;
     const buf = rec.buffer;
     const vary = VARY[v.name] || 0;
     let rate = p * (1 + vary * (Math.random() * 2 - 1));
@@ -1483,7 +1496,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   function makeScene(name, t0, instant) {
     const cv = { end: Infinity, nodes: [], src: [], sfx: false, dead: false }; // the scene's long-lived nodes
     live.push(cv);
-    const sc = { name, t0, st0: t0, stopAt: Infinity, cv, i: 0, song: null, em: [], kids: [], music: null };
+    const sc = { name, t0, st0: t0, stopAt: Infinity, cv, i: 0, song: null, em: [], kids: [], music: null, ambience: 'synth' };
     const fader = (to) => {
       const g = gain(cv, instant ? to : 0);
       if (!instant) g.gain.setTargetAtTime(to, t0, 0.5);
@@ -1492,11 +1505,15 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     const trim = SCENE_GAIN[name];
     sc.dry = fader(trim.music);
     sc.wet = fader(trim.music);
-    sc.amb = fader(trim.amb);
+    sc.ambFade = fader(trim.amb);
     sc.dry.connect(musicBus);
     sc.wet.connect(musicVerb);
-    sc.amb.connect(ambBus);
-    // The synthesised tune has its own faders, so a recording can take over from it.
+    sc.ambFade.connect(ambBus);
+    // The synthesised ambience (its beds live in sc.av, its events are voices of their own) and the synthesised
+    // tune have their own faders, so a recording that arrives mid-scene can take over from them.
+    sc.amb = gain(cv, 1);
+    sc.amb.connect(sc.ambFade);
+    sc.av = longVoice(sc);
     sc.synthDry = gain(cv, 1);
     sc.synthWet = gain(cv, 1);
     sc.synthDry.connect(sc.dry);
@@ -1519,15 +1536,17 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       sc.waitUntil = t0 + MUSIC_WAIT;
     } else startSynth(sc, t0);
     const amb = recs.get(`amb:${name}`);
-    if (amb) {
-      // A recorded bed, entered at a random point so it does not always start the same way.
-      const s = sample(cv, amb.buffer, t0, null, 1, rng() * amb.buffer.duration);
-      s.loop = true;
-      const g = gain(cv, amb.gain);
-      s.connect(g);
-      g.connect(sc.amb);
-    } else AMBIENCE[name](sc, t0);
+    if (amb) startRecordedAmbience(sc, amb, t0, false);
+    else AMBIENCE[name](sc, t0);
     return sc;
+  }
+
+  // A voice for a scene's long-lived nodes (a bed, a drone): it ends with the scene, or earlier when cut short.
+  function longVoice(sc) {
+    const v = { end: Infinity, nodes: [], src: [], sfx: false, dead: false };
+    live.push(v);
+    sc.kids.push(v);
+    return v;
   }
 
   // The sequenced tune, from t on. Its long-lived nodes (the volcano's drone) live in their own voice, sc.sv.
@@ -1535,9 +1554,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     sc.music = 'synth';
     sc.st0 = t;
     sc.i = 0;
-    sc.sv = { end: Infinity, nodes: [], src: [], sfx: false, dead: false };
-    live.push(sc.sv);
-    sc.kids.push(sc.sv); // so it ends with the scene
+    sc.sv = longVoice(sc);
     sc.song = SONGS[sc.name](sc);
   }
 
@@ -1556,8 +1573,30 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     g.connect(sc.dry);
   }
 
+  // A recorded ambience bed on a loop, entered at a random point so it does not always start the same way.
+  function startRecordedAmbience(sc, rec, t, fade) {
+    sc.ambience = 'rec';
+    const s = sample(sc.cv, rec.buffer, t, null, 1, rng() * rec.buffer.duration);
+    s.loop = true;
+    const g = gain(sc.cv, fade ? 0 : rec.gain);
+    if (fade) {
+      g.gain.setValueAtTime(0, t);
+      g.gain.setTargetAtTime(rec.gain, t, 0.4);
+    }
+    s.connect(g);
+    g.connect(sc.ambFade);
+  }
+
+  // Fade a scene's synthesised part out over ~2 s and stop its long-lived nodes after that.
+  function retire(faders, v, now) {
+    for (const g of faders) g.setTargetAtTime(0, now, 0.25);
+    const end = now + 2;
+    for (const s of v.src) if (s.t1 > end) stopAt(s, end);
+    v.end = end;
+  }
+
   // A recording has been decoded (or dropped to save memory: buffer null). New scenes use it; the current scene
-  // switches to newly arrived music, crossfading from the synthesised tune if that had already started.
+  // switches to newly arrived music or ambience, crossfading from the synthesised version if that had started.
   function setRecording(key, buffer, meta = EMPTY) {
     if (!buffer) {
       recs.delete(key);
@@ -1569,21 +1608,26 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     const rec = { gain: 1, duck: 0, ...meta, buffer };
     recs.set(key, rec);
     const sc = current;
-    if (!sc || key !== `music:${sc.name}` || sc.stopAt !== Infinity || sc.music === 'rec') return;
+    if (!sc || sc.stopAt !== Infinity) return;
     const now = ctx.currentTime;
+    if (key === `amb:${sc.name}` && sc.ambience !== 'rec') {
+      // No more synthesised events; those already scheduled play out under the fade, then the beds stop.
+      sc.em.length = 0;
+      retire([sc.amb.gain], sc.av, now);
+      startRecordedAmbience(sc, rec, now + 0.05, true);
+      return;
+    }
+    if (key !== `music:${sc.name}` || sc.music === 'rec') return;
     if (sc.music === 'synth') {
       // Notes already scheduled (the lookahead) play out under the fade; then the drone stops.
       sc.song = null;
-      for (const g of [sc.synthDry.gain, sc.synthWet.gain]) g.setTargetAtTime(0, now, 0.25);
-      const end = now + 2;
-      for (const s of sc.sv.src) if (s.t1 > end) stopAt(s, end);
-      sc.sv.end = end;
+      retire([sc.synthDry.gain, sc.synthWet.gain], sc.sv, now);
     }
     startRecordedMusic(sc, rec, now + 0.05, true);
   }
 
   function fadeOutScene(sc, now) {
-    for (const g of [sc.dry, sc.wet, sc.amb]) {
+    for (const g of [sc.dry, sc.wet, sc.ambFade]) {
       g.gain.cancelScheduledValues(now);
       g.gain.setTargetAtTime(0, now, 0.4);
     }
@@ -1604,6 +1648,8 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
 
   function setScene(name, instant = false) {
     if (name != null && !SONGS[name]) return;
+    // Without a recording of its own the shipyard keeps the title screen's scene (the jig plays on, no restart).
+    if (name === 'dock' && !recs.has('music:dock') && !pending('music:dock')) name = 'menu';
     if ((current ? current.name : null) === name) return;
     const now = ctx.currentTime;
     if (current) {
@@ -1951,7 +1997,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
 
   // Open sea: stereo noise breathing through a low-pass at two unrelated slow rates.
   function seaBed(sc, t0, lvl, cutoff) {
-    const v = sc.cv;
+    const v = sc.av;
     const n = noise(v, t0, null, R.noise2);
     const lp = filt(v, 'lowpass', cutoff, -3);
     const g = gain(v, lvl);
@@ -2176,7 +2222,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     volcano(sc, t0) {
       seaBed(sc, t0, 0.035, 380);
       // Constant low rumble.
-      const v = sc.cv;
+      const v = sc.av;
       const n = noise(v, t0, null, R.noise2);
       const lp = filt(v, 'lowpass', 130, 3);
       const g = gain(v, 0.2);
@@ -2223,7 +2269,9 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
         scene: current ? current.name : null,
         music: current ? current.music : null,
         musicSeconds: current && current.recSeconds ? current.recSeconds : null,
+        ambience: current ? current.ambience : null,
         emitters: current ? current.em.length : 0,
+        recordedPlays: S.recPlays,
         recordings: [...recs.keys()],
         time: ctx.currentTime,
         state: ctx.state,
@@ -2468,6 +2516,7 @@ async function renderOffline({
   musicOffset = 0, // seconds into the recorded music to start at
   linear = false, // bypass the master compressor (level measurements)
   sfxOff = false, // mute the effects (fanfares still duck the music)
+  late = null, // { key: seconds }: injected recordings that only arrive at that time (mid-scene takeovers)
 } = {}) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const ctx = new OAC(2, Math.ceil(seconds * sampleRate), sampleRate);
@@ -2481,7 +2530,14 @@ async function renderOffline({
   for (const [key, r] of Object.entries(inject || EMPTY)) {
     const buf = ctx.createBuffer(r.channels.length, r.channels[0].length, r.sampleRate || sampleRate);
     r.channels.forEach((d, c) => buf.getChannelData(c).set(d));
-    eng.setRecording(key, buf, r);
+    const at = late && late[key];
+    if (at == null) eng.setRecording(key, buf, r);
+    else {
+      ctx.suspend(Math.round(at * 128) / 128).then(() => {
+        eng.setRecording(key, buf, r);
+        ctx.resume();
+      });
+    }
   }
   if (linear) {
     eng.buses.comp.ratio.value = 1;
@@ -2571,4 +2627,4 @@ function validateScores() {
   ];
 }
 
-export const __audioTest = { renderOffline, validateScores, distGain, distCutoff, trimPadding, loadRecording, RECORDINGS };
+export const __audioTest = { renderOffline, validateScores, distGain, distCutoff, fitLength, loadRecording, RECORDINGS };
