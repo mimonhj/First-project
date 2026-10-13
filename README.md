@@ -22,9 +22,39 @@ On your first voyage, hints show how to steer and when a pirate is in your firin
 The gun panel lights up **FIRE!** when a side has a target, and hits pop up as **HIT!** / **SUNK!**.
 Any key skips the camera fly-in at the start of a level.
 
-All sound effects and music are generated in the browser with the Web Audio API: cannon booms,
-splashes, a sea shanty for Europe, gamelan bells for Bali and drums for the Volcano.
 Press `M` (or the speaker button) to mute.
+
+### Music and sound
+
+The soundtrack is recorded music made with [ElevenLabs](https://elevenlabs.io) (Eleven Music),
+with the game's own synthesised sound (Web Audio API) for everything that has no recording yet:
+
+| Where | Music | |
+|-------|-------|-|
+| Title screen | a jaunty sea-shanty jig: fiddle, accordion, tin whistle, bodhrán | recorded |
+| Shipyard (Sparrow's Floating Island) | a sunny harbour-tavern tune: concertina, mandolin, ukulele | recorded |
+| Coast of Europe | a swashbuckling hornpipe: fiddle and accordion over a snare march, brass stabs | recorded |
+| Bali Islands | gamelan bells, kendang drums and a bamboo flute | synthesised |
+| The Volcano | taiko drums, low brass and driving cellos in D minor | recorded |
+| Level cleared | a brass fanfare | recorded |
+| Victory, shipwrecked | fanfares | synthesised |
+
+The recorded tracks are seamless loops (60 to 80 seconds) and play at the same loudness as the
+synthesised tunes they replace. The sound effects (cannons, splashes, hits, coins, sails, lava bombs...)
+and the ambience (waves, gulls, jungle birds, the volcano's rumble) are synthesised.
+
+- The files are in `assets/audio/` (MP3, about 5 MB in all). They download in the background, the
+  title music first. A scene whose track hasn't arrived yet waits up to 2 seconds for it, then plays the
+  synthesised tune, and switches to the recording when it comes in. If a file can't be loaded, that
+  part of the soundtrack stays synthesised.
+- Add `?audio=synth` to the URL for the synthesised soundtrack only (nothing is downloaded).
+- `tools/audio/assets.json` lists every recording: what it is for, the ElevenLabs prompt and generation,
+  and where it was cut. `tools/audio/build.py` turns the raw downloads into the game's files
+  (loop with a crossfaded seam, loudness, MP3) and `tools/audio/loopfind.py` finds the loop points
+  (they need `ffmpeg` and Python 3 with `numpy`). The level trims (`gain` in `RECORDED`, `src/audio.js`)
+  come from `node tests/audio.cjs --calibrate`.
+- To add a recording (say the Bali music, or a sound effect): generate it, add it to `assets.json`,
+  run the build, add a line to `RECORDED`, calibrate, and run `npm run test:audio`.
 
 ## Shipyard & Sparrow's Floating Island
 
@@ -136,14 +166,16 @@ when you haven't been hit for a few seconds.
   and writing the saved ship (no three.js, so Node can load it too)
 - `src/people.js`: cartoon pirates and townsfolk with their animations (mopping, scrubbing, waving,
   fishing, fiddling...)
-- `src/audio.js`: procedural sound effects, music and ambience
+- `src/audio.js`: sound effects, music and ambience: the recorded tracks (`RECORDED`) and the synthesised
+  sound for everything else
+- `assets/audio/`: the recorded music; `tools/audio/`: how it was made (see Music and sound)
 - `src/env/europe.js`, `src/env/bali.js`, `src/env/volcano.js`: the three level environments
 - `src/env/sparrow.js`: Sparrow's Floating Island, the shipyard's town and the cleaning crew
 - `src/style.js`: shared cel-shading materials, outline settings and palette fields
 
 ## Tests
 
-`npm test` runs four suites, in this order. The first runs in plain Node; the others run in headless
+`npm test` runs five suites, in this order. The first runs in plain Node; the others run in headless
 Chromium with Playwright:
 
 - `tests/upgrades.test.cjs` (`npm run test:upgrades`, under a second): the shipyard data and logic in
@@ -205,6 +237,22 @@ Chromium with Playwright:
       on screen or reachable by scrolling the panel, 44px targets, nothing overlapping, the ship
       framed beside or above the panel, and every text in the panel at 4.5:1 contrast or better
       (3:1 for large text)
+- `tests/audio.cjs` (`npm run test:audio`, about two minutes): the recorded audio.
+  - every file in `RECORDED` is served as `audio/mpeg`, decodes, and is stereo, finite, not silent and
+    not clipping
+  - each loop runs from its end into its start without a click: in the file and played by the engine
+    across the seam (a click is a sample step far above the steps within 1 ms of it; a deliberately
+    clicking loop must be caught) and without a gap
+  - decoder padding is trimmed (as some browsers' MP3 decoders leave it) without cutting real sound
+  - each recording is within 1 LU of the loudness of the synthesised sound it replaces (BS.1770
+    integrated loudness of offline renders through the game's mix)
+  - the level-cleared fanfare ducks the music and lets it back up
+  - stand-ins for recordings that don't exist yet: a recorded bomb whistle is fitted to the bomb's
+    flight (it ends on the impact), a recorded ambience bed replaces the synthesised one
+  - in the game: the title, the shipyard and the levels play their recordings (Bali its synthesised
+    tune), the title music is fetched first, at most two decoded tracks are kept, `?audio=synth`
+    fetches nothing, missing files fall back to the synthesised sound with one warning each, and a
+    slow download goes silent for a moment, then synthesised, then recorded
 
 ### Setting up the tests
 

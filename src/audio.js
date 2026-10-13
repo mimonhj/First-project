@@ -1,5 +1,6 @@
-// Procedural sound for Pirates Ahoy!: sound effects, ambience beds and music,
-// all synthesised live with the Web Audio API (no audio files, no libraries).
+// Sound for Pirates Ahoy!: sound effects, ambience beds and music, played with the Web Audio API.
+// Recorded tracks (made with ElevenLabs, see RECORDED and tools/audio/) are used where there is one; everything
+// else, and anything whose file has not arrived, is synthesised live (no libraries).
 //
 //   const audio = createAudio();
 //   addEventListener('pointerdown', () => audio.unlock()); // sound may only start after a user gesture
@@ -10,6 +11,12 @@
 // Every method is a safe no-op before unlock() and when Web Audio is missing. play() is also refused while
 // the context cannot run (autoplay-blocked, an iOS interruption, muted, hidden tab), so nothing stockpiles
 // on a frozen clock; a hidden tab suspends the context and the clock (no backlog on return).
+//
+// Recordings: the files are fetched from the start (the title-screen music and the effects first), and decoded
+// once there is an AudioContext. A scene whose recording is still on its way waits for it (MUSIC_WAIT) before
+// falling back to the synthesised tune, and switches over if it arrives later. Only the current and the previous
+// scene's music stay decoded (a minute of decoded stereo is ~23 MB). Add ?audio=synth to the URL for the
+// synthesised soundtrack only.
 //
 // Signal flow:
 //   one-shot voice: sound → gain (volume × distance) → low-pass (distance) → panner → sfx bus ──────┐
@@ -42,6 +49,7 @@ const SFX_GAIN = {
 };
 const SCENE_GAIN = {
   menu: { music: 0.95, amb: 1.3 },
+  dock: { music: 0.95, amb: 1.3 },
   europe: { music: 1.5, amb: 1 },
   bali: { music: 1.3, amb: 1.3 },
   volcano: { music: 0.6, amb: 0.75 },
@@ -51,7 +59,36 @@ export const SFX_NAMES = [
   'cannon', 'splash', 'hit', 'sink', 'coin', 'bombWhistle', 'bombBoom', 'wave',
   'levelClear', 'victory', 'defeat', 'click', 'reef', 'sailUp', 'sailDown',
 ];
-export const SCENE_NAMES = ['menu', 'europe', 'bali', 'volcano'];
+export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano'];
+
+// Recorded audio in assets/audio/ (generated with ElevenLabs; tools/audio/assets.json has the prompts and the cuts).
+// music: a seamless loop per scene. amb: a looping ambience bed per scene (replaces the synthesised one).
+// sfx: one-shots and fanfares, by sound name. gain: level trim, set so each recording is as loud as the
+// synthesised version it replaces (measured on offline renders through the same mix, see tests/audio.cjs).
+// duck: seconds a fanfare holds the music down. Anything not listed here is synthesised.
+export const RECORDED = {
+  music: {
+    menu: { file: 'music-menu.mp3', gain: 0.489 },
+    dock: { file: 'music-dock.mp3', gain: 0.483 },
+    europe: { file: 'music-europe.mp3', gain: 0.29 },
+    volcano: { file: 'music-volcano.mp3', gain: 0.658 },
+  },
+  amb: {},
+  sfx: {
+    levelClear: { file: 'stinger-level-clear.mp3', gain: 0.8, duck: 2.9 },
+  },
+};
+const ASSET_DIR = new URL('../assets/audio/', import.meta.url);
+const MUSIC_WAIT = 2; // seconds a scene waits, silent, for its recorded music before playing the synthesised tune
+const KEEP_MUSIC = 2; // decoded music tracks kept (the current scene's and the one it crossfades from)
+// Per-shot pitch variation (±) for recorded one-shots that repeat a lot.
+const VARY = { cannon: 0.04, splash: 0.05, hit: 0.05, sink: 0.03, bombBoom: 0.04, reef: 0.04, sailUp: 0.03, sailDown: 0.03 };
+
+// Every recording as { key: 'music:menu' | 'amb:bali' | 'sfx:cannon', name, kind, file, gain, duck }.
+const RECORDINGS = [];
+for (const kind of ['music', 'amb', 'sfx']) {
+  for (const [name, r] of Object.entries(RECORDED[kind])) RECORDINGS.push({ key: `${kind}:${name}`, name, kind, ...r });
+}
 
 const NOOP_HANDLE = Object.freeze({ stop() {}, set() {} });
 const EMPTY = Object.freeze({});
@@ -99,6 +136,63 @@ function distGain(d) {
 // Far sounds lose their highs.
 function distCutoff(d) {
   return Math.max(500, 20000 * Math.exp(-(d > 0 ? d : 0) / 35));
+}
+
+// ---------------------------------------------------------------------------
+// Recordings: fetching and decoding
+// ---------------------------------------------------------------------------
+// The compressed files, fetched once per page (a few MB in all) and kept, so a dropped track can be decoded again.
+const fileCache = new Map();
+function fetchRecording(file) {
+  if (!fileCache.has(file)) {
+    fileCache.set(
+      file,
+      fetch(new URL(file, ASSET_DIR)).then((res) => {
+        if (!res.ok) throw new Error(`${file}: HTTP ${res.status}`);
+        return res.arrayBuffer();
+      }),
+    );
+  }
+  return fileCache.get(file);
+}
+
+// decodeAudioData detaches the bytes it is given, so it gets a copy. Older Safari only has the callback form.
+function decodeRecording(ctx, bytes) {
+  return new Promise((resolve, reject) => {
+    const p = ctx.decodeAudioData(bytes.slice(0), resolve, reject);
+    if (p && p.then) p.then(resolve, reject);
+  });
+}
+
+// Some MP3 decoders keep the encoder's padding: a few ms of digital silence at either end, which would put a gap
+// in a loop. The files' own first and last samples are never silent, so trim any near-zero run (capped at a
+// few MP3 frames, so real sound is never cut).
+function trimPadding(ctx, buf) {
+  const ch = [];
+  for (let c = 0; c < buf.numberOfChannels; c++) ch.push(buf.getChannelData(c));
+  const quiet = (i) => ch.every((d) => Math.abs(d[i]) < 2e-4);
+  const cap = Math.min(4608, buf.length >> 3);
+  let s = 0;
+  while (s < cap && quiet(s)) s++;
+  let e = buf.length;
+  while (buf.length - e < cap && quiet(e - 1)) e--;
+  if (s === 0 && e === buf.length) return buf;
+  const out = ctx.createBuffer(buf.numberOfChannels, e - s, buf.sampleRate);
+  for (let c = 0; c < ch.length; c++) out.getChannelData(c).set(ch[c].subarray(s, e));
+  return out;
+}
+
+async function loadRecording(ctx, rec) {
+  const buf = await decodeRecording(ctx, await fetchRecording(rec.file));
+  return rec.kind === 'sfx' ? buf : trimPadding(ctx, buf);
+}
+
+function audioParam(name) {
+  try {
+    return new URLSearchParams(location.search).get(name);
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -404,8 +498,11 @@ function sus(p, t, peak, a, off, r) {
 // ---------------------------------------------------------------------------
 // The engine: everything that needs an AudioContext (real-time or offline)
 // ---------------------------------------------------------------------------
-function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
+// `pending(key)`: is a recording for this key on its way (so a new scene should wait for it)?
+// `musicOffset`: where recorded music starts, in seconds (tests use it to listen across a loop's seam).
+function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending = () => false, musicOffset = 0 } = {}) {
   const R = buildResources(ctx);
+  const recs = new Map(); // decoded recordings by key ('music:menu', 'sfx:levelClear'...): { buffer, gain, duck, name }
   const rng = mulberry32(seed); // music + ambience (deterministic per seed)
   const rand = (a, b) => a + (b - a) * rng();
   const pick = (arr) => arr[Math.floor(rng() * arr.length)];
@@ -1253,9 +1350,11 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     const isStinger = name in STINGER;
     // Stingers skip the caps: there is only ever one, and a level-clear fanfare must not lose to a coin storm.
     if (!isStinger && (S.sfx >= MAX_SFX || active[name] >= (SFX_CAP[name] || 6))) return NOOP_HANDLE;
+    const rec = recs.get(`sfx:${name}`);
+    const trim = rec ? rec.gain : SFX_GAIN[name];
     const d = Math.max(0, Number(o.distance) || 0);
     const volume = o.volume == null ? 1 : Math.max(0, Number(o.volume) || 0);
-    let vol = volume * distGain(d) * SFX_GAIN[name];
+    let vol = volume * distGain(d) * trim;
     const now = ctx.currentTime;
     // Thin out pile-ups of the same sound in the same instant (e.g. both broadsides at once).
     const lp = lastPlay[name] || (lastPlay[name] = { t: -1, n: 0 });
@@ -1276,13 +1375,14 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     v.name = name;
     active[name]++;
     v.volume = volume;
-    v.trim = SFX_GAIN[name];
+    v.trim = trim;
     v.dist = d;
     if (isStinger) {
       stinger = v;
-      if (STINGER[name]) {
+      const hold = rec ? rec.duck || 0 : STINGER[name];
+      if (hold) {
         v.duck = true;
-        duck(t, t + STINGER[name] / pitch);
+        duck(t, t + hold / pitch);
       }
     }
     v.in = gain(v, vol);
@@ -1291,8 +1391,34 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     v.in.connect(v.lp);
     v.lp.connect(v.pn);
     v.pn.connect(sfxBus);
-    make(v, t, pitch, o);
+    if (rec) playRecording(v, t, pitch, o, rec);
+    else make(v, t, pitch, o);
     return handleFor(v);
+  }
+
+  // A recorded one-shot into v.in. The bomb whistle is fitted to the bomb's flight: played a little faster or
+  // slower, and started partway in (or a moment late) so that it ends on the impact.
+  function playRecording(v, t, p, o, rec) {
+    const buf = rec.buffer;
+    const vary = VARY[v.name] || 0;
+    let rate = p * (1 + vary * (Math.random() * 2 - 1));
+    let offset = 0;
+    let at = t;
+    if (v.name === 'bombWhistle') {
+      const want = clamp(Number(o.duration) || 2.5, 0.4, 6);
+      rate = p * clamp(buf.duration / want, 0.8, 1.25);
+      const len = buf.duration / rate;
+      if (len > want) offset = (len - want) * rate;
+      else at = t + (want - len);
+    }
+    const g = gain(v, 1);
+    if (offset > 0) {
+      g.gain.setValueAtTime(0, at);
+      g.gain.linearRampToValueAtTime(1, at + 0.12);
+    }
+    const s = sample(v, buf, at, at + (buf.duration - offset) / rate + 0.005, rate, offset);
+    s.connect(g);
+    g.connect(v.in);
   }
 
   function stopVoice(v, fade) {
@@ -1352,10 +1478,12 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
   const scenes = [];
   let current = null;
 
+  // sc.music says what the scene's music is: 'rec' (a recording), 'synth' (the sequenced tune), or 'wait'
+  // (silent until its recording arrives, at most until sc.waitUntil).
   function makeScene(name, t0, instant) {
     const cv = { end: Infinity, nodes: [], src: [], sfx: false, dead: false }; // the scene's long-lived nodes
     live.push(cv);
-    const sc = { name, t0, stopAt: Infinity, cv, i: 0, song: null, em: [], kids: [] };
+    const sc = { name, t0, st0: t0, stopAt: Infinity, cv, i: 0, song: null, em: [], kids: [], music: null };
     const fader = (to) => {
       const g = gain(cv, instant ? to : 0);
       if (!instant) g.gain.setTargetAtTime(to, t0, 0.5);
@@ -1368,20 +1496,90 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     sc.dry.connect(musicBus);
     sc.wet.connect(musicVerb);
     sc.amb.connect(ambBus);
+    // The synthesised tune has its own faders, so a recording can take over from it.
+    sc.synthDry = gain(cv, 1);
+    sc.synthWet = gain(cv, 1);
+    sc.synthDry.connect(sc.dry);
+    sc.synthWet.connect(sc.wet);
     // An instrument bus: panned, with an optional reverb send.
     sc.bus = (pan, send = 0) => {
       const p = panner(cv, pan);
-      p.connect(sc.dry);
+      p.connect(sc.synthDry);
       if (send) {
         const s = gain(cv, send);
         p.connect(s);
-        s.connect(sc.wet);
+        s.connect(sc.synthWet);
       }
       return p;
     };
-    sc.song = SONGS[name](sc);
-    AMBIENCE[name](sc, t0);
+    const music = recs.get(`music:${name}`);
+    if (music) startRecordedMusic(sc, music, t0, false);
+    else if (pending(`music:${name}`)) {
+      sc.music = 'wait';
+      sc.waitUntil = t0 + MUSIC_WAIT;
+    } else startSynth(sc, t0);
+    const amb = recs.get(`amb:${name}`);
+    if (amb) {
+      // A recorded bed, entered at a random point so it does not always start the same way.
+      const s = sample(cv, amb.buffer, t0, null, 1, rng() * amb.buffer.duration);
+      s.loop = true;
+      const g = gain(cv, amb.gain);
+      s.connect(g);
+      g.connect(sc.amb);
+    } else AMBIENCE[name](sc, t0);
     return sc;
+  }
+
+  // The sequenced tune, from t on. Its long-lived nodes (the volcano's drone) live in their own voice, sc.sv.
+  function startSynth(sc, t) {
+    sc.music = 'synth';
+    sc.st0 = t;
+    sc.i = 0;
+    sc.sv = { end: Infinity, nodes: [], src: [], sfx: false, dead: false };
+    live.push(sc.sv);
+    sc.kids.push(sc.sv); // so it ends with the scene
+    sc.song = SONGS[sc.name](sc);
+  }
+
+  // A recording on a loop. `fade`: swell in (it is replacing silence or the synthesised tune mid-scene).
+  function startRecordedMusic(sc, rec, t, fade) {
+    sc.music = 'rec';
+    sc.recSeconds = rec.buffer.duration;
+    const s = sample(sc.cv, rec.buffer, t, null, 1, musicOffset % rec.buffer.duration);
+    s.loop = true;
+    const g = gain(sc.cv, fade ? 0 : rec.gain);
+    if (fade) {
+      g.gain.setValueAtTime(0, t);
+      g.gain.setTargetAtTime(rec.gain, t, 0.25);
+    }
+    s.connect(g);
+    g.connect(sc.dry);
+  }
+
+  // A recording has been decoded (or dropped to save memory: buffer null). New scenes use it; the current scene
+  // switches to newly arrived music, crossfading from the synthesised tune if that had already started.
+  function setRecording(key, buffer, meta = EMPTY) {
+    if (!buffer) {
+      recs.delete(key);
+      // A scene still waiting for this one (its file failed) plays the synthesised tune straight away.
+      const sc = current;
+      if (sc && sc.music === 'wait' && key === `music:${sc.name}` && sc.stopAt === Infinity) startSynth(sc, ctx.currentTime + 0.05);
+      return;
+    }
+    const rec = { gain: 1, duck: 0, ...meta, buffer };
+    recs.set(key, rec);
+    const sc = current;
+    if (!sc || key !== `music:${sc.name}` || sc.stopAt !== Infinity || sc.music === 'rec') return;
+    const now = ctx.currentTime;
+    if (sc.music === 'synth') {
+      // Notes already scheduled (the lookahead) play out under the fade; then the drone stops.
+      sc.song = null;
+      for (const g of [sc.synthDry.gain, sc.synthWet.gain]) g.setTargetAtTime(0, now, 0.25);
+      const end = now + 2;
+      for (const s of sc.sv.src) if (s.t1 > end) stopAt(s, end);
+      sc.sv.end = end;
+    }
+    startRecordedMusic(sc, rec, now + 0.05, true);
   }
 
   function fadeOutScene(sc, now) {
@@ -1434,15 +1632,17 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
         continue;
       }
       const end = Math.min(horizon, sc.stopAt);
-      const song = sc.song;
       owner = sc;
       try {
+        // Waited long enough for the recording: play the synthesised tune after all.
+        if (sc.music === 'wait' && now >= sc.waitUntil && sc.stopAt === Infinity) startSynth(sc, now + 0.05);
+        const song = sc.song;
         // Each step's time comes from its index, so long loops never accumulate rounding drift.
-        let t = sc.t0 + sc.i * song.dur;
+        let t = song ? sc.st0 + sc.i * song.dur : Infinity;
         while (t < end) {
           if (t >= now - 0.02) song.step(sc.i, t); // skip notes we were too late for (stalled main thread)
           sc.i++;
-          t = sc.t0 + sc.i * song.dur;
+          t = sc.st0 + sc.i * song.dur;
         }
         // No new ambience events once the scene is fading out.
         if (sc.stopAt === Infinity) {
@@ -1523,6 +1723,11 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
           if (s === 5) hiss(v, drums, t, 0.05, 0.05, 'highpass', 3500, -3);
         },
       };
+    },
+
+    // The shipyard has its own recording; synthesised, it gets the title-screen jig.
+    dock(sc) {
+      return SONGS.menu(sc);
     },
 
     europe(sc) {
@@ -1670,19 +1875,20 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
       const drums = sc.bus(0, 0.15);
       const anvil = sc.bus(0.4, 0.3);
       // The drone: low detuned saws on D and A, slowly breathing through a low-pass.
-      const t0 = sc.t0;
-      const dl = filt(sc.cv, 'lowpass', 340, 4);
-      const dg = gain(sc.cv, 0.045);
+      const t0 = sc.st0;
+      const dv = sc.sv;
+      const dl = filt(dv, 'lowpass', 340, 4);
+      const dg = gain(dv, 0.045);
       for (const [m, dt] of [[38, -9], [38, 9], [45, 0]]) {
-        const o = osc(sc.cv, 'sawtooth', mtof(m), t0, null);
+        const o = osc(dv, 'sawtooth', mtof(m), t0, null);
         o.detune.value = dt;
         o.connect(dl);
       }
-      const sub = osc(sc.cv, 'sine', mtof(26), t0, null);
-      const subg = gain(sc.cv, 0.3);
+      const sub = osc(dv, 'sine', mtof(26), t0, null);
+      const subg = gain(dv, 0.3);
       sub.connect(subg);
       subg.connect(dg);
-      lfo(sc.cv, 0.05, 180, dl.frequency, t0);
+      lfo(dv, 0.05, 180, dl.frequency, t0);
       dl.connect(dg);
       dg.connect(sc.bus(0, 0.2));
       let pattern = 'a';
@@ -1948,6 +2154,13 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
       emit(sc, 3, (t) => (gull(sc, t, 0.02), rand(8, 18)));
       emit(sc, 6, (t) => (creak(sc, t, 0.02), rand(9, 20)));
     },
+    dock(sc, t0) {
+      // A harbour: small water slapping the piles, more gulls, the moored ship's timbers working.
+      seaBed(sc, t0, 0.04, 480);
+      emit(sc, 1, (t) => (wash(sc, t, 0.06, 900, rand(0.6, 1.1), rand(1.2, 2)), rand(2.5, 5)));
+      emit(sc, 2, (t) => (gull(sc, t, 0.025), rand(5, 11)));
+      emit(sc, 3, (t) => (creak(sc, t, 0.025), rand(6, 14)));
+    },
     europe(sc, t0) {
       seaBed(sc, t0, 0.07, 620);
       emit(sc, 0.5, (t) => (wash(sc, t, 0.13, 1300, rand(1.2, 2), rand(2, 3)), rand(3, 6)));
@@ -1983,6 +2196,8 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     stopAll,
     setScene,
     pump,
+    setRecording,
+    hasRecording: (key) => recs.has(key),
     setMaster(on, instant = false) {
       const g = master.gain;
       g.cancelScheduledValues(ctx.currentTime);
@@ -1996,7 +2211,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
     get scene() {
       return current;
     },
-    buses: { sfx: sfxBus, music: musicBus, amb: ambBus, verb: verbOut, musicVerb },
+    buses: { sfx: sfxBus, music: musicBus, amb: ambBus, verb: verbOut, musicVerb, comp },
     stats() {
       return {
         nodes: S.nodes,
@@ -2005,6 +2220,11 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0 } = {}) {
         voices: live.length,
         sfxVoices: S.sfx,
         scenes: scenes.length,
+        scene: current ? current.name : null,
+        music: current ? current.music : null,
+        musicSeconds: current && current.recSeconds ? current.recSeconds : null,
+        emitters: current ? current.em.length : 0,
+        recordings: [...recs.keys()],
         time: ctx.currentTime,
         state: ctx.state,
       };
@@ -2078,6 +2298,70 @@ export function createAudio() {
     }
   };
 
+  // ---- recordings: fetched from the start, decoded once there is a context (see RECORDED)
+  const recordings = win && win.fetch && audioParam('audio') !== 'synth' ? RECORDINGS : [];
+  const recState = new Map(recordings.map((r) => [r.key, 'fetching'])); // → fetched → ready (→ fetched if dropped) | failed
+  const decoding = new Set();
+  let recent = []; // scenes whose music stays decoded, most recent last
+  const isPending = (key) => recState.has(key) && recState.get(key) !== 'failed';
+  const wanted = (rec) => rec.kind === 'sfx' || recent.includes(rec.name);
+
+  function recFailed(rec, err) {
+    recState.set(rec.key, 'failed');
+    if (win && win.console) console.warn(`audio: no recording for ${rec.key} (${rec.file}), using the synthesised sound:`, String(err));
+    if (eng) guard(() => eng.setRecording(rec.key, null));
+  }
+
+  function fetched(rec) {
+    return fetchRecording(rec.file).then(
+      () => {
+        if (recState.get(rec.key) === 'fetching') recState.set(rec.key, 'fetched');
+        if (wanted(rec)) decode(rec);
+      },
+      (err) => recState.get(rec.key) !== 'failed' && recFailed(rec, err),
+    );
+  }
+
+  function decode(rec) {
+    if (!eng || recState.get(rec.key) !== 'fetched' || decoding.has(rec.key)) return;
+    decoding.add(rec.key);
+    const e = eng;
+    loadRecording(ctx, rec).then(
+      (buf) => {
+        decoding.delete(rec.key);
+        if (!wanted(rec)) return; // the player has moved on twice since: not needed any more
+        recState.set(rec.key, 'ready');
+        guard(() => e.setRecording(rec.key, buf, rec));
+      },
+      (err) => {
+        decoding.delete(rec.key);
+        recFailed(rec, err);
+      },
+    );
+  }
+
+  // A scene starts: decode its music and ambience, drop the decoded music of scenes before the previous one.
+  function want(name) {
+    if (!name || !recordings.length) return;
+    recent = recent.filter((n) => n !== name).concat(name);
+    while (recent.length > KEEP_MUSIC) {
+      const old = recent.shift();
+      for (const rec of recordings) {
+        if (rec.name !== old || rec.kind === 'sfx' || recState.get(rec.key) !== 'ready') continue;
+        recState.set(rec.key, 'fetched');
+        if (eng) guard(() => eng.setRecording(rec.key, null));
+      }
+    }
+    for (const rec of recordings) if (rec.name === name && rec.kind !== 'sfx') fetched(rec);
+  }
+
+  if (recordings.length) {
+    // The title music and the effects first (small, needed soonest), then the other tracks one at a time.
+    const first = recordings.filter((r) => r.kind === 'sfx' || r.key === 'music:menu');
+    const rest = recordings.filter((r) => !first.includes(r));
+    Promise.all(first.map(fetched)).then(() => rest.reduce((p, r) => p.then(() => fetched(r)), Promise.resolve()));
+  }
+
   return {
     unlock() {
       if (failed) return;
@@ -2085,7 +2369,7 @@ export function createAudio() {
         if (!ctx) {
           try {
             ctx = new AC({ latencyHint: 'interactive' });
-            eng = createEngine(ctx);
+            eng = createEngine(ctx, { pending: isPending });
           } catch (err) {
             failed = true;
             ctx = eng = null;
@@ -2094,6 +2378,8 @@ export function createAudio() {
           eng.setMaster(0, true);
           eng.setMusicVolume(musicVolume);
           if (scene) eng.setScene(scene); // fades in (nothing to fade out yet)
+          for (const rec of recordings) if (rec.kind === 'sfx') decode(rec);
+          want(scene);
           setInterval(tick, TICK_MS);
           if (doc) doc.addEventListener('visibilitychange', () => guard(sync));
           // iOS only opens the output once something has started inside a gesture.
@@ -2119,6 +2405,7 @@ export function createAudio() {
       if (name != null && !SCENE_NAMES.includes(name)) return;
       scene = name || null;
       if (eng) guard(() => eng.setScene(scene, !shouldRun() || ctx.state !== 'running'));
+      guard(() => want(scene));
     },
 
     setMuted(m) {
@@ -2148,7 +2435,7 @@ export function createAudio() {
     },
 
     stats() {
-      return eng ? eng.stats() : null;
+      return eng ? { ...eng.stats(), files: Object.fromEntries(recState) } : null;
     },
 
     // Errors caught by guard() so far (they are only logged otherwise).
@@ -2176,18 +2463,40 @@ async function renderOffline({
   seed = 7,
   progressive = false,
   events = null, // [{ at, name, opts }]: several one-shots through the same engine (game-like mixes)
+  recorded = false, // true: load the files in RECORDED for this render (the scene's music and ambience, the sfx)
+  inject = null, // { key: { channels: [Float32Array, ...], sampleRate, gain, duck } }: stand-in recordings
+  musicOffset = 0, // seconds into the recorded music to start at
+  linear = false, // bypass the master compressor (level measurements)
+  sfxOff = false, // mute the effects (fanfares still duck the music)
 } = {}) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const ctx = new OAC(2, Math.ceil(seconds * sampleRate), sampleRate);
-  const eng = createEngine(ctx, { seed });
+  const eng = createEngine(ctx, { seed, musicOffset });
+  if (recorded) {
+    const keys = [`music:${scene}`, `amb:${scene}`, `sfx:${sfx}`, ...(events || []).map((e) => `sfx:${e.name}`)];
+    for (const rec of RECORDINGS) {
+      if (keys.includes(rec.key)) eng.setRecording(rec.key, await loadRecording(ctx, rec), rec);
+    }
+  }
+  for (const [key, r] of Object.entries(inject || EMPTY)) {
+    const buf = ctx.createBuffer(r.channels.length, r.channels[0].length, r.sampleRate || sampleRate);
+    r.channels.forEach((d, c) => buf.getChannelData(c).set(d));
+    eng.setRecording(key, buf, r);
+  }
+  if (linear) {
+    eng.buses.comp.ratio.value = 1;
+    eng.buses.comp.threshold.value = 0;
+  }
   if (!music) {
     eng.buses.music.gain.value = 0;
     eng.buses.musicVerb.gain.value = 0;
   }
   if (!ambience) eng.buses.amb.gain.value = 0;
+  if (sfxOff) eng.buses.sfx.gain.value = 0;
   let handle = null;
   if (scene) eng.setScene(scene, !fade);
-  const loop = eng.scene ? { start: eng.scene.t0, stepDur: eng.scene.song.dur, steps: eng.scene.song.len } : null;
+  const sc = eng.scene;
+  const loop = sc && sc.song ? { start: sc.st0, stepDur: sc.song.dur, steps: sc.song.len } : null;
   if (sfx) handle = eng.play(sfx, opts, at);
   let peakSfx = 0;
   if (events) {
@@ -2262,4 +2571,4 @@ function validateScores() {
   ];
 }
 
-export const __audioTest = { renderOffline, validateScores, distGain, distCutoff };
+export const __audioTest = { renderOffline, validateScores, distGain, distCutoff, trimPadding, loadRecording, RECORDINGS };

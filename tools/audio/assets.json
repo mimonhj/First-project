@@ -1,0 +1,63 @@
+{
+  "about": "Recorded audio for Pirates Ahoy!, generated with ElevenLabs (flow l3rYeW88nmbwExpbBSrh) and cut into game assets by build.py.",
+  "flow": "https://elevenlabs.io/app/flows/l3rYeW88nmbwExpbBSrh",
+  "rate": 48000,
+  "bitrate": "160k",
+  "assets": [
+    {
+      "out": "music-menu.mp3",
+      "kind": "loop",
+      "use": "title-screen music (scene: menu)",
+      "model": "eleven_music_v2_5",
+      "generation": "e218wX7zlIBdo6Obr2ql",
+      "src": "music-menu-e218wX7zlIBdo6Obr2ql.mp3",
+      "loop": [195072, 3075179],
+      "lufs": -15,
+      "prompt": "Jaunty cartoon sea-shanty jig in 6/8 time, D dorian, around 112 bpm. Fiddle and accordion trade a catchy melody over a tin whistle countermelody, strummed acoustic guitar, upright bass and a stomping bodhran. Playful, swashbuckling and warm, with steady energy from start to finish, no intro and no fade-out, so it loops smoothly. Instrumental."
+    },
+    {
+      "out": "music-dock.mp3",
+      "kind": "loop",
+      "use": "shipyard music at Sparrow's Floating Island (scene: dock)",
+      "model": "eleven_music_v2_5",
+      "generation": "NFuAh8r5lV33K1Xlbr0E",
+      "src": "music-dock-NFuAh8r5lV33K1Xlbr0E.mp3",
+      "loop": [1022976, 3326688],
+      "lufs": -15,
+      "prompt": "Cosy, carefree harbour-tavern tune with a relaxed swing, around 100 bpm, F major. Concertina melody with plucked mandolin, ukulele strums, pizzicato upright bass, marimba accents and light hand percussion. Cheerful, sunny, laid-back and homely, with steady energy throughout and no big ending, so it loops smoothly. Instrumental."
+    },
+    {
+      "out": "music-europe.mp3",
+      "kind": "loop",
+      "use": "level 1 music, Coast of Europe (scene: europe)",
+      "model": "eleven_music_v2_5",
+      "generation": "2YtrDeYro24WVCZDJCeN",
+      "src": "music-europe-2YtrDeYro24WVCZDJCeN.mp3",
+      "loop": [418304, 3993380],
+      "lufs": -15,
+      "prompt": "Bright, energetic swashbuckling naval-battle hornpipe in G major, about 116 bpm. Fast fiddle and accordion lead over a driving snare-drum march, pizzicato strings, punchy brass stabs and booming bass drum hits. Adventurous cartoon action with a confident, heroic feel. Keeps a steady driving energy the whole way through, no intro and no ending, built to loop. Instrumental."
+    },
+    {
+      "out": "music-volcano.mp3",
+      "kind": "loop",
+      "use": "level 3 music, The Volcano (scene: volcano)",
+      "model": "eleven_music_v2_5",
+      "generation": "bEstR069KWmy8nB8tUP1",
+      "src": "music-volcano-bEstR069KWmy8nB8tUP1.mp3",
+      "loop": [257536, 4097408],
+      "lufs": -15,
+      "prompt": "Intense, epic boss-battle music in D minor, about 96 bpm. Thunderous taiko drums and pounding toms, menacing low brass and trombones, driving staccato cellos and basses, dramatic string swells and an ominous low drone. Dark and fiery but heroic, in a cartoon-adventure way, with a relentless steady rhythm throughout, no intro and no ending, built to loop. Instrumental."
+    },
+    {
+      "out": "stinger-level-clear.mp3",
+      "kind": "oneshot",
+      "use": "level-cleared fanfare (sound: levelClear)",
+      "model": "eleven_music_v2_5",
+      "generation": "F2A5Zundz5ChPIYKQKw4",
+      "src": "stinger-levelClear-F2A5Zundz5ChPIYKQKw4.mp3",
+      "start": 1.595,
+      "lufs": -16,
+      "prompt": "Short triumphant pirate brass fanfare: bright trumpets and a snare roll rising into a big major chord with a cymbal crash. Cheerful cartoon success jingle that ends cleanly. Instrumental."
+    }
+  ]
+}

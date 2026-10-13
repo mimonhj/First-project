@@ -276,7 +276,7 @@ const clouds = createClouds(scene);
 const lights = createLights(scene);
 
 // ---------------------------------------------------------------------------
-// Sound (procedural, see audio.js)
+// Sound (recorded music where there is some, everything else synthesised: see audio.js)
 // ---------------------------------------------------------------------------
 const audio = createAudio();
 const LEVEL_SCENES = ['europe', 'bali', 'volcano'];
@@ -2325,7 +2325,7 @@ function openDock(from) {
   dock.drag = null;
   audio.stopAll();
   audio.setMusicVolume(1);
-  audio.setScene('menu');
+  audio.setScene('dock');
 
   buildDockPanel();
   renderDockExits();
