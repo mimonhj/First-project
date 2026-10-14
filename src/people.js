@@ -22,6 +22,14 @@ import { toon, gradientMap, setOutline, ensureIndex } from './style.js';
 // RAIL.y, RAIL.z; 'scrub' with { wall: true } scrubs a wall WALL_Z in front of the feet; 'mop'
 // with { sweep: 0..1 } makes shorter strokes.
 // Tools follow the hands: two-handed tools run through where the hands really are.
+//
+// The captain, uniforms and the tailor's shop add options (all optional; a call without them
+// resolves and builds exactly as before): outfit 'pirate' on any body, the hats 'bicorne',
+// 'plumed', 'crown' and 'horned' (+ hatColor), a long coat (coat, coatTrim) with tails on the
+// 'skirt' bone, beard styles, hair colour and style, stripes / shirt2 / vest, a parrot on the
+// shoulder (pet bones), the tools 'cutlass', 'tape' and 'scissors', and share: true (geometry
+// shared by every person with the same resolved look, see releaseSharedPeople). The captain
+// (outfit 'pirate') is built at mid detail, which keeps every outfit under 12k triangles.
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -34,7 +42,8 @@ const smooth = (x) => {
 };
 const frac = (x) => x - Math.floor(x);
 
-export const ACTIONS = ['idle', 'walk', 'mop', 'scrub', 'wave', 'carry', 'fish', 'sit', 'cheer', 'hammer', 'fiddle', 'lean'];
+export const ACTIONS = ['idle', 'walk', 'mop', 'scrub', 'wave', 'carry', 'fish', 'sit', 'cheer', 'hammer', 'fiddle', 'lean',
+  'run', 'proud', 'steer', 'point', 'swing', 'fight', 'fall', 'surrender', 'haul', 'measure', 'snip'];
 /** Seat height for 'sit' / 'fish' (person units, multiply by the person's scale). */
 export const SEAT_HEIGHT = 0.3;
 /** Rail that 'lean' rests on: height and distance in front of the feet (person units). */
@@ -45,9 +54,22 @@ const BRUSH_H = 0.15; // hand height when the brush's suds touch the deck
 const MOP_LEN = 1.3; // mop handle length (long, so it shows above a ship's rail while mopping)
 const ROD_TIP = 1.43; // rod tip distance from the lower grip
 
+/** 'steer': the wheel's centre (height, distance in front of the feet) and the radius the hands hold,
+ *  in person units. At scale 1.1 it matches the Sea Biscuit's wheel seen from the helm spot. */
+export const WHEEL = Object.freeze({ y: 0.7, z: 0.31, r: 0.3 });
+/** 'haul': the rope runs forward (+z) at this height through x = 0 (person units). */
+export const HAUL = Object.freeze({ y: 0.74 });
+/** 'fight': one guard → slash → recover loop lasts `period` seconds; the blade lands at `hit` of it. */
+export const FIGHT = Object.freeze({ period: 1, hit: 0.62 });
+const RUN_A = 0.8; // 'run' stride angle
+const RUN_F = 1.45; // 'run' cycles per second at tempo 1
+const RUN_STANCE = 0.36; // fraction of a cycle each foot is planted (the rest is a flight)
+
 const KINDS = ['pirate', 'man', 'woman', 'kid', 'old'];
-const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none'];
-const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none'];
+export const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned'];
+export const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors'];
+export const BEARDS = ['full', 'goatee', 'stubble', 'braids', 'handlebar', 'none'];
+export const HAIR_STYLES = ['crop', 'long', 'ponytail', 'bald'];
 
 // ---------------------------------------------------------------------------
 // Materials: shared by every person, never disposed
@@ -95,6 +117,7 @@ const STRAW = 0xf2cf6b;
 const WHITE = 0xfffaf0;
 const DARK = 0x1d1620;
 const GOLD = 0xffcc3a;
+const BRASS = 0xe0a93a;
 const WOOD = 0xb67b45;
 const IRON = 0x3b3a44;
 
@@ -277,6 +300,54 @@ function resolveLook(opts) {
     if (!opts.beard) L.moustache = false;
     if (opts.beard) L.moustache = true;
   }
+  // ---- The captain's and the uniforms' options (SPEC2 §7.10). None of them draws a random number,
+  // and each one only adds its fields to the look when it is given, so every call without them
+  // resolves to exactly the same look as before.
+  if (opts.outfit === 'pirate' && kind !== 'pirate') {
+    // pirate clothes on another body: shirt, sash, trousers and tall boots (never a skirt or apron)
+    L.outfit = 'pirate';
+    L.stripes = false;
+    L.sleeves = 'long';
+    L.vest = null;
+    L.apron = null;
+    L.bodice = null;
+    L.skirt = null;
+    delete L.skirtTrim;
+    L.sash = L.accent;
+    L.belt = null;
+    L.shorts = false;
+    L.stockings = null;
+  }
+  if (typeof opts.stripes === 'boolean') L.stripes = opts.stripes;
+  if (Number.isFinite(opts.shirt2)) L.shirt2 = opts.shirt2;
+  else if (opts.stripes === true && L.shirt2 === L.shirt) L.shirt2 = WHITE;
+  if (opts.vest === null || opts.vest === false) L.vest = null;
+  else if (Number.isFinite(opts.vest)) L.vest = opts.vest;
+  if (Number.isFinite(opts.hatColor)) L.hatColor = opts.hatColor;
+  else if (L.hat === 'crown') L.hatColor = GOLD;
+  else if (L.hat === 'horned') L.hatColor = 0x9aa3b5;
+  if (opts.hatBadge === 'skull') L.hatBadge = 'skull';
+  if (typeof opts.beard === 'string' && BEARDS.includes(opts.beard)) {
+    const b = opts.beard;
+    L.beard = b === 'none' || b === 'handlebar' ? null : b;
+    L.moustache = b === 'handlebar' ? 'handlebar' : b === 'full' || b === 'goatee' || b === 'braids';
+  }
+  if (typeof opts.earring === 'boolean') L.earring = opts.earring;
+  if (Number.isFinite(opts.hair)) L.hair = opts.hair;
+  if (HAIR_STYLES.includes(opts.hairStyle)) {
+    L.bald = opts.hairStyle === 'bald';
+    if (!L.bald) L.hairStyle = opts.hairStyle;
+  }
+  if (Number.isFinite(opts.coat)) {
+    L.coat = opts.coat;
+    L.coatTrim = hex(opts.coatTrim, GOLD);
+    L.sleeves = 'long';
+  }
+  if (opts.pet === 'parrot') {
+    const pc = opts.petColor && typeof opts.petColor === 'object' ? opts.petColor : {};
+    L.pet = 'parrot';
+    L.petColor = { body: hex(pc.body, 0xe2383d), wing: hex(pc.wing, 0x2f86ea), head: hex(pc.head, 0xe2383d) };
+  }
   if (typeof opts.eyepatch === 'boolean') L.eyepatch = opts.eyepatch;
   if (typeof opts.pegLeg === 'boolean') L.pegLeg = opts.pegLeg;
   if (L.kind === 'kid') L.beard = null;
@@ -367,6 +438,34 @@ function coarse(geo) {
       return geo;
   }
 }
+// Mid detail (`detail: 'mid'`, the captain's default): about two thirds of the triangles, for people
+// seen at most half a screen tall (the captain in the town and at the tailor's). Every part is kept;
+// spheres are picked by their size and lathes, rings and tubes get a few fewer segments.
+let MID = false;
+const SPH_HEAD_MID = () => cached('shm', () => new THREE.SphereGeometry(1, 16, 11));
+function coarseMid(geo, size) {
+  const p = geo.parameters;
+  if (!p) return geo; // lathes are built at mid detail (paintLathe), rounded boxes are plain already
+  const fewer = (n, k, min) => Math.max(min, Math.round(n * k));
+  switch (geo.type) {
+    case 'SphereGeometry':
+      if (p.thetaLength < PI) return cached(`cap-mid${p.thetaLength}`, () => new THREE.SphereGeometry(1, 14, 7, 0, TAU, 0, p.thetaLength));
+      if (p.widthSegments >= 20) return SPH_HEAD_MID();
+      return size >= 0.13 ? SPH() : size >= 0.06 ? SPH_MID() : size >= 0.028 ? SPH_LO() : SPH_TINY();
+    case 'TorusGeometry':
+      return torus(p.radius, p.tube, fewer(p.tubularSegments, 0.75, 8), fewer(p.radialSegments, 0.8, 4), p.arc);
+    case 'CylinderGeometry':
+      return cyl(p.radiusTop, p.radiusBottom, p.height, fewer(p.radialSegments, 0.75, 6), p.openEnded);
+    case 'ConeGeometry':
+      return cone(p.radius, p.height, fewer(p.radialSegments, 0.75, 6));
+    case 'CapsuleGeometry':
+      return cached(`c-mid${p.radius.toFixed(4)},${p.length.toFixed(4)},${p.radialSegments}`, () => new THREE.CapsuleGeometry(p.radius, p.length, 1, fewer(p.radialSegments, 0.85, 5)));
+    default:
+      return geo;
+  }
+}
+/** Template cache tag of the detail level being built. */
+const tier = () => (LOW ? 'low' : MID ? 'mid' : 'full');
 const CAP_SEG = (r) => cached(`cap${r}`, () => new THREE.SphereGeometry(1, 18, 8, 0, TAU, 0, r));
 const capsule = (r, len, seg = 8) =>
   cached(`c${r.toFixed(4)},${len.toFixed(4)},${seg}`, () => new THREE.CapsuleGeometry(r, Math.max(0.001, len), 2, seg));
@@ -389,6 +488,9 @@ function paintLathe(ctrl, rows, segs, paint) {
   if (LOW) {
     rows = Math.max(4, Math.ceil(rows * 0.5));
     segs = Math.max(8, Math.ceil(segs * 0.55));
+  } else if (MID) {
+    rows = Math.max(4, Math.ceil(rows * 0.75));
+    segs = Math.max(8, Math.ceil(segs * 0.8));
   }
   const curve = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
   const pts = curve.getSpacedPoints(rows);
@@ -508,6 +610,9 @@ class Kit {
       if (!geo.boundingSphere) geo.computeBoundingSphere();
       if (geo.boundingSphere.radius * m.getMaxScaleOnAxis() < SPECK) return;
       geo = coarse(geo);
+    } else if (MID) {
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      geo = coarseMid(geo, geo.boundingSphere.radius * m.getMaxScaleOnAxis());
     }
     this.parts.push({ bone, geo, color, slot, m });
   }
@@ -550,6 +655,19 @@ function skull(P) {
   };
 }
 
+/** The jaw ellipsoid (unit sphere, scaled by the caller) painted with stubble: under the mouth,
+ *  along the jaw to the ears and a shadow over the upper lip. */
+function stubbleJaw(L) {
+  const stub = mix(L.skin, mix(L.hair, DARK, 0.3), 0.42);
+  const prof = [[0, -1], [0.5, -0.866], [0.866, -0.5], [1, 0], [0.866, 0.5], [0.5, 0.866], [0, 1]];
+  return paintLathe(prof, 18, 24, (row, y, ang) => {
+    const a = Math.abs(ang);
+    if (y < -0.3 + 0.6 * smooth((a - 0.5) / 0.9)) return stub;
+    if (a < 0.45 && y > 0.0 && y < 0.17) return stub;
+    return L.skin;
+  });
+}
+
 function buildHead(K, head, eyes, mouth, L, P) {
   const R = P.R;
   const C = P.C;
@@ -559,8 +677,10 @@ function buildHead(K, head, eyes, mouth, L, P) {
   // neck + skull + ears + nose
   K.put(head, capsule(0.055, 0.08, 8), skin, INK, [0, 0.03, 0]);
   K.put(head, SPH_HI(), skin, INK, [0, C, 0], null, [R, R * 0.97, R * 0.93]);
-  // a fuller jaw for grown-up men
-  if (L.kind === 'pirate' || L.kind === 'man' || (L.kind === 'old' && !L.girl)) {
+  // a fuller jaw for grown-up men (painted with stubble when asked)
+  if (L.beard === 'stubble') {
+    K.putM(head, stubbleJaw(L), null, THIN, new THREE.Matrix4().compose(V3(0, C - R * 0.36, R * 0.08), new THREE.Quaternion(), V3(R * 0.86, R * 0.62, R * 0.82)));
+  } else if (L.kind === 'pirate' || L.kind === 'man' || (L.kind === 'old' && !L.girl)) {
     K.put(head, SPH(), skin, THIN, [0, C - R * 0.36, R * 0.08], null, [R * 0.86, R * 0.62, R * 0.82]);
   }
   for (const sd of [-1, 1]) {
@@ -610,7 +730,7 @@ function buildHead(K, head, eyes, mouth, L, P) {
   const mp = on(0, my, -R * 0.005);
   const arc = PI * 0.62;
   const smileQ = mp.q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), -PI / 2 - arc / 2));
-  if (!(L.beard === 'full')) {
+  if (L.beard !== 'full' && L.beard !== 'braids') {
     K.putM(head, torus(R * 0.22, R * 0.045, 12, 5, arc), DARK, FLAT, new THREE.Matrix4().compose(mp.p.clone().add(V3(0, R * 0.12, 0)), smileQ, V3(1, 1, 1)));
   }
   // open mouth lives on the mouth bone (scaled to nothing when closed)
@@ -630,16 +750,41 @@ function buildHead(K, head, eyes, mouth, L, P) {
     }
   }
   // beard and moustache
-  if (L.beard === 'full') {
+  if (L.beard === 'full' || L.beard === 'braids') {
     K.put(head, SPH(), hair, INK, [0, C - R * 0.62, R * 0.42], null, [R * 0.8, R * 0.62, R * 0.55]);
     K.put(head, SPH(), hair, THIN, [0, C - R * 0.92, R * 0.48], null, [R * 0.5, R * 0.42, R * 0.38]);
     for (const sd of [-1, 1]) {
       K.put(head, SPH(), hair, THIN, [sd * R * 0.66, C - R * 0.25, R * 0.12], null, [R * 0.28, R * 0.5, R * 0.42]);
     }
+    if (L.beard === 'braids') {
+      // Blackbeard's two braided tails, each tied off with a gold bead
+      for (const sd of SIDES) {
+        for (let k = 0; k < 3; k++) {
+          const y = C - R * (1.18 + k * 0.17);
+          K.put(head, SPH(), hair, THIN, [sd * R * (0.22 + 0.02 * k) + (k % 2 ? -sd : sd) * R * 0.03, y, R * (0.62 + 0.05 * k)], [0.3, 0, (k % 2 ? 1 : -1) * 0.35], [R * 0.13, R * 0.12, R * 0.11]);
+        }
+        K.put(head, SPH(), GOLD, THIN, [sd * R * 0.27, C - R * 1.68, R * 0.76], null, R * 0.095);
+        K.blob(head, hair, THIN, V3(sd * R * 0.27, C - R * 1.72, R * 0.77), V3(sd * R * 0.3, C - R * 1.92, R * 0.8), R * 0.07, R * 0.06);
+      }
+    }
   } else if (L.beard === 'goatee') {
     K.put(head, SPH(), hair, THIN, [0, C - R * 0.78, R * 0.62], [0.4, 0, 0], [R * 0.3, R * 0.36, R * 0.22]);
   }
-  if (L.moustache) {
+  if (L.moustache === 'handlebar') {
+    // a big handlebar moustache, its ends curled up
+    for (const sd of SIDES) {
+      const a = on(sd * R * 0.04, C - R * 0.29, R * 0.07).p;
+      const b = on(sd * R * 0.5, C - R * 0.36, R * 0.09).p;
+      K.blob(head, hair, THIN, a, b, R * 0.17, R * 0.14);
+      // the curl: an arc in the cheek's plane starting under its centre, sweeping out, up and back in
+      const e = on(sd * R * 0.58, C - R * 0.27, R * 0.1);
+      const q = e.q.clone();
+      if (sd < 0) q.multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 1, 0), PI));
+      q.multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), -PI / 2));
+      K.putM(head, torus(R * 0.09, R * 0.05, 12, 6, PI * 1.4), hair, THIN, new THREE.Matrix4().compose(e.p, q, V3(1, 1, 1)));
+      K.put(head, SPH(), hair, THIN, [e.p.x - sd * R * 0.02, e.p.y + R * 0.02, e.p.z], null, R * 0.045);
+    }
+  } else if (L.moustache) {
     for (const sd of [-1, 1]) {
       const a = on(sd * R * 0.05, C - R * 0.3, R * 0.05).p;
       const b = on(sd * R * 0.42, C - R * 0.42, R * 0.06).p;
@@ -664,7 +809,7 @@ function buildHair(K, head, L, P) {
   const C = P.C;
   const hair = L.hair;
   const hat = L.hat;
-  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap';
+  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap' || hat === 'plumed' || hat === 'bicorne' || hat === 'horned';
   if (L.bald) {
     // fringe around the back and sides only
     K.put(head, SPH(), hair, INK, [0, C - R * 0.1, -R * 0.42], null, [R * 0.92, R * 0.55, R * 0.62]);
@@ -690,7 +835,7 @@ function buildHair(K, head, L, P) {
     // just a little hair showing under the hat at the back
     K.put(head, SPH(), hair, INK, [0, C - R * 0.12, -R * 0.42], null, [R * 0.88, R * 0.58, R * 0.6]);
   }
-  if (L.girl || L.kind === 'woman') {
+  if (L.girl || L.kind === 'woman' || L.hairStyle === 'long' || L.hairStyle === 'ponytail') {
     if (L.hairStyle === 'bun' && hat !== 'straw') {
       K.put(head, SPH(), hair, INK, [0, C + R * 0.62, -R * 0.78], null, R * 0.42);
     } else if (L.hairStyle === 'long') {
@@ -705,6 +850,100 @@ function buildHair(K, head, L, P) {
       }
     }
   }
+}
+
+/** A small skull and crossbones at p, facing along q's +z (badges on bandanas). */
+function skullBadge(K, bone, p, q, size) {
+  const put = (geo, color, slot, x, y, z, s, rz = 0) => {
+    const m = new THREE.Matrix4().compose(V3(x, y, z).multiplyScalar(size).applyQuaternion(q).add(p),
+      q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), rz)), s);
+    K.putM(bone, geo, color, slot, m);
+  };
+  for (const sd of SIDES) put(capsule(0.06, 0.62, 5), WHITE, FLAT, 0, -0.05, -0.02, V3(size, size, size * 0.4), sd * 0.8);
+  put(SPH(), WHITE, FLAT, 0, 0.08, 0, V3(size * 0.34, size * 0.3, size * 0.12));
+  put(SPH(), WHITE, FLAT, 0, -0.14, 0.01, V3(size * 0.2, size * 0.14, size * 0.1));
+  for (const sd of SIDES) put(SPH_LO(), DARK, FLAT, sd * 0.12, 0.06, 0.1, V3(size * 0.085, size * 0.1, size * 0.04));
+}
+
+/** Bend a unit-sized template so its ends droop: y -= k x^2 (normals follow the bend). */
+function bend(g, k) {
+  const p = g.attributes.position;
+  const n = g.attributes.normal;
+  for (let i = 0; i < p.count; i++) {
+    const x = p.getX(i);
+    p.setY(i, p.getY(i) - k * x * x);
+    const nx = n.getX(i) + 2 * k * x * n.getY(i);
+    const l = Math.hypot(nx, n.getY(i), n.getZ(i)) || 1;
+    n.setXYZ(i, nx / l, n.getY(i) / l, n.getZ(i) / l);
+  }
+  return g;
+}
+
+/** The bicorne's crescent (unit size: x and y ±1, z ±1, scaled by the caller): a lens turned about
+ *  the front-back axis so its rim, where the two walls meet, carries the gold piping. */
+function bicorneGeo(col, trim) {
+  return cached(`bic${col},${trim},${tier()}`, () => {
+    const prof = [[0, -1], [0.45, -0.88], [0.8, -0.55], [1, 0], [0.8, 0.55], [0.45, 0.88], [0, 1]];
+    const g = paintLathe(prof, 16, 26, (row, y) => (Math.abs(y) < 0.3 ? trim : col));
+    g.rotateX(-PI / 2); // lathe axis y -> z: the rim faces up, down and sideways
+    return bend(g, 0.32);
+  });
+}
+
+/** A curling horn (unit size): starts at the origin pointing +x, sweeps up and in, tapering to a point. */
+function hornGeo() {
+  return cached(`horn${tier()}`, () => {
+    const N = LOW ? 6 : MID ? 8 : 11;
+    const M = LOW ? 6 : MID ? 7 : 9;
+    const ivory = 0xf3e9cf;
+    const tip = 0xcdb68a;
+    const pos = [];
+    const nor = [];
+    const col = [];
+    const idx = [];
+    const c = new THREE.Color();
+    const turn = 1.7;
+    const Rc = 0.62;
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      const f = s * turn;
+      const cx = Rc * Math.sin(f);
+      const cy = Rc * (1 - Math.cos(f));
+      const r = 0.24 * Math.pow(1 - s, 0.85);
+      const nx = -Math.sin(f);
+      const ny = Math.cos(f);
+      c.setHex(s > 0.72 ? tip : ivory);
+      for (let j = 0; j < M; j++) {
+        const a = (j / M) * TAU;
+        const ox = nx * Math.cos(a);
+        const oy = ny * Math.cos(a);
+        const oz = Math.sin(a);
+        pos.push(cx + r * ox, cy + r * oy, r * oz);
+        nor.push(ox, oy, oz);
+        col.push(c.r, c.g, c.b);
+      }
+    }
+    const base = pos.length / 3;
+    pos.push(0, 0, 0);
+    nor.push(-1, 0, 0);
+    col.push(c.setHex(ivory).r, c.g, c.b);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < M; j++) {
+        const a = i * M + j;
+        const b = i * M + ((j + 1) % M);
+        const d = (i + 1) * M + j;
+        const e = (i + 1) * M + ((j + 1) % M);
+        idx.push(a, e, d, a, b, e);
+      }
+    }
+    for (let j = 0; j < M; j++) idx.push(base, (j + 1) % M, j);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    return g;
+  });
 }
 
 function buildHat(K, head, L, P) {
@@ -725,7 +964,12 @@ function buildHat(K, head, L, P) {
     for (const sd of [-1, 1]) {
       K.blob(head, col, THIN, V3(sd * R * 0.06, ky - R * 0.02, kz - R * 0.04), V3(sd * R * 0.32, ky - R * 0.62, kz - R * 0.2), R * 0.12, R * 0.05, sd * 0.3);
     }
-    if (hat === 'bandana') {
+    if (hat === 'bandana' && L.hatBadge === 'skull') {
+      // a skull and crossbones on the front of the cloth
+      const v = V3(0, Math.sin(0.24), Math.cos(0.24)).applyEuler(new THREE.Euler(tilt, 0, 0));
+      const p = V3(v.x * R * 1.1, v.y * R * 1.07 + C + R * 0.06, v.z * R * 1.08 - R * 0.03);
+      skullBadge(K, head, p, new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), v.clone().normalize()), R * 0.62);
+    } else if (hat === 'bandana') {
       // white polka dots on the cloth
       const dots = [[0.0, 0.25], [0.9, 0.42], [-0.9, 0.42], [1.9, 0.5], [-1.9, 0.5], [2.8, 0.35], [-2.8, 0.35], [0.45, 0.62], [-0.45, 0.62]];
       for (const [az, el] of dots) {
@@ -736,7 +980,7 @@ function buildHat(K, head, L, P) {
         if (v.y > 0.02) K.putM(head, SPH_LO(), WHITE, FLAT, new THREE.Matrix4().compose(p, q, V3(R * 0.085, R * 0.085, R * 0.025)));
       }
     }
-  } else if (hat === 'tricorn') {
+  } else if (hat === 'tricorn' || hat === 'plumed') {
     const y0 = C + R * 0.62;
     // crown
     K.put(head, SPH(), col, INK, [0, y0 + R * 0.12, -R * 0.02], null, [R * 0.86, R * 0.62, R * 0.86]);
@@ -760,6 +1004,73 @@ function buildHat(K, head, L, P) {
     }
     // a little skull badge at the front point
     K.put(head, SPH_LO(), WHITE, FLAT, [0, y0 + R * 0.26, R * 1.3], null, [R * 0.12, R * 0.11, R * 0.05]);
+    if (hat === 'plumed') {
+      // the cavalier's feather: three blobs rising off the left wall, arching back over the crown and
+      // drooping off the back (broad side facing out)
+      const red = 0xe2383d;
+      const p0 = V3(R * 0.6, y0 + R * 0.32, R * 0.55);
+      const p1 = V3(R * 0.82, y0 + R * 0.95, -R * 0.02);
+      const p2 = V3(R * 0.78, y0 + R * 0.86, -R * 0.86);
+      const p3 = V3(R * 0.55, y0 + R * 0.2, -R * 1.3);
+      K.blob(head, red, INK, p0, p1, R * 0.17, R * 0.34, -0.35);
+      K.blob(head, red, INK, p1, p2, R * 0.17, R * 0.36, -0.15);
+      K.blob(head, mix(red, WHITE, 0.25), THIN, p2, p3, R * 0.14, R * 0.27, 0.2);
+      K.rod(head, mix(red, WHITE, 0.6), FLAT, p0.clone().lerp(p1, 0.12), p2.clone().lerp(p3, 0.3), R * 0.028, 4);
+    }
+  } else if (hat === 'bicorne') {
+    // the admiral's bicorne, worn athwartships: a tall gold-piped crescent from ear to ear over a
+    // low crown, with a cockade on the front
+    K.put(head, SPH(), col, INK, [0, C + R * 0.62, -R * 0.03], null, [R * 0.88, R * 0.5, R * 0.86]);
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.06, 0, 0.05));
+    const base = V3(0, C + R * 0.9, -R * 0.06);
+    K.putM(head, bicorneGeo(col, L.hatTrim), null, INK, new THREE.Matrix4().compose(base, q, V3(R * 1.62, R * 0.74, R * 0.6)));
+    const ck = V3(R * 0.62, R * 0.2, R * 0.49).applyQuaternion(q).add(base);
+    K.putM(head, SPH(), 0xe2383d, THIN, new THREE.Matrix4().compose(ck, q, V3(R * 0.17, R * 0.17, R * 0.06)));
+    K.putM(head, SPH_LO(), GOLD, FLAT, new THREE.Matrix4().compose(ck.clone().add(V3(0, 0, R * 0.05).applyQuaternion(q)), q, V3(R * 0.07, R * 0.07, R * 0.03)));
+  } else if (hat === 'crown') {
+    // the Pirate King's crown, set at a jaunty angle on top of the hair: a gold band with five
+    // points, jewels round it and a red velvet cap inside
+    const F = new THREE.Matrix4().compose(V3(0, C + R * 0.8, -R * 0.02), new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.12, 0, -0.16)), V3(1, 1, 1));
+    const at = (geo, color, slot, p, r, sc) => {
+      const m = new THREE.Matrix4().compose(V3(p[0], p[1], p[2]), new THREE.Quaternion().setFromEuler(new THREE.Euler(r[0], r[1], r[2])), typeof sc === 'number' ? V3(sc, sc, sc) : V3(sc[0], sc[1], sc[2]));
+      K.putM(head, geo, color, slot, F.clone().multiply(m));
+    };
+    const bandR = R * 0.84;
+    at(SPH(), 0xb3203a, INK, [0, R * 0.14, 0], [0, 0, 0], [R * 0.78, R * 0.48, R * 0.78]);
+    at(torus(bandR, R * 0.11, 26, 8), col, INK, [0, R * 0.12, 0], [PI / 2, 0, 0], [1, 1, 1.7]);
+    const gems = [0xe2383d, 0x2f86ea, 0x2fa84f];
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * TAU;
+      const sn = Math.sin(a);
+      const cs = Math.cos(a);
+      at(cone(R * 0.15, R * 0.36, 8), col, INK, [sn * bandR, R * 0.48, cs * bandR], [cs * 0.18, 0, -sn * 0.18], 1);
+      at(SPH(), col, THIN, [sn * bandR * 1.04, R * 0.7, cs * bandR * 1.04], [0, 0, 0], R * 0.075);
+      const b = a + PI / 5;
+      at(SPH(), gems[k % 3], THIN, [Math.sin(b) * (bandR + R * 0.1), R * 0.12, Math.cos(b) * (bandR + R * 0.1)], [0, b, 0], [R * 0.085, R * 0.1, R * 0.05]);
+    }
+    at(SPH(), col, THIN, [0, R * 0.62, 0], [0, 0, 0], R * 0.09);
+  } else if (hat === 'horned') {
+    // a raider's horned helmet: iron dome, bronze rim and crest band, nose guard, curling horns
+    const bronze = 0xc9963a;
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.14, 0, 0));
+    const base = V3(0, C + R * 0.12, -R * 0.03);
+    K.putM(head, CAP_SEG(PI * 0.5), col, INK, new THREE.Matrix4().compose(base, q, V3(R * 1.1, R * 1.04, R * 1.08)));
+    const qr = q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(1, 0, 0), PI / 2));
+    K.putM(head, torus(R * 1.1, R * 0.085, 28, 6), bronze, INK, new THREE.Matrix4().compose(base, qr, V3(1, 1.08 / 1.1, 1)));
+    const qc = q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 1, 0), PI / 2));
+    K.putM(head, torus(R * 1.08, R * 0.06, 20, 5, PI), bronze, THIN, new THREE.Matrix4().compose(base, qc, V3(1, 1.04 / 1.08, 1)));
+    const nTop = V3(0, 0, R * 1.1).applyQuaternion(q).add(base);
+    K.rod(head, col, THIN, nTop, nTop.clone().add(V3(0, -R * 0.36, -R * 0.06)), R * 0.065, 6);
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * TAU + PI / 8;
+      const p = V3(Math.sin(a) * R * 1.19, 0, Math.cos(a) * R * 1.17).applyQuaternion(q).add(base);
+      K.put(head, SPH_LO(), 0xffe08a, FLAT, [p.x, p.y, p.z], null, R * 0.035);
+    }
+    for (const sd of SIDES) {
+      const p = V3(sd * R * 0.98, R * 0.36, -R * 0.02).applyQuaternion(q).add(base);
+      const qh = q.clone().multiply(new THREE.Quaternion().setFromEuler(new THREE.Euler(0, sd > 0 ? 0.25 : PI - 0.25, 0.12)));
+      K.putM(head, hornGeo(), null, INK, new THREE.Matrix4().compose(p, qh, V3(R * 0.95, R * 0.95, R * 0.95)));
+    }
   } else if (hat === 'cap') {
     const m = new THREE.Matrix4().compose(V3(0, C + R * 0.12, -R * 0.02),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.32, 0, 0)), V3(R * 1.08, R * 0.8, R * 1.08));
@@ -778,15 +1089,29 @@ function buildHat(K, head, L, P) {
   }
 }
 
-/** Torso: painted lathe with stripes / vest / bodice / apron, plus the sash or belt on the hips. */
+/** The torso lathe's profile (torso space, bottom to top). */
+function TORSO_CTRL(P) {
+  const h = P.torsoH;
+  return [[0, -0.05], [P.rw * 0.8, -0.045], [P.rw, 0.0], [P.rb, h * 0.28], [P.rc, h * 0.55], [P.rs, h * 0.76],
+    [P.rs * 0.78, h * 0.88], [P.rs * 0.45, h * 0.96], [0, h]];
+}
+
+/** Torso: painted lathe with stripes / vest / bodice / apron / coat, plus the sash or belt on the
+ *  hips, and the skirt or coat tails on the skirt bone. */
 function buildBody(K, hips, torso, skirtBone, L, P) {
   const h = P.torsoH;
-  const ctrl = [[0, -0.05], [P.rw * 0.8, -0.045], [P.rw, 0.0], [P.rb, h * 0.28], [P.rc, h * 0.55], [P.rs, h * 0.76],
-    [P.rs * 0.78, h * 0.88], [P.rs * 0.45, h * 0.96], [0, h]];
+  const ctrl = TORSO_CTRL(P);
   const stripeEvery = 2;
-  const g = paintLathe(ctrl, 18, 18, (row, y, ang) => {
+  const coat = L.coat;
+  const g = paintLathe(ctrl, 18, coat !== undefined ? 30 : 18, (row, y, ang) => {
     const a = Math.abs(ang);
     const t = y / h;
+    if (coat !== undefined && t > 0) {
+      // long coat: open down the front, lapels / facings in the trim colour
+      const o = coatOpen(t);
+      if (a > o + coatLapel(t)) return coat;
+      if (a > o) return L.coatTrim;
+    }
     if (L.apron && t < 0.62 && a < 0.85 - t * 0.25) return L.apron;
     if (L.vest && a > 0.28 + 0.6 * t * t && t < 0.9) return L.vest;
     if (L.bodice && t < 0.5) return L.bodice;
@@ -802,6 +1127,15 @@ function buildBody(K, hips, torso, skirtBone, L, P) {
       K.put(torso, SPH_LO(), L.bodice ? WHITE : GOLD, FLAT, [0, y, z * (1 - 0.02 * i)], null, [0.014, 0.014, 0.01]);
     }
   }
+  // six gold buttons down the coat's front edges
+  if (coat !== undefined) {
+    for (let i = 0; i < 3; i++) {
+      const t = 0.2 + i * 0.19;
+      const r = profileR(ctrl, t * h) + 0.004;
+      const a = coatOpen(t) + coatLapel(t) + 0.15;
+      for (const sd of SIDES) K.put(torso, SPH(), GOLD, THIN, [sd * r * Math.sin(a), t * h, r * Math.cos(a) * P.zs], [0, sd * a, 0], [0.019, 0.019, 0.011]);
+    }
+  }
   // apron neck strap
   if (L.apron) {
     for (const sd of [-1, 1]) {
@@ -809,7 +1143,7 @@ function buildBody(K, hips, torso, skirtBone, L, P) {
     }
   }
   // collar / neckerchief
-  if (L.kind === 'pirate') {
+  if (L.kind === 'pirate' || L.outfit === 'pirate') {
     const kc = L.hat === 'bandana' ? L.hatColor : L.sash;
     K.put(torso, SPH(), kc, THIN, [0, h * 0.93, P.rs * 0.5], [0.5, 0, 0], [0.034, 0.026, 0.022]);
     for (const sd of [-1, 1]) {
@@ -856,14 +1190,146 @@ function buildBody(K, hips, torso, skirtBone, L, P) {
     });
     K.putM(skirtBone, sg, null, INK, new THREE.Matrix4().makeScale(1, 1, 0.92));
   }
+  // coat tails on the same bone (they swing when walking and running)
+  if (coat !== undefined && skirtBone) {
+    const s = L.skirt ? 1.12 : 1;
+    K.putM(skirtBone, coatTailsGeo(P, coat, L.coatTrim), null, INK, new THREE.Matrix4().makeScale(s, 1, 0.94 * s));
+  }
+}
+
+/** Half-width (radians from the front) of a coat's open front at torso height t (0 waist .. 1 neck), and its lapel band. */
+const coatOpen = (t) => 0.26 + 0.2 * t;
+const coatLapel = (t) => 0.2 + 0.16 * t;
+
+/** Radius of a lathe profile (as paintLathe smooths it) at height y. */
+function profileR(ctrl, y) {
+  const pts = new THREE.SplineCurve(ctrl.map(([r, yy]) => new THREE.Vector2(r, yy))).getSpacedPoints(64);
+  for (let i = 1; i < pts.length; i++) {
+    const a = pts[i - 1];
+    const b = pts[i];
+    if ((a.y - y) * (b.y - y) <= 0 && a.y !== b.y) return Math.max(0, lerp(a.x, b.x, (y - a.y) / (b.y - a.y)));
+  }
+  return 0;
+}
+
+/**
+ * Coat tails (hips space): a thick shell of revolution from the waist (under the sash) to the knee,
+ * open at the front so the legs stride and sit through the gap. Outside in the coat colour with a
+ * trimmed hem and front edges, inside a darker lining. Smooth normals; edge strips share their
+ * vertices with the surfaces so the ink outline stays closed.
+ */
+function coatTailsGeo(P, coat, trim) {
+  const rows = LOW ? 5 : MID ? 7 : 9;
+  const segs = LOW ? 12 : MID ? 16 : 22;
+  const top = P.torsoY + 0.03;
+  const hem = P.legY - P.thigh * 1.08;
+  const pts = new THREE.SplineCurve([
+    new THREE.Vector2(P.rw * 1.07, top),
+    new THREE.Vector2(P.pelvisR * 1.13, -0.02),
+    new THREE.Vector2(P.pelvisR * 1.27, (hem - 0.02) * 0.55),
+    new THREE.Vector2(P.pelvisR * 1.5, hem),
+  ]).getSpacedPoints(rows);
+  const n = pts.length;
+  const nr = [];
+  const ny = [];
+  for (let k = 0; k < n; k++) {
+    const a = pts[Math.max(0, k - 1)];
+    const b = pts[Math.min(n - 1, k + 1)];
+    // outward normal of a profile running downwards: (-dy, dr)
+    const x = -(b.y - a.y);
+    const y = b.x - a.x;
+    const l = Math.hypot(x, y) || 1;
+    nr.push(x / l);
+    ny.push(y / l);
+  }
+  const thick = 0.013;
+  const open0 = 0.8;
+  const open1 = 1.12;
+  const lining = mix(coat, DARK, 0.42);
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const idx = [];
+  const map = new Map();
+  const c = new THREE.Color();
+  // vertex (k, j) on the outer (side 0) or inner (side 1) surface, split only by colour
+  const vert = (k, j, side, hex) => {
+    const key = ((k * (segs + 1) + j) * 2 + side) * 16777216 + hex;
+    let v = map.get(key);
+    if (v !== undefined) return v;
+    v = pos.length / 3;
+    const o = lerp(open0, open1, k / rows);
+    const a = o + (TAU - 2 * o) * (j / segs);
+    const sn = Math.sin(a);
+    const co = Math.cos(a);
+    const r = pts[k].x - (side ? thick * nr[k] : 0);
+    const y = pts[k].y - (side ? thick * ny[k] : 0);
+    const f = side ? -1 : 1;
+    pos.push(r * sn, y, r * co);
+    nor.push(f * nr[k] * sn, f * ny[k], f * nr[k] * co);
+    c.setHex(hex);
+    col.push(c.r, c.g, c.b);
+    map.set(key, v);
+    return v;
+  };
+  const P0 = V3();
+  const P1 = V3();
+  const P2 = V3();
+  const at = (v, out) => out.set(pos[v * 3], pos[v * 3 + 1], pos[v * 3 + 2]);
+  // a quad facing along `want` (corners in any cyclic order)
+  const quad = (a, b, cc, d, want) => {
+    at(a, P0);
+    at(b, P1).sub(P0);
+    at(cc, P2).sub(P0);
+    if (P1.cross(P2).dot(want) >= 0) idx.push(a, b, cc, a, cc, d);
+    else idx.push(a, cc, b, a, d, cc);
+  };
+  const W = V3();
+  const dirAt = (k, j, out) => {
+    const o = lerp(open0, open1, k / rows);
+    const a = o + (TAU - 2 * o) * (j / segs);
+    return out.set(nr[k] * Math.sin(a), ny[k], nr[k] * Math.cos(a));
+  };
+  for (let k = 0; k < rows; k++) {
+    for (let j = 0; j < segs; j++) {
+      const hex = k === rows - 1 || j === 0 || j === segs - 1 ? trim : coat;
+      dirAt(k, j + 0.5, W);
+      quad(vert(k, j, 0, hex), vert(k, j + 1, 0, hex), vert(k + 1, j + 1, 0, hex), vert(k + 1, j, 0, hex), W);
+      quad(vert(k, j, 1, lining), vert(k, j + 1, 1, lining), vert(k + 1, j + 1, 1, lining), vert(k + 1, j, 1, lining), W.negate());
+    }
+  }
+  // front edges (facing the opening) and the hem / waist rims
+  for (let k = 0; k < rows; k++) {
+    for (const j of [0, segs]) {
+      const o = lerp(open0, open1, (k + 0.5) / rows);
+      const a = o + (TAU - 2 * o) * (j / segs);
+      const sgn = j === 0 ? -1 : 1;
+      W.set(sgn * Math.cos(a), 0, -sgn * Math.sin(a));
+      quad(vert(k, j, 0, trim), vert(k + 1, j, 0, trim), vert(k + 1, j, 1, trim), vert(k, j, 1, trim), W);
+    }
+  }
+  for (const k of [0, rows]) {
+    for (let j = 0; j < segs; j++) {
+      const hex = k === rows ? trim : coat;
+      W.set(0, k === rows ? -1 : 1, 0);
+      quad(vert(k, j, 0, hex), vert(k, j + 1, 0, hex), vert(k, j + 1, 1, hex), vert(k, j, 1, hex), W);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  return g;
 }
 
 function buildArm(K, arm, fore, sd, L, P) {
-  const sleeve = L.shirt;
-  const stripes = L.stripes;
+  const coat = L.coat;
+  const sleeve = coat !== undefined ? coat : L.shirt;
+  const stripes = L.stripes && coat === undefined;
   // shoulder ball + upper sleeve
   const puff = L.sleeves === 'puff';
-  const shoulderCol = L.vest && L.kind !== 'woman' ? L.shirt : L.shirt;
+  const shoulderCol = sleeve;
   K.put(arm, SPH(), shoulderCol, INK, [0, -0.01, 0], null, puff ? [P.armR * 1.7, P.armR * 1.55, P.armR * 1.6] : P.armR * 1.28);
   const upperSkin = puff;
   const ug = paintLathe(capsuleProfile(P.armR, -P.a, P.armR * 1.05, -0.01, 2), 8, 10, (row) => {
@@ -874,13 +1340,19 @@ function buildArm(K, arm, fore, sd, L, P) {
   K.putM(arm, ug, null, INK, new THREE.Matrix4());
   // forearm: sleeve to the wrist, or rolled up showing skin
   const bare = L.sleeves === 'rolled' || puff;
-  const fg = paintLathe(capsuleProfile(P.foreR, -P.b + 0.03, P.foreR * 1.08, -0.005, 2), 7, 10, (row) => {
+  const cuffY = -P.b + 0.1;
+  const fg = paintLathe(capsuleProfile(P.foreR, -P.b + 0.03, P.foreR * 1.08, -0.005, 2), 7, 10, (row, y) => {
     if (bare) return L.skin;
+    if (coat !== undefined) return y < cuffY ? L.coatTrim : coat;
     if (stripes && row % 4 < 2) return L.shirt2;
     return sleeve;
   });
   K.putM(fore, fg, null, INK, new THREE.Matrix4());
-  if (L.sleeves === 'rolled' && !puff) K.put(fore, torus(P.foreR * 1.15, 0.018, 12, 5), L.shirt, THIN, [0, -0.012, 0], [PI / 2, 0, 0]);
+  if (coat !== undefined) {
+    // a deep turned-back cuff in the trim colour, a lace ruffle at the wrist
+    K.put(fore, torus(P.foreR * 1.18, 0.017, 14, 5), L.coatTrim, THIN, [0, cuffY, 0], [PI / 2, 0, 0]);
+    K.put(fore, torus(P.foreR * 0.88, 0.017, 12, 5), WHITE, THIN, [0, -P.b + 0.04, 0], [PI / 2, 0, 0]);
+  } else if (L.sleeves === 'rolled' && !puff) K.put(fore, torus(P.foreR * 1.15, 0.018, 12, 5), L.shirt, THIN, [0, -0.012, 0], [PI / 2, 0, 0]);
   else if (!bare) K.put(fore, torus(P.foreR * 0.95, 0.014, 12, 5), mix(sleeve, WHITE, 0.45), THIN, [0, -P.b + 0.05, 0], [PI / 2, 0, 0]);
   // mitten hand + thumb
   const hr = P.handR;
@@ -903,7 +1375,7 @@ function buildLeg(K, leg, shin, sd, L, P) {
     return;
   }
   const lowerCol = L.shorts || L.skirt ? L.stockings : L.pants;
-  const striped = L.kind === 'kid' && L.girl;
+  const striped = L.kind === 'kid' && L.girl && !L.outfit;
   const sg = paintLathe(capsuleProfile(P.shinR * 0.92, -P.shin + 0.08, P.shinR, -0.005, 2), 7, 10, (row) =>
     striped && row % 2 === 0 ? mix(L.skirtTrim || WHITE, WHITE, 0.2) : lowerCol);
   K.putM(shin, sg, null, INK, new THREE.Matrix4());
@@ -913,7 +1385,7 @@ function buildLeg(K, leg, shin, sd, L, P) {
   }
   // boot: shaft with a turned-down cuff, then a flat-soled foot
   const b = P.boot;
-  const tall = L.kind === 'pirate';
+  const tall = L.kind === 'pirate' || L.outfit === 'pirate';
   const shaftTop = tall ? -P.shin * 0.42 : -P.shin * 0.72;
   const cuff = tall ? mix(L.boots, 0xc9a56b, 0.35) : L.boots;
   const bg = paintLathe([[0, -P.shin + 0.03], [b * 0.88, -P.shin + 0.03], [b * 0.92, (shaftTop - P.shin) / 2], [b, shaftTop - 0.012], [b * 1.12, shaftTop], [b * 1.06, shaftTop + 0.03], [0, shaftTop + 0.03]],
@@ -928,7 +1400,7 @@ function buildLeg(K, leg, shin, sd, L, P) {
 // ---------------------------------------------------------------------------
 // Tools (on the tool bone; toolB carries a second piece: the fiddle bow, the fishing line)
 // ---------------------------------------------------------------------------
-function buildTool(K, tool, toolB, L) {
+function buildTool(K, tool, toolB, L, P) {
   const kind = L.tool;
   if (kind === 'mop') {
     // origin on the deck under the mop head; handle along +y
@@ -1005,6 +1477,129 @@ function buildTool(K, tool, toolB, L) {
     K.put(toolB, rbox(0.04, 0.04, 0.03, 0.012), 0x3a2418, THIN, [0.0, 0, 0]);
     K.rod(toolB, 0x7a4a2b, THIN, V3(0.0, 0.0, 0), V3(0.62, 0.0, 0), 0.011, 5);
     K.rod(toolB, 0xfff6dc, THIN, V3(0.03, -0.028, 0), V3(0.6, -0.016, 0), 0.007, 4);
+  } else if (kind === 'cutlass') {
+    // origin in the fist; the blade runs along +y with its edge facing +z, curving back to the tip
+    K.rod(tool, 0x4a2e1e, INK, V3(0, -0.06, 0), V3(0, 0.06, 0), 0.02, 7);
+    K.put(tool, SPH(), BRASS, THIN, [0, -0.077, 0], null, 0.025);
+    K.put(tool, SPH(), BRASS, INK, [0, 0.07, 0.01], null, [0.036, 0.017, 0.056]);
+    K.put(tool, torus(0.075, 0.011, 14, 5, 2.4), BRASS, THIN, [0, -0.002, 0.006], [0, -PI / 2, -1.2]);
+    K.putM(tool, bladeGeo(), null, INK, new THREE.Matrix4());
+  } else if (kind === 'tape') {
+    // a tailor's tape round the neck (the tool bone sits at the base of the neck, turned with the
+    // torso) ...
+    const yel = 0xffd84a;
+    const h = P.torsoH;
+    const y0 = h * 0.94;
+    const rr = P.rs * 0.62;
+    K.put(tool, torus(rr, 0.013, 18, 4, PI * 1.2), yel, THIN, [0, 0, 0], [PI / 2, 0, PI * 0.9], [1, P.zs * 1.05, 0.5]);
+    // ... its two ends hanging down the chest, clear of the shirt
+    const chest = (y, x) => Math.sqrt(Math.max(0, profileR(TORSO_CTRL(P), y) ** 2 - x * x)) * P.zs + 0.014;
+    for (const sd of SIDES) {
+      const a = V3(sd * rr * 0.95, 0, rr * 0.33 * P.zs);
+      const b = V3(sd * rr * 0.78, -0.07, chest(y0 - 0.07, rr * 0.78));
+      const e = V3(sd * rr * 0.62, sd > 0 ? -0.2 : -0.24, chest(y0 + (sd > 0 ? -0.2 : -0.24), rr * 0.62));
+      K.blob(tool, yel, THIN, a, b, 0.021, 0.006);
+      K.blob(tool, yel, THIN, b, e, 0.021, 0.006);
+      K.put(tool, SPH(), IRON, THIN, [e.x, e.y - 0.004, e.z], null, [0.022, 0.012, 0.009]);
+      for (let k = 1; k <= 3; k++) {
+        const m = b.clone().lerp(e, k / 4.2);
+        K.put(tool, SPH_LO(), 0x5a4030, FLAT, [m.x, m.y, m.z + 0.006], null, [0.013, 0.003, 0.003]);
+      }
+    }
+    // the length held stretched between the hands ('measure'): unit long along +x, scaled to the gap
+    K.put(toolB, rbox(1, 0.026, 0.006, 0.0029), yel, THIN, [0.5, 0, 0]);
+  } else if (kind === 'scissors') {
+    // barber's shears: two halves pivoting at the origin (tool and toolB open them), blades along +y,
+    // finger rings below the pivot
+    for (const [bone, sd] of [[tool, 1], [toolB, -1]]) {
+      K.blob(bone, 0xe3e8f0, INK, V3(sd * 0.006, -0.004, 0), V3(-sd * 0.004, 0.17, 0), 0.012, 0.0045, 0);
+      K.rod(bone, 0x3a3440, THIN, V3(0, 0, 0), V3(sd * 0.02, -0.035, 0), 0.0065, 5);
+      K.put(bone, torus(0.02, 0.006, 12, 4), 0x3a3440, THIN, [sd * 0.03, -0.055, 0]);
+    }
+    K.put(tool, SPH_LO(), BRASS, FLAT, [0, 0, 0.006], null, [0.008, 0.008, 0.004]);
+  }
+}
+
+/** The cutlass blade (tool space): a lens-section blade from the guard, widening and curving back
+ *  to a clipped point; the edge side is a lighter steel. */
+function bladeGeo() {
+  return cached(`blade${tier()}`, () => {
+    const N = LOW ? 6 : MID ? 9 : 12;
+    const M = LOW ? 6 : MID ? 8 : 10;
+    const steel = new THREE.Color(0xc4cfdc);
+    const edge = new THREE.Color(0xf6f9fc);
+    const pos = [];
+    const nor = [];
+    const col = [];
+    const idx = [];
+    const c = new THREE.Color();
+    for (let i = 0; i <= N; i++) {
+      const s = i / N;
+      const y = 0.075 + 0.52 * s;
+      const zc = -0.075 * s * s;
+      const w = (0.022 + 0.016 * s) * (s > 0.8 ? Math.sqrt(Math.max(0, (1 - s) / 0.2)) : 1);
+      const th = 0.0075 * (1 - 0.45 * s);
+      const zs = zc + (s > 0.8 ? -0.02 * (s - 0.8) / 0.2 : 0); // the point sits towards the spine
+      for (let j = 0; j < M; j++) {
+        const a = (j / M) * TAU;
+        const x = th * Math.sin(a);
+        const z = zs + w * Math.cos(a);
+        pos.push(x, y, z);
+        const nx = Math.sin(a) / th;
+        const nz = Math.cos(a) / Math.max(w, 1e-3);
+        const l = Math.hypot(nx, nz) || 1;
+        nor.push(nx / l, 0, nz / l);
+        c.copy(steel).lerp(edge, smooth((Math.cos(a) - 0.35) / 0.5));
+        col.push(c.r, c.g, c.b);
+      }
+    }
+    const base = pos.length / 3;
+    pos.push(0, 0.075, 0);
+    nor.push(0, -1, 0);
+    col.push(steel.r, steel.g, steel.b);
+    for (let i = 0; i < N; i++) {
+      for (let j = 0; j < M; j++) {
+        const a = i * M + j;
+        const b = i * M + ((j + 1) % M);
+        const d = (i + 1) * M + j;
+        const e = (i + 1) * M + ((j + 1) % M);
+        idx.push(a, b, e, a, e, d);
+      }
+    }
+    for (let j = 0; j < M; j++) idx.push(base, (j + 1) % M, j);
+    const g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+    g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+    g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+    g.setIndex(idx);
+    return g;
+  });
+}
+
+// ---------------------------------------------------------------------------
+// The parrot (pet bones: the body perched on the left shoulder, its head and two wings)
+// ---------------------------------------------------------------------------
+function buildPet(K, pet, head, wingL, wingR, L) {
+  const c = L.petColor;
+  const beak = 0xf4e3c3;
+  // toes gripping the shoulder
+  for (const sd of SIDES) K.put(pet, SPH(), 0x6b6470, THIN, [sd * 0.017, 0.007, 0.014], null, [0.012, 0.008, 0.02]);
+  // an upright egg of a body, tail feathers hanging down behind the shoulder
+  K.put(pet, SPH(), c.body, INK, [0, 0.082, 0], [0.22, 0, 0], [0.047, 0.074, 0.048]);
+  K.blob(pet, c.wing, INK, V3(0, 0.05, -0.03), V3(0, -0.085, -0.075), 0.024, 0.011);
+  K.blob(pet, c.body, THIN, V3(0, -0.06, -0.07), V3(0, -0.115, -0.083), 0.017, 0.009);
+  // head: hooked pale beak with a dark lower bill, white face patches, beady eyes
+  K.put(head, SPH(), c.head, INK, [0, 0.026, 0.004], null, [0.041, 0.041, 0.043]);
+  K.blob(head, beak, THIN, V3(0, 0.034, 0.034), V3(0, -0.004, 0.066), 0.016, 0.019);
+  K.put(head, SPH(), 0x3a3440, THIN, [0, 0.006, 0.044], null, [0.012, 0.011, 0.014]);
+  for (const sd of SIDES) {
+    K.put(head, SPH(), WHITE, THIN, [sd * 0.029, 0.031, 0.02], [0, sd * 0.7, 0], [0.012, 0.016, 0.011]);
+    K.put(head, SPH_LO(), DARK, FLAT, [sd * 0.036, 0.034, 0.024], null, [0.006, 0.0075, 0.0065]);
+  }
+  // wings folded against the body (they hang from their pivots and flap out)
+  for (const [bone, sd] of [[wingL, 1], [wingR, -1]]) {
+    K.blob(bone, c.wing, INK, V3(0, 0.004, 0.006), V3(sd * 0.004, -0.085, -0.026), 0.011, 0.034);
+    K.blob(bone, mix(c.wing, 0xffd84a, 0.55), THIN, V3(sd * 0.006, -0.004, 0.012), V3(sd * 0.008, -0.04, 0.0), 0.007, 0.022);
   }
 }
 
@@ -1064,17 +1659,25 @@ function bake(K) {
 /**
  * Build a cartoon person. Returns a THREE.Group (origin at the feet, facing +z).
  * group.userData = { kind, look, parts: { hips, torso, head, armL, armR, legL, legR, tool,
- *   foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB }, mesh, skeleton, keep: true }.
+ *   foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB (+ pet, petHead, petWingL, petWingR with a
+ *   parrot) }, mesh, skeleton, keep: true (+ shared: the cache entry of a share: true person) }.
  * The pivots are THREE.Bone objects. Materials are shared (see disposePerson).
+ * opts.share = true takes the geometry from a cache keyed by the resolved look (boarding parties,
+ * overboard tumblers): only the bones and Skeleton are new; see releaseSharedPeople.
  * opts.detail = 'low' builds a lighter person (about a third of the triangles) for crowds that are
- * only ever seen small; it looks the same from a distance.
+ * only ever seen small; it looks the same from a distance. 'mid' (about two thirds) is the default
+ * for the captain (outfit 'pirate'), which stays under 12k triangles in every outfit; 'full' forces
+ * full detail.
  */
 export function buildPerson(opts = {}) {
-  LOW = !!opts && opts.detail === 'low';
+  const o = opts || {};
+  LOW = o.detail === 'low';
+  MID = !LOW && o.detail !== 'full' && (o.detail === 'mid' || o.outfit === 'pirate');
   try {
-    return build(opts || {});
+    return build(o);
   } finally {
     LOW = false;
+    MID = false;
   }
 }
 function build(opts) {
@@ -1083,6 +1686,8 @@ function build(opts) {
   const K = new Kit();
   const group = new THREE.Group();
   group.name = `person:${L.kind}`;
+  const key = opts.share === true ? lookKey(L) : null;
+  const shared = key !== null ? SHARE.get(key) : undefined;
 
   // skeleton (rest pose)
   const hips = K.bone('hips', null, 0, P.hipY, 0);
@@ -1101,18 +1706,33 @@ function build(opts) {
   const skirt = K.bone('skirt', hips, 0, 0, 0);
   const tool = K.bone('tool', null, 0, 0, 0);
   const toolB = K.bone('toolB', null, 0, 0, 0);
+  // the parrot perches on the left shoulder (its bones exist only when it does)
+  const pet = L.pet ? K.bone('pet', torso, P.shX + 0.03, P.shY + P.armR * 1.2, -0.02) : null;
+  const petHead = pet ? K.bone('petHead', pet, 0, 0.148, 0.008) : null;
+  const petWingL = pet ? K.bone('petWingL', pet, 0.042, 0.122, -0.006) : null;
+  const petWingR = pet ? K.bone('petWingR', pet, -0.042, 0.122, -0.006) : null;
   group.add(hips, tool, toolB);
   group.updateMatrixWorld(true);
 
-  buildHead(K, head, eyes, mouth, L, P);
-  buildBody(K, hips, torso, L.skirt ? skirt : null, L, P);
-  buildArm(K, armL, foreL, 1, L, P);
-  buildArm(K, armR, foreR, -1, L, P);
-  buildLeg(K, legL, shinL, 1, L, P);
-  buildLeg(K, legR, shinR, -1, L, P);
-  buildTool(K, tool, toolB, L);
-
-  const { geometry, mats } = bake(K);
+  let geometry;
+  let mats;
+  if (shared) {
+    // same resolved look as a person built before: reuse its geometry, only the bones are new
+    ({ geometry, mats } = shared);
+    shared.refs++;
+  } else {
+    buildHead(K, head, eyes, mouth, L, P);
+    buildBody(K, hips, torso, L.skirt || L.coat !== undefined ? skirt : null, L, P);
+    buildArm(K, armL, foreL, 1, L, P);
+    buildArm(K, armR, foreR, -1, L, P);
+    buildLeg(K, legL, shinL, 1, L, P);
+    buildLeg(K, legR, shinR, -1, L, P);
+    buildTool(K, tool, toolB, L, P);
+    if (pet) buildPet(K, pet, petHead, petWingL, petWingR, L);
+    ({ geometry, mats } = bake(K));
+  }
+  const entry = shared || (key !== null ? { key, geometry, mats, refs: 1, orphan: false } : null);
+  if (entry && !shared) SHARE.set(key, entry);
   const mesh = new THREE.SkinnedMesh(geometry, mats.length === 1 ? mats[0] : mats);
   mesh.name = 'person-body';
   // generous fixed bounds (the pose changes; skinned bounds would cost a pass over every vertex)
@@ -1128,6 +1748,7 @@ function build(opts) {
   group.scale.setScalar(L.scale);
 
   const parts = { hips, torso, head, armL, armR, legL, legR, tool, foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB };
+  if (pet) Object.assign(parts, { pet, petHead, petWingL, petWingR });
   group.userData = {
     kind: L.kind,
     look: L,
@@ -1141,20 +1762,36 @@ function build(opts) {
     skeleton: hidden(skeleton),
     rig: hidden(makeRig(parts, L, P)),
   });
+  if (entry) Object.defineProperty(group.userData, 'shared', hidden(entry));
   animatePerson(group, 0, 'idle');
   return group;
 }
 
 /**
- * Ground speed (world units per second) that matches the stride of 'walk' or 'carry'
+ * Ground speed (world units per second) that matches the stride of 'walk', 'carry' or 'run'
  * at the given tempo, so a caller moving the group along a path keeps the feet from sliding.
  */
 export function walkSpeed(person, action = 'walk', speed = 1) {
   const R = person && person.userData && person.userData.rig;
   if (!R) return 0;
   const legLen = R.P.thigh + R.P.shin;
+  if (action === 'run') {
+    // a planted foot travels 2 D (D = legLen sin RUN_A) while it is down, RUN_STANCE of a cycle
+    return ((2 * legLen * Math.sin(RUN_A) * RUN_F) / RUN_STANCE) * (Number.isFinite(speed) ? speed : 1) * person.scale.x;
+  }
   const [A, f] = action === 'carry' ? [0.38, 0.95] : [0.5, 1.05];
   return 4 * legLen * Math.sin(A) * f * (Number.isFinite(speed) ? speed : 1) * person.scale.x;
+}
+
+/**
+ * World position of a hand's centre (s = +1 left, -1 right) in the current pose, e.g. to tie the
+ * 'swing' rope or the 'haul' line to it. Updates the person's world matrices.
+ */
+export function handPosition(person, s = -1, out = new THREE.Vector3()) {
+  const R = person && person.userData && person.userData.rig;
+  if (!R) return out.set(0, 0, 0);
+  person.updateMatrixWorld(true);
+  return out.set(0, -R.P.b, 0).applyMatrix4((s > 0 ? R.foreL : R.foreR).matrixWorld);
 }
 
 /**
@@ -1168,8 +1805,37 @@ export function disposePerson(person) {
   const u = person.userData || {};
   if (u.disposed) return;
   u.disposed = true;
-  if (u.mesh && u.mesh.geometry) u.mesh.geometry.dispose();
+  if (u.shared) {
+    // shared geometry: one reference fewer (freed by releaseSharedPeople, or now if already released)
+    const e = u.shared;
+    e.refs = Math.max(0, e.refs - 1);
+    if (e.refs === 0 && e.orphan) e.geometry.dispose();
+  } else if (u.mesh && u.mesh.geometry) u.mesh.geometry.dispose();
   if (u.skeleton) u.skeleton.dispose();
+}
+
+// ---------------------------------------------------------------------------
+// Shared geometry (buildPerson({ share: true })): people with the same resolved look draw the same
+// geometry; each still has its own bones and Skeleton.
+// ---------------------------------------------------------------------------
+const SHARE = new Map();
+/** Cache key of a resolved look: everything that shapes the geometry (not the animation phase,
+ *  blink rate, seed or scale) and the detail level. */
+function lookKey(L) {
+  const { phase, blink, seed, scale, ...rest } = L;
+  return `${tier()}|${JSON.stringify(rest)}`;
+}
+
+/**
+ * Empty the shared-geometry cache (main calls it on level change). Geometry nobody uses any more is
+ * freed now; geometry still worn by a living person is freed when its last person is disposed.
+ */
+export function releaseSharedPeople() {
+  for (const e of SHARE.values()) {
+    if (e.refs === 0) e.geometry.dispose();
+    else e.orphan = true;
+  }
+  SHARE.clear();
 }
 
 // ---------------------------------------------------------------------------
@@ -1191,6 +1857,7 @@ const _z = new THREE.Vector3();
 const _basis = new THREE.Matrix4();
 const ONE = new THREE.Vector3(1, 1, 1);
 const _e = new THREE.Euler();
+const ZV = new THREE.Vector3(0, 0, 1);
 
 function makeRig(parts, L, P) {
   const bones = Object.values(parts);
@@ -1506,7 +2173,100 @@ function toolRest(R, t, walking = 0, swing = 0) {
     R.toolB.quaternion.setFromUnitVectors(XV, C.set(0.15, -1, 0.2).normalize());
     return true;
   }
+  if (k === 'cutlass') {
+    // carried in the right hand, blade forward and down
+    armE(R, -1, -0.2 + 0.4 * walking * Math.sin(swing), 0.16, 0.6);
+    toolInHand(R, -1, PI / 2 + 0.7, 0, 0);
+    return true;
+  }
+  if (k === 'scissors') {
+    armE(R, -1, -0.3 + 0.3 * walking * Math.sin(swing), 0.1, 1.15);
+    toolInHand(R, -1, PI / 2 - 0.35, 0, 0);
+    return true;
+  }
   return false;
+}
+
+// --- worn things, placed after every action ---------------------------------
+/** A cutlass the action has no use for goes through the sash on the left hip, hilt up in front. */
+function sheathe(R) {
+  const P = R.P;
+  const [A, B] = R.s;
+  // blade direction (hips space): down, back and a little out
+  B.set(0.22, -0.72, -0.66).normalize().applyQuaternion(R.hips.quaternion);
+  A.set(P.rw + 0.035, P.torsoY - 0.005, 0.07).applyQuaternion(R.hips.quaternion).add(R.hips.position);
+  A.addScaledVector(B, -0.085); // the guard rests on the sash
+  R.tool.scale.setScalar(1);
+  toolAlong(R, A, _v1.copy(A).add(B), 0.4);
+}
+/** The tailor's tape lies round the neck whatever the action. */
+function drapeTape(R) {
+  R.tool.position.set(0, R.P.torsoH * 0.94, 0).applyMatrix4(R.mht);
+  R.tool.quaternion.copy(R.qht);
+  R.tool.scale.setScalar(1);
+}
+/** The second shear follows the first, opened by R.snip radians about the pivot. */
+function shears(R) {
+  if (R.tool.scale.x < 0.01) {
+    hideTool(R, R.toolB);
+    return;
+  }
+  R.toolB.position.copy(R.tool.position);
+  R.toolB.quaternion.copy(R.tool.quaternion).multiply(_q2.setFromAxisAngle(ZV, R.snip / 2));
+  R.tool.quaternion.multiply(_q2.setFromAxisAngle(ZV, -R.snip / 2));
+}
+/**
+ * Coat tails (on the skirt bone): they trail behind a stride, swing with the steps (R.tailSwing, set by
+ * 'walk' / 'run'), lie back over a seat and fold up out of the deck when kneeling.
+ */
+function fitTails(R, action) {
+  const sk = R.skirt;
+  const P = R.P;
+  let rx = Math.max(0, R.legL.rotation.x, R.legR.rotation.x) * 0.75 + R.tailSwing;
+  let sy = 1;
+  if (action === 'sit' || action === 'fish') {
+    rx = 0.6;
+    sy = 0.85;
+  } else {
+    // kneeling / crouching: shorten the tails so the hem stays off the deck
+    const drop = P.hipY - R.hips.position.y;
+    if (drop > 0.05) {
+      sy = clamp(1 - (drop - 0.05) * 3.2, 0.42, 1);
+      rx = Math.max(rx, 0.35);
+    }
+  }
+  sk.position.set(0, 0, 0);
+  sk.rotation.set(rx, 0, 0);
+  sk.scale.set(1 + 0.12 * (1 - sy), sy, 1 + 0.12 * (1 - sy));
+}
+/**
+ * The parrot: looks about and bobs its head every 3 s on the shoulder; flaps when running. When the
+ * left arm goes up (cheering, waving, hands up, swinging, falling) it flutters up over the hat.
+ */
+function petPose(R, t, action) {
+  const P = R.P;
+  const q = frac(t / 3);
+  const bob = q < 0.18 ? Math.sin((q / 0.18) * PI) : 0;
+  // how far the left upper arm is raised (0 hanging or forward, 1 above the shoulder)
+  _v1.set(0, -1, 0).applyQuaternion(R.armL.quaternion);
+  const forced = action === 'cheer' || action === 'surrender' || action === 'swing' || action === 'fall';
+  const fly = forced ? 1 : smooth((_v1.y - 0.05) / 0.45);
+  const flap = fly > 0 || action === 'run';
+  R.pet.rotation.set(-0.2 * fly, (0.35 + 0.15 * Math.sin(t * 0.31)) * (1 - fly), 0);
+  R.petHead.rotation.set(0.5 * bob - 0.05 + 0.35 * fly, 0.45 * Math.sin(t * 0.53 + 1) * (1 - 0.5 * fly), 0.12 * bob);
+  if (fly > 0) {
+    const rest = R.pet.userData.rest;
+    const hat = R.L.hat === 'none' || R.L.hat === 'bandana' || R.L.hat === 'kerchief' ? 0.05 : 0.15;
+    const hover = P.headY + P.R * 2 + hat + 0.025 * Math.sin(t * TAU * 1.6);
+    R.pet.position.set(lerp(rest.x, 0.1, fly), lerp(rest.y, hover, fly), lerp(rest.z, -0.13, fly));
+  }
+  if (flap) {
+    const f = 0.5 + 0.5 * Math.sin(t * TAU * 4.5);
+    const k = Math.max(fly, 0.6);
+    R.petWingL.rotation.set(0, 0, k * (0.35 + 1.15 * f));
+    R.petWingR.rotation.set(0, 0, -k * (0.35 + 1.15 * f));
+    R.pet.position.y += 0.012 * f * (1 - fly);
+  }
 }
 
 /** Put a crate, bucket or lantern down on the floor beside the right foot; hide anything else. */
@@ -1561,6 +2321,7 @@ const POSES = {
     const ph = t * TAU * 1.05; // keep in step with walkSpeed()
     walkLegs(R, ph, 0.5);
     R.head.rotation.x = -0.04;
+    R.tailSwing = 0.05 + 0.04 * Math.sin(2 * ph); // coat tails only
     bodyDone(R);
     const busy = toolRest(R, t, 1, ph);
     if (busy !== 'both') {
@@ -1676,7 +2437,7 @@ const POSES = {
     legsStand(R, 0.05);
     R.hips.position.y += 0.012 * Math.abs(s);
     // wave with the free hand: the left one when the right holds something
-    const sd = R.tk === 'none' || R.tk === 'crate' ? -1 : 1;
+    const sd = R.tk === 'none' || R.tk === 'crate' || R.tk === 'tape' ? -1 : 1;
     R.torso.rotation.set(R.P.hunch * 0.6 - 0.04, 0.0, -sd * 0.12);
     R.head.rotation.set(-0.1, sd * 0.12, sd * 0.14 + 0.05 * s);
     bodyDone(R);
@@ -1784,7 +2545,7 @@ const POSES = {
       toolHang(R, -1, 0.25 * Math.sin(w), torsoYaw(R));
     } else if (k === 'crate' || k === 'bucket') {
       setDown(R);
-    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle') {
+    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle' || k === 'cutlass' || k === 'scissors') {
       handP(R, -1, A);
       B.copy(A).add(_v1.set(-0.1, 1, 0.1));
       toolAlong(R, k === 'brush' || k === 'fiddle' ? B : A, k === 'brush' || k === 'fiddle' ? A : B);
@@ -1879,14 +2640,320 @@ const POSES = {
     for (const sd of SIDES) reachP(R, sd, sd * 0.08, RAIL.y + 0.05, RAIL.z + 0.06, sd * 1, -0.8, -0.2);
     setDown(R);
   },
+
+  run(R, t) {
+    const P = R.P;
+    const ph = t * TAU * RUN_F; // keep in step with walkSpeed()
+    runLegs(R, ph);
+    R.torso.rotation.x = 0.13 + P.hunch * 0.5 + 0.03 * Math.cos(2 * ph);
+    R.head.rotation.x = -0.2;
+    bodyDone(R);
+    // arms pumping, elbows bent, opposite to the legs
+    const busy = toolRest(R, t, 1, ph);
+    if (busy !== 'both') {
+      armE(R, 1, 0.85 * Math.sin(ph) - 0.15, 0.16, 1.45 - 0.35 * Math.sin(ph));
+      if (!busy) armE(R, -1, -0.85 * Math.sin(ph) - 0.15, 0.16, 1.45 + 0.35 * Math.sin(ph));
+    }
+    R.tailSwing = 0.3 + 0.08 * Math.sin(2 * ph);
+    R.mouth.scale.set(0.55, 0.3, 1);
+  },
+
+  proud(R, t) {
+    const P = R.P;
+    // feet apart, chest out, chin up, fists on the hips
+    legsStand(R, 0.11);
+    R.hips.rotation.z = 0.02 * Math.sin(t * 0.5);
+    R.legL.rotation.z -= R.hips.rotation.z;
+    R.legR.rotation.z -= R.hips.rotation.z;
+    R.torso.rotation.set(-0.08 + P.hunch * 0.4 + 0.02 * Math.sin(t * 1.7), 0.05 * Math.sin(t * 0.4), 0);
+    R.head.rotation.set(-0.2 + 0.02 * Math.sin(t * 1.7 + 0.5), 0.3 * Math.sin(t * 0.29), 0.04);
+    bodyDone(R);
+    handOnHip(R, 1);
+    handOnHip(R, -1);
+    setDown(R);
+  },
+
+  steer(R, t, o) {
+    const P = R.P;
+    const turn = Number.isFinite(o.turn) ? clamp(o.turn, -1, 1) : 0;
+    // feet braced, leaning into the turn, hands on the spokes at ten and two (WHEEL)
+    legsStand(R, 0.09);
+    R.hips.rotation.z = 0.04 * turn;
+    R.hips.position.x = -0.02 * turn;
+    R.torso.rotation.set(0.14 + P.hunch * 0.4, -0.12 * turn, 0.08 * turn);
+    R.head.rotation.set(-0.1, -0.1 * turn + 0.22 * Math.sin(t * 0.23), -0.04 * turn);
+    bodyDone(R);
+    const rot = -0.7 * turn + 0.04 * Math.sin(t * 1.3);
+    for (const sd of SIDES) {
+      const a = sd * 1.0 + rot; // from the top of the wheel, + towards the left (+x)
+      reachP(R, sd, Math.sin(a) * WHEEL.r, WHEEL.y + Math.cos(a) * WHEEL.r, WHEEL.z - 0.03, sd * 0.9, -0.5, -0.4);
+    }
+    setDown(R);
+  },
+
+  point(R, t) {
+    const P = R.P;
+    const [A, B] = R.s;
+    // "Fire!": right foot forward, the right arm thrust out ahead, left fist on the hip
+    R.hips.position.y -= 0.012;
+    R.hips.position.z = 0.02;
+    footAt(R, -1, -P.legX - 0.02, 0, 0.15, 1);
+    footAt(R, 1, P.legX + 0.04, 0, -0.08, 1);
+    const jab = 0.5 + 0.5 * Math.sin(t * TAU * 1.6);
+    R.torso.rotation.set(0.1 + P.hunch * 0.4 + 0.02 * jab, 0.3, 0.04);
+    R.head.rotation.set(-0.12, -0.3, 0.05);
+    bodyDone(R);
+    reachP(R, -1, -0.1, P.hipY + P.torsoY + P.shY + 0.16 + 0.02 * jab, 0.55, -0.6, -0.6, -0.3);
+    handOnHip(R, 1);
+    if (R.tk === 'cutlass') {
+      // pointing with the blade, along the arm and a little up
+      handP(R, -1, A);
+      B.set(-P.shX, P.shY, 0).applyMatrix4(R.mht);
+      B.subVectors(A, B).normalize();
+      B.y += 0.25;
+      toolAlong(R, A, B.normalize().add(A), PI / 2);
+    } else setDown(R);
+    R.mouth.scale.set(1, 1, 1);
+  },
+
+  swing(R, t) {
+    const P = R.P;
+    // hanging from a rope above (the caller moves the group along the arc): hands stacked up in
+    // front of the right shoulder, knees tucked, yelling
+    R.hips.position.y = P.hipY + 0.02;
+    for (const sd of SIDES) {
+      const leg = sd > 0 ? R.legL : R.legR;
+      const shin = sd > 0 ? R.shinL : R.shinR;
+      const k = Math.sin(t * 5.5 + (sd > 0 ? 0 : 2));
+      leg.rotation.set(-1.2 + 0.12 * k, 0, sd * 0.16);
+      shin.rotation.x = 1.75 - 0.15 * k;
+    }
+    R.torso.rotation.set(-0.06 + P.hunch * 0.3, -0.3, 0.05);
+    R.head.rotation.set(-0.22, 0.32, 0.0);
+    bodyDone(R);
+    const top = P.hipY + P.torsoY + P.shY;
+    reachP(R, -1, -0.15, top + 0.3, 0.14, -0.7, -0.2, -0.6);
+    reachP(R, 1, -0.11, top + 0.16, 0.2, 0.9, -0.4, -0.4);
+    hideTool(R); // in mid-air nothing can be set down (a cutlass goes in the sash)
+    hideTool(R, R.toolB);
+    R.mouth.scale.set(0.9, 1.1, 1);
+  },
+
+  fight(R, t) {
+    const P = R.P;
+    const [A, B] = R.s;
+    // a 1 s loop (FIGHT.period): guard, wind up over the shoulder, a lunging slash, recover
+    const q = frac(t / FIGHT.period);
+    let i = 0;
+    while (i < FIGHT_KEYS.length - 2 && q >= FIGHT_KEYS[i + 1].q) i++;
+    const k0 = FIGHT_KEYS[i];
+    const k1 = FIGHT_KEYS[i + 1];
+    const u = smooth((q - k0.q) / (k1.q - k0.q));
+    const at = (n, j) => (j === undefined ? lerp(k0[n], k1[n], u) : lerp(k0[n][j], k1[n][j], u));
+    const f = (P.hipY + P.torsoY + P.shY) / 0.71; // keys are for a grown-up: scale to this body
+    const bob = 0.008 * Math.sin(t * TAU * 2);
+    R.hips.position.set(0, P.hipY - at('drop') * f + bob, at('lunge') * f);
+    R.hips.rotation.y = at('yaw') * 0.5;
+    footAt(R, -1, -P.legX - 0.03, 0, at('foot') * f, 1); // right foot leads
+    footAt(R, 1, P.legX + 0.07, 0, -0.13 * f, 1);
+    R.torso.rotation.set(at('lean') + P.hunch * 0.3, at('yaw') * 0.6, -0.05);
+    R.head.rotation.set(-0.08 - at('lean') * 0.4, -at('yaw') * 0.9, 0);
+    bodyDone(R);
+    reachP(R, -1, at('hand', 0) * f, at('hand', 1) * f, at('hand', 2) * f, -0.7, -0.5, -0.5);
+    // the free arm held out behind for balance
+    armE(R, 1, 0.35 + 0.25 * at('lean'), 0.6, 0.9);
+    if (R.tk === 'cutlass') {
+      handP(R, -1, A);
+      B.set(at('blade', 0), at('blade', 1), at('blade', 2)).normalize().add(A);
+      toolAlong(R, A, B, PI / 2);
+    } else setDown(R);
+    const slash = q > 0.55 && q < 0.8 ? 1 : 0.25;
+    R.mouth.scale.set(0.8, slash, 1);
+  },
+
+  fall(R, t) {
+    const P = R.P;
+    // overboard: arms windmilling, legs bicycling, mouth wide open; { since } starts the flail from
+    // standing (the caller moves and spins the group)
+    const e = R.elapsed;
+    const k = e === null ? 1 : smooth(e / 0.2);
+    const w = (e === null ? t : e) * TAU * 2.4 + R.L.phase;
+    for (const sd of SIDES) {
+      const leg = sd > 0 ? R.legL : R.legR;
+      const shin = sd > 0 ? R.shinL : R.shinR;
+      const s = Math.sin(w + (sd > 0 ? 0 : PI));
+      leg.rotation.set(k * (-0.55 + 0.6 * s), 0, sd * (0.04 + 0.22 * k));
+      shin.rotation.x = k * (0.95 + 0.6 * Math.sin(w + (sd > 0 ? 0 : PI) + 1.2));
+    }
+    R.torso.rotation.set(-0.28 * k + P.hunch * 0.3, 0.15 * k * Math.sin(w * 0.5), 0.12 * k * Math.sin(w * 0.7));
+    R.head.rotation.set(-0.35 * k, 0.2 * k * Math.sin(w * 0.6), 0.1 * k * Math.sin(w * 0.4));
+    bodyDone(R);
+    for (const sd of SIDES) {
+      const s = Math.sin(w * 1.15 + (sd > 0 ? 0 : PI));
+      armE(R, sd, k * (-1.7 + 1.1 * s), 0.14 + k * (0.55 + 0.25 * s), 0.25 + k * 0.35 * (1 - s));
+    }
+    hideTool(R);
+    hideTool(R, R.toolB);
+    R.mouth.scale.set(0.9, k, 1);
+  },
+
+  surrender(R, t) {
+    const P = R.P;
+    // hands up, head down, knees knocking a little
+    legsStand(R, 0.05);
+    R.hips.position.y -= 0.012;
+    R.hips.position.x = 0.004 * Math.sin(t * 23);
+    R.torso.rotation.set(0.08 + P.hunch * 0.5, 0, 0.02 * Math.sin(t * 1.3));
+    R.head.rotation.set(0.38 + 0.03 * Math.sin(t * 2.1), 0.15 * Math.sin(t * 0.4), 0.0);
+    bodyDone(R);
+    const shake = 0.012 * Math.sin(t * 17);
+    for (const sd of SIDES) reachT(R, sd, sd * (P.shX + 0.12), P.shY + P.reach * 0.78 + shake, 0.1, sd * 1, -0.6, -0.4);
+    if (R.tk === 'cutlass') {
+      // the blade dropped on the deck at the feet
+      R.tool.position.set(-0.12, 0.018, 0.34);
+      R.tool.quaternion.setFromEuler(_e.set(0, 0.5, PI / 2, 'YXZ'));
+    } else setDown(R);
+    R.mouth.scale.set(0.45, 0.5, 1);
+  },
+
+  haul(R, t) {
+    const P = R.P;
+    // hand over hand on a rope running out ahead at HAUL.y, feet braced, leaning back
+    const cyc = t / 1.1;
+    const tug = 0.5 + 0.5 * Math.sin(cyc * TAU * 2);
+    R.hips.position.set(0, R.hips.position.y - 0.04, -0.05 - 0.02 * tug);
+    footAt(R, 1, P.legX + 0.02, 0, 0.13, 1);
+    footAt(R, -1, -P.legX - 0.03, 0, -0.13, 1);
+    R.torso.rotation.set(-0.16 - 0.06 * tug + P.hunch * 0.3, 0.08 * Math.sin(cyc * TAU), 0);
+    R.head.rotation.set(0.14, -0.04 * Math.sin(cyc * TAU), 0);
+    bodyDone(R);
+    for (const sd of SIDES) {
+      const u = frac(cyc + (sd > 0 ? 0 : 0.5));
+      let z;
+      let y = HAUL.y;
+      if (u < 0.55) z = lerp(0.32, 0.08, smooth(u / 0.55));
+      else {
+        const v = smooth((u - 0.55) / 0.45);
+        z = lerp(0.08, 0.32, v);
+        y += 0.07 * Math.sin(PI * v);
+      }
+      reachP(R, sd, sd * 0.03, y, z, sd * 0.8, -0.6, -0.3);
+    }
+    setDown(R);
+    R.mouth.scale.set(0.5, 0.3 + 0.3 * tug, 1);
+  },
+
+  measure(R, t) {
+    const P = R.P;
+    const [A, B] = R.s;
+    // the tailor at work: tape stretched between the hands at chest height, sliding it along, then
+    // lifting it to read the number
+    const cyc = frac(t / 3.2);
+    const read = cyc > 0.55 && cyc < 0.9 ? Math.sin((PI * (cyc - 0.55)) / 0.35) : 0;
+    const w = Math.sin(cyc * TAU * 2.5);
+    legsStand(R, 0.07);
+    R.hips.rotation.y = 0.08 * Math.sin(t * 0.6);
+    R.torso.rotation.set(0.14 - 0.08 * read + P.hunch * 0.5, 0.05 * Math.sin(t * 0.9), 0.04 * w * (1 - read));
+    R.head.rotation.set(0.28 + 0.12 * read, 0.1 * Math.sin(t * 0.7), 0.08 * read);
+    bodyDone(R);
+    const spread = (0.13 + 0.05 * w * (1 - read)) * (1 - 0.3 * read);
+    const y = P.hipY + P.torsoY + P.shY + lerp(-0.09, 0.0, read);
+    const z = lerp(0.26, 0.29, read);
+    reachP(R, 1, spread, y, z, 0.8, -0.6, -0.3);
+    reachP(R, -1, -spread, y + 0.01 * w, z, -0.8, -0.6, -0.3);
+    if (R.tk === 'tape') {
+      handP(R, -1, A);
+      handP(R, 1, B);
+      _v1.subVectors(B, A);
+      const d = _v1.length();
+      R.toolB.position.copy(A);
+      R.toolB.quaternion.setFromUnitVectors(XV, _v1.normalize());
+      R.toolB.scale.set(Math.max(1e-3, d), 1, 1);
+    } else {
+      setDown(R);
+      hideTool(R, R.toolB);
+    }
+    R.mouth.scale.set(0.35, 0.3 * read, 1);
+  },
+
+  snip(R, t) {
+    const P = R.P;
+    // the barber: shears up at a customer's head in front, snipping in bursts, the other hand holding
+    // the lock being cut
+    const cyc = frac(t / 2.4);
+    const burst = cyc < 0.5;
+    const spot = Math.floor(t / 2.4);
+    const sx = 0.05 * Math.sin(spot * 2.1);
+    const sy = 0.035 * Math.cos(spot * 1.3);
+    legsStand(R, 0.07);
+    R.hips.position.x = 0.025 * Math.sin(t * 0.8);
+    R.torso.rotation.set(0.08 + P.hunch * 0.2, 0.1 + 0.08 * Math.sin(t * 0.8), 0.04 * Math.sin(t * 0.8));
+    R.head.rotation.set(0.2 - P.hunch * 0.5, -0.2 + 0.06 * Math.sin(t * 0.8), 0.08);
+    bodyDone(R);
+    const y = P.hipY + P.torsoY + P.shY - 0.06;
+    reachP(R, -1, -0.14 + sx, y + sy, 0.34, -0.9, -0.7, -0.1);
+    reachP(R, 1, 0.03 + sx, y + sy - 0.04, 0.32, 0.8, -0.5, -0.4);
+    if (R.tk === 'scissors') {
+      toolInHand(R, -1, PI / 2 - 0.35, 0, 0.5);
+      R.snip = burst ? 0.08 + 0.42 * (0.5 + 0.5 * Math.cos(t * TAU * 4)) : 0.1;
+    } else setDown(R);
+    R.mouth.scale.set(0.3, burst ? 0.15 : 0.001, 1);
+  },
 };
+
+// 'fight' keyframes (a grown-up's numbers, person space): loop position q, hips lunge forward and
+// drop, stance yaw, forward lean, leading foot z, sword hand position, blade direction
+const FIGHT_GUARD = { q: 0, lunge: 0, drop: 0.05, yaw: 0.42, lean: 0.12, foot: 0.12, hand: [-0.1, 0.8, 0.3], blade: [0.12, 0.75, 0.62] };
+const FIGHT_KEYS = [
+  FIGHT_GUARD,
+  { q: 0.42, lunge: 0, drop: 0.05, yaw: 0.42, lean: 0.12, foot: 0.12, hand: [-0.12, 0.82, 0.29], blade: [0.12, 0.8, 0.55] },
+  { q: 0.56, lunge: -0.02, drop: 0.04, yaw: 0.68, lean: 0.04, foot: 0.12, hand: [-0.24, 1.02, 0.02], blade: [0.1, 0.55, -0.8] },
+  { q: 0.66, lunge: 0.1, drop: 0.1, yaw: -0.12, lean: 0.3, foot: 0.27, hand: [0.06, 0.64, 0.42], blade: [0.65, -0.35, 0.55] },
+  { q: 0.76, lunge: 0.09, drop: 0.1, yaw: -0.08, lean: 0.28, foot: 0.27, hand: [0.04, 0.66, 0.4], blade: [0.6, -0.3, 0.6] },
+  { ...FIGHT_GUARD, q: 1 },
+];
+
+/**
+ * Run cycle in place: each foot is planted for RUN_STANCE of the cycle, moving back at a constant
+ * speed (walkSpeed('run')), then kicks up behind and swings through with the knee high; between the
+ * stances both feet are off the ground and the hips ride a little higher.
+ */
+function runLegs(R, ph) {
+  const P = R.P;
+  const L = P.thigh + P.shin;
+  const D = L * Math.sin(RUN_A);
+  const u0 = frac(ph / TAU - 0.25);
+  const w = frac(u0 * 2); // half cycle: one foot's stance, then a flight
+  const S2 = 2 * RUN_STANCE;
+  const H = L * Math.cos(RUN_A);
+  const hipJ = w < S2 ? H - 0.03 * Math.sin((PI * w) / S2) : H + 0.035 * Math.sin((PI * (w - S2)) / (1 - S2));
+  const s = Math.sin(ph);
+  R.hips.position.y = hipJ - P.legY;
+  R.hips.rotation.set(0.07, 0.15 * s, 0.03 * Math.cos(ph));
+  R.torso.rotation.y = -0.22 * s;
+  R.head.rotation.y = 0.12 * s;
+  for (const sd of SIDES) {
+    const u = frac(u0 + (sd > 0 ? 0 : 0.5));
+    let z;
+    let y = 0;
+    if (u < RUN_STANCE) z = D * (1 - (2 * u) / RUN_STANCE);
+    else {
+      const v = (u - RUN_STANCE) / (1 - RUN_STANCE);
+      z = -D * Math.cos(PI * v) - 0.22 * L * Math.sin(PI * Math.min(1, v * 1.6)) * (1 - v);
+      y = L * 0.62 * Math.sin(PI * Math.min(1, v * 1.25)) ** 1.3;
+    }
+    footAt(R, sd, sd * (P.legX + 0.01), y, z, 1);
+  }
+}
 
 const NO_OPTS = Object.freeze({});
 /**
  * Pose a person for time t (seconds). Deterministic in t; transforms only.
  * opts: { phase? (seconds, defaults to a per-person offset), speed? (tempo, default 1),
  *         wall? ('scrub' only: true scrubs a wall/hull in front instead of the deck),
- *         sweep? ('mop' only: 0..1, shorter strokes; default 1) }
+ *         sweep? ('mop' only: 0..1, shorter strokes; default 1),
+ *         turn? ('steer' only: -1..1, + turns to starboard), since? ('fall' only: the time t the fall
+ *         began; without it the tumble loops) }
  */
 export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   const u = person && person.userData;
@@ -1898,14 +2965,28 @@ export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   const tt = (Number.isFinite(t) ? t : 0) * speed + phase;
   reset(R);
   R.mouth.scale.set(1, 0.001, 1);
+  R.tailSwing = 0;
+  R.snip = 0.1;
+  R.elapsed = action === 'fall' && Number.isFinite(o.since) && Number.isFinite(t) ? Math.max(0, t - o.since) * speed : null;
   // (own keys only: an action named like an Object.prototype member falls back to idle too)
-  const pose = Object.prototype.hasOwnProperty.call(POSES, action) ? POSES[action] : POSES.idle;
+  const own = Object.prototype.hasOwnProperty.call(POSES, action);
+  const pose = own ? POSES[action] : POSES.idle;
   pose(R, tt, o);
+  // worn things: a spare cutlass in the sash, the tape round the neck, the shears' second half,
+  // coat tails and the parrot
+  const k = R.tk;
+  if (k === 'cutlass' && R.tool.scale.x < 0.01) sheathe(R);
+  else if (k === 'tape') {
+    drapeTape(R);
+    if (action !== 'measure' || !own) hideTool(R, R.toolB);
+  } else if (k === 'scissors') shears(R);
+  if (R.L.coat !== undefined && !R.L.skirt) fitTails(R, own ? action : 'idle');
+  if (R.pet) petPose(R, tt, own ? action : 'idle');
   // tools that the action didn't place stay hidden
   if (R.tk === 'none') {
     hideTool(R);
     hideTool(R, R.toolB);
-  } else if (R.tk !== 'rod' && R.tk !== 'fiddle') {
+  } else if (R.tk !== 'rod' && R.tk !== 'fiddle' && R.tk !== 'tape' && R.tk !== 'scissors') {
     hideTool(R, R.toolB);
   }
   // blink every few seconds
