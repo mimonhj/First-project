@@ -1,2 +1,104 @@
-/* Battle feedback styles (SPEC2 §2.5, §5.3, §5.4): pop words in #pops, tag icons and the like.
-   Empty until Stage 1 (1K) fills it. Loaded after style.css. */
+/* Battle feedback styles (SPEC2 §2.5, §5.3, §5.4). Loaded after style.css.
+   - #pops: the pop words over the 3D view (pops.js positions, scales and fades each one inline).
+   - .hm-tags: the stickers after the hitmark's HIT! / SUNK! text ("RAKE ×2", "CRIT!", ...). */
+
+/* ---------------------------------------------------------------------------------------------
+   Pop words. Light text, at least 24 px, with a 3 px ink outline (the stroke is drawn under the
+   fill, so a 6 px stroke shows 3 px outside the letters) and a cartoon drop shadow: large text that
+   reads on sky, sea, sails and fire alike (≥ 3:1 against anything, the ink against the fill ≥ 11:1).
+   --------------------------------------------------------------------------------------------- */
+.pops {
+  position: fixed;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  contain: strict;
+}
+.pop {
+  position: absolute;
+  left: 0;
+  top: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  transform-origin: 50% 100%;
+  will-change: transform, opacity;
+  white-space: nowrap;
+  line-height: 1;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  letter-spacing: 0.02em;
+  color: #ffffff;
+  -webkit-text-stroke: 6px var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 4px 0 var(--ink);
+  pointer-events: none;
+  --pop-size: clamp(26px, 4.2vmin, 36px);
+  font-size: var(--pop-size);
+}
+.pop-main { display: block; }
+.pop-sub {
+  display: block;
+  margin-top: 2px;
+  font-size: max(24px, 0.62em);
+  -webkit-text-stroke-width: 6px;
+}
+
+/* the summed damage of a volley on one ship: "17" */
+.pop-dmg { --pop-size: clamp(28px, 4.6vmin, 40px); }
+/* STERN RAKE ×2! / BOW RAKE ×1.5! */
+.pop-rake { --pop-size: clamp(26px, 3.9vmin, 34px); color: var(--gold); }
+/* CRIT! + the effect line, 1.3× a damage pop */
+.pop-crit { --pop-size: clamp(36px, 6vmin, 52px); color: #ffe14d; }
+.pop-crit .pop-sub { color: #ffffff; font-size: max(24px, 0.6em); }
+/* −3 CREW */
+.pop-crew { --pop-size: clamp(26px, 3.9vmin, 34px); color: #ffc4bc; }
+/* POINT BLANK!, SAILS SHREDDED!, CRUNCH! */
+.pop-info { --pop-size: clamp(24px, 3.2vmin, 28px); color: #ffffff; }
+/* CAPTURED! +145 */
+.pop-capture { --pop-size: clamp(38px, 7vmin, 62px); color: #b8f56c; text-shadow: 0 5px 0 var(--ink); }
+.pop-capture .pop-sub { color: var(--gold); font-size: max(28px, 0.7em); }
+/* +125 gold */
+.pop-gold { --pop-size: clamp(28px, 4.4vmin, 38px); color: var(--gold); }
+/* Driven back! −4 crew, −30 gold */
+.pop-bad { --pop-size: clamp(26px, 4.2vmin, 36px); color: #ff8f85; }
+
+/* ---------------------------------------------------------------------------------------------
+   Hitmark stickers: <div id="hitmark">HIT ×3<span class="hm-tags"><span class="hm-tag rake">RAKE ×2</span>
+   <span class="hm-tag crit">CRIT!</span></span></div>. Ink on a bright sticker, so each reads as text,
+   not as a colour.
+   --------------------------------------------------------------------------------------------- */
+.hm-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 6px;
+  margin-top: 6px;
+  justify-content: center;
+}
+.hitmark.left .hm-tags { justify-content: flex-start; }
+.hitmark.right .hm-tags { justify-content: flex-end; }
+.hm-tag {
+  display: inline-block;
+  padding: 4px 9px 2px;
+  font-size: max(15px, 0.34em);
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  -webkit-text-stroke: 0;
+  text-shadow: none;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 3px 0 var(--ink);
+  transform: rotate(-3deg);
+}
+.hm-tag:nth-child(2n) { transform: rotate(2deg); }
+.hm-tag.rake { background: var(--gold); }
+.hm-tag.crit { background: #ffe14d; }
+.hm-tag.blank { background: #ffffff; }
+.hm-tag.captured { background: #b8f56c; }
+
+@media (prefers-reduced-motion: reduce) {
+  .hm-tag, .hm-tag:nth-child(2n) { transform: none; }
+}

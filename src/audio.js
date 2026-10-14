@@ -4,7 +4,7 @@
 //
 //   const audio = createAudio();
 //   addEventListener('pointerdown', () => audio.unlock()); // sound may only start after a user gesture
-//   audio.setScene('europe');                               // crossfades music + ambience
+//   audio.setScene('europe');                               // crossfades music + ambience (SCENE_NAMES)
 //   const h = audio.play('bombWhistle', { distance: 12, pan: -0.3 });
 //   h.stop();                                               // every play() returns { stop(fade), set(opts) }
 //
@@ -24,7 +24,7 @@
 //          ambience beds + random events → ambience fade → ambience bus ───────────────────────────┤  → compressor
 //   shared reverb (convolver) ←── music / fanfare sends ────────────────────────────────────────────┘  → soft clipper
 //                                                                                                       → mute → out
-// Fanfares (levelClear / victory / defeat) duck the music while they play; stingers never stack.
+// Fanfares (levelClear / victory / defeat / capture) duck the music while they play; stingers never stack.
 //
 // Music is sequenced with a lookahead scheduler: a timer (and update()) tops up
 // the next LOOKAHEAD seconds, but every note time is computed from the
@@ -38,14 +38,20 @@ const TICK_MS = 50; // scheduler timer period (timing comes from the audio clock
 const MAX_DIST = 150; // world units: one-shots are silent beyond this
 const MAX_SFX = 40; // simultaneous one-shot voices
 // Simultaneous voices per sound (the oldest is not cut; new ones are skipped past the cap).
-const SFX_CAP = { cannon: 10, splash: 8, hit: 8, coin: 6, bombWhistle: 6, bombBoom: 4, sink: 4, reef: 2, sailUp: 2, sailDown: 2, click: 4 };
+const SFX_CAP = {
+  cannon: 10, splash: 8, hit: 8, coin: 6, bombWhistle: 6, bombBoom: 4, sink: 4, reef: 2, sailUp: 2, sailDown: 2, click: 4,
+  grapple: 3, heave: 3, clash: 6, cheer: 2, crit: 3, rake: 3, chain: 6, grape: 6, cut: 3, crunch: 3, thunder: 2, step: 4,
+  overboard: 4, ghost: 2,
+};
 // Stingers: one at a time (a new one replaces the old); the fanfares also duck the music while they play.
-const STINGER = { wave: 0, levelClear: 2.4, victory: 6.9, defeat: 3.6 };
+const STINGER = { wave: 0, levelClear: 2.4, victory: 6.9, defeat: 3.6, capture: 1.5 };
 const LEVEL = { sfx: 0.85, music: 0.5, amb: 0.75, verb: 0.9 };
 // Per-sound and per-scene trims, balanced with K-weighted loudness measurements of offline renders.
 const SFX_GAIN = {
   cannon: 1.8, splash: 1.4, hit: 2.1, sink: 1.4, coin: 1.3, bombWhistle: 0.4, bombBoom: 1.2, wave: 0.47,
   levelClear: 0.45, victory: 0.52, defeat: 0.42, click: 4, reef: 1.4, sailUp: 1.4, sailDown: 1.8,
+  grapple: 1.14, heave: 0.82, clash: 1.77, cheer: 0.52, capture: 0.5, crit: 1.52, rake: 1.34, chain: 1.06, grape: 2.5,
+  cut: 2.09, crunch: 1.43, thunder: 1.56, step: 1.95, overboard: 0.6, ghost: 0.3,
 };
 const SCENE_GAIN = {
   menu: { music: 0.95, amb: 1.3 },
@@ -53,13 +59,28 @@ const SCENE_GAIN = {
   europe: { music: 1.5, amb: 1 },
   bali: { music: 1.3, amb: 1.3 },
   volcano: { music: 0.6, amb: 0.75 },
+  doubloon: { music: 0.88, amb: 1.19 },
+  frost: { music: 1.32, amb: 1.37 },
+  maelstrom: { music: 0.99, amb: 0.62 },
+  town: { music: 0.95, amb: 1.4 }, // the title tune at the title's level, so carrying it over never jumps
 };
 
 export const SFX_NAMES = [
   'cannon', 'splash', 'hit', 'sink', 'coin', 'bombWhistle', 'bombBoom', 'wave',
   'levelClear', 'victory', 'defeat', 'click', 'reef', 'sailUp', 'sailDown',
+  // Boarders Away!: boarding, the new shot, crits and rakes, Act II hazards, the town.
+  'grapple', 'heave', 'clash', 'cheer', 'capture', 'crit', 'rake', 'chain', 'grape', 'cut', 'crunch', 'thunder', 'step',
+  'overboard', 'ghost',
 ];
-export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano'];
+export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano', 'doubloon', 'frost', 'maelstrom', 'town'];
+// Scenes that play another scene's music: ashore on Sparrow's Floating Island you hear the title-screen tune (its
+// recording too, when there is one) over the harbour. Going between two scenes that share their music carries it
+// on from where it is instead of starting it again.
+const MUSIC_OF = { town: 'menu' };
+const musicOf = (scene) => MUSIC_OF[scene] || scene;
+// The synthesised tune each scene plays, where it is another scene's (the shipyard's own tune is a recording).
+const TUNE_OF = { dock: 'menu', town: 'menu' };
+const tuneOf = (scene) => TUNE_OF[scene] || scene;
 
 // Recorded audio in assets/audio/ (generated with ElevenLabs; tools/audio/assets.json has the prompts and the cuts).
 // music: a seamless loop per scene. amb: a looping ambience bed per scene (replaces the synthesised one).
@@ -254,6 +275,8 @@ const parseChords = (s) => s.trim().split(/\s+/).map((c) => c.split('/'));
 const CHORD = {
   C: [48, 52, 55], Dm: [50, 53, 57], D: [50, 54, 57], Em: [52, 55, 59], F: [53, 57, 60],
   G: [55, 59, 62], Gm: [55, 58, 62], A: [57, 61, 64], Am: [57, 60, 64], Bb: [58, 62, 65], Eb: [51, 55, 58],
+  E: [52, 56, 59], Cm: [48, 51, 55], Fm: [53, 56, 60], Ab: [56, 60, 63], Bm: [59, 62, 66], B: [59, 63, 66],
+  Bdim: [59, 62, 65, 68],
 };
 
 // Move chord tones into [lo, hi].
@@ -335,6 +358,59 @@ const VOLCANO = {
   },
 };
 
+// Doubloon Bay: a fandango for the treasure fleet at dusk, in A minor with the Spanish G# (3/4, one step = an eighth
+// note; even bars lean into 6/8). Trumpets over strummed guitars, castanets and a cajon; the harbour bell tolls each
+// section in. A A' B A''.
+const DOUBLOON = {
+  bar: 6,
+  dur: 0.17,
+  scale: [9, 11, 0, 2, 4, 5, 7],
+  spanish: [9, 11, 0, 2, 4, 5, 8], // over E major the thirds use G# (E-C, D-B, C-A, B-G#: the Spanish cadence)
+  melody: `A4 C5 E5:2 D5 C5 | B4:2 D5 G5:2 F5 | A5:2 G5 F5 E5 D5 | E5:4 -:2 |
+           A4 C5 E5:2 D5 C5 | B4:2 D5 G5:2 B5 | A5:2 G5 F5 E5 D5 | F5 E5 D5 C5 B4 G#4 |
+           A4 C5 E5:2 D5 C5 | B4:2 D5 G5:2 F5 | A5:2 G5 F5 E5 D5 | E5:4 -:2 |
+           F5:2 E5 D5:2 F5 | E5:2 C5 A4:2 C5 | B4 C5 D5 C5 B4 G#4 | A4:4 -:2 |
+           C5 F5 A5:2 G5 F5 | G5:2 E5 C5:2 E5 | D5 G5 B5:2 A5 G5 | G5:3 E5:3 |
+           C5 F5 A5:2 G5 F5 | G5:2 E5 C6:2 B5 | A5 G5 F5 E5 D5 F5 | E5:2 D5 B4:2 G#4 |
+           A4 C5 E5:2 D5 C5 | B4:2 D5 G5:2 F5 | A5:2 G5 F5 E5 D5 | F5 E5 D5 C5 B4 G#4 |
+           F5:2 E5 D5:2 F5 | E5:2 C5 A4:2 C5 | B4 C5 D5 C5 B4 G#4 | A4:3 -:3`,
+  chords: `Am G F E Am G F E  Am G F E Dm Am E Am  F C G C F C Dm E  Am G F E Dm Am E Am`,
+};
+
+// Frostbite Straits: longships rowing out of the fog. E dorian over a bowed drone (4/4 at 108 bpm, eighth-note
+// steps): a hardanger-ish fiddle (a second fiddle a third below it from the middle on), a rowing drum, a choir
+// breathing the chords, celesta frost and lur-horn calls in the middle. A B A'.
+const FROST = {
+  bar: 8,
+  dur: 60 / 108 / 2,
+  scale: [4, 6, 7, 9, 11, 1, 2],
+  melody: `E5:2 B4 E5 F#5:2 G5 F#5 | E5:2 D5 B4 A4:2 B4:2 | D5:2 A4 D5 F#5:2 E5 D5 | E5:4 B4:2 -:2 |
+           E5:2 B4 E5 F#5:2 G5 A5 | B5:2 A5 G5 F#5:2 E5 C#5 | D5:2 F#5 A5 G5 F#5 E5 D5 | E5:6 -:2 |
+           G5:2 E5 G5 C6:2 B5 A5 | F#5:2 D5 F#5 A5:4 | G5 F#5 E5 F#5 G5:2 B5:2 | B5:4 A5:2 G5:2 |
+           E5:2 G5 E5 C5:2 E5:2 | D5:2 F#5 D5 A4:2 D5:2 | F#5:2 D5 B4 F#5:2 A5 F#5 | D#5:4 F#5:2 B4:2 |
+           E5:2 B4 E5 F#5:2 G5 F#5 | E5:2 D5 B4 A4:2 B4:2 | D5:2 A4 D5 F#5:2 E5 D5 | E5:4 B4:2 -:2 |
+           E5:2 B4 E5 F#5:2 G5 A5 | B5:2 A5 G5 F#5:2 E5 C#5 | D5:2 F#5 A5 G5 F#5 E5 D5 | E5:6 -:2`,
+  chords: `Em Em D Em Em A D Em  C D Em Em C D Bm B  Em Em D Em Em A D Em`,
+};
+
+// The Maelstrom: a danse macabre for the Phantom Galleon in C minor (3/4 at 150 bpm, eighth-note steps). A
+// theremin ghost over a pizzicato waltz and a wheezing organ, xylophone bones in the whirl, timpani and a tolling
+// bell. A A' B A''.
+const MAELSTROM = {
+  bar: 6,
+  dur: 60 / 150 / 2,
+  scale: [0, 2, 3, 5, 7, 8, 10],
+  melody: `C5:2 Eb5:2 G5:2 | Ab5:3 G5 F5 Eb5 | D5:2 F5:2 Ab5:2 | G5:6 |
+           C5:2 Eb5:2 G5:2 | C6:3 Bb5 Ab5 G5 | F5:2 Eb5 D5 B4:2 | C5:4 -:2 |
+           C5:2 Eb5:2 G5:2 | Ab5:3 G5 F5 Eb5 | F5:2 Ab5:2 C6:2 | Db6:4 C6:2 |
+           C6:2 Ab5:2 Eb5:2 | D5:2 F5:2 Ab5:2 | G5 F5 Eb5 D5 C5 B4 | C5:4 -:2 |
+           Eb5 G5 Bb5 G5 Eb5 G5 | D5 F5 Bb5 F5 D5 F5 | C5 Eb5 G5 Eb5 C5 Eb5 | B4 D5 G5 D5 B4 D5 |
+           C5 Eb5 Ab5 Eb5 C5 Eb5 | C5 F5 Ab5 F5 C5 F5 | D5 G5 B5 G5 D5 G5 | D5:2 B4:2 G4:2 |
+           C5:2 Eb5:2 G5:2 | Ab5:3 G5 F5 Eb5 | D5:2 F5:2 Ab5:2 | G5:6 |
+           C5:2 Eb5:2 G5:2 | C6:3 Bb5 Ab5 G5 | F5:2 Eb5 D5 B4:2 | C5:3 -:3`,
+  chords: `Cm Cm G G Cm Fm G Cm  Cm Cm Fm Fm Ab Bdim G Cm  Eb Bb Cm G Ab Fm G G  Cm Cm G G Cm Fm G Cm`,
+};
+
 // ---------------------------------------------------------------------------
 // Shared buffers and curves (built once per AudioContext)
 // ---------------------------------------------------------------------------
@@ -374,6 +450,7 @@ function buildResources(ctx) {
     // Plucked strings (Karplus-Strong), one per octave; notes in between retune by playback rate.
     ks: [98, 196, 392, 784].map((f, i) => ksString(ctx, f, [1.6, 1.3, 1.0, 0.8][i])),
     reed: reedWave(ctx),
+    organ: organWave(ctx),
     ir: reverbImpulse(ctx, 1.5),
     curve: softClipCurve(),
     drive: driveCurve(3),
@@ -440,6 +517,14 @@ function reedWave(ctx) {
   const re = new Float32Array(n);
   const im = new Float32Array(n);
   for (let k = 1; k < n; k++) im[k] = (Math.sin(Math.PI * k * 0.28) / k) * (1 + 0.8 * Math.exp(-((k - 4) ** 2) / 4));
+  return ctx.createPeriodicWave(re, im);
+}
+
+// A pipe organ's flue stops (8', 4', 2 2/3', 2', 1 3/5', 1 1/3', 1'): the Maelstrom's wheezing chapel organ.
+function organWave(ctx) {
+  const re = new Float32Array(9);
+  const im = new Float32Array(9);
+  [[1, 1], [2, 0.55], [3, 0.3], [4, 0.28], [5, 0.08], [6, 0.12], [8, 0.1]].forEach(([k, a]) => (im[k] = a));
   return ctx.createPeriodicWave(re, im);
 }
 
@@ -613,7 +698,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   }
   function osc(v, type, f, t0, t1) {
     const o = own(v, ctx.createOscillator());
-    if (type === 'reed') o.setPeriodicWave(R.reed);
+    if (type === 'reed' || type === 'organ') o.setPeriodicWave(R[type]);
     else o.type = type;
     o.frequency.value = f;
     o.frequency.setValueAtTime(f, t0); // so later ramps start at t0, not at "now"
@@ -927,6 +1012,140 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     lp.frequency.exponentialRampToValueAtTime(f * 2.2, t + 0.16);
     o.connect(lp);
     lp.connect(g);
+    g.connect(out);
+  }
+
+  // Chapel organ: flue pipes that speak a little slowly, with a faint wind wobble.
+  function organ(v, out, t, notes, dur, vel) {
+    const g = gain(v, 0);
+    const end = sus(g.gain, t, vel, 0.06, t + dur, 0.2);
+    const lp = filt(v, 'lowpass', 2600, -3);
+    for (const m of notes) {
+      const o = osc(v, 'organ', mtof(m), t, end);
+      o.detune.value = (rng() - 0.5) * 6;
+      o.connect(lp);
+    }
+    const wob = gain(v, 1);
+    lfo(v, 5.2, 0.06, wob.gain, t, end);
+    lp.connect(wob);
+    wob.connect(g);
+    g.connect(out);
+  }
+
+  // Theremin: a sine with a breath of edge, sliding in from the previous note, vibrato swelling as it holds.
+  function theremin(v, out, t, f, dur, vel, from = 0) {
+    const g = gain(v, 0);
+    const end = sus(g.gain, t, vel, 0.07, t + dur, 0.22);
+    const voices = [osc(v, 'sine', f, t, end), osc(v, 'triangle', f, t, end)];
+    const edge = gain(v, 0.22);
+    voices[1].connect(edge);
+    const vib = osc(v, 'sine', 5.8, t, end);
+    const depth = gain(v, 0);
+    depth.gain.setValueAtTime(f * 0.004, t);
+    depth.gain.linearRampToValueAtTime(f * 0.016, t + clamp(dur, 0.2, 0.9));
+    vib.connect(depth);
+    for (const o of voices) {
+      if (from) {
+        o.frequency.setValueAtTime(from, t);
+        o.frequency.exponentialRampToValueAtTime(f, t + Math.min(0.14, dur * 0.4));
+      }
+      depth.connect(o.frequency);
+    }
+    voices[0].connect(g);
+    edge.connect(g);
+    g.connect(out);
+  }
+
+  // A choir breathing "ooh" (or "aah"): pairs of buzzing voices a few cents apart through the vowel's two formants.
+  function choir(v, out, t, notes, dur, vel, vowel = 'oo') {
+    const [f1, f2] = vowel === 'aa' ? [720, 1150] : [380, 820];
+    const g = gain(v, 0);
+    const end = sus(g.gain, t, vel, Math.min(0.35, dur * 0.3), t + dur, 0.45);
+    const b1 = filt(v, 'bandpass', f1, 2.5);
+    const b2 = filt(v, 'bandpass', f2, 4);
+    const g2 = gain(v, 0.45);
+    for (const m of notes) {
+      for (const dt of [-9, 9]) {
+        const o = osc(v, 'sawtooth', mtof(m), t, end);
+        o.detune.value = dt;
+        o.connect(b1);
+        o.connect(b2);
+      }
+    }
+    b2.connect(g2);
+    b1.connect(g);
+    g2.connect(g);
+    g.connect(out);
+  }
+
+  // A lur or a ram's horn: low saws whose filter opens slowly, with a little wavering pitch.
+  function horn(v, out, t, f, dur, vel) {
+    const g = gain(v, 0);
+    const end = sus(g.gain, t, vel, 0.16, t + dur, 0.35);
+    const lp = filt(v, 'lowpass', f * 1.2, 3);
+    lp.frequency.setValueAtTime(f * 1.2, t);
+    lp.frequency.exponentialRampToValueAtTime(f * 4.5, t + 0.25);
+    lp.frequency.setTargetAtTime(f * 2.4, t + 0.3, 0.4);
+    const wob = osc(v, 'sine', 4.3, t, end);
+    const depth = gain(v, f * 0.004);
+    wob.connect(depth);
+    for (const dt of [-5, 5]) {
+      const o = osc(v, 'sawtooth', f, t, end);
+      o.detune.value = dt;
+      o.frequency.setValueAtTime(f * 0.96, t);
+      o.frequency.exponentialRampToValueAtTime(f, t + 0.12);
+      depth.connect(o.frequency);
+      o.connect(lp);
+    }
+    lp.connect(g);
+    g.connect(out);
+  }
+
+  // Xylophone: a hard mallet on a wooden bar (the skeletons' bones in the danse macabre).
+  function xylo(v, out, t, f, vel) {
+    bell(v, out, t, f, vel, 0.32, 3, 0.55);
+    hiss(v, out, t, vel * 0.5, 0.012, 'bandpass', f * 4, 2);
+  }
+
+  // Castanets: two shells clacking a hair apart.
+  function castanet(v, out, t, vel) {
+    hiss(v, out, t, vel, 0.022, 'bandpass', 2900, 5);
+    hiss(v, out, t + 0.011, vel * 0.7, 0.018, 'bandpass', 3600, 5);
+  }
+
+  // A cartoon voice for the crew: a buzzing glottal tone through two formant band-passes (the vowel), with a
+  // breathy "h" at the start. pitch / vowel / amp are breakpoints ([time, Hz], [time, F1, F2], [time, level]) that
+  // it glides between; amp starts and ends at zero.
+  function vox(v, out, pitch, vowel, amp, vib = 0, breath = 0) {
+    const t = amp[0][0];
+    const end = amp[amp.length - 1][0] + 0.01;
+    const o = osc(v, 'sawtooth', pitch[0][1], t, end);
+    for (let k = 1; k < pitch.length; k++) o.frequency.exponentialRampToValueAtTime(pitch[k][1], pitch[k][0]);
+    if (vib) lfo(v, 5 + Math.random() * 1.5, pitch[0][1] * vib, o.frequency, t, end);
+    const b1 = filt(v, 'bandpass', vowel[0][1], 6);
+    const b2 = filt(v, 'bandpass', vowel[0][2], 9);
+    vowel.forEach(([s, a, b], k) => {
+      for (const [f, x] of [[b1.frequency, a], [b2.frequency, b]]) {
+        if (k) f.exponentialRampToValueAtTime(x, s);
+        else f.setValueAtTime(x, s);
+      }
+    });
+    const g2 = gain(v, 0.7);
+    const g = gain(v, 0);
+    g.gain.setValueAtTime(0, t);
+    for (const [s, a] of amp) g.gain.linearRampToValueAtTime(a, s);
+    o.connect(b1);
+    o.connect(b2);
+    if (breath) {
+      const n = noise(v, t, t + 0.12);
+      const ng = gain(v, 0);
+      perc(ng.gain, t, breath, 0.01, 0.08);
+      n.connect(ng);
+      ng.connect(b2);
+    }
+    b2.connect(g2);
+    b1.connect(g);
+    g2.connect(g);
     g.connect(out);
   }
 
@@ -1331,6 +1550,459 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       // ...and the loose sail luffing.
       clothFlap(v, t + 0.22, p, 0.45, 8, 0.8);
     },
+
+    // ---- Boarding, the new shot, crits and rakes, Act II hazards, the town.
+
+    grapple(v, t, p) {
+      const q = p * R1();
+      // Three hooks whirled and thrown a beat apart: a rope swish each, then the iron biting into her rail
+      // (a wooden thunk and a short clank).
+      for (let k = 0; k < 3; k++) {
+        const s = t + k * 0.12 + Math.random() * 0.03;
+        const n = noise(v, s, s + 0.24);
+        const bp = filt(v, 'bandpass', 600 * q, 2.5);
+        bp.frequency.setValueAtTime(600 * q, s);
+        bp.frequency.exponentialRampToValueAtTime(2200 * q, s + 0.09);
+        bp.frequency.exponentialRampToValueAtTime(800 * q, s + 0.22);
+        const g = gain(v, 0);
+        g.gain.setValueAtTime(0, s);
+        g.gain.linearRampToValueAtTime(0.45, s + 0.09);
+        g.gain.linearRampToValueAtTime(0, s + 0.22);
+        n.connect(bp);
+        bp.connect(g);
+        g.connect(v.in);
+        const hit = s + 0.34 + Math.random() * 0.03;
+        const f = (1500 + Math.random() * 500) * q;
+        hiss(v, v.in, hit, 1.6, 0.1, 'bandpass', 480 * q, 4);
+        hiss(v, v.in, hit, 0.6, 0.03, 'bandpass', 2400 * q, 2);
+        drum(v, v.in, hit, 0.25, 120 * q, 0.08, 1.5);
+        bell(v, v.in, hit, f, 0.12, 0.25, 2.76, 0.9);
+        bell(v, v.in, hit + 0.004, f * 1.47, 0.06, 0.16, 1.9, 0.5);
+      }
+      // The lines paying out over the gunwale.
+      const z = t + 0.12;
+      const n = noise(v, z, z + 0.32);
+      const bp = filt(v, 'bandpass', 3200 * q, 4);
+      const chop = gain(v, 0.5);
+      lfo(v, 85, 0.5, chop.gain, z, z + 0.32, 'sawtooth');
+      const g = gain(v, 0);
+      sus(g.gain, z, 0.25, 0.03, z + 0.18, 0.1);
+      n.connect(bp);
+      bp.connect(chop);
+      chop.connect(g);
+      g.connect(v.in);
+    },
+
+    heave(v, t, p) {
+      const q = p * R1();
+      // "HUP!" from three throats, the rope groaning taut and the block's pawl clicking round.
+      for (const [f0, dt, pan] of [[118, 0, -0.3], [146, 0.015, 0.3], [176, 0.03, 0]]) {
+        const s = t + dt + Math.random() * 0.02;
+        const f = f0 * q * (0.95 + Math.random() * 0.1);
+        const e = s + 0.22;
+        const pn = panner(v, pan);
+        pn.connect(v.in);
+        vox(v, pn, [[s, f * 1.1], [s + 0.06, f * 1.18], [e, f * 0.85]], [[s, 520, 1250], [e, 620, 1150]],
+          [[s, 0], [s + 0.02, 0.9], [s + 0.13, 0.7], [e, 0]], 0, 0.5);
+      }
+      const c = osc(v, 'sawtooth', 95 * q, t + 0.02, t + 0.44);
+      c.frequency.linearRampToValueAtTime(150 * q, t + 0.36);
+      const cb = filt(v, 'bandpass', 900 * q, 7);
+      const cg = gain(v, 0);
+      sus(cg.gain, t + 0.02, 0.35, 0.05, t + 0.28, 0.1);
+      c.connect(cb);
+      cb.connect(cg);
+      cg.connect(v.in);
+      for (let k = 0; k < 3; k++) hiss(v, v.in, t + 0.06 + k * 0.07, 0.25, 0.015, 'bandpass', 2600 * q, 4);
+    },
+
+    clash(v, t, p) {
+      const q = p * R1();
+      // Steel on steel: a bright snap and the dull thump of the blow, then the blades ringing (inharmonic partials,
+      // each doubled a few Hz apart so it rings rough and short), sometimes a scrape as they slide apart.
+      hiss(v, v.in, t, 0.8, 0.03, 'highpass', 3000, -3);
+      hiss(v, v.in, t, 0.6, 0.12, 'bandpass', 5200 * q, 1.5);
+      hiss(v, v.in, t, 0.4, 0.08, 'bandpass', 400 * q, 2);
+      const f = (950 + Math.random() * 400) * q;
+      for (const [r, a, d] of [[1, 0.16, 0.45], [1.59, 0.09, 0.32], [2.76, 0.12, 0.3], [3.93, 0.06, 0.22], [5.4, 0.07, 0.16], [7.1, 0.03, 0.1]]) {
+        const g = gain(v, 0);
+        const end = perc(g.gain, t, a, 0.001, d * (0.85 + Math.random() * 0.3));
+        const fr = f * r * (0.99 + Math.random() * 0.02);
+        for (const dt of [-4, 4]) osc(v, 'sine', fr + dt * r, t, end).connect(g);
+        g.connect(v.in);
+      }
+      if (Math.random() < 0.6) {
+        const s = t + 0.03;
+        const n = noise(v, s, s + 0.2);
+        const bp = filt(v, 'bandpass', 5000 * q, 3);
+        bp.frequency.setValueAtTime(5000 * q, s);
+        bp.frequency.exponentialRampToValueAtTime(2600 * q, s + 0.16);
+        const g = gain(v, 0);
+        sus(g.gain, s, 0.18, 0.02, s + 0.08, 0.08);
+        n.connect(bp);
+        bp.connect(g);
+        g.connect(v.in);
+      }
+    },
+
+    cheer(v, t, p) {
+      const q = p * R1();
+      // "Hoo-RAY!" from seven throats, each its own pitch, timing and place on the deck...
+      for (let k = 0; k < 7; k++) {
+        const s = t + Math.random() * 0.09;
+        const f = (100 + Math.random() * 130) * q;
+        const turn = s + 0.15 + Math.random() * 0.07;
+        const end = turn + 0.55 + Math.random() * 0.4;
+        const a = 0.5 + Math.random() * 0.3;
+        const pn = panner(v, (k / 6) * 1.2 - 0.6);
+        pn.connect(v.in);
+        vox(v, pn,
+          [[s, f * 0.9], [turn, f], [turn + 0.12, f * 1.5], [end, f * 1.25]],
+          [[s, 330, 880], [turn, 360, 950], [turn + 0.09, 700, 1650], [end, 560, 1900]],
+          [[s, 0], [s + 0.05, a * 0.55], [turn, a * 0.45], [turn + 0.05, a], [end - 0.25, a * 0.8], [end, 0]],
+          0.025, 0.6);
+      }
+      // ...then a few whoops over the top...
+      for (let k = 0; k < 3; k++) {
+        const s = t + 0.55 + k * 0.17 + Math.random() * 0.1;
+        const f = (220 + Math.random() * 110) * q;
+        const end = s + 0.3 + Math.random() * 0.15;
+        const pn = panner(v, Math.random() * 1.4 - 0.7);
+        pn.connect(v.in);
+        vox(v, pn, [[s, f], [s + 0.1, f * 1.6], [end, f * 1.3]], [[s, 400, 1900], [end, 750, 1300]],
+          [[s, 0], [s + 0.03, 0.45], [end - 0.08, 0.3], [end, 0]], 0.03, 0);
+      }
+      // ...and the crowd's breath under it all.
+      const n = noise(v, t, t + 1.5);
+      const bp = filt(v, 'bandpass', 1300, 0.8);
+      const g = gain(v, 0);
+      sus(g.gain, t + 0.15, 0.06, 0.1, t + 0.8, 0.5);
+      n.connect(bp);
+      bp.connect(g);
+      g.connect(v.in);
+      roomSend(v, 0.25);
+    },
+
+    capture(v, t, p) {
+      // A prize! A bugle call up the C major triad, a big "ta-DAAA" chord, and the prize money showering down.
+      const b = 0.11;
+      brassLine(v, v.in, [
+        [t, mtof(67) * p, 0.07, 0.03], [t + b, mtof(72) * p, 0.07, 0.03], [t + 2 * b, mtof(76) * p, 0.07, 0.03],
+        [t + 3 * b, mtof(79) * p, 0.14, 0.03], [t + 5 * b, mtof(76) * p, 0.07, 0.03], [t + 6 * b, mtof(79) * p, 0.75, 0.25],
+      ], 0.22, 1.15);
+      const tc = t + 6 * b;
+      brassChord(v, v.in, tc, [48, 55, 60, 64].map((m) => mtof(m) * p), 0.75, 0.22, 0.9);
+      drum(v, v.in, t + 3 * b, 0.25, 70, 0.2);
+      drum(v, v.in, tc, 0.5, 52, 0.45);
+      hiss(v, v.in, tc, 0.14, 1.2, 'highpass', 5500, -3);
+      [96, 93, 91, 88, 86, 84, 81, 79, 84, 88, 91, 96].forEach((m, i) => {
+        const s = tc + 0.05 + i * 0.07 + Math.random() * 0.03;
+        bell(v, v.in, s, mtof(m) * p * (0.995 + Math.random() * 0.01), 0.05 * (1 - i * 0.05), 0.3, 3, 0.25);
+      });
+      v.pn.connect(sfxVerb);
+    },
+
+    crit(v, t, p) {
+      const q = p * R1();
+      // KRANG! A heavy blow (a driven thump and a cracking snap)...
+      boom(v, v.in, t, 0.2, 90 * q, 0.18, 2.2);
+      hiss(v, v.in, t, 1.2, 0.07, 'bandpass', 1500 * q, 1.2);
+      hiss(v, v.in, t, 0.7, 0.04, 'highpass', 4000, -3);
+      bell(v, v.in, t, 820 * q, 0.12, 0.35, 2.76, 2.2);
+      // ...and a bright "shing!" sweeping up into a burst of star sparkles.
+      const o = osc(v, 'sine', 1400 * q, t + 0.02, t + 0.4);
+      o.frequency.exponentialRampToValueAtTime(4200 * q, t + 0.16);
+      const og = gain(v, 0);
+      perc(og.gain, t + 0.02, 0.22, 0.01, 0.3);
+      o.connect(og);
+      og.connect(v.in);
+      hiss(v, v.in, t + 0.02, 0.25, 0.25, 'bandpass', 6500, 2);
+      bell(v, v.in, t + 0.05, 2637 * q, 0.16, 0.7, 1.5, 1.6);
+      [3136, 3951, 4699].forEach((f, i) => bell(v, v.in, t + 0.12 + i * 0.06, f * q, 0.09, 0.3, 3, 0.3));
+      roomSend(v, 0.3);
+    },
+
+    rake(v, t, p) {
+      const q = p * R1();
+      // A broadside raking her from end to end: a deep whump, six cracks running along the hull (and across the
+      // stereo field), and a hail of splinters.
+      boom(v, v.in, t, 0.4, 55 * q, 0.45, 3);
+      for (let k = 0; k < 6; k++) {
+        const s = t + 0.02 + k * 0.055 + Math.random() * 0.02;
+        const pn = panner(v, -0.45 + k * 0.18);
+        pn.connect(v.in);
+        const r = q * (1.08 - k * 0.04);
+        hiss(v, pn, s, 0.75, 0.05, 'bandpass', 2100 * r, 0.9);
+        hiss(v, pn, s, 0.9, 0.16, 'bandpass', 430 * r, 5);
+        hiss(v, pn, s, 0.6, 0.1, 'bandpass', 880 * r, 4);
+      }
+      const n = noise(v, t + 0.05, t + 0.75);
+      const sp = filt(v, 'bandpass', 3600, 1.3);
+      const g = gain(v, 0);
+      for (let tk = t + 0.06; tk < t + 0.65; tk += 0.024 + Math.random() * 0.04) {
+        const a = 0.15 + Math.random() * 0.35;
+        g.gain.setValueAtTime(0, tk);
+        g.gain.linearRampToValueAtTime(a, tk + 0.002);
+        g.gain.exponentialRampToValueAtTime(a * 1e-3, tk + 0.018);
+        g.gain.linearRampToValueAtTime(0, tk + 0.022);
+      }
+      n.connect(sp);
+      sp.connect(g);
+      g.connect(v.in);
+      roomSend(v, 0.3);
+    },
+
+    chain(v, t, p) {
+      const q = p * R1();
+      const end = t + 0.85;
+      // Two balls on a chain whirling end over end: a chopped "whup-whup" of air that slows and drops in pitch as
+      // it goes by, and a link or two rattling.
+      const n = noise(v, t, end);
+      const bp = filt(v, 'bandpass', 1300 * q, 2.2);
+      bp.frequency.setValueAtTime(1300 * q, t);
+      bp.frequency.exponentialRampToValueAtTime(800 * q, end);
+      const tone = osc(v, 'sine', 640 * q, t, end);
+      tone.frequency.exponentialRampToValueAtTime(470 * q, end);
+      const tg = gain(v, 0.08);
+      const chop = gain(v, 0.5);
+      const body = noise(v, t, end);
+      const blp = filt(v, 'lowpass', 380 * q, 2);
+      body.connect(blp);
+      blp.connect(chop);
+      const spin = lfo(v, 24, 0.5, chop.gain, t, end, 'triangle');
+      spin.frequency.linearRampToValueAtTime(15, end);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.7, t + 0.15);
+      g.gain.setValueAtTime(0.7, t + 0.5);
+      g.gain.linearRampToValueAtTime(0, end);
+      n.connect(bp);
+      bp.connect(chop);
+      tone.connect(tg);
+      tg.connect(chop);
+      chop.connect(g);
+      g.connect(v.in);
+      for (let k = 0; k < 7; k++) bell(v, v.in, t + 0.05 + Math.random() * 0.65, (2200 + Math.random() * 1600) * q, 0.06, 0.07, 2.4, 1.1);
+    },
+
+    grape(v, t, p) {
+      const q = p * R1();
+      // A bag of musket balls let fly: a blunt "fwump", pellets zipping past, then a hail of them peppering wood.
+      hiss(v, v.in, t, 1.4, 0.16, 'lowpass', 900 * q, 0);
+      hiss(v, v.in, t, 0.5, 0.05, 'bandpass', 2000 * q, 1);
+      boom(v, v.in, t, 0.3, 80 * q, 0.16, 2);
+      for (let k = 0; k < 3; k++) {
+        const s = t + 0.03 + Math.random() * 0.12;
+        const f = (2600 + Math.random() * 1400) * q;
+        const o = osc(v, 'sine', f, s, s + 0.1);
+        o.frequency.exponentialRampToValueAtTime(f * 0.6, s + 0.09);
+        const g = gain(v, 0);
+        perc(g.gain, s, 0.04, 0.01, 0.08);
+        o.connect(g);
+        g.connect(v.in);
+      }
+      const n = noise(v, t + 0.08, t + 0.65);
+      const bp = filt(v, 'bandpass', 1800, 3);
+      const g = gain(v, 0);
+      for (let k = 0, tk = t + 0.1; k < 16; k++, tk += 0.029 + Math.random() * Math.random() * 0.02) {
+        const a = (0.45 + Math.random() * 0.4) * (1 - k * 0.04);
+        bp.frequency.setValueAtTime((900 + Math.random() * 2400) * q, tk);
+        g.gain.setValueAtTime(0, tk);
+        g.gain.linearRampToValueAtTime(a, tk + 0.002);
+        g.gain.exponentialRampToValueAtTime(a * 1e-3, tk + 0.025);
+        g.gain.linearRampToValueAtTime(0, tk + 0.028);
+      }
+      n.connect(bp);
+      bp.connect(g);
+      g.connect(v.in);
+    },
+
+    cut(v, t, p) {
+      const q = p * R1();
+      // An axe bites through a taut line: THOCK, the rope parts with a twang and a snap, and whips away.
+      hiss(v, v.in, t, 1.8, 0.09, 'bandpass', 620 * q, 4);
+      hiss(v, v.in, t, 0.9, 0.05, 'bandpass', 1500 * q, 2);
+      hiss(v, v.in, t, 0.5, 0.02, 'highpass', 3000, -3);
+      boom(v, v.in, t, 0.22, 110 * q, 0.12, 1.6);
+      const s = t + 0.035;
+      const o = osc(v, 'sawtooth', 240 * q, s, s + 0.3);
+      o.frequency.exponentialRampToValueAtTime(85 * q, s + 0.22);
+      const bp = filt(v, 'bandpass', 1300 * q, 3);
+      const og = gain(v, 0);
+      perc(og.gain, s, 0.5, 0.003, 0.22);
+      o.connect(bp);
+      bp.connect(og);
+      og.connect(v.in);
+      hiss(v, v.in, s, 0.45, 0.035, 'highpass', 2200, -3);
+      const w = s + 0.05;
+      const n = noise(v, w, w + 0.32);
+      const wb = filt(v, 'bandpass', 2600 * q, 2);
+      wb.frequency.setValueAtTime(2600 * q, w);
+      wb.frequency.exponentialRampToValueAtTime(600 * q, w + 0.28);
+      const wg = gain(v, 0);
+      sus(wg.gain, w, 0.3, 0.04, w + 0.12, 0.12);
+      n.connect(wb);
+      wb.connect(wg);
+      wg.connect(v.in);
+    },
+
+    crunch(v, t, p) {
+      const q = p * R1();
+      // The hull rides up onto an ice floe: a thud, cracks running through the ice, a grinding scrape and shards
+      // tinkling down.
+      boom(v, v.in, t, 0.35, 62 * q, 0.35, 2.4);
+      hiss(v, v.in, t, 0.7, 0.18, 'lowpass', 300 * q, 0);
+      for (const [dt, a] of [[0, 0.8], [0.07, 0.5], [0.16, 0.6], [0.29, 0.35]]) {
+        hiss(v, v.in, t + dt + Math.random() * 0.02, a, 0.035, 'highpass', 2400 * q, -3);
+        hiss(v, v.in, t + dt, a * 0.8, 0.07, 'bandpass', 1100 * q, 3);
+      }
+      const c = sample(v, R.crackle, t + 0.02, t + 0.6, 1.4 * q, Math.random() * 2);
+      const cb = filt(v, 'bandpass', 3200, 0.8);
+      const cg = gain(v, 0);
+      sus(cg.gain, t + 0.02, 0.9, 0.01, t + 0.25, 0.3);
+      c.connect(cb);
+      cb.connect(cg);
+      cg.connect(v.in);
+      const end = t + 0.75;
+      const n = noise(v, t + 0.05, end);
+      const chop = gain(v, 0.5);
+      lfo(v, 31, 0.5, chop.gain, t + 0.05, end, 'sawtooth');
+      const gb = filt(v, 'bandpass', 750 * q, 1.6);
+      const gg = gain(v, 0);
+      sus(gg.gain, t + 0.05, 0.35, 0.05, t + 0.35, 0.3);
+      n.connect(chop);
+      chop.connect(gb);
+      gb.connect(gg);
+      gg.connect(v.in);
+      for (let k = 0; k < 5; k++) bell(v, v.in, t + 0.2 + Math.random() * 0.45, (3000 + Math.random() * 3500) * q, 0.025, 0.12, 2.9, 0.6);
+    },
+
+    thunder(v, t, p) {
+      const q = p * R1();
+      // Lightning: the crack of the bolt (a tearing ripple of snaps), a deep boom, then the roll rumbling away in
+      // uneven waves.
+      hiss(v, v.in, t, 1.4, 0.18, 'highpass', 1500, -3);
+      hiss(v, v.in, t, 1.2, 0.3, 'bandpass', 900 * q, 0.8);
+      const c = sample(v, R.crackle, t, t + 0.55, 1.6 * q, Math.random() * 2);
+      const cb = filt(v, 'highpass', 1000, -3);
+      const cg = gain(v, 0);
+      sus(cg.gain, t, 2, 0.005, t + 0.15, 0.35);
+      c.connect(cb);
+      cb.connect(cg);
+      cg.connect(v.in);
+      boom(v, v.in, t + 0.02, 0.32, 48 * q, 1.1, 2.4);
+      hiss(v, v.in, t + 0.02, 1.4, 0.7, 'bandpass', 220 * q, 1);
+      const end = t + 4.2;
+      const n = noise(v, t + 0.05, end);
+      const lp = filt(v, 'lowpass', 1200, 0);
+      lp.frequency.setValueAtTime(1200 * q, t + 0.05);
+      lp.frequency.exponentialRampToValueAtTime(450 * q, t + 0.9);
+      lp.frequency.exponentialRampToValueAtTime(140 * q, end - 0.2);
+      const g = gain(v, 0);
+      let tk = t + 0.05;
+      let a = 1.4;
+      g.gain.setValueAtTime(0, tk);
+      g.gain.linearRampToValueAtTime(a, tk + 0.06);
+      while (tk < end - 0.9) {
+        const d = 0.35 + Math.random() * 0.55;
+        g.gain.linearRampToValueAtTime(a * (0.15 + Math.random() * 0.2), tk + d * 0.55);
+        a *= 0.65 + Math.random() * 0.25;
+        g.gain.linearRampToValueAtTime(a, tk + d);
+        tk += d;
+      }
+      g.gain.linearRampToValueAtTime(0, end);
+      n.connect(lp);
+      lp.connect(g);
+      g.connect(v.in);
+      roomSend(v, 0.6);
+    },
+
+    step(v, t, p) {
+      const q = p * R1();
+      // A boot on a boardwalk plank: a soft heel thump, the wood's "tok" and a scuff; now and then the plank creaks.
+      drum(v, v.in, t, 0.3, 85 * q, 0.07, 1.4);
+      hiss(v, v.in, t, 0.7, 0.06, 'bandpass', 620 * q, 3);
+      hiss(v, v.in, t + 0.004, 0.35, 0.04, 'bandpass', 1350 * q, 4);
+      hiss(v, v.in, t + 0.012, 0.08, 0.03, 'highpass', 3000, -3);
+      if (Math.random() < 0.15) {
+        const o = osc(v, 'sawtooth', 160 * q, t + 0.03, t + 0.2);
+        o.frequency.linearRampToValueAtTime(210 * q, t + 0.15);
+        const bp = filt(v, 'bandpass', 1100 * q, 8);
+        const g = gain(v, 0);
+        sus(g.gain, t + 0.03, 0.12, 0.03, t + 0.12, 0.05);
+        o.connect(bp);
+        bp.connect(g);
+        g.connect(v.in);
+      }
+    },
+
+    overboard(v, t, p) {
+      const q = p * R1();
+      // "Waaaah!" A sailor goes over the rail yelling all the way down, then a body-sized splash.
+      const f = (190 + Math.random() * 60) * q;
+      const fall = 0.55;
+      vox(v, v.in, [[t, f * 1.5], [t + 0.08, f * 1.7], [t + fall, f * 0.85]], [[t, 650, 1100], [t + fall, 800, 1250]],
+        [[t, 0], [t + 0.04, 0.9], [t + fall - 0.08, 0.7], [t + fall, 0]], 0.04, 0.3);
+      const s = t + fall + 0.03;
+      const o = osc(v, 'sine', 380 * q, s, s + 0.25);
+      o.frequency.exponentialRampToValueAtTime(95 * q, s + 0.12);
+      const og = gain(v, 0);
+      perc(og.gain, s, 0.6, 0.003, 0.18);
+      o.connect(og);
+      og.connect(v.in);
+      hiss(v, v.in, s, 0.55, 0.4, 'lowpass', 420 * q, 0);
+      const n = noise(v, s, s + 1.0);
+      const bp = filt(v, 'bandpass', 2200 * q, 0.9);
+      bp.frequency.setValueAtTime(2200 * q, s);
+      bp.frequency.exponentialRampToValueAtTime(500 * q, s + 0.75);
+      const ng = gain(v, 0);
+      perc(ng.gain, s, 0.65, 0.015, 0.85);
+      n.connect(bp);
+      bp.connect(ng);
+      ng.connect(v.in);
+    },
+
+    ghost(v, t, p) {
+      const q = p * R1();
+      const end = t + 2.6;
+      // "WoooOOOooo": spectral voices sliding up and down together, a cold wind through them, a tritone chime.
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.35, t + 0.5);
+      g.gain.linearRampToValueAtTime(0.28, t + 1.6);
+      g.gain.linearRampToValueAtTime(0, end);
+      const lp = filt(v, 'lowpass', 1800, 0);
+      const vib = osc(v, 'sine', 5.2, t, end);
+      const depth = gain(v, 0);
+      depth.gain.setValueAtTime(0, t);
+      depth.gain.linearRampToValueAtTime(14 * q, t + 1.2);
+      vib.connect(depth);
+      for (const [r, dt, a] of [[1, 0, 1], [1, 12, 0.6], [2, -8, 0.25]]) {
+        const o = osc(v, 'sine', 280 * q * r, t, end);
+        o.detune.value = dt;
+        o.frequency.exponentialRampToValueAtTime(520 * q * r, t + 0.9);
+        o.frequency.exponentialRampToValueAtTime(330 * q * r, t + 2.3);
+        depth.connect(o.frequency);
+        const og = gain(v, a);
+        o.connect(og);
+        og.connect(lp);
+      }
+      lp.connect(g);
+      g.connect(v.in);
+      const n = noise(v, t, end);
+      const bp = filt(v, 'bandpass', 700 * q, 3);
+      bp.frequency.setValueAtTime(700 * q, t);
+      bp.frequency.exponentialRampToValueAtTime(2300 * q, t + 1.0);
+      bp.frequency.exponentialRampToValueAtTime(1100 * q, end);
+      const ng = gain(v, 0);
+      sus(ng.gain, t, 0.35, 0.6, t + 1.4, 0.9);
+      n.connect(bp);
+      bp.connect(ng);
+      ng.connect(v.in);
+      bell(v, v.in, t, 1480 * q, 0.06, 1.8, 3.5, 0.4, 3);
+      bell(v, v.in, t + 0.25, 1047 * q, 0.05, 1.8, 3.5, 0.4, 3);
+      roomSend(v, 0.7);
+    },
   };
 
   // Canvas flapping: low-passed noise chopped at `rate` Hz (slowing down).
@@ -1492,8 +2164,9 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   let current = null;
 
   // sc.music says what the scene's music is: 'rec' (a recording), 'synth' (the sequenced tune), or 'wait'
-  // (silent until its recording arrives, at most until sc.waitUntil).
-  function makeScene(name, t0, instant) {
+  // (silent until its recording arrives, at most until sc.waitUntil). `carry`: where the music of the scene being
+  // left is, when this scene plays the same music (see musicPlace); it then goes on from there, not from the top.
+  function makeScene(name, t0, instant, carry = null) {
     const cv = { end: Infinity, nodes: [], src: [], sfx: false, dead: false }; // the scene's long-lived nodes
     live.push(cv);
     const sc = { name, t0, st0: t0, stopAt: Infinity, cv, i: 0, song: null, em: [], kids: [], music: null, ambience: 'synth' };
@@ -1529,12 +2202,12 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       }
       return p;
     };
-    const music = recs.get(`music:${name}`);
-    if (music) startRecordedMusic(sc, music, t0, false);
-    else if (pending(`music:${name}`)) {
+    const music = recs.get(`music:${musicOf(name)}`);
+    if (music) startRecordedMusic(sc, music, t0, false, carry && carry.rec === music.buffer ? carry.at(t0) : null);
+    else if (pending(`music:${musicOf(name)}`)) {
       sc.music = 'wait';
       sc.waitUntil = t0 + MUSIC_WAIT;
-    } else startSynth(sc, t0);
+    } else startSynth(sc, t0, carry && carry.tune === tuneOf(name) ? carry.st0 : null);
     const amb = recs.get(`amb:${name}`);
     if (amb) startRecordedAmbience(sc, amb, t0, false);
     else AMBIENCE[name](sc, t0);
@@ -1550,19 +2223,29 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   }
 
   // The sequenced tune, from t on. Its long-lived nodes (the volcano's drone) live in their own voice, sc.sv.
-  function startSynth(sc, t) {
+  // `from`: the start time of the same tune already playing in the scene being left; this one keeps its beat and
+  // picks it up at the next step.
+  function startSynth(sc, t, from = null) {
     sc.music = 'synth';
     sc.st0 = t;
     sc.i = 0;
     sc.sv = longVoice(sc);
     sc.song = SONGS[sc.name](sc);
+    if (from != null && from <= t) {
+      sc.st0 = from;
+      sc.i = Math.ceil((t - from) / sc.song.dur - 1e-6);
+    }
   }
 
   // A recording on a loop. `fade`: swell in (it is replacing silence or the synthesised tune mid-scene).
-  function startRecordedMusic(sc, rec, t, fade) {
+  // `offset`: where in the recording to start (default: musicOffset).
+  function startRecordedMusic(sc, rec, t, fade, offset = null) {
     sc.music = 'rec';
     sc.recSeconds = rec.buffer.duration;
-    const s = sample(sc.cv, rec.buffer, t, null, 1, musicOffset % rec.buffer.duration);
+    sc.recBuffer = rec.buffer;
+    sc.recAt = t;
+    sc.recFrom = (offset == null ? musicOffset : offset) % rec.buffer.duration;
+    const s = sample(sc.cv, rec.buffer, t, null, 1, sc.recFrom);
     s.loop = true;
     const g = gain(sc.cv, fade ? 0 : rec.gain);
     if (fade) {
@@ -1602,7 +2285,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       recs.delete(key);
       // A scene still waiting for this one (its file failed) plays the synthesised tune straight away.
       const sc = current;
-      if (sc && sc.music === 'wait' && key === `music:${sc.name}` && sc.stopAt === Infinity) startSynth(sc, ctx.currentTime + 0.05);
+      if (sc && sc.music === 'wait' && key === `music:${musicOf(sc.name)}` && sc.stopAt === Infinity) startSynth(sc, ctx.currentTime + 0.05);
       return;
     }
     const rec = { gain: 1, duck: 0, ...meta, buffer };
@@ -1617,7 +2300,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       startRecordedAmbience(sc, rec, now + 0.05, true);
       return;
     }
-    if (key !== `music:${sc.name}` || sc.music === 'rec') return;
+    if (key !== `music:${musicOf(sc.name)}` || sc.music === 'rec') return;
     if (sc.music === 'synth') {
       // Notes already scheduled (the lookahead) play out under the fade; then the drone stops.
       sc.song = null;
@@ -1646,12 +2329,26 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     }
   }
 
+  // Where a scene's music is, for a scene `name` that would play the very same music (the town and the title screen
+  // share a tune): { rec, at(t) } for a recording (the buffer, and the offset it plays at time t), { tune, st0 } for
+  // the synthesised tune. null when the music differs, is still waiting, or the scene is already on its way out.
+  function musicPlace(sc, name) {
+    if (!sc || sc.stopAt !== Infinity) return null;
+    if (sc.music === 'rec' && musicOf(sc.name) === musicOf(name)) {
+      const { recBuffer: rec, recAt, recFrom } = sc;
+      return { rec, at: (t) => (recFrom + Math.max(0, t - recAt)) % rec.duration };
+    }
+    if (sc.music === 'synth' && sc.song && tuneOf(sc.name) === tuneOf(name)) return { tune: tuneOf(name), st0: sc.st0 };
+    return null;
+  }
+
   function setScene(name, instant = false) {
     if (name != null && !SONGS[name]) return;
     // Without a recording of its own the shipyard keeps the title screen's scene (the jig plays on, no restart).
     if (name === 'dock' && !recs.has('music:dock') && !pending('music:dock')) name = 'menu';
     if ((current ? current.name : null) === name) return;
     const now = ctx.currentTime;
+    const carry = name ? musicPlace(current, name) : null;
     if (current) {
       if (instant) {
         // Nothing is audible (muted or suspended): drop the old scene at once.
@@ -1663,7 +2360,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
         scenes.splice(scenes.indexOf(current), 1);
       } else fadeOutScene(current, now);
     }
-    current = name ? makeScene(name, now + 0.05, instant) : null;
+    current = name ? makeScene(name, now + 0.05, instant, carry) : null;
     if (current) scenes.push(current);
     pump(now + LOOKAHEAD);
   }
@@ -1988,6 +2685,237 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
         },
       };
     },
+
+    doubloon(sc) {
+      const { bar: BAR, dur: SD, scale, spanish } = DOUBLOON;
+      const mel = parseScore(DOUBLOON.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(DOUBLOON.chords);
+      const lead = sc.bus(0.15, 0.3);
+      const second = sc.bus(-0.3, 0.3);
+      const gtr = sc.bus(-0.25, 0.15);
+      const gtr2 = sc.bus(0.35, 0.15);
+      const bass = sc.bus(0, 0.05);
+      const kit = sc.bus(0.15, 0.12);
+      const bells = sc.bus(-0.1, 0.5);
+      // Who has the tune per pass and section (A A' B A''): a trumpet, the guitar, or two trumpets in thirds.
+      const roles = [
+        ['trumpet', 'trumpet', 'pair', 'pair'],
+        ['guitar', 'trumpet', 'pair', 'trumpet'],
+      ];
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const sec = bar >> 3;
+          const ch = CHORD[chords[bar][0]];
+          const role = roles[pass & 1][sec];
+          const six8 = bar & 1; // every other bar leans into 6/8 (accents on 1 and 4): the fandango's hemiola
+          const notes = at[pos];
+          if (notes) {
+            for (const n of notes) {
+              const d = n.len * SD;
+              const v = voice();
+              if (role === 'guitar') {
+                // Tremolo picking: the tune re-plucked three times a step, so it sings over the strumming.
+                for (let k = 0, m = Math.max(1, Math.round(n.len * 3 - 1)); k < m; k++) {
+                  pluck(v, lead, t + (k * SD) / 3, mtof(n.m), k ? 0.2 : 0.3, SD * 0.45);
+                }
+              } else brass(v, lead, t, mtof(n.m), d * 0.88, 0.075, 1.15);
+              if (role === 'pair') {
+                const h = diatonic(n.m, -2, chords[bar][0] === 'E' ? spanish : scale);
+                if (h != null) brass(v, second, t, mtof(h), d * 0.88, 0.05, 1);
+              }
+            }
+          }
+          const v = voice();
+          const root = ch[0] % 12;
+          const tones = voicing(ch, 52, 67);
+          const sv = role === 'guitar' ? 0.6 : 1; // the rhythm guitars step back while a guitar has the tune
+          // Guitars: a rasgueado roll on the downbeat, then strums on the 3/4 (or 6/8) accents, light up-strums between.
+          if (s === 0) {
+            strum(v, gtr, t, tones, 0.16 * sv, 0.3, 0.014);
+            strum(v, gtr, t + 0.05, tones.slice().reverse(), 0.09 * sv, 0.25, 0.01);
+          } else if (six8 ? s === 3 : s === 2 || s === 4) strum(v, gtr, t, tones, 0.12 * sv, 0.25, 0.012);
+          else if (six8 ? s === 1 || s === 4 : s === 5) strum(v, gtr2, t, tones.slice().reverse(), 0.05 * sv, 0.15, 0.008);
+          // Bass: the root on 1, the fifth on the next accent. Cajon: its bass tone on 1, slaps on the accents.
+          if (s === 0) pluck(v, bass, t, mtof(36 + root), 0.45, 0.45);
+          if (six8 ? s === 3 : s === 4) pluck(v, bass, t, mtof(43 + root), 0.3, 0.35);
+          if (s === 0) drum(v, kit, t, 0.35, 78, 0.22, 1.5);
+          if (six8 ? s === 3 : s === 2 || s === 4) hiss(v, kit, t, 0.12, 0.06, 'bandpass', 1900, 1.4);
+          // Castanets on the off-beats, with a trill into the last bar of each phrase.
+          if (bar % 4 === 3 && s >= 3) for (let k = 0; k < 3; k++) castanet(v, kit, t + (k * SD) / 3, 0.05 + k * 0.01);
+          else if (s % 2 === 1 || (s === 4 && rng() < 0.5)) castanet(v, kit, t, s === 1 ? 0.05 : 0.035);
+          // The harbour bell tolls each section in.
+          if (s === 0 && bar % 8 === 0) {
+            bell(v, bells, t, 220, 0.05, 3.2, 2.0, 0.55, 1.2);
+            bell(v, bells, t, 220 * 2.4, 0.018, 2, 1.4, 0.3);
+          }
+        },
+      };
+    },
+
+    frost(sc) {
+      const { bar: BAR, dur: SD, scale } = FROST;
+      const mel = parseScore(FROST.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(FROST.chords);
+      const lead = sc.bus(0.1, 0.35);
+      const second = sc.bus(-0.35, 0.35);
+      const pad = sc.bus(-0.1, 0.45);
+      const cel = sc.bus(0.4, 0.45);
+      const horns = sc.bus(-0.25, 0.4);
+      const drums = sc.bus(0, 0.15);
+      // The drone: open fifths on E, bowed (saws through a slowly breathing low-pass), under everything.
+      const t0 = sc.st0;
+      const dv = sc.sv;
+      const dl = filt(dv, 'lowpass', 700, 1);
+      for (const [m, dt] of [[40, -6], [47, 5], [52, 0]]) {
+        const o = osc(dv, 'sawtooth', mtof(m), t0, null);
+        o.detune.value = dt;
+        o.connect(dl);
+      }
+      lfo(dv, 0.07, 250, dl.frequency, t0);
+      const swell = gain(dv, 1);
+      lfo(dv, 0.11, 0.25, swell.gain, t0);
+      const dg = gain(dv, 0.014);
+      dl.connect(swell);
+      swell.connect(dg);
+      dg.connect(sc.bus(0, 0.25));
+      // Who has the tune per pass and section (A B A'): the fiddle, or a wooden flute; the fiddle gets a second
+      // fiddle a third below it in the middle and the reprise.
+      const roles = [
+        ['fiddle', 'fiddle+', 'fiddle+'],
+        ['flute', 'fiddle+', 'fiddle+'],
+      ];
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const sec = Math.floor(bar / 8);
+          const ch = CHORD[chords[bar][0]];
+          const root = ch[0] % 12;
+          const role = roles[pass & 1][sec];
+          const notes = at[pos];
+          if (notes) {
+            for (const n of notes) {
+              const d = n.len * SD;
+              const v = voice();
+              if (role === 'flute') flute(v, lead, t, mtof(n.m), d * 0.9, 0.075);
+              else fiddle(v, lead, t, mtof(n.m), d * 0.92, 0.065);
+              if (role === 'fiddle+') {
+                const h = diatonic(n.m, -2, scale);
+                if (h != null) fiddle(v, second, t, mtof(h), d * 0.92, 0.035);
+              }
+            }
+          }
+          const v = voice();
+          // Rowing drum on 1 and 3 (a big skin, then a lighter stroke), a frame drum tapping 2 and 4.
+          if (bar > 0 || pass > 0) {
+            if (s === 0) {
+              boom(v, drums, t, 0.22, 52, 0.6, 1.8);
+              hiss(v, drums, t, 1.2, 0.12, 'bandpass', 330, 1.4);
+            }
+            if (s === 4) {
+              boom(v, drums, t, 0.14, 58, 0.45, 1.7);
+              hiss(v, drums, t, 0.7, 0.1, 'bandpass', 360, 1.4);
+            }
+            if (s === 2 || s === 6) drum(v, drums, t, 0.12, 150, 0.12, 1.3);
+            if (sec === 1 && s === 7) drum(v, drums, t, 0.08, 170, 0.1, 1.3);
+          }
+          // A choir breathes each chord ("ooh", opening to "aah" in the middle).
+          if (s === 0) choir(v, pad, t, voicing(ch, 52, 66), BAR * SD * 0.98, 0.016, sec === 1 ? 'aa' : 'oo');
+          // Celesta frost from the middle on: the chord rippling high up.
+          if (sec >= 1) {
+            const tones = voicing(ch, 76, 90).sort((a, b) => a - b);
+            const k = [0, 1, 2, 1, 2, 0, 1, 2][s] % tones.length;
+            bell(v, cel, t, mtof(tones[k]), s % 2 ? 0.014 : 0.022, 0.9, 4, 0.25);
+          }
+          // Lur horns call across the fjord in the middle section.
+          if (sec === 1 && s === 0 && bar % 2 === 0) horn(v, horns, t, mtof(48 + root), SD * 6, 0.06);
+        },
+      };
+    },
+
+    maelstrom(sc) {
+      const { bar: BAR, dur: SD } = MAELSTROM;
+      const mel = parseScore(MAELSTROM.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(MAELSTROM.chords);
+      const lead = sc.bus(0.15, 0.45);
+      const bones = sc.bus(-0.35, 0.3);
+      const org = sc.bus(-0.1, 0.4);
+      const pizz = sc.bus(0.25, 0.2);
+      const bass = sc.bus(0, 0.1);
+      const drums = sc.bus(0, 0.25);
+      const bells = sc.bus(0.1, 0.6);
+      // Who sings the tune per pass and section (A A' B A''): the theremin, the bones, or both (bones an octave up).
+      const roles = [
+        ['ghost', 'ghost', 'bones', 'both'],
+        ['bones', 'ghost', 'bones', 'ghost'],
+      ];
+      let prev = 0; // the theremin slides into each note from the last one
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const sec = bar >> 3;
+          const ch = CHORD[chords[bar][0]];
+          const root = ch[0] % 12;
+          const role = roles[pass & 1][sec];
+          const notes = at[pos];
+          if (notes) {
+            for (const n of notes) {
+              const d = n.len * SD;
+              const v = voice();
+              if (role === 'bones') xylo(v, bones, t, mtof(n.m), 0.07);
+              else {
+                theremin(v, lead, t, mtof(n.m), d * 0.95, 0.07, prev);
+                if (role === 'both') xylo(v, bones, t, mtof(n.m + 12), 0.035);
+              }
+              prev = mtof(n.m);
+            }
+          }
+          const v = voice();
+          // The waltz: a pizzicato bass on 1, plucked chords on 2 and 3.
+          if (s === 0) pluck(v, bass, t, mtof(36 + root), 0.5, 0.35);
+          if (s === 2 || s === 4) strum(v, pizz, t, voicing(ch, 55, 68), 0.1, 0.12, 0.006);
+          // The organ holds the chords: two bars a breath, every bar in the last section.
+          if (s === 0 && (sec === 3 || bar % 2 === 0)) {
+            organ(v, org, t, voicing(ch, 48, 62), (sec === 3 ? 1 : 2) * BAR * SD * 0.96, sec === 3 ? 0.03 : 0.022);
+          }
+          // Timpani on the phrase starts and a roll into each section; a deep bell tolls every eight bars.
+          if (s === 0 && bar % 4 === 0) {
+            drum(v, drums, t, 0.45, mtof(36 + (root > 7 ? root - 12 : root)), 0.9, 1.15);
+            hiss(v, drums, t, 0.35, 0.05, 'lowpass', 700, 0);
+          }
+          if (bar % 8 === 7 && s >= 3) {
+            for (let k = 0; k < 2; k++) drum(v, drums, t + (k * SD) / 2, 0.12 + (s - 3) * 0.06 + k * 0.03, mtof(43), 0.25, 1.1);
+          }
+          if (s === 0 && bar % 8 === 0) bell(v, bells, t, 130.81, 0.05, 4.5, 1.4, 0.7, 1.3);
+        },
+      };
+    },
+
+    // Ashore: the title screen's jig (its recording when there is one, see MUSIC_OF).
+    town(sc) {
+      return SONGS.menu(sc);
+    },
   };
 
   // =========================================================================
@@ -2193,6 +3121,193 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     g.connect(sc.amb);
   }
 
+  // A channel buoy's bell (or a moored boat's) clanging as the swell rocks it: two to four strokes.
+  function buoyBell(sc, t, vel) {
+    const v = voice();
+    const f = rand(560, 700);
+    const pn = panner(v, rand(-0.8, 0.8));
+    pn.connect(sc.amb);
+    let s = t;
+    for (let k = 0, n = 2 + Math.floor(rng() * 3); k < n; k++) {
+      bell(v, pn, s, f, vel * rand(0.6, 1), 1.8, 2.4, 0.7, 2);
+      s += rand(0.5, 1.1);
+    }
+  }
+
+  // The town's church bell tolling three times, far off across the water.
+  function townBell(sc, t, vel) {
+    const v = voice();
+    const lp = filt(v, 'lowpass', 1400, -3);
+    lp.connect(panner(v, rand(-0.4, 0.4))).connect(sc.amb);
+    for (let k = 0; k < 3; k++) {
+      bell(v, lp, t + k * 1.9, 293.66, vel, 4, 2.0, 0.5, 1.4);
+      bell(v, lp, t + k * 1.9, 293.66 * 2.4, vel * 0.35, 2.5, 1.4, 0.3);
+    }
+  }
+
+  // A ship's bell striking the half hours in pairs: "ding-ding, ding-ding".
+  function shipBell(sc, t, vel) {
+    const v = voice();
+    const pn = panner(v, rand(-0.6, 0.6));
+    pn.connect(sc.amb);
+    for (let k = 0, n = 1 + Math.floor(rng() * 3); k < n; k++) {
+      for (let j = 0; j < 2; j++) bell(v, pn, t + k * 1.1 + j * 0.32, 1250, vel, 1.6, 2.4, 0.6, 1.5);
+    }
+  }
+
+  // Halyards slapping the masts of the boats in harbour: a few "tinks".
+  function halyard(sc, t, vel) {
+    const v = voice();
+    const pn = panner(v, rand(-0.9, 0.9));
+    pn.connect(sc.amb);
+    const f = rand(1500, 2300);
+    let s = t;
+    for (let k = 0, n = 2 + Math.floor(rng() * 4); k < n; k++) {
+      bell(v, pn, s, f * rand(0.97, 1.03), vel * rand(0.5, 1), 0.25, 2.9, 0.9);
+      s += rand(0.15, 0.6);
+    }
+  }
+
+  // Wind whistling through the rigging: noise through a resonant band-pass that wanders.
+  function windBed(sc, t0, lvl, f, q) {
+    const v = sc.av;
+    const n = noise(v, t0, null, R.noise2);
+    const bp = filt(v, 'bandpass', f, q);
+    const g = gain(v, lvl);
+    lfo(v, 0.061, f * 0.35, bp.frequency, t0);
+    lfo(v, 0.137, f * 0.15, bp.frequency, t0);
+    lfo(v, 0.083, lvl * 0.5, g.gain, t0);
+    n.connect(bp);
+    bp.connect(g);
+    g.connect(sc.amb);
+  }
+
+  // A gust rising and falling.
+  function gust(sc, t, peak, f) {
+    const v = voice();
+    const att = rand(1, 2.2);
+    const dec = rand(1.5, 3);
+    const end = t + att + dec + 0.05;
+    const n = noise(v, t, end, R.noise2);
+    const bp = filt(v, 'bandpass', f, 2.5);
+    bp.frequency.setValueAtTime(f * 0.7, t);
+    bp.frequency.exponentialRampToValueAtTime(f * rand(1.3, 1.8), t + att);
+    bp.frequency.exponentialRampToValueAtTime(f * 0.8, t + att + dec);
+    const g = gain(v, 0);
+    g.gain.setValueAtTime(0, t);
+    g.gain.linearRampToValueAtTime(peak, t + att);
+    g.gain.exponentialRampToValueAtTime(peak * 1e-3, t + att + dec);
+    g.gain.linearRampToValueAtTime(0, end);
+    n.connect(bp);
+    bp.connect(g);
+    g.connect(panner(v, rand(-0.6, 0.6))).connect(sc.amb);
+  }
+
+  // Ice floes grinding against each other with a low groan; sometimes the ice cracks and "sings" (a crack in sheet
+  // ice rings as a falling "pew", the highs racing ahead of the lows).
+  function iceGroan(sc, t, vel) {
+    const v = voice();
+    const d = rand(0.8, 1.8);
+    const end = t + d + 0.2;
+    const f = rand(38, 60);
+    const o = osc(v, 'sawtooth', f, t, end);
+    o.frequency.linearRampToValueAtTime(f * rand(1.2, 1.6), t + d * 0.5);
+    o.frequency.linearRampToValueAtTime(f * rand(0.8, 1.1), t + d);
+    lfo(v, rand(9, 16), f * 0.06, o.frequency, t, end);
+    const bp = filt(v, 'bandpass', rand(280, 450), 5);
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, d * 0.3, t + d * 0.7, d * 0.3);
+    const pn = panner(v, rand(-0.8, 0.8));
+    o.connect(bp);
+    bp.connect(g);
+    g.connect(pn);
+    pn.connect(sc.amb);
+    if (rng() < 0.5) {
+      const c = t + rand(0.2, d);
+      const f0 = rand(2600, 3800);
+      const z = osc(v, 'sine', f0, c, c + 0.32);
+      z.frequency.exponentialRampToValueAtTime(f0 * 0.12, c + 0.25);
+      const zg = gain(v, 0);
+      perc(zg.gain, c, vel * 0.8, 0.004, 0.26);
+      z.connect(zg);
+      zg.connect(pn);
+      hiss(v, pn, c, vel * 1.2, 0.1, 'bandpass', 1400, 1.5);
+    }
+  }
+
+  // Ice shards tinkling together.
+  function tinkle(sc, t, vel) {
+    const v = voice();
+    const pn = panner(v, rand(-0.9, 0.9));
+    pn.connect(sc.amb);
+    let s = t;
+    for (let k = 0, n = 3 + Math.floor(rng() * 4); k < n; k++) {
+      bell(v, pn, s, rand(2800, 5200), vel * rand(0.4, 1), rand(0.1, 0.3), 2.9, 0.4);
+      s += rand(0.04, 0.2);
+    }
+  }
+
+  // Rain on the sea: a steady hiss, and drops pattering on the deck (two loops of crackle that never line up).
+  function rainBed(sc, t0, lvl) {
+    const v = sc.av;
+    const n = noise(v, t0, null, R.noise2);
+    const hp = filt(v, 'highpass', 1200, -3);
+    const lp = filt(v, 'lowpass', 7000, -3);
+    const g = gain(v, lvl);
+    lfo(v, 0.09, lvl * 0.3, g.gain, t0);
+    n.connect(hp);
+    hp.connect(lp);
+    lp.connect(g);
+    g.connect(sc.amb);
+    for (const [rate, pan] of [[1.3, -0.5], [0.83, 0.5]]) {
+      const c = sample(v, R.crackle, t0, null, rate, rng() * 2);
+      c.loop = true;
+      const chp = filt(v, 'highpass', 2500, -3);
+      const cg = gain(v, lvl * 0.8);
+      c.connect(chp);
+      chp.connect(cg);
+      cg.connect(panner(v, pan)).connect(sc.amb);
+    }
+  }
+
+  // The whirlpool: a deep roar, and a hollow swirl circling round you.
+  function whirlBed(sc, t0, lvl) {
+    const v = sc.av;
+    const n = noise(v, t0, null, R.noise2);
+    const lp = filt(v, 'lowpass', 220, 2);
+    lfo(v, 0.05, 90, lp.frequency, t0);
+    const g = gain(v, lvl);
+    n.connect(lp);
+    lp.connect(g);
+    g.connect(sc.amb);
+    const m = noise(v, t0, null);
+    const bp = filt(v, 'bandpass', 480, 3);
+    lfo(v, 0.21, 160, bp.frequency, t0);
+    const sg = gain(v, lvl * 0.6);
+    const pn = panner(v, 0);
+    if (pn.pan) lfo(v, 0.12, 0.8, pn.pan, t0);
+    m.connect(bp);
+    bp.connect(sg);
+    sg.connect(pn);
+    pn.connect(sc.amb);
+  }
+
+  // Something moaning out in the dark.
+  function moan(sc, t, vel) {
+    const v = voice();
+    const d = rand(1.5, 2.6);
+    const end = t + d + 0.1;
+    const f = rand(220, 330);
+    const o = osc(v, 'sine', f, t, end);
+    o.frequency.exponentialRampToValueAtTime(f * rand(1.25, 1.5), t + d * 0.45);
+    o.frequency.exponentialRampToValueAtTime(f * rand(0.75, 0.9), t + d);
+    lfo(v, 5, f * 0.015, o.frequency, t, end);
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, d * 0.4, t + d * 0.6, d * 0.35);
+    o.connect(g);
+    g.connect(panner(v, rand(-0.9, 0.9))).connect(sc.amb);
+  }
+
   const AMBIENCE = {
     menu(sc, t0) {
       seaBed(sc, t0, 0.05, 520);
@@ -2234,6 +3349,49 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       emit(sc, 3, (t) => (rumble(sc, t, 0.4), rand(7, 15)));
       emit(sc, 0.3, (t) => (crackle(sc, t, 0.17), rand(0.25, 0.9)));
       emit(sc, 2, (t) => (bloop(sc, t, 0.13), rand(2.5, 7)));
+    },
+    doubloon(sc, t0) {
+      // Golden hour off a harbour town: the swell over the sandbars, gulls, the channel buoys' bells, timbers, and
+      // now and then the bell tower across the bay.
+      seaBed(sc, t0, 0.06, 600);
+      emit(sc, 0.5, (t) => (wash(sc, t, 0.11, 1400, rand(1, 1.8), rand(1.8, 2.8)), rand(3, 6)));
+      emit(sc, 1.5, (t) => (gull(sc, t, 0.03), rand(4, 10)));
+      emit(sc, 4, (t) => (buoyBell(sc, t, 0.012), rand(7, 14)));
+      emit(sc, 6, (t) => (creak(sc, t, 0.022), rand(8, 18)));
+      emit(sc, 12, (t) => (townBell(sc, t, 0.01), rand(35, 60)));
+    },
+    frost(sc, t0) {
+      // A cold strait at dawn: wind whistling in the rigging, small waves lapping at the ice, floes groaning, shards
+      // tinkling.
+      seaBed(sc, t0, 0.045, 500);
+      windBed(sc, t0, 0.05, 900, 3);
+      emit(sc, 1, (t) => (wash(sc, t, 0.06, 900, rand(0.8, 1.4), rand(1.5, 2.4)), rand(3, 6)));
+      emit(sc, 3, (t) => (gust(sc, t, 0.12, 700), rand(6, 12)));
+      emit(sc, 2, (t) => (iceGroan(sc, t, 0.05), rand(5, 11)));
+      emit(sc, 1.2, (t) => (tinkle(sc, t, 0.012), rand(3, 8)));
+    },
+    maelstrom(sc, t0) {
+      // A storm at the end of the world: rain, the whirlpool's roar going round, wind, thunder rolling far off,
+      // timbers straining, and now and then something moaning out in the dark.
+      seaBed(sc, t0, 0.06, 450);
+      rainBed(sc, t0, 0.03);
+      whirlBed(sc, t0, 0.12);
+      windBed(sc, t0, 0.04, 650, 2);
+      emit(sc, 0.5, (t) => (wash(sc, t, 0.12, 1000, rand(1, 1.8), rand(2, 3)), rand(3, 5)));
+      emit(sc, 2, (t) => (gust(sc, t, 0.14, 550), rand(4, 9)));
+      emit(sc, 5, (t) => (rumble(sc, t, 0.35), rand(9, 18)));
+      emit(sc, 4, (t) => (creak(sc, t, 0.03), rand(6, 13)));
+      emit(sc, 15, (t) => (moan(sc, t, 0.012), rand(20, 40)));
+    },
+    town(sc, t0) {
+      // Ashore on Sparrow's Floating Island: water slapping the piles, gulls, ships' timbers working, halyards
+      // tinking against the masts, a ship's bell.
+      seaBed(sc, t0, 0.05, 460);
+      emit(sc, 1, (t) => (wash(sc, t, 0.075, 900, rand(0.5, 1), rand(1, 1.8)), rand(2, 4.5)));
+      emit(sc, 2, (t) => (gull(sc, t, 0.035), rand(4, 10)));
+      emit(sc, 3, (t) => (creak(sc, t, 0.035), rand(5, 12)));
+      emit(sc, 1.5, (t) => (halyard(sc, t, 0.015), rand(3, 8)));
+      emit(sc, 20, (t) => (shipBell(sc, t, 0.022), rand(40, 70)));
     },
   };
 
@@ -2352,7 +3510,9 @@ export function createAudio() {
   const decoding = new Set();
   let recent = []; // scenes whose music stays decoded, most recent last
   const isPending = (key) => recState.has(key) && recState.get(key) !== 'failed';
-  const wanted = (rec) => rec.kind === 'sfx' || recent.includes(rec.name);
+  // A scene's own music and ambience, or the music it borrows (MUSIC_OF).
+  const uses = (scene, rec) => rec.kind !== 'sfx' && (rec.name === scene || (rec.kind === 'music' && rec.name === musicOf(scene)));
+  const wanted = (rec) => rec.kind === 'sfx' || recent.some((n) => uses(n, rec));
 
   function recFailed(rec, err) {
     recState.set(rec.key, 'failed');
@@ -2395,12 +3555,13 @@ export function createAudio() {
     while (recent.length > KEEP_MUSIC) {
       const old = recent.shift();
       for (const rec of recordings) {
-        if (rec.name !== old || rec.kind === 'sfx' || recState.get(rec.key) !== 'ready') continue;
+        // (still kept when the other scene in `recent` borrows it)
+        if (!uses(old, rec) || wanted(rec) || recState.get(rec.key) !== 'ready') continue;
         recState.set(rec.key, 'fetched');
         if (eng) guard(() => eng.setRecording(rec.key, null));
       }
     }
-    for (const rec of recordings) if (rec.name === name && rec.kind !== 'sfx') fetched(rec);
+    for (const rec of recordings) if (uses(name, rec)) fetched(rec);
   }
 
   if (recordings.length) {
@@ -2522,7 +3683,8 @@ async function renderOffline({
   const ctx = new OAC(2, Math.ceil(seconds * sampleRate), sampleRate);
   const eng = createEngine(ctx, { seed, musicOffset });
   if (recorded) {
-    const keys = [`music:${scene}`, `amb:${scene}`, `sfx:${sfx}`, ...(events || []).map((e) => `sfx:${e.name}`)];
+    const keys = [`music:${musicOf(scene)}`, `amb:${scene}`, `sfx:${sfx}`, ...(events || []).map((e) => `sfx:${e.name}`)];
+    if (then) keys.push(`music:${musicOf(then.scene)}`, `amb:${then.scene}`);
     for (const rec of RECORDINGS) {
       if (keys.includes(rec.key)) eng.setRecording(rec.key, await loadRecording(ctx, rec), rec);
     }
@@ -2623,6 +3785,13 @@ function validateScores() {
     ...(parseChords(MENU.chords).length !== 32 ? ['menu chords'] : []),
     ...(parseChords(EUROPE.chords).length !== 24 ? ['europe chords'] : []),
     ...(parseChords(VOLCANO.chords).length !== 16 ? ['volcano chords'] : []),
+    ...parseScore(DOUBLOON.melody, DOUBLOON.bar).errors.map((e) => `doubloon ${e}`),
+    ...parseScore(FROST.melody, FROST.bar).errors.map((e) => `frost ${e}`),
+    ...parseScore(MAELSTROM.melody, MAELSTROM.bar).errors.map((e) => `maelstrom ${e}`),
+    ...(parseChords(DOUBLOON.chords).length !== parseScore(DOUBLOON.melody, DOUBLOON.bar).bars ? ['doubloon chords'] : []),
+    ...(parseChords(FROST.chords).length !== parseScore(FROST.melody, FROST.bar).bars ? ['frost chords'] : []),
+    ...(parseChords(MAELSTROM.chords).length !== parseScore(MAELSTROM.melody, MAELSTROM.bar).bars ? ['maelstrom chords'] : []),
+    ...[DOUBLOON, FROST, MAELSTROM].flatMap((x) => parseChords(x.chords).flat().filter((c) => !CHORD[c]).map((c) => `unknown chord ${c}`)),
     ...Object.values(VOLCANO.drums).filter((p) => p.length !== 16).map((p) => `drum pattern ${p}`),
   ];
 }
