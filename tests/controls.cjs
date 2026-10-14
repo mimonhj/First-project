@@ -822,6 +822,9 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const T = window.__dockTest;
     return { mode: G.state.mode, from: G.dock.from, exits: T.exits(), focus: document.activeElement && document.activeElement.id, panel: T.shown('dock-screen'), hud: T.shown('hud'), purse: G.state.purse };
   });
+  // The shipyard buttons open the dock a couple of frames after the click (once "Rowing to Sparrow's
+  // Floating Island…" has been drawn): wait for it.
+  const docked = (page) => page.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 60000 }).catch(() => {});
 
   // Level cleared -> treasure chest -> the dock: buy, paint, sail on with the new ship; shipwrecked
   // -> dock -> try again; title -> dock -> title; quitting the voyage from the level-cleared screen.
@@ -853,6 +856,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
 
     // The dock.
     await page.click('#dock-btn');
+    await docked(page);
     await frames(page, 2);
     const d = await page.evaluate(() => {
       const G = window.__game;
@@ -978,6 +982,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     });
     check(over.mode === 'over' && over.after === over.purse && over.buttons.join() === 'retry-btn,over-dock-btn,menu-btn', `shipyard: shipwrecked: nothing is banked, and "Visit the dock" sits between Try again and Main menu (${over.buttons.join(', ')})`);
     await page.click('#over-dock-btn');
+    await docked(page);
     const here3 = await page.evaluate(() => window.__game.LEVELS[2].env.meta.name);
     const fromOver = await dockState(page);
     check(fromOver.mode === 'dock' && fromOver.from === 'over' && JSON.stringify(fromOver.exits) === JSON.stringify([`Try again: ${here3}`, 'Main menu']), `shipyard: from the shipwrecked screen the ways out are ${fromOver.exits.map((e) => `"${e}"`).join(' and ')}`);
@@ -988,6 +993,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     // From the title: one way out, back to the title. Keys that pause or sail on do nothing here.
     await page.evaluate(() => window.__game.showMenu());
     await page.click('#menu-dock-btn');
+    await docked(page);
     const fromTitle = await dockState(page);
     check(fromTitle.mode === 'dock' && fromTitle.from === 'menu' && JSON.stringify(fromTitle.exits) === '["Back to the title"]', `shipyard: from the title the only way out is "Back to the title" (${fromTitle.exits.join(' | ')})`);
     const keep = () => page.evaluate(() => ({ mode: window.__game.state.mode, purse: window.__game.state.purse, cfg: JSON.stringify(window.__game.shipConfig), balls: window.__game.balls.length, level: window.__game.state.level, pause: window.__dockTest.shown('pause-screen'), dock: window.__dockTest.shown('dock-screen'), hud: window.__dockTest.shown('hud') }));
@@ -1149,6 +1155,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     }
     check(!!titleFocus && titleFocus.id === 'menu-dock-btn' && titleFocus.ring && titleFocus.visible, `keyboard: Tab reaches the Shipyard button on the title screen, with a focus ring (${JSON.stringify(titleFocus)})`);
     await page.keyboard.press('Enter');
+    await docked(page);
     await frames(page, 2);
     const first = await page.evaluate(focusProbe);
     const mode = await page.evaluate(() => window.__game.state.mode);
@@ -1263,6 +1270,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     // The last (valid) records are what the shipyard and the next voyage use.
     await page.evaluate(dockHelpers);
     await page.click('#menu-dock-btn');
+    await docked(page);
     const used = await page.evaluate(async () => {
       const G = window.__game;
       const T = window.__dockTest;
@@ -1294,6 +1302,98 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const left = await bp.evaluate(() => window.__game.state.mode);
     check(mem.mode === 'dock' && mem.purse === 200 && mem.cfg.up.guns === 1 && mem.cfg.look.hull === 'royal' && left === 'menu', `saved shipyard records: with storage blocked, buying and painting still work for the visit (${JSON.stringify({ purse: mem.purse, guns: mem.cfg.up.guns, hull: mem.cfg.look.hull })})`);
     await blocked.close();
+  }
+
+  // Storage full (a write that grows it throws, one of the same size or smaller still works): a purchase
+  // never loses gold. When the ship record can't be saved the chest isn't written either; banking later
+  // keeps the saved chest matching the saved ship (the upgrade's gold stays in the chest until both can
+  // be saved together). After a reload the gold and the upgrades always add up: never paid for but missing.
+  {
+    const { ctx, page } = await open();
+    await page.evaluate(dockHelpers);
+    const reload = async () => {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__gameReady === true, null, { timeout: 120000 });
+    };
+    await page.evaluate(() => { localStorage.clear(); localStorage.setItem('pirates-ahoy-purse', '1000'); });
+    await reload();
+    // Filler records up to the quota, down to single characters, after the game has loaded.
+    const fill = () => page.evaluate(() => {
+      let n = 0;
+      for (let size = 1 << 20; size >= 1; size >>= 1) {
+        const chunk = 'x'.repeat(size);
+        for (;;) {
+          try { localStorage.setItem(`zz-fill-${n}`, chunk); n++; } catch { break; }
+        }
+      }
+      const probe = (() => { try { localStorage.setItem('zz-probe', '{"up":{"guns":1}}'); localStorage.removeItem('zz-probe'); return true; } catch { return false; } })();
+      return { records: n, roomForAShip: probe };
+    });
+    const saved = () => page.evaluate(() => ({ purse: localStorage.getItem('pirates-ahoy-purse'), ship: localStorage.getItem('pirates-ahoy-ship') }));
+    const filled = await fill();
+    const buy1 = await page.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      return { ok: G.dock.buy('guns'), purse: G.state.purse, guns: G.shipConfig.up.guns };
+    });
+    const saved1 = await saved();
+    check(filled.records > 0 && !filled.roomForAShip && buy1.ok && buy1.purse === 700 && buy1.guns === 1 && saved1.purse === '1000' && saved1.ship === null, `storage full: the purchase lasts for the visit, and with no room for the ship record the chest isn't written either (${JSON.stringify({ filled, buy1, saved1 })})`);
+    // Bank a level's earnings while the upgrade is still unsaved, then reload.
+    await page.evaluate(() => { window.__game.dock.leave('title'); window.__game.newGame(1); });
+    const cleared1 = await clearLevel(page);
+    const bank1 = await page.evaluate(() => ({ earned: window.__game.state.gold - window.__game.state.goldAtLevelStart, purse: window.__game.state.purse, guns: window.__game.shipConfig.up.guns }));
+    const saved2 = await saved();
+    await reload();
+    const after1 = await page.evaluate(() => ({ purse: window.__game.state.purse, guns: window.__game.shipConfig.up.guns }));
+    const paid1 = after1.guns >= 1 ? 300 : 0;
+    check(cleared1 === 'levelDone' && bank1.earned > 0 && bank1.purse === 700 + bank1.earned && bank1.guns === 1 && after1.purse + paid1 === 1000 + bank1.earned, `storage full: banking ${bank1.earned} gold keeps the saved chest and ship consistent; after a reload ${after1.purse} gold + guns tier ${after1.guns} (paid ${paid1}) = 1000 + ${bank1.earned} (saved ${JSON.stringify(saved2)})`);
+    // The same purchase, then room appears before the next banking: the ship record and the chest are saved together.
+    const buy2 = await page.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      const ok = G.dock.buy('guns');
+      const unsaved = localStorage.getItem('pirates-ahoy-ship');
+      for (const k of Object.keys(localStorage)) if (k.startsWith('zz-fill-')) localStorage.removeItem(k);
+      G.dock.leave('title');
+      G.newGame(1);
+      return { ok, unsaved, purse: G.state.purse };
+    });
+    const cleared2 = await clearLevel(page);
+    const bank2 = await page.evaluate(() => window.__game.state.gold - window.__game.state.goldAtLevelStart);
+    await reload();
+    const after2 = await page.evaluate(() => ({ purse: window.__game.state.purse, guns: window.__game.shipConfig.up.guns, ship: localStorage.getItem('pirates-ahoy-ship') }));
+    check(buy2.ok && buy2.unsaved === null && cleared2 === 'levelDone' && after2.guns === 1 && after2.purse === after1.purse - 300 + bank2, `storage full, then room again: the next banking saves the upgrade and the chest together (${after1.purse} - 300 + ${bank2} = ${after2.purse} gold, guns tier ${after2.guns})`);
+    await ctx.close();
+  }
+
+  // Building the shipyard holds the page up for a moment, so its buttons first say where you're going
+  // (a status message) and the dock opens once that has been drawn. The test API's dock.open() stays synchronous.
+  {
+    const { ctx, page } = await open();
+    await page.evaluate(() => {
+      const toast = document.getElementById('dock-toast');
+      const log = (window.__toastLog = { set: null, frames: [] });
+      if (!toast) return;
+      // When the message appears, and from that frame until the dock is open, what each frame shows.
+      const watch = () => {
+        const r = toast.getBoundingClientRect();
+        log.frames.push({ text: toast.textContent.trim(), mode: window.__game.state.mode, shown: r.width > 0 && r.height > 0 && r.top >= 0 && r.bottom <= innerHeight });
+        if (window.__game.state.mode !== 'dock' && log.frames.length < 60) requestAnimationFrame(watch);
+      };
+      new MutationObserver(() => {
+        if (!toast.textContent.trim() || log.set) return;
+        log.set = { text: toast.textContent.trim(), role: toast.getAttribute('role'), mode: window.__game.state.mode };
+        requestAnimationFrame(watch);
+      }).observe(toast, { childList: true, characterData: true, subtree: true });
+    });
+    await page.click('#menu-dock-btn');
+    await page.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 60000 }).catch(() => {});
+    await frames(page, 1);
+    const r = await page.evaluate(() => ({ mode: window.__game.state.mode, log: window.__toastLog, text: (document.getElementById('dock-toast') || {}).textContent, focus: document.activeElement && document.activeElement.id }));
+    const set = r.log.set || {};
+    const drawnFirst = r.log.frames.some((f) => f.mode === 'menu' && f.shown && /^Rowing to Sparrow's Floating Island/.test(f.text));
+    check(set.mode === 'menu' && /^Rowing to Sparrow's Floating Island/.test(set.text) && set.role === 'status' && drawnFirst && r.mode === 'dock' && r.text === '' && r.focus === 'dock-tab-up', `shipyard button: "${set.text}" shows (role ${set.role}) and is drawn before the dock opens; then the dock opens with focus on the Upgrades tab and the message goes (${JSON.stringify({ set, frames: r.log.frames, after: r.mode, focus: r.focus })})`);
+    await ctx.close();
   }
 
   // Layout and contrast of the shipyard panel on small and large screens.

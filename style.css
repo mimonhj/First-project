@@ -645,7 +645,7 @@ kbd {
   right: var(--edge);
   bottom: 86px;
   grid-template-columns: auto 1fr auto;
-  grid-template-areas: "sail . ." "steer . fire";
+  grid-template-areas: "sail . act" "steer . fire";
   align-items: end;
   row-gap: 10px;
   pointer-events: none;
@@ -654,6 +654,7 @@ kbd {
 .pad.left { grid-area: steer; }
 .pad.mid { grid-area: sail; gap: 8px; }
 .pad.right { grid-area: fire; }
+.pad.act { grid-area: act; gap: 8px; justify-content: flex-end; } /* Ammo / Board (hidden until boarding arrives) */
 .touch button {
   width: 66px;
   height: 66px;
@@ -1300,6 +1301,33 @@ body.docked.dragging #game { cursor: grabbing; }
 @media (max-height: 500px) {
   .up-blurb { display: none; }
   .paint-note { display: none; }
+}
+
+/* "Rowing to Sparrow's Floating Island…" while the shipyard is being built. The live region is always
+   there; empty, it has no size and shows nothing. */
+.dock-toast {
+  position: fixed;
+  left: 50%;
+  top: max(16px, 9vh);
+  transform: translateX(-50%);
+  max-width: calc(100vw - 32px);
+  pointer-events: none;
+  text-align: center;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: min(20px, 4.4vw);
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  width: max-content;
+  color: var(--ink);
+}
+.dock-toast:not(:empty) {
+  padding: 10px 18px 8px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: 0 5px 0 var(--ink);
 }
 
 @media (prefers-reduced-motion: reduce) {

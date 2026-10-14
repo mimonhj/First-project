@@ -16,6 +16,8 @@
     <style>#menu-screen { display: none !important; }</style>
   </noscript>
   <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="fx.css" />
+  <link rel="stylesheet" href="town.css" />
   <script type="importmap">
     { "imports": { "three": "./vendor/three.module.min.js", "three/addons/": "./vendor/addons/" } }
   </script>
@@ -28,6 +30,11 @@
     <div class="hud-top">
       <div id="hull-card" class="card hull">
         <div class="label">The Sea Biscuit</div>
+        <!-- Crew count (crossed cutlasses), at the right end of the label row. -->
+        <span id="crew-chip" class="crew-chip hidden" role="img" aria-label="Crew">
+          <svg class="crew-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4l12 13M19 4L7 17M4.5 16.5l3 3M19.5 16.5l-3 3" /></svg>
+          <b class="crew-num"></b>
+        </span>
         <div class="bar"><div id="hull-ghost" class="ghost"></div><div id="hull-fill" class="fill good"></div></div>
       </div>
       <div class="card level"><div class="label">Voyage</div><div id="level-name" class="value">1. Coast of Europe</div></div>
@@ -42,13 +49,23 @@
       </button>
       <button id="pause-btn" class="card icon-btn" type="button" aria-label="Pause">II</button>
     </div>
+    <!-- The level's goal, e.g. "Galleons: 1 taken · 0 escaped · 1 to go" (a pill under the hull card). -->
+    <div id="objective" class="objective hidden"></div>
     <div id="boss" class="boss hidden">
       <div id="boss-name" class="boss-name">Boss</div>
       <div class="bar boss-bar"><div id="boss-fill" class="fill"></div></div>
+      <!-- The boss's crew pips and surrender notch. -->
+      <div id="boss-crew" class="boss-crew hidden" aria-hidden="true"><div id="boss-crew-fill" class="boss-crew-fill"></div></div>
     </div>
+    <!-- During a boarding: "12 vs 9" with cutlass and skull icons, the tug-of-war bar and the heave pips. -->
+    <div id="boarding-strip" class="boarding-strip hidden" aria-hidden="true"></div>
     <canvas id="minimap" width="150" height="150" aria-label="Minimap"></canvas>
     <div id="hitmark" class="hitmark" aria-hidden="true"></div>
+    <!-- Pop words over the 3D view (pops.js). -->
+    <div id="pops" class="pops hidden" aria-hidden="true"></div>
     <div id="hint" class="hint-bubble hidden" role="status" aria-live="polite"></div>
+    <!-- Big battle events for screen readers (captures, boardings, new ammo). -->
+    <p id="game-live" class="sr-only hidden" role="status" aria-live="polite"></p>
     <div class="hud-bottom">
       <div class="card guns">
         <div id="gun-port" class="gun port">
@@ -63,6 +80,14 @@
         <div class="gun speed">
           <span class="label">Speed <kbd>W</kbd><kbd>S</kbd></span>
           <div id="sails" class="sails">Cruising &#9646;&#9646;&#9647;</div>
+        </div>
+        <div id="gun-ammo" class="gun ammo hidden">
+          <span class="label">Ammo <kbd>R</kbd></span>
+          <div class="ammo-val"><span class="ammo-ico" aria-hidden="true"></span><span id="ammo-name" class="ammo-name">Round</span></div>
+        </div>
+        <div id="gun-board" class="gun board hidden">
+          <span class="label">Board <kbd>G</kbd></span>
+          <div id="board-tag" class="board-tag">&mdash;</div>
         </div>
         <div id="gun-star" class="gun star">
           <span class="fire-tag">FIRE!</span>
@@ -83,6 +108,11 @@
       <div class="pad right">
         <button type="button" data-tap="firePort" class="fire" aria-label="Fire port cannons">&#9664; Fire</button>
         <button type="button" data-tap="fireStar" class="fire" aria-label="Fire starboard cannons">Fire &#9654;</button>
+      </div>
+      <!-- Ammo and Board pills (top right, level with the sail pills). -->
+      <div class="pad act hidden">
+        <button type="button" id="touch-ammo" class="hidden" data-tap="ammo" aria-label="Ammo: round shot">Round</button>
+        <button type="button" id="touch-board" class="hidden" data-tap="board" aria-label="Board" aria-disabled="true">Board</button>
       </div>
     </div>
   </div>
@@ -173,10 +203,11 @@
   <div id="won-screen" class="overlay hidden">
     <div class="panel">
       <h2>Victory!</h2>
-      <p>The Molten Maw is sunk and every pirate fleet is at the bottom of the sea. The seas are yours, Captain!</p>
+      <p id="won-text">The Molten Maw is sunk and every pirate fleet is at the bottom of the sea. The seas are yours, Captain!</p>
       <p class="final">Plunder: <strong id="won-gold">0</strong> gold</p>
       <p id="won-best" class="new-best hidden">New best!</p>
       <p id="won-chest" class="chest-line"></p>
+      <button id="act2-btn" class="btn hidden" type="button">Sail on to the Far Seas</button>
       <button id="again-btn" class="btn" type="button">Main menu</button>
       <button id="won-dock-btn" class="btn alt" type="button">Visit the dock</button>
     </div>
@@ -207,6 +238,11 @@
           </svg>
           <span><span class="chest-label">Treasure chest: </span><b id="dock-chest-gold">0</b> gold</span>
         </p>
+        <!-- Walk round the island (before the tabs in Tab order: reached with Shift+Tab from them). -->
+        <button id="dock-ashore-btn" class="btn alt dock-ashore hidden" type="button">
+          <svg class="boot" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3h6v9l5 3.5c1 .7 1.5 1.6 1.5 2.7V20H4.5v-3.5L8 14z" /></svg>
+          Go ashore
+        </button>
       </header>
       <div class="dock-tabs" role="tablist" aria-label="Shipyard">
         <button id="dock-tab-up" type="button" role="tab" data-tab="up" aria-selected="true" aria-controls="dock-up">Upgrades</button>
@@ -225,6 +261,104 @@
       <p id="dock-live" class="sr-only" role="status" aria-live="polite"></p>
     </div>
   </section>
+
+  <!-- Ashore on Sparrow's Floating Island (townMode.js fills and shows these; styles in town.css). Like the
+       shipyard, the town screens let pointer events through to the 3D view. They come before
+       #recover-screen, so the graphics-recovery dialog stays on top of them. -->
+  <section id="town-screen" class="overlay town hidden" tabindex="-1" role="region" aria-label="Sparrow's Floating Island: walking">
+    <p id="town-chest" class="town-chest" aria-live="polite" aria-atomic="true">Treasure chest: <b>0</b> gold</p>
+    <div class="town-corner">
+      <button id="town-menu-btn" class="town-btn" type="button" aria-label="Harbour menu" aria-haspopup="dialog">&#9776;</button>
+      <button id="town-mute" class="mute-btn town-mute" type="button" aria-label="Mute sound" aria-pressed="false">
+        <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+          <path class="spk" d="M3 9.5h3.6L12 5v14l-5.4-4.5H3z" />
+          <path class="waves" d="M15.4 9a4.2 4.2 0 0 1 0 6M18.2 6.2a8.2 8.2 0 0 1 0 11.6" />
+          <path class="cross" d="M16 9.5l5 5M21 9.5l-5 5" />
+        </svg>
+      </button>
+    </div>
+    <button id="town-prompt" class="town-prompt hidden" type="button"></button>
+    <nav id="town-places" class="town-places" aria-label="Places">
+      <button type="button" data-place="shipyard">Shipyard</button>
+      <button type="button" data-place="tailor">Tailor</button>
+      <button type="button" data-place="tavern">Tavern</button>
+      <button type="button" data-place="ship">Set sail</button>
+    </nav>
+    <button id="town-action" class="town-action" type="button" aria-disabled="true">Go in</button>
+    <div id="town-joystick" class="town-joystick" aria-hidden="true"><div class="town-knob"></div></div>
+    <p id="town-keys" class="town-keys">Walk <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> &middot; Sprint <kbd>Shift</kbd> &middot; Go in <kbd>E</kbd> &middot; Camera <kbd>C</kbd> &middot; Menu <kbd>Esc</kbd></p>
+    <p id="town-live" class="sr-only" role="status" aria-live="polite"></p>
+  </section>
+
+  <!-- Polly's Plumes & Trims: the captain's and the crew's looks. -->
+  <section id="wardrobe-screen" class="overlay town wardrobe hidden" aria-labelledby="wardrobe-title">
+    <div id="wardrobe-panel" class="panel dock-panel town-panel">
+      <header class="dock-head">
+        <p class="dock-kicker">Tailor &amp; Barber</p>
+        <h2 id="wardrobe-title">Polly's Plumes &amp; Trims</h2>
+        <p id="wardrobe-chest" class="dock-chest" aria-live="polite" aria-atomic="true">Treasure chest: <b>0</b> gold</p>
+      </header>
+      <div class="dock-tabs" role="tablist" aria-label="Wardrobe">
+        <button id="wardrobe-tab-captain" type="button" role="tab" aria-selected="true" aria-controls="wardrobe-captain">Captain</button>
+        <button id="wardrobe-tab-crew" type="button" role="tab" aria-selected="false" aria-controls="wardrobe-crew" tabindex="-1">Crew</button>
+      </div>
+      <div class="dock-body">
+        <div id="wardrobe-captain" role="tabpanel" aria-labelledby="wardrobe-tab-captain"></div>
+        <div id="wardrobe-crew" role="tabpanel" aria-labelledby="wardrobe-tab-crew" hidden></div>
+      </div>
+      <div class="dock-exits">
+        <button id="wardrobe-surprise-btn" class="btn alt" type="button">Surprise me!</button>
+        <button id="wardrobe-back-btn" class="btn" type="button">Back to town</button>
+      </div>
+      <p id="wardrobe-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- The Salty Sparrow: crew upgrades, the rumour board and the captain's log. -->
+  <section id="tavern-screen" class="overlay town tavern hidden" aria-labelledby="tavern-title">
+    <div id="tavern-panel" class="panel dock-panel town-panel">
+      <header class="dock-head">
+        <p class="dock-kicker">Tavern</p>
+        <h2 id="tavern-title">The Salty Sparrow</h2>
+        <p id="tavern-chest" class="dock-chest" aria-live="polite" aria-atomic="true">Treasure chest: <b>0</b> gold</p>
+      </header>
+      <div class="dock-body">
+        <ul id="tavern-up-list" class="up-list" aria-label="Crew upgrades"></ul>
+        <section id="tavern-rumour" class="tavern-rumour" aria-label="Rumour board"></section>
+        <section id="tavern-log" class="tavern-log" aria-label="Captain's log"></section>
+      </div>
+      <div class="dock-exits">
+        <button id="tavern-back-btn" class="btn" type="button">Back to town</button>
+      </div>
+      <p id="tavern-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- The Harbour menu (P / Esc / ☰ in the town): every place one keypress away, and the ways out. -->
+  <div id="harbour-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="harbour-title">
+    <div class="panel">
+      <h2 id="harbour-title">Harbour menu</h2>
+      <button id="harbour-walk-btn" class="btn" type="button">Keep walking</button>
+      <div class="more-actions">
+        <button id="harbour-shipyard-btn" class="btn alt" type="button">Shipyard</button>
+        <button id="harbour-tailor-btn" class="btn alt" type="button">Tailor</button>
+        <button id="harbour-tavern-btn" class="btn alt" type="button">Tavern</button>
+      </div>
+      <div id="harbour-exits" class="more-actions"></div>
+    </div>
+  </div>
+
+  <!-- At the ship's gangplank: the dock's ways out, or stay ashore. -->
+  <div id="aboard-dialog" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="aboard-title">
+    <div class="panel">
+      <h2 id="aboard-title">All aboard?</h2>
+      <div id="aboard-exits" class="more-actions"></div>
+      <button id="aboard-stay-btn" class="btn alt" type="button">Stay ashore</button>
+    </div>
+  </div>
+
+  <!-- "Rowing to Sparrow's Floating Island…" while the shipyard is being built (empty, and so invisible, otherwise). -->
+  <div id="dock-toast" class="dock-toast" role="status" aria-live="polite" aria-atomic="true"></div>
 
   <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues.
        It comes after the other game overlays so it paints on top of an end screen that is already showing. -->

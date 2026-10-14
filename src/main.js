@@ -5,10 +5,8 @@ import { createRenderer, createOcean, createSky, createClouds, createLights, app
 import { toon, noOutline, gradientMap } from './style.js';
 import { createAudio } from './audio.js';
 import { animatePerson } from './people.js';
-import * as europe from './env/europe.js';
-import * as bali from './env/bali.js';
-import * as volcano from './env/volcano.js';
 import * as sparrow from './env/sparrow.js';
+import { LEVELS } from './levels.js';
 import {
   UPGRADES,
   LOOKS,
@@ -54,46 +52,9 @@ const TUTOR_KEY = 'pirates-ahoy-tutorial-done';
 const PURSE_KEY = 'pirates-ahoy-purse'; // the treasure chest: banked gold to spend at the shipyard
 const SHIP_KEY = 'pirates-ahoy-ship'; // the player's upgrades and paint (see upgrades.js)
 
-// Each level: its environment, enemy waves (the next wave sails in once
-// `nextWaveAt` or fewer ships of the current one are left) and difficulty knobs.
-const LEVELS = [
-  {
-    env: europe,
-    difficulty: 'Easy',
-    waves: [['cutter', 'cutter'], ['privateer', 'cutter']],
-    nextWaveAt: 0,
-    maxAttackers: 2, // pirates allowed to attack at once
-    lead: 0.3, // how well enemy gunners lead your motion (0..1)
-    spreadMul: 1.5, // enemy aim error multiplier
-    grace: 5, // seconds after the fly-in before enemies may open fire
-    bonus: 100,
-  },
-  {
-    env: bali,
-    difficulty: 'Medium',
-    waves: [['prahu', 'prahu', 'prahu'], ['junk', 'junk', 'prahu']],
-    nextWaveAt: 1,
-    maxAttackers: 2,
-    lead: 0.55,
-    spreadMul: 1.0,
-    grace: 4,
-    mechanic: 'Light coral slows you down. Prahus sail right over it!',
-    bonus: 200,
-  },
-  {
-    env: volcano,
-    difficulty: 'Hard',
-    waves: [['corsair', 'corsair', 'manowar'], ['inferno']],
-    nextWaveAt: 0,
-    maxAttackers: 2,
-    lead: 0.6,
-    spreadMul: 1.0,
-    grace: 3,
-    bombs: { every: [4.5, 7.5], spread: 9 }, // lava bombs from the volcano
-    mechanic: 'Lava bombs! Steer out of the red circles.',
-    bonus: 400,
-  },
-];
+// The levels (environment, enemy waves, difficulty knobs, audio scene, finale) live in levels.js.
+// Beating a finale level wins the voyage (the Victory screen); so does beating the last level.
+const isFinale = (n) => !!LEVELS[n - 1]?.finale || n >= LEVELS.length;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -177,6 +138,7 @@ const ui = {
   dockPaint: $('dock-paint-groups'),
   dockExits: $('dock-exits'),
   dockLive: $('dock-live'),
+  dockToast: $('dock-toast'),
   error: $('error-screen'),
   recover: $('recover-screen'),
   recoverTitle: $('recover-title'),
@@ -267,14 +229,63 @@ function saveShipConfig(config) {
   }
 }
 
+// The saved chest never pays for an upgrade the saved ship record doesn't have. When storage is full
+// (a write that grows it fails) a purchase still lasts for this visit, but its gold stays in the saved
+// chest: `unsavedSpend` is that gold. Every later save of the chest tries the ship record again first,
+// and the two are only saved without that gold together.
+let unsavedSpend = 0;
+function saveChest() {
+  if (unsavedSpend > 0) {
+    const before = readRaw(SHIP_KEY);
+    if (saveShipConfig(shipConfig)) {
+      if (saveNumber(PURSE_KEY, state.purse)) {
+        unsavedSpend = 0;
+        return true;
+      }
+      // The chest couldn't follow: put the ship record back the way it was.
+      try {
+        if (before === null) localStorage.removeItem(SHIP_KEY);
+        else localStorage.setItem(SHIP_KEY, before);
+        seen[SHIP_KEY] = before;
+      } catch {
+        // storage blocked
+      }
+    }
+  }
+  return saveNumber(PURSE_KEY, clamp(state.purse + unsavedSpend, 0, MAX_GOLD));
+}
+
+// Generic saved record (validated by its module, like the ship record): `parse(raw)` never throws and
+// gives the defaults for a missing record; a record that needed fixing is rewritten.
+function loadRecord(key, parse, serialize) {
+  let raw;
+  try {
+    raw = localStorage.getItem(key);
+  } catch {
+    return parse(null); // storage blocked: defaults for this visit
+  }
+  const value = parse(raw);
+  if (raw !== null && serialize(value) !== raw) saveRecord(key, serialize, value);
+  return value;
+}
+function saveRecord(key, serialize, value) {
+  try {
+    localStorage.setItem(key, serialize(value));
+    return true;
+  } catch {
+    return false; // storage blocked or full: it just won't persist
+  }
+}
+
 // Another tab of the game may have banked gold or changed the ship since this one last read or
 // wrote them: take those records before changing anything, so neither tab undoes the other's work.
-// Returns whether anything changed.
+// (Upgrades bought here but not saved yet stay paid for out of the chest the other tab saved; if the
+// other tab saved a ship record, that one is taken and their gold goes back.) Returns whether anything changed.
 function syncSaved() {
   let changed = false;
   const rawPurse = readRaw(PURSE_KEY);
   if (rawPurse !== null && rawPurse !== seen[PURSE_KEY]) {
-    const purse = loadInt(PURSE_KEY, 0, MAX_GOLD, state.purse);
+    const purse = clamp(loadInt(PURSE_KEY, 0, MAX_GOLD, state.purse + unsavedSpend) - unsavedSpend, 0, MAX_GOLD);
     seen[PURSE_KEY] = readRaw(PURSE_KEY);
     changed = purse !== state.purse;
     state.purse = purse;
@@ -285,6 +296,11 @@ function syncSaved() {
     const config = parseShipConfig(rawShip);
     if (serializeShipConfig(config) !== serializeShipConfig(shipConfig)) {
       shipConfig = config;
+      changed = true;
+    }
+    if (unsavedSpend > 0) {
+      state.purse = clamp(state.purse + unsavedSpend, 0, MAX_GOLD);
+      unsavedSpend = 0;
       changed = true;
     }
   }
@@ -319,7 +335,6 @@ const lights = createLights(scene);
 // Sound (recorded music where there is some, everything else synthesised: see audio.js)
 // ---------------------------------------------------------------------------
 const audio = createAudio();
-const LEVEL_SCENES = ['europe', 'bali', 'volcano'];
 // Browsers only start audio from a user gesture. Capture phase, so it runs before the button/key handlers.
 for (const type of ['pointerdown', 'keydown', 'touchend']) {
   window.addEventListener(type, () => audio.unlock(), { capture: true, passive: true });
@@ -971,7 +986,7 @@ function startLevel(n, { retry = false } = {}) {
   for (const el of [ui.menu, ui.pause, ui.levelDone, ui.over, ui.won, ui.dock]) show(el, false);
   show(ui.hud, true);
   show(ui.hint, false);
-  audio.setScene(LEVEL_SCENES[n - 1]);
+  audio.setScene(def.scene);
   if (!retry) audio.play('wave');
   const m = def.env.meta;
   const firstVoyage = n === 1 && !state.tutorialDone;
@@ -1029,7 +1044,7 @@ function finishLevel() {
   const banked =
     `Banked <b>+${state.banked}</b> gold &middot; Treasure chest: <b>${state.purse}</b> gold`;
 
-  if (state.level >= LEVELS.length) {
+  if (isFinale(state.level)) {
     state.mode = 'won';
     const isBest = state.gold > state.best;
     if (isBest) {
@@ -1066,7 +1081,7 @@ function bankGold(amount) {
   const before = state.purse;
   state.purse = clamp(state.purse + n, 0, MAX_GOLD);
   state.banked = state.purse - before;
-  saveNumber(PURSE_KEY, state.purse);
+  saveChest();
 }
 
 // Leave the voyage between levels for the title screen: progress and the chest are already
@@ -1110,6 +1125,11 @@ function launchVy(t) {
   return clamp((0.8 - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
 }
 
+// Still in the fight: afloat, and not captured, escaped or surrendered (those arrive with boarding).
+function fighting(e) {
+  return e.hp > 0 && !e.captured && !e.escaped && !e.surrendered;
+}
+
 // Position of a point relative to `ship`: distance along the bow and to starboard.
 function relative(ship, tx, tz) {
   const dx = tx - ship.x;
@@ -1124,7 +1144,7 @@ function relative(ship, tx, tz) {
 // Is `e` inside the firing arc on `side` of `ship`, taking its motion into account?
 // (The same intercept that fire() solves, from the ship's centre.)
 function inArc(ship, e, side) {
-  if (e.hp <= 0) return false;
+  if (!fighting(e)) return false;
   const rvx = fwdX(e.h) * e.speed - fwdX(ship.h) * ship.speed;
   const rvz = fwdZ(e.h) * e.speed - fwdZ(ship.h) * ship.speed;
   const px = e.x - ship.x;
@@ -1217,7 +1237,7 @@ function playerFire(side) {
   let fallback = null;
   let fallbackDist = Infinity;
   for (const e of enemies) {
-    if (e.hp <= 0) continue;
+    if (!fighting(e)) continue;
     const r = relative(player, e.x, e.z);
     if (inArc(player, e, side)) {
       if (r.dist < bestDist) {
@@ -1284,7 +1304,7 @@ function damage(ship, amount, x, z, source = 'other') {
         scene.add(mesh);
         coins.push({ mesh, x: ship.x + Math.cos(a) * 2.5, z: ship.z + Math.sin(a) * 2.5, spin: Math.random() * 6 });
       }
-      const left = enemies.filter((e) => e.hp > 0).length;
+      const left = enemies.filter(fighting).length;
       const def = LEVELS[state.level - 1];
       const moreWaves = state.wave < def.waves.length - 1;
       if (left > 0 || moreWaves) {
@@ -1741,7 +1761,7 @@ function updateHints(dt) {
     } else {
       const port = enemies.some((e) => inArc(player, e, -1));
       const star = enemies.some((e) => inArc(player, e, 1));
-      const near = enemies.some((e) => e.hp > 0 && Math.hypot(e.x - player.x, e.z - player.z) < MAX_RANGE);
+      const near = enemies.some((e) => fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) < MAX_RANGE);
       h.offBeam = near && !port && !star ? h.offBeam + dt : 0;
       if (port || star) {
         const side = port ? 'port (left)' : 'starboard (right)';
@@ -1769,11 +1789,13 @@ function step(dt) {
   else state.combatTime += dt;
   state.edgeCooldown = Math.max(0, state.edgeCooldown - dt);
   const def = LEVELS[state.level - 1];
+  // Gameplay motion of the environment itself (drifting ice floes), in simulated time.
+  if (env && env.step) env.step(state.time, dt);
   if (player) updatePlayer(dt);
-  // The nearest pirates get the attack slots (ships escaping from land don't count).
+  // The nearest pirates get the attack slots (ships escaping from land, and treasure galleons, don't count).
   const attackers = new Set(
     enemies
-      .filter((e) => e.hp > 0 && player && e.escapeUntil <= state.time)
+      .filter((e) => fighting(e) && !e.type.merchant && player && e.escapeUntil <= state.time)
       .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
       .slice(0, def.maxAttackers)
   );
@@ -1813,13 +1835,13 @@ function step(dt) {
     state.nextBomb = state.combatTime + rand(...def.bombs.every);
   }
 
-  const alive = enemies.filter((e) => e.hp > 0).length;
+  const alive = enemies.filter(fighting).length;
   if (state.wave < def.waves.length - 1 && alive <= def.nextWaveAt) {
     spawnWave(state.wave + 1);
   } else if (alive === 0 && state.wave === def.waves.length - 1) {
     state.clearTimer = 2.5;
     clearProjectiles(true); // enemy shots and lava still in the air fizzle out
-    const won = state.level === LEVELS.length;
+    const won = isFinale(state.level);
     audio.play(won ? 'victory' : 'levelClear');
     const boss = state.lastBossSunk ? `<small>${state.lastBossSunk} is sunk!</small>` : '';
     showBanner(won ? `Victory!${boss}<small>The seas are yours</small>` : `Level cleared!${boss}<small>Grab the loot</small>`, 2.5);
@@ -2186,6 +2208,9 @@ const TAP_ACTIONS = {
   sailDown: () => changeSail(-1),
   firePort: () => playerFire(-1),
   fireStar: () => playerFire(1),
+  // The act pad (hidden until the boarding update wires these up: cycle ammo; grapple / heave / cut).
+  ammo: () => {},
+  board: () => {},
 };
 for (const btn of document.querySelectorAll('[data-tap]')) {
   const act = () => {
@@ -2230,10 +2255,10 @@ $('retry-btn').addEventListener('click', retryLevel);
 $('menu-btn').addEventListener('click', showMenu);
 $('again-btn').addEventListener('click', showMenu);
 $('exit-btn').addEventListener('click', exitVoyage);
-$('dock-btn').addEventListener('click', () => openDock('levelDone'));
-$('over-dock-btn').addEventListener('click', () => openDock('over'));
-$('won-dock-btn').addEventListener('click', () => openDock('won'));
-$('menu-dock-btn').addEventListener('click', () => openDock('menu'));
+$('dock-btn').addEventListener('click', () => openDockSoon('levelDone'));
+$('over-dock-btn').addEventListener('click', () => openDockSoon('over'));
+$('won-dock-btn').addEventListener('click', () => openDockSoon('won'));
+$('menu-dock-btn').addEventListener('click', () => openDockSoon('menu'));
 for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
   btn.addEventListener('click', (e) => {
     const target = e.currentTarget;
@@ -2313,6 +2338,11 @@ function menuShip() {
 const DOCK_FROM = ['menu', 'levelDone', 'over', 'won'];
 // Ways out of the dock, by where the player came from; the first one is the main action.
 const DOCK_EXITS = { levelDone: ['next', 'menu'], over: ['retry', 'menu'], menu: ['title'], won: ['title'] };
+function dockExits(from) {
+  // After a finale with more voyage to come (Act II), the dock can also sail on to the next level.
+  if (from === 'won') return state.level < LEVELS.length ? ['next', 'title'] : DOCK_EXITS.won;
+  return DOCK_EXITS[from] || DOCK_EXITS.menu;
+}
 const PAINT_PARTS = [
   ['hull', 'Hull paint'],
   ['sails', 'Sails'],
@@ -2375,10 +2405,28 @@ function announce(text) {
   ui.dockLive.textContent = ui.dockLive.textContent === text ? `${text} ` : text;
 }
 
+// Building the island and the ship holds the page up for a moment (seconds on a slow device). From a
+// button, first say where we're going and let that be drawn (two animation frames), then open the dock.
+// The test API's dock.open() opens it at once.
+let dockSoon = 0;
+function openDockSoon(from) {
+  if (state.mode === 'dock' || dockSoon) return;
+  const mode = state.mode;
+  ui.dockToast.textContent = "Rowing to Sparrow's Floating Island…";
+  dockSoon = requestAnimationFrame(() => {
+    dockSoon = requestAnimationFrame(() => {
+      dockSoon = 0;
+      // Only if the player is still where they pressed the button (not sailing on or back at the title).
+      if (state.mode === mode) openDock(from);
+      ui.dockToast.textContent = '';
+    });
+  });
+}
+
 function openDock(from) {
   if (state.mode === 'dock') return true;
   if (!DOCK_FROM.includes(from)) from = DOCK_FROM.includes(state.mode) ? state.mode : 'menu';
-  if (from === 'levelDone' && state.level >= LEVELS.length) from = 'won';
+  if (from === 'levelDone' && isFinale(state.level)) from = 'won';
   if (activeModal() && !state.contextLost) closeModal(modal);
   blurActive();
   clearLevelEntities();
@@ -2439,7 +2487,7 @@ function closeDock() {
 
 function leaveDock(action) {
   if (state.mode !== 'dock') return false;
-  const exits = DOCK_EXITS[dock.from];
+  const exits = dockExits(dock.from);
   if (action === undefined) action = exits[0];
   if (action === 'menu' && !exits.includes('menu')) action = 'title';
   if (!exits.includes(action)) return false;
@@ -2561,9 +2609,10 @@ function buyUpgrade(id) {
   }
   state.purse -= cost;
   shipConfig.up[id] = Math.min(maxTier(id), shipConfig.up[id] + 1);
-  // The ship's record first, the chest only once that is saved: if storage is full, the purchase
-  // lasts for this visit and the gold is still in the saved chest, rather than spent on nothing.
-  if (saveShipConfig(shipConfig)) saveNumber(PURSE_KEY, state.purse);
+  // The ship's record first, the chest only together with it: if storage is full, the purchase lasts
+  // for this visit and the gold is still in the saved chest, rather than spent on nothing (saveChest()).
+  unsavedSpend += cost;
+  saveChest();
   rebuildDockShip();
   renderDock();
   retrigger(ui.dockChest, 'bump');
@@ -2582,7 +2631,9 @@ function setPaint(part, id) {
   if (syncSaved() && shipConfig.look[part] === id) rebuildDockShip(); // changed in another tab
   if (shipConfig.look[part] !== id) {
     shipConfig.look[part] = id;
-    saveShipConfig(shipConfig);
+    // An upgrade bought while storage was full rides along in this record: save the chest with it.
+    if (unsavedSpend > 0) saveChest();
+    else saveShipConfig(shipConfig);
     rebuildDockShip();
     celebrate(false);
   }
@@ -2719,7 +2770,7 @@ function renderDockExits() {
     title: 'Back to the title',
   };
   ui.dockExits.innerHTML = '';
-  DOCK_EXITS[dock.from].forEach((action, i) => {
+  dockExits(dock.from).forEach((action, i) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = i === 0 ? 'btn' : 'btn alt';
@@ -2972,7 +3023,7 @@ function updateHud(force = false, dt = 0) {
   }
   const def = LEVELS[state.level - 1];
   setText(ui.levelName, 'level', `${state.level}. ${def.env.meta.name}`, force);
-  const alive = enemies.filter((e) => e.hp > 0).length;
+  const alive = enemies.filter(fighting).length;
   const pending = def.waves.slice(state.wave + 1).reduce((n, w) => n + w.length, 0);
   setText(ui.ships, 'ships', pending ? `${alive} +${pending}` : `${alive}`, force);
   setText(ui.gold, 'gold', state.gold, force);
@@ -2987,7 +3038,7 @@ function updateHud(force = false, dt = 0) {
   setClass(ui.gunPort, 'gp', 'target', live && enemies.some((e) => inArc(player, e, -1)), force);
   setClass(ui.gunStar, 'gs', 'target', live && enemies.some((e) => inArc(player, e, 1)), force);
 
-  const boss = enemies.find((e) => e.type.boss && e.hp > 0);
+  const boss = enemies.find((e) => e.type.boss && e.hp > 0 && !e.captured && !e.escaped);
   if (force || shown.boss !== !!boss) {
     show(ui.boss, !!boss);
     shown.boss = !!boss;
@@ -3060,7 +3111,7 @@ function drawMinimap() {
     mm.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
   for (const e of enemies) {
-    if (e.hp <= 0) continue;
+    if (!fighting(e)) continue;
     let [x, y] = toMap(e.x, e.z);
     // Pin off-map enemies to the rim so you can always find them.
     const dx = x - c;
@@ -3100,6 +3151,9 @@ function drawMinimap() {
 // ---------------------------------------------------------------------------
 const clock = new THREE.Clock();
 let visualTime = 0;
+// What env.update(t, dt, ctx) gets besides the visual time: the simulated time (moving obstacles are
+// placed by it) and the camera.
+const envFrame = { simTime: 0, camera };
 
 function syncShip(s, t) {
   const wy = ocean.heightAt(s.x, s.z, t);
@@ -3198,7 +3252,7 @@ function updateCamera(dt, paused) {
     let want = 0;
     let best = MAX_RANGE + 10;
     for (const e of enemies) {
-      if (e.hp <= 0) continue;
+      if (!fighting(e)) continue;
       const r = relative(player, e.x, e.z);
       if (r.dist < best) {
         best = r.dist;
@@ -3323,7 +3377,10 @@ function frame() {
   ocean.update(t, focusX, focusZ);
   sky.update(camera);
   clouds.update(paused ? 0 : dt, focusX, focusZ);
-  if (env && !paused) env.update(t, dt);
+  if (env && !paused) {
+    envFrame.simTime = state.time;
+    env.update(t, dt, envFrame);
+  }
   if (state.mode === 'dock' && t < dock.cheerUntil) for (const p of dock.cheering) animatePerson(p, t, 'cheer');
 
   if (state.mode !== 'menu' && state.mode !== 'dock') {
@@ -3374,6 +3431,130 @@ window.__game = {
   relative,
   launchBomb,
   step,
+  // Still in the fight (afloat, not captured, escaped or surrendered).
+  fighting,
+  // Put a ship somewhere (tests): position, and heading when given.
+  place(ship, x, z, h) {
+    if (!ship) return;
+    ship.x = x;
+    ship.z = z;
+    if (h !== undefined) ship.h = h;
+  },
+  // ---- "Boarders Away!" test API (SPEC2 §9.3): placeholders with safe defaults until the systems land.
+  combat: {
+    rules: {},
+    get ammo() {
+      return 'round';
+    },
+    setAmmo: () => false,
+    cycleAmmo: () => 'round',
+    get unlockedAmmo() {
+      return ['round'];
+    },
+    seed: () => {},
+    forceCrit: () => {},
+    get log() {
+      return [];
+    },
+    setCrew: () => false,
+  },
+  grapple: () => ({ ok: false, reason: 'none' }),
+  boarding: {
+    get active() {
+      return false;
+    },
+    get phase() {
+      return null;
+    },
+    get kind() {
+      return null;
+    },
+    get target() {
+      return null;
+    },
+    get heave() {
+      return 0;
+    },
+    get last() {
+      return null;
+    },
+    odds: () => null,
+    heavePress: () => 0,
+    cut: () => false,
+    cutHold: () => {},
+    skip: () => {},
+    resolveNow: () => false,
+  },
+  get crew() {
+    return { crew: 0, max: 0 };
+  },
+  spawn: () => null,
+  mechanics: {
+    get state() {
+      return {};
+    },
+  },
+  armory: {
+    get config() {
+      return null;
+    },
+    set: () => false,
+    buy: () => false,
+  },
+  get feats() {
+    return null;
+  },
+  setFeats: () => false,
+  get look() {
+    return null;
+  },
+  get tips() {
+    return 0;
+  },
+  // Validated and saved; the player's ship is rebuilt at the next level (and at once in the shipyard).
+  setShipConfig(cfg) {
+    shipConfig = parseShipConfig(cfg);
+    // (Upgrades bought but not saved are replaced: their gold, still in the saved chest, comes back.)
+    state.purse = clamp(state.purse + unsavedSpend, 0, MAX_GOLD);
+    unsavedSpend = 0;
+    saveShipConfig(shipConfig);
+    if (state.mode === 'dock') {
+      rebuildDockShip();
+      renderDock();
+    }
+    return parseShipConfig(shipConfig);
+  },
+  wardrobe: {
+    wear: () => ({ ok: false, reason: 'unknown' }),
+    buy: () => ({ ok: false, reason: 'unknown' }),
+  },
+  town: {
+    get active() {
+      return false;
+    },
+    get view() {
+      return null;
+    },
+    get pos() {
+      return null;
+    },
+    get place() {
+      return null;
+    },
+    get walk() {
+      return null;
+    },
+    get captain() {
+      return null;
+    },
+    setMove: () => {},
+    walkTo: () => false,
+    goTo: () => false,
+    interact: () => false,
+    open: () => false,
+    back: () => false,
+    simulate: () => {},
+  },
   // The shipyard: open('menu' | 'levelDone' | 'over' | 'won'), leave(['next' | 'retry' | 'menu' | 'title'];
   // default: the main way out for where it was opened from), buy(upgrade id), paint(part, look id).
   dock: {
@@ -3391,6 +3572,12 @@ window.__game = {
     get layout() {
       return dockLayout ? { ...dockLayout, fov: camera.fov, angle: dock.a } : null;
     },
+    // Which dock view is showing (only the shipyard until the town arrives).
+    get view() {
+      return state.mode === 'dock' ? 'shop' : null;
+    },
+    ashore: () => false,
+    back: () => false,
   },
   camera,
   scene,
