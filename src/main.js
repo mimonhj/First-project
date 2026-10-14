@@ -152,6 +152,7 @@ const ui = {
   hitmark: $('hitmark'),
   muteBtn: $('mute-btn'),
   menuMute: $('menu-mute'),
+  dockMute: $('dock-mute'),
   menu: $('menu-screen'),
   levelCards: $('level-cards'),
   pause: $('pause-screen'),
@@ -221,11 +222,23 @@ function loadInt(key, min, max, fallback) {
   return value;
 }
 
+// The chest and ship records as this tab last read or wrote them (see syncSaved).
+const seen = { [PURSE_KEY]: null, [SHIP_KEY]: null };
+function readRaw(key) {
+  try {
+    return localStorage.getItem(key);
+  } catch {
+    return null; // storage blocked
+  }
+}
+
 function saveNumber(key, v) {
   try {
     localStorage.setItem(key, String(v));
+    if (key in seen) seen[key] = String(v);
+    return true;
   } catch {
-    // Storage blocked: progress just won't persist.
+    return false; // storage blocked or full: progress just won't persist
   }
 }
 
@@ -245,10 +258,37 @@ function loadShipConfig() {
 
 function saveShipConfig(config) {
   try {
-    localStorage.setItem(SHIP_KEY, serializeShipConfig(config));
+    const text = serializeShipConfig(config);
+    localStorage.setItem(SHIP_KEY, text);
+    seen[SHIP_KEY] = text;
+    return true;
   } catch {
-    // Storage blocked: the shipyard work just won't persist.
+    return false; // storage blocked or full: the shipyard work just won't persist
   }
+}
+
+// Another tab of the game may have banked gold or changed the ship since this one last read or
+// wrote them: take those records before changing anything, so neither tab undoes the other's work.
+// Returns whether anything changed.
+function syncSaved() {
+  let changed = false;
+  const rawPurse = readRaw(PURSE_KEY);
+  if (rawPurse !== null && rawPurse !== seen[PURSE_KEY]) {
+    const purse = loadInt(PURSE_KEY, 0, MAX_GOLD, state.purse);
+    seen[PURSE_KEY] = readRaw(PURSE_KEY);
+    changed = purse !== state.purse;
+    state.purse = purse;
+  }
+  const rawShip = readRaw(SHIP_KEY);
+  if (rawShip !== null && rawShip !== seen[SHIP_KEY]) {
+    seen[SHIP_KEY] = rawShip;
+    const config = parseShipConfig(rawShip);
+    if (serializeShipConfig(config) !== serializeShipConfig(shipConfig)) {
+      shipConfig = config;
+      changed = true;
+    }
+  }
+  return changed;
 }
 
 // ---------------------------------------------------------------------------
@@ -303,7 +343,7 @@ function sfxAt(x, z, extra) {
 }
 
 function updateMuteButtons() {
-  for (const btn of [ui.muteBtn, ui.menuMute]) {
+  for (const btn of [ui.muteBtn, ui.menuMute, ui.dockMute]) {
     btn.classList.toggle('muted', audio.muted);
     btn.setAttribute('aria-pressed', String(audio.muted));
     btn.setAttribute('aria-label', audio.muted ? 'Unmute sound' : 'Mute sound');
@@ -457,6 +497,8 @@ const state = {
   ghostPct: 100,
   hint: { step: 0, t: 0, offBeam: 0, hits: 0, text: '' },
 };
+seen[PURSE_KEY] = readRaw(PURSE_KEY);
+seen[SHIP_KEY] = readRaw(SHIP_KEY);
 
 const input = { left: false, right: false };
 let player = null;
@@ -771,6 +813,11 @@ function setEnvironment(mod, seed) {
   ocean.setFoam(colliders);
   applyPalette(scene, mod.palette, { ocean, sky, clouds, lights });
   foamColor = mod.palette.waterFoam ?? 0xffffff;
+  // A new scene costs differently (the shipyard's crowd barely gains from fewer pixels, a level does):
+  // forget what the last one taught the adaptive resolution.
+  perf.floor = 0;
+  perf.pending = 0;
+  perf.probing = false;
   resetPerfWindow(1.5);
 }
 
@@ -1015,6 +1062,7 @@ function finishLevel() {
 // Put gold into the treasure chest (and save it).
 function bankGold(amount) {
   const n = Math.max(0, Math.round(Number(amount) || 0));
+  syncSaved();
   const before = state.purse;
   state.purse = clamp(state.purse + n, 0, MAX_GOLD);
   state.banked = state.purse - before;
@@ -1898,7 +1946,7 @@ function togglePause() {
 // many tabs). Stop the fight so nothing can hit you while you can't see, say so,
 // and only carry on when the player says so after the graphics come back.
 // ---------------------------------------------------------------------------
-const recovery = { resume: false, pauseWasOpen: false };
+const recovery = { resume: false, pauseWasOpen: false, focus: null };
 function onContextLost() {
   state.contextLost = true;
   pausedDrawn = false;
@@ -1907,12 +1955,19 @@ function onContextLost() {
   if (activeModal() !== ui.recover) {
     recovery.pauseWasOpen = activeModal() === ui.pause;
     recovery.resume = state.mode === 'playing';
+    // At the shipyard, focus goes back where it was (a Buy button, a swatch) when the view returns.
+    recovery.focus = state.mode === 'dock' && ui.dock.contains(document.activeElement) ? document.activeElement : null;
   }
   if (state.mode === 'playing') pauseGame();
   if (activeModal() === ui.pause) closeModal(ui.pause);
   ui.recoverTitle.textContent = 'Graphics paused';
-  ui.recoverMsg.textContent =
-    'Your device reset the 3D graphics. The voyage is paused and your progress is safe. Waiting for the graphics to come back…';
+  const what =
+    state.mode === 'dock'
+      ? 'The shipyard will be back in a moment; your treasure chest and your ship are safe.'
+      : state.mode === 'menu'
+        ? 'Your progress is safe.'
+        : 'The voyage is paused and your progress is safe.';
+  ui.recoverMsg.textContent = `Your device reset the 3D graphics. ${what} Waiting for the graphics to come back…`;
   show(ui.recoverBtn, false);
   openModal(ui.recover);
 }
@@ -1934,7 +1989,13 @@ function onContextRestored() {
   } else {
     closeModal(ui.recover);
     if (recovery.pauseWasOpen) openModal(ui.pause); // it was paused before: stay paused
-    else if (state.mode === 'dock') dockTab(dock.tab).focus({ preventScroll: true }); // back to the shipyard panel
+    else if (state.mode === 'dock') {
+      // back to the shipyard panel, where the player was if that control is still there
+      const f = recovery.focus;
+      const back = f && f.isConnected && ui.dock.contains(f) && f.getClientRects().length > 0 ? f : dockTab(dock.tab);
+      back.focus({ preventScroll: f !== back });
+    }
+    recovery.focus = null;
   }
 }
 function continueAfterRecovery() {
@@ -1980,7 +2041,10 @@ window.addEventListener('keydown', (e) => {
   // Enter do nothing, arrows scroll the panel. With nothing focused, ←/→ (or A/D) turn the view.
   if (state.mode === 'dock' && !open) {
     if (k === 'm') {
-      if (!e.repeat) toggleMute();
+      if (!e.repeat) {
+        toggleMute();
+        announce(audio.muted ? 'Sound off.' : 'Sound on.');
+      }
     } else if (KEYMAP[k] && !ui.dock.contains(document.activeElement)) {
       e.preventDefault();
       nudgeDockView(KEYMAP[k] === 'left' ? -1 : 1);
@@ -2178,6 +2242,21 @@ for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
     else togglePause();
   });
 }
+// The shipyard's sound button keeps focus (the dock leaves Space and Enter to the focused button).
+ui.dockMute.addEventListener('click', toggleMute);
+
+// The chest or the ship changed in another tab of the game: show it here too.
+window.addEventListener('storage', (e) => {
+  if (e.key !== null && e.key !== PURSE_KEY && e.key !== SHIP_KEY) return;
+  if (!syncSaved()) return;
+  if (state.mode === 'dock') {
+    rebuildDockShip();
+    renderDock();
+  } else if (state.mode === 'menu') {
+    renderLevelCards();
+    menuShip();
+  }
+});
 
 // Level select cards on the title screen.
 function renderLevelCards() {
@@ -2466,6 +2545,11 @@ function buyUpgrade(id) {
   if (state.mode !== 'dock') return false;
   const u = UPGRADES.find((x) => x.id === id);
   if (!u) return false;
+  if (syncSaved()) {
+    // changed in another tab: show that ship first
+    rebuildDockShip();
+    renderDock();
+  }
   const cost = nextCost(shipConfig, id);
   if (cost === null) {
     announce(`${u.name} is fully upgraded.`);
@@ -2476,9 +2560,10 @@ function buyUpgrade(id) {
     return false;
   }
   state.purse -= cost;
-  saveNumber(PURSE_KEY, state.purse);
   shipConfig.up[id] = Math.min(maxTier(id), shipConfig.up[id] + 1);
-  saveShipConfig(shipConfig);
+  // The ship's record first, the chest only once that is saved: if storage is full, the purchase
+  // lasts for this visit and the gold is still in the saved chest, rather than spent on nothing.
+  if (saveShipConfig(shipConfig)) saveNumber(PURSE_KEY, state.purse);
   rebuildDockShip();
   renderDock();
   retrigger(ui.dockChest, 'bump');
@@ -2494,6 +2579,7 @@ function setPaint(part, id) {
   if (state.mode !== 'dock' || !PAINT_PARTS.some(([p]) => p === part)) return false;
   const look = LOOKS[part].find((l) => l.id === id);
   if (!look) return false;
+  if (syncSaved() && shipConfig.look[part] === id) rebuildDockShip(); // changed in another tab
   if (shipConfig.look[part] !== id) {
     shipConfig.look[part] = id;
     saveShipConfig(shipConfig);
@@ -2505,7 +2591,7 @@ function setPaint(part, id) {
   return true;
 }
 
-// A shower of gold sparkles over the deck (and a cheer, if the crew knows how).
+// A shower of gold sparkles over the deck, and for a purchase a cheer from the crew aboard.
 function celebrate(big) {
   const s = dock.ship;
   if (!s) return;
@@ -2513,16 +2599,12 @@ function celebrate(big) {
   puff(s.position.x, 3, s.position.z, n, 0xffd23f, 7, 9, 0.2, 0.9, GRAVITY * 0.45, false, 'glow');
   puff(s.position.x, 3, s.position.z, Math.round(n / 2), 0xffffff, 6, 8, 0.15, 0.8, GRAVITY * 0.45, false, 'glow');
   if (!big) return;
-  if (typeof env.cheer === 'function') {
-    env.cheer(1.6);
-  } else {
-    // The crew aboard throws their arms (and mops) in the air for a moment.
-    dock.cheering = [];
-    s.traverse((o) => {
-      if (o.userData && o.userData.keep && o.userData.kind) dock.cheering.push(o);
-    });
-    dock.cheerUntil = visualTime + 1.6;
-  }
+  // The crew aboard throws their arms (and mops) in the air for a moment.
+  dock.cheering = [];
+  s.traverse((o) => {
+    if (o.userData && o.userData.keep && o.userData.kind) dock.cheering.push(o);
+  });
+  dock.cheerUntil = visualTime + 1.6;
 }
 
 // ---- Panel ----
@@ -2553,7 +2635,7 @@ function buildDockPanel() {
     li.dataset.id = u.id;
     li.innerHTML =
       `<span class="up-ico" aria-hidden="true">${UP_ICONS[u.id] || ''}</span>` +
-      `<div class="up-head"><h3 class="up-name" id="up-${u.id}-name">${u.name}</h3><span class="pips" role="img"></span></div>` +
+      `<div class="up-head"><h3 class="up-name">${u.name}</h3><span class="pips" role="img"></span></div>` +
       `<p class="up-stat"><span class="up-statname">${u.stat}:</span> <span class="up-values"></span></p>` +
       `<p class="up-blurb">${u.blurb}</p>` +
       '<div class="up-buy">' +
@@ -2584,11 +2666,17 @@ function buildDockPanel() {
   ui.dockUpList.addEventListener('click', (e) => {
     const b = e.target instanceof Element && e.target.closest('[data-buy]');
     if (!b) return;
-    // A double-click is one purchase, not two.
+    // A double-click (or double-tap) is one purchase, not two. A purchase rebuilds the ship, which
+    // can hold up a slow device for longer than a double-click lasts, so the second click is often
+    // handled well after it happened: it is the second click of a multi-click (detail 2), and its
+    // input time (timeStamp) falls before the first purchase finished. Keyboard clicks have detail 0.
+    if (e.detail > 1) return;
+    const id = b.dataset.buy;
     const now = performance.now();
-    if (dock.lastBuy.id === b.dataset.buy && now - dock.lastBuy.at < 400) return;
-    dock.lastBuy = { id: b.dataset.buy, at: now };
-    buyUpgrade(b.dataset.buy);
+    const at = e.timeStamp > 0 && e.timeStamp <= now ? e.timeStamp : now;
+    if (dock.lastBuy.id === id && at - dock.lastBuy.at < 400) return;
+    buyUpgrade(id);
+    dock.lastBuy = { id, at: performance.now() }; // from when this purchase finished
   });
   // A held Enter clicks again on every auto-repeat: one press is one purchase (or one paint).
   ui.dockPanel.addEventListener('keydown', (e) => {
@@ -2670,7 +2758,7 @@ function renderDock() {
       reason = 'Fully upgraded';
     } else {
       btn.innerHTML = `<span class="buy-word">Buy</span><span class="buy-cost"><span class="coin" aria-hidden="true"></span>${cost}</span>`;
-      btn.setAttribute('aria-label', `Buy ${u.name} for ${cost} gold`);
+      btn.setAttribute('aria-label', `Buy ${cost} gold: ${u.name}`); // starts with what the button says (Buy 300)
       if (state.purse < cost) reason = `Need ${cost - state.purse} more gold`;
     }
     // Out-of-reach buttons stay focusable (aria-disabled) so focus never drops out of the panel
@@ -2753,7 +2841,9 @@ function dockFraming() {
   let fy = 0;
   let fw = W;
   let fh = H;
-  const sheet = r.width > W * 0.7;
+  // Same test as the stylesheet, which makes the panel a bottom sheet on every portrait screen
+  // (capped at 620px wide, so on a wide portrait screen it doesn't span the width).
+  const sheet = window.matchMedia?.('(orientation: portrait)').matches ?? r.width > W * 0.7;
   if (r.width && r.height) {
     if (sheet) fh = clamp(r.top, H * 0.25, H);
     else if (r.left > W * 0.3) fw = clamp(r.left, W * 0.3, W);
@@ -3168,10 +3258,13 @@ function updateCamera(dt, paused) {
   }
 }
 
+const gl = view.renderer.getContext();
 function frame() {
   requestAnimationFrame(frame);
   const rawDt = clock.getDelta();
-  if (state.contextLost) return; // nothing can be drawn; the game is paused (see onContextLost)
+  // Nothing can be drawn; the game is paused (see onContextLost). The context can be gone a moment
+  // before the 'webglcontextlost' event says so: don't build shaders on a dead context then.
+  if (state.contextLost || gl.isContextLost()) return;
   trackPerformance(rawDt);
   const dt = Math.min(rawDt, MAX_FRAME_DT);
   audio.update(dt);

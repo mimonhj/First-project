@@ -482,12 +482,20 @@ async function shotColours(page) {
     const G = window.__game;
     let crew = 0;
     if (G.dock.ship) G.dock.ship.traverse((o) => { if (o.userData && o.userData.keep && o.userData.kind) crew++; });
+    // Triangles of the townsfolk (everyone not aboard the docked ship), per person.
+    const aboard = (o) => { for (let n = o; n; n = n.parent) if (n === G.dock.ship) return true; return false; };
+    let folk = 0;
+    let folkTris = 0;
+    G.scene.traverse((o) => { if (o.isSkinnedMesh && !aboard(o)) { folk++; folkTris += o.geometry.index.count / 3; } });
     return {
       mode: G.state.mode,
       from: G.dock.from,
       people: G.env.peopleCount,
       crew,
       calls: G.renderInfo.calls,
+      triangles: G.renderInfo.triangles,
+      folk,
+      folkTris: Math.round(folkTris / Math.max(1, folk)),
       chest: document.getElementById('dock-chest-gold').textContent,
       exits: [...document.querySelectorAll('#dock-exits button')].map((b) => b.textContent.trim()).join(' | '),
     };
@@ -495,6 +503,9 @@ async function shotColours(page) {
   check(dock.mode === 'dock' && dock.from === 'won' && dock.crew >= 5 && dock.people >= 20, `"Visit the dock" opens Sparrow's Floating Island: ${dock.crew} crew cleaning the ship, ${dock.people} people in all`);
   check(dock.chest === String(chestAtWin) && dock.exits === 'Back to the title', `the shipyard shows the chest (${dock.chest} gold) and the way back (${dock.exits})`);
   check(dock.calls > 0 && dock.calls <= 450, `draw calls at the dock stay within the budget (${dock.calls} of 450)`);
+  // The townsfolk are only ever seen small: they use the light build, which keeps the dock's triangle
+  // count (both passes: colour and ink outline) well under what a full-detail crowd costs (~1.74M).
+  check(dock.folk >= 20 && dock.folkTris <= 4000 && dock.triangles > 0 && dock.triangles <= 1500000, `the dock's ${dock.folk} townsfolk are light (${dock.folkTris} triangles each) and the frame stays under 1.5M triangles (${dock.triangles})`);
   await snap(page, '8-dock.png');
   const dockColours = await shotColours(page);
   check(dockColours > 40, `the dock renders with rich colour (${dockColours} colour buckets)`);

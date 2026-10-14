@@ -124,7 +124,7 @@ Upgrades and paint are saved and used everywhere: on the title screen and on eve
 | Move through the panel | `Tab` / `Shift+Tab` | scroll the panel |
 | Switch between Upgrades and Paint | `←` `→` on the tabs (`Home` / `End`) | tap a tab |
 | Buy an upgrade, pick a paint | click, `Enter` or `Space` | tap |
-| Mute | `M` | the speaker button on the title screen (there is none in the shipyard) |
+| Mute | `M`, or the speaker button in a top corner | the speaker button in a top corner |
 
 The view also sways slowly by itself (not when the system asks for reduced motion). There is no
 pause in the shipyard: `P`, `Esc` and `Enter` (with no button focused) do nothing there.
@@ -208,7 +208,8 @@ Chromium with Playwright:
     really fails the check. Short offline renders must also give finite, non-silent stereo audio.
   - a bot captain playing all three levels with simulated controls, to show every level can be won
   - the shipyard, visited from the victory screen: the banked chest, the crew aboard and the town's
-    people, draw calls within budget (450) and a screenshot (`8-dock.png`)
+    people, draw calls within budget (450), the light build of the townsfolk keeping the frame under
+    1.5M triangles, and a screenshot (`8-dock.png`)
 - `tests/controls.cjs` (`npm run test:controls`): focused regressions.
   - small-screen layouts (320x480 to desktop, small landscape phones too) keep every HUD control
     on screen, the hint readable and clear of the level banner, and the boss name whole
@@ -220,26 +221,33 @@ Chromium with Playwright:
   - the pause dialog keeps keyboard focus inside and hands it back to the game
   - saved best score, progress and tutorial records are validated (Infinity, negative, garbage...)
   - losing the WebGL context pauses the fight and waits for the player when the view comes back,
-    also after a second loss and on the level-cleared and shipwrecked screens (uses the
-    browser's `WEBGL_lose_context`; reported as skipped if it isn't available)
+    also after a second loss and on the level-cleared and shipwrecked screens; at the shipyard the
+    dialog talks about the shipyard and focus returns to where it was, and a loss while the scenery
+    is being built gives no errors (uses the browser's `WEBGL_lose_context`; reported as skipped if
+    it isn't available)
   - the shipyard and Sparrow's Floating Island:
     - the level-cleared choices (sail on, visit the dock, main menu; `Enter` still sails on), and
       banking exactly each cleared level's earnings, never a lost attempt's
     - the dock: the ship at its berth with its crew aboard (and moving), the townsfolk at work
     - buying: the gold comes out of the chest and is saved, the ship is rebuilt with more cannons
       (counted on the model) and the next level's broadside fires that many balls; Buy buttons that
-      are out of reach or maxed say why and buy nothing, a double-click or a held `Enter` buys once
+      are out of reach or maxed say why and buy nothing, a double-click or a held `Enter` buys once,
+      also on a slow device where each purchase holds the page up for longer than a double-click
+    - the hull scrubber's plank, ropes and bucket stay clear of the gun barrels for every number
+      and size of cannons
     - paint is free, saved, marked with `aria-pressed` and shows on the ship
     - the ways out by where you came from (level cleared, shipwrecked, title), and that `P`, `Esc`,
       `Enter` and `Space` do nothing in the dock
     - keyboard only: `Tab` reaches the tabs, every Buy button, the swatches and the ways out, each
-      with a visible focus ring; `Enter` and `Space` buy, arrows switch tabs
+      with a visible focus ring; `Enter` and `Space` buy, arrows switch tabs; `M` mutes and says so,
+      and `Shift+Tab` reaches the sound button
     - corrupt saved chest and ship records fall back safely and are rewritten; with storage
       blocked the shipyard still works for the visit
-    - the panel at 320x480, 390x844, 844x390, 568x320 and 1280x720: no page scroll, every control
-      on screen or reachable by scrolling the panel, 44px targets, nothing overlapping, the ship
-      framed beside or above the panel, and every text in the panel at 4.5:1 contrast or better
-      (3:1 for large text)
+    - the panel at 320x480, 390x844, 844x390, 568x320, 1280x720 and 1024x1366 (a portrait tablet
+      wider than the bottom sheet): no page scroll, every control on screen or reachable by
+      scrolling the panel, 44px targets, nothing overlapping, the ship framed beside or above the
+      panel, a sound button on screen that a tap or click toggles, and every text in the panel at
+      4.5:1 contrast or better (3:1 for large text)
 - `tests/audio.cjs` (`npm run test:audio`, about two minutes): the recorded audio.
   - every file in `RECORDED` is served as `audio/mpeg`, decodes, and is stereo, finite, not silent and
     not clipping

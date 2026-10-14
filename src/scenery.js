@@ -206,6 +206,10 @@ function createOutlinePass(renderer, { thickness = 0.003, color = [0, 0, 0] } = 
       renderer.shadowMap.enabled = false;
       try {
         scene.traverse(prepare);
+        // Same frame as the colour pass: three updates skeletons (bone textures), geometry and
+        // instance matrices once per info.render.frame, which each render() counts up. They are
+        // already up to date, so don't let this second render upload them all again.
+        renderer.info.render.frame--;
         renderer.render(scene, camera);
       } finally {
         for (let i = 0; i < swapped.length; i++) {

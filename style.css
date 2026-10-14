@@ -613,7 +613,8 @@ kbd {
 .btn:hover { filter: brightness(1.07); }
 .btn:active { transform: translateY(4px); box-shadow: 0 2px 0 var(--ink); }
 .btn.alt { background: #fff; }
-.btn:focus-visible, .icon-btn:focus-visible, .level-card:focus-visible, .menu-mute:focus-visible { outline: 4px solid var(--teal); outline-offset: 3px; }
+/* The darker teal: at least 3:1 against the parchment, white and gold around the controls. */
+.btn:focus-visible, .icon-btn:focus-visible, .level-card:focus-visible, .menu-mute:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 3px; }
 
 .best, .hint { font-size: 13px; opacity: 0.75; margin-bottom: 0; }
 .final strong { color: var(--red); font-size: 30px; }
@@ -1031,6 +1032,7 @@ body.docked.dragging #game { cursor: grabbing; }
     var(--paper);
   scrollbar-width: thin;
   scrollbar-color: rgba(29, 19, 48, 0.45) transparent;
+  scroll-padding-block: 10px; /* a control scrolled into view keeps its whole focus ring in view */
 }
 
 .up-list { list-style: none; margin: 0; padding: 0; }
@@ -1178,6 +1180,7 @@ body.docked.dragging #game { cursor: grabbing; }
 .swatch[aria-pressed="true"] { background: #fff1bf; box-shadow: 0 0 0 3px var(--gold), 0 3px 0 3px var(--ink); }
 .swatch[aria-pressed="true"]::after {
   content: "\2713";
+  content: "\2713" / ""; /* decorative: not part of the button's name (browsers without alt text keep the line above) */
   position: absolute;
   top: -9px;
   right: -9px;
@@ -1208,8 +1211,31 @@ body.docked.dragging #game { cursor: grabbing; }
 .dock-exits .btn.alt { flex: 0 1 auto; }
 .dock-exits .btn:active { box-shadow: 0 1px 0 var(--ink); }
 
-.dock-panel button:focus-visible { outline: 4px solid var(--teal); outline-offset: 2px; }
+.dock-panel button:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
 .dock-tabs [role="tab"]:focus-visible { outline-offset: -1px; box-shadow: inset 0 0 0 2px var(--ink); }
+
+/* Sound on/off: a round button in a top corner of the 3D view, clear of the panel: just left of the
+   side panel's top (a flex item beside it), or top right above the bottom sheet. */
+.dock-mute {
+  flex: none;
+  align-self: flex-start;
+  margin-right: 12px;
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: auto;
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.dock-mute .ico { width: 22px; height: 22px; }
+.dock-mute:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.dock-mute:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 3px; box-shadow: 0 0 0 9px #fff; }
 
 /* Portrait screens: the panel is a bottom sheet and the ship is framed above it. */
 @media (orientation: portrait) {
@@ -1221,6 +1247,7 @@ body.docked.dragging #game { cursor: grabbing; }
   .dock-tabs { margin: 8px 12px 2px; }
   .dock-body { padding: 0 10px 8px; }
   .dock-exits { padding: 8px 10px 10px; }
+  .dock-mute { position: absolute; top: 10px; right: 10px; margin: 0; }
 }
 @keyframes dock-up {
   from { transform: translateY(40px); opacity: 0; }
@@ -1240,9 +1267,21 @@ body.docked.dragging #game { cursor: grabbing; }
   .dock-exits { padding: 7px 10px 9px; gap: 6px; }
   .dock-exits .btn { font-size: 16px; min-height: 46px; padding: 7px 10px 4px; box-shadow: 0 4px 0 var(--ink); }
 }
+/* Very short portrait screens (320x480): a tighter header, tabs and footer, so a whole upgrade row
+   fits in the list without taking room from the ship above the sheet. */
+@media (orientation: portrait) and (max-height: 520px) {
+  .dock-head { padding: 6px 12px 5px; }
+  .dock-tabs { margin: 5px 10px 0; }
+  .dock-tabs [role="tab"] { padding-top: 4px; padding-bottom: 2px; }
+  .dock-body { padding-bottom: 4px; }
+  .up-row { margin: 6px 0 8px; }
+  .dock-exits { padding: 6px 10px 7px; }
+  .dock-exits .btn { font-size: 15px; min-height: 44px; padding: 6px 10px 3px; }
+}
 /* Short landscape screens (phones on their side): everything a size smaller. */
 @media (orientation: landscape) and (max-height: 500px) {
   .overlay.dock { padding: 8px; }
+  .dock-mute { margin-right: 8px; }
   .dock-panel { width: clamp(290px, 44vw, 380px); border-radius: 20px; }
   .dock-head { display: grid; grid-template-columns: 1fr auto; align-items: center; gap: 2px 8px; text-align: left; padding: 7px 12px 6px; }
   .dock-kicker { grid-column: 1; grid-row: 1; justify-self: start; margin: 0; font-size: 11px; }

@@ -63,11 +63,13 @@ export const palette = {
 // ---------------------------------------------------------------------------
 const PI = Math.PI;
 const TAU = PI * 2;
-const DEG = PI / 180;
 const DECK = 1.3; // top of the town's boardwalks
+const TOWER_H = 5.8; // the lookout tower's crow's nest (low enough that its weathervane stays in the shipyard view)
+const SIGN_LIFT = 1.4; // the welcome sign's board sits this much higher than on plain 4.6 posts
 const BERTH = { x: 0, z: 0, h: PI / 2 }; // bow to +x; the town lies to -z (behind the ship)
 const WORLD_R = 120;
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
+const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 
 // ---------------------------------------------------------------------------
 // Colours
@@ -1180,29 +1182,27 @@ export function build(scene, ctx = {}) {
   const towerRaft = platform('tower', { x: -15.5, z: -27.2, w: 6, d: 6, float: 'logs', ry: 0.15 });
   // The shipyard
   const yard = platform('yard', { x: 16.2, z: -11.5, w: 8.4, d: 9, float: 'stilts', rails: ['back'] });
-  // Stilt shack platforms
-  const shackPlats = [
-    platform('s1', { x: 5.2, z: -20.8, w: 6, d: 5, float: 'stilts', ry: -0.06 }),
-    platform('s2', { x: 12.6, z: -23, w: 5.4, d: 5, float: 'stilts', ry: 0.12 }),
-    platform('s3', { x: -0.5, z: -29.5, w: 6, d: 5.4, float: 'stilts', ry: 0.05, y: 1.6 }),
-    platform('s4', { x: -7.6, z: -33.6, w: 5.6, d: 5, float: 'stilts', ry: -0.1, y: 1.5 }),
-    platform('s5', { x: 9.2, z: -31.5, w: 6.4, d: 5.2, float: 'stilts', ry: -0.05, y: 1.8 }),
-    platform('s6', { x: -22.5, z: -25, w: 5.6, d: 5.2, float: 'stilts', ry: 0.3 }),
-    platform('s7', { x: 21.5, z: -22.5, w: 5.4, d: 5, float: 'stilts', ry: -0.25 }),
-    platform('s8', { x: -24, z: -9, w: 5.4, d: 5, float: 'logs', ry: 0.45 }),
-    platform('s9', { x: 25, z: -6, w: 5, d: 5, float: 'stilts', ry: -0.5 }),
-    platform('s10', { x: -17.5, z: -38, w: 6, d: 5.5, float: 'stilts', ry: 0.1, y: 1.6 }),
-    platform('s11', { x: 18, z: -36, w: 6, d: 5.5, float: 'stilts', ry: -0.2, y: 1.6 }),
-    platform('s12', { x: 2, z: -40, w: 7, d: 5.5, float: 'stilts', ry: 0, y: 1.6 }),
-    // the west arm, out towards the open sea
-    platform('s13', { x: -21.5, z: 2.0, w: 5.4, d: 5, float: 'logs', ry: 0.55 }),
-    platform('s14', { x: -29, z: -4.5, w: 5.2, d: 5, float: 'stilts', ry: 0.25 }),
-    platform('s15', { x: -31, z: -16, w: 5.6, d: 5.2, float: 'stilts', ry: 0.1 }),
-    platform('s16', { x: -16.6, z: -17.4, w: 5.4, d: 5, float: 'barrels', ry: -0.08 }),
-    // the east arm, behind the shipyard
-    platform('s17', { x: 29.5, z: -25, w: 6, d: 5.4, float: 'stilts', ry: -0.35, y: 1.6 }),
-    platform('s18', { x: 35, z: -12.5, w: 5.2, d: 5, float: 'logs', ry: -0.7 }),
-  ];
+  // Stilt shack platforms (platform() registers each one in plats)
+  platform('s1', { x: 5.2, z: -20.8, w: 6, d: 5, float: 'stilts', ry: -0.06 });
+  platform('s2', { x: 12.6, z: -23, w: 5.4, d: 5, float: 'stilts', ry: 0.12 });
+  platform('s3', { x: -0.5, z: -29.5, w: 6, d: 5.4, float: 'stilts', ry: 0.05, y: 1.6 });
+  platform('s4', { x: -7.6, z: -33.6, w: 5.6, d: 5, float: 'stilts', ry: -0.1, y: 1.5 });
+  platform('s5', { x: 9.2, z: -31.5, w: 6.4, d: 5.2, float: 'stilts', ry: -0.05, y: 1.8 });
+  platform('s6', { x: -22.5, z: -25, w: 5.6, d: 5.2, float: 'stilts', ry: 0.3 });
+  platform('s7', { x: 21.5, z: -22.5, w: 5.4, d: 5, float: 'stilts', ry: -0.25 });
+  platform('s8', { x: -24, z: -9, w: 5.4, d: 5, float: 'logs', ry: 0.45 });
+  platform('s9', { x: 25, z: -6, w: 5, d: 5, float: 'stilts', ry: -0.5 });
+  platform('s10', { x: -17.5, z: -38, w: 6, d: 5.5, float: 'stilts', ry: 0.1, y: 1.6 });
+  platform('s11', { x: 18, z: -36, w: 6, d: 5.5, float: 'stilts', ry: -0.2, y: 1.6 });
+  platform('s12', { x: 2, z: -40, w: 7, d: 5.5, float: 'stilts', ry: 0, y: 1.6 });
+  // the west arm, out towards the open sea
+  platform('s13', { x: -21.5, z: 2.0, w: 5.4, d: 5, float: 'logs', ry: 0.55 });
+  platform('s14', { x: -29, z: -4.5, w: 5.2, d: 5, float: 'stilts', ry: 0.25 });
+  platform('s15', { x: -31, z: -16, w: 5.6, d: 5.2, float: 'stilts', ry: 0.1 });
+  platform('s16', { x: -16.6, z: -17.4, w: 5.4, d: 5, float: 'barrels', ry: -0.08 });
+  // the east arm, behind the shipyard
+  platform('s17', { x: 29.5, z: -25, w: 6, d: 5.4, float: 'stilts', ry: -0.35, y: 1.6 });
+  platform('s18', { x: 35, z: -12.5, w: 5.2, d: 5, float: 'logs', ry: -0.7 });
 
   // ----- sandy floating garden -----
   const GARDEN = { x: -14.4, z: -7.6, r: 3.7, y: 1.45 };
@@ -1365,29 +1365,31 @@ export function build(scene, ctx = {}) {
     }
   }
   {
-    // the welcome sign: a big painted board on two posts, the pirate sparrow on top
+    // the welcome sign: a big painted board on two tall posts, the pirate sparrow on top (high
+    // enough to show over the docked ship's rigging and sails from most of the showcase camera's sway)
     const g = new THREE.Group();
     g.position.set(-5.9, DECK, -6.9);
     g.rotation.y = 0.22;
     statics.add(g);
+    const up = SIGN_LIFT;
     for (const sx of [-1, 1]) {
-      add(g, cyl(0.16, 0.2, 4.6, 10), ink(COL.woodDark), sx * 2.85, 2.3, 0);
-      add(g, sphere(10), ink(COL.brass), sx * 2.85, 4.7, 0, 0, 0, 0, 0.22);
+      add(g, cyl(0.16, 0.2, 4.6 + up, 10), ink(COL.woodDark), sx * 2.85, (4.6 + up) / 2, 0);
+      add(g, sphere(10), ink(COL.brass), sx * 2.85, 4.7 + up, 0, 0, 0, 0, 0.22);
       add(g, rbox(0.6, 0.18, 0.6, 0.05), ink(COL.woodDark), sx * 2.85, 0.09, 0);
     }
-    add(g, rbox(6.2, 2.05, 0.22, 0.12, 2), ink(COL.woodDark), 0, 3.1, 0);
-    if (signMat) add(g, signPlane(tex, 'welcome', 6.0, 1.99), signMat, 0, 3.1, 0.115);
-    else add(g, rbox(5.8, 1.8, 0.1, 0.05), ink(COL.cream), 0, 3.1, 0.08);
+    add(g, rbox(6.2, 2.05, 0.22, 0.12, 2), ink(COL.woodDark), 0, 3.1 + up, 0);
+    if (signMat) add(g, signPlane(tex, 'welcome', 6.0, 1.99), signMat, 0, 3.1 + up, 0.115);
+    else add(g, rbox(5.8, 1.8, 0.1, 0.05), ink(COL.cream), 0, 3.1 + up, 0.08);
     // little ropes and a lantern on each post
     for (const sx of [-1, 1]) {
-      beam(g, ink(COL.woodDark), V3(sx * 2.85, 4.25, 0), V3(sx * 3.4, 4.25, 0.1), 0.1, 0.1, 0.03);
-      lantern(g, sx * 3.38, 3.85, 0.1, lanternGlow, 0.9);
+      beam(g, ink(COL.woodDark), V3(sx * 2.85, 4.25 + up, 0), V3(sx * 3.4, 4.25 + up, 0.1), 0.1, 0.1, 0.03);
+      lantern(g, sx * 3.38, 3.85 + up, 0.1, lanternGlow, 0.9);
     }
     const bird = sparrowBird(g, 1.15);
-    bird.position.set(0.4, 4.12, 0.02);
+    bird.position.set(0.4, 4.12 + up, 0.02);
     bird.rotation.y = 0.15;
     // the bird stands on a little perch block
-    add(g, rbox(1.0, 0.14, 0.42, 0.05), ink(COL.woodDark), 0.4, 4.12, 0);
+    add(g, rbox(1.0, 0.14, 0.42, 0.05), ink(COL.woodDark), 0.4, 4.12 + up, 0);
   }
   {
     // a water barrel tower and a pile of crates on the plaza
@@ -1538,7 +1540,7 @@ export function build(scene, ctx = {}) {
     g.position.copy(base);
     g.rotation.y = 0.15;
     statics.add(g);
-    const H = 9.6;
+    const H = TOWER_H;
     const b0 = 1.6;
     const b1 = 0.85;
     const leg = ink(COL.wood2);
@@ -1550,8 +1552,8 @@ export function build(scene, ctx = {}) {
       return V3(sx * b, y, sz * b);
     };
     for (let lv = 0; lv < 3; lv++) {
-      const y0 = 0.4 + lv * 3.07;
-      const y1 = y0 + 3.07;
+      const y0 = 0.4 + (lv * (H - 0.4)) / 3;
+      const y1 = y0 + (H - 0.4) / 3;
       for (let i = 0; i < 4; i++) {
         const [ax, az] = corners[i];
         const [bx, bz] = corners[(i + 1) % 4];
@@ -1582,16 +1584,16 @@ export function build(scene, ctx = {}) {
     add(nest, cone(2.0, 1.35, 18), ink(COL.red), 0, 3.0, 0);
     add(nest, torus(1.95, 0.08, 28, 5), ink(COL.cream), 0, 2.35, 0, PI / 2);
     add(nest, sphere(10), ink(COL.brass), 0, 3.72, 0, 0, 0, 0, 0.2);
-    rod(nest, ink(COL.iron), V3(0, 3.72, 0), V3(0, 4.75, 0), 0.05, 6);
+    rod(nest, ink(COL.iron), V3(0, 3.72, 0), V3(0, 4.35, 0), 0.05, 6);
     // compass arms N/E/S/W
     for (let i = 0; i < 4; i++) {
       const a = (i / 4) * TAU;
-      rod(nest, thin(COL.iron), V3(0, 4.3, 0), V3(Math.cos(a) * 0.65, 4.3, Math.sin(a) * 0.65), 0.025, 4);
-      add(nest, sphere(8), ink(COL.brass), Math.cos(a) * 0.68, 4.3, Math.sin(a) * 0.68, 0, 0, 0, 0.09);
+      rod(nest, thin(COL.iron), V3(0, 4.05, 0), V3(Math.cos(a) * 0.65, 4.05, Math.sin(a) * 0.65), 0.025, 4);
+      add(nest, sphere(8), ink(COL.brass), Math.cos(a) * 0.68, 4.05, Math.sin(a) * 0.68, 0, 0, 0, 0.09);
     }
     // the turning vane: an arrow with a sparrow riding it (its own mesh)
     const vane = new THREE.Group();
-    vane.position.copy(base).add(V3(0, H + 4.8, 0));
+    vane.position.copy(base).add(V3(0, H + 4.4, 0));
     vane.userData.keep = true;
     root.add(vane);
     const vg = new THREE.Group();
@@ -1654,10 +1656,8 @@ export function build(scene, ctx = {}) {
       cannon(cg, 0.9);
     }
     // cannonball pyramid
-    let k = 0;
     for (let ly = 0; ly < 3; ly++) for (let i = 0; i < 3 - ly; i++) for (let j = 0; j < 3 - ly; j++) {
       add(g, sphere(10), ink(COL.iron), 1.0 + i * 0.3 + ly * 0.15, DECK + 0.14 + ly * 0.24, 3.0 + j * 0.3 + ly * 0.15, 0, 0, 0, 0.15);
-      k++;
     }
     // the shipyard sign over the entrance from the plaza side
     const sg = new THREE.Group();
@@ -1795,7 +1795,6 @@ export function build(scene, ctx = {}) {
   // ----- shacks -----
   function roof(g, w, d, y, rh, color, o = {}) {
     // gable roof with the ridge along x; three shingle bands per side, patches with nails
-    const ov = 0.0;
     const half = d / 2;
     const slope = Math.atan2(rh, half);
     const L = Math.hypot(half, rh);
@@ -2071,7 +2070,7 @@ export function build(scene, ctx = {}) {
   bunting(V3(-10.4, DECK + 2.55, -5.35), V3(-5.8, DECK + 2.55, -5.35), 0.45);
   bunting(V3(5.8, DECK + 2.55, -5.35), V3(10.4, DECK + 2.55, -5.35), 0.45);
   tavernG.updateMatrixWorld(true);
-  bunting(towerRaft.at(1.15, 1.15, 9.6 + 1.0), tavernG.localToWorld(V3(-4.6, 3.1 + 2.8, -1.4)), 1.0, { step: 0.6 });
+  bunting(towerRaft.at(1.15, 1.15, TOWER_H + 1.0), tavernG.localToWorld(V3(-4.6, 3.1 + 2.8, -1.4)), 1.0, { step: 0.6 });
   // laundry between the shacks
   laundry(plats.s1.at(-2.6, 2.2, 2.0), plats.s1.at(2.6, 2.3, 1.9), 0.25, [['shirt', COL.white, COL.red], ['pants', COL.blue], ['sock', COL.red], ['sock', COL.yellow], ['shirt', COL.yellow]]);
   laundry(plats.s4.at(-2.4, 2.2, 1.9), plats.s4.at(2.4, 2.2, 2.1), 0.2, [['sheet', COL.white], ['shirt', COL.pink], ['pants', COL.woodDark], ['sock', COL.teal]]);
@@ -2181,9 +2180,11 @@ export function build(scene, ctx = {}) {
   });
 
   // ----- townsfolk -----
+  // Seen from the showcase camera they are only a few dozen pixels tall: the light build (a third of
+  // the triangles) looks the same there. The crew aboard the ship, much closer, keeps full detail.
   const folk = [];
   function person(opts, action, pos, h, aopts = {}) {
-    const p = buildPerson(opts);
+    const p = buildPerson({ ...opts, detail: 'low' });
     p.position.copy(pos);
     p.rotation.y = h;
     root.add(p);
@@ -2192,7 +2193,7 @@ export function build(scene, ctx = {}) {
     return f;
   }
   function walker(opts, path, o = {}) {
-    const p = buildPerson(opts);
+    const p = buildPerson({ ...opts, detail: 'low' });
     root.add(p);
     const pts = path.map((q) => q.clone());
     const cum = [0];
@@ -2245,7 +2246,7 @@ export function build(scene, ctx = {}) {
   // the lookout waving from the crow's nest
   {
     const base = towerRaft.at(0, 0);
-    person({ kind: 'pirate', seed: 331, hat: 'tricorn' }, (t) => (t % 6 < 3.5 ? 'wave' : 'idle'), V3(base.x + 0.4, base.y + 9.6 + 0.15, base.z + 0.6), 0.3);
+    person({ kind: 'pirate', seed: 331, hat: 'tricorn' }, (t) => (t % 6 < 3.5 ? 'wave' : 'idle'), V3(base.x + 0.4, base.y + TOWER_H + 0.15, base.z + 0.6), 0.3);
   }
   // the shipwright hammering at the slipway, a crane hand at the winch
   person({ kind: 'man', seed: 341, tool: 'hammer', hat: 'cap' }, 'hammer', yard.at(0.2, 0.3), PI - 0.2);
@@ -2289,6 +2290,20 @@ export function build(scene, ctx = {}) {
   walker({ kind: 'woman', seed: 361, tool: 'bucket' }, [plaza.at(6.4, -3.3), ...bridges.plazaS1, plats.s1.at(0.4, 1.7)], { pause: 2.5 });
   walker({ kind: 'man', seed: 362, hat: 'straw' }, [...bridges.plazaYard, yard.at(-2.6, -1.4)], { pause: 2, off: 3 });
 
+  // The showcase camera (main.js sways it across yaw ± yawRange): high enough to look over the near
+  // bulwark at the crew mopping the deck, with the town and its people rising behind the ship.
+  const VIEW = { target: [0.4, 3.3, -1.2], yaw: 0.15, yawRange: 0.42, dist: 17, height: 5.5 };
+  // Where that camera is in the docked ship's frame (ship-local), in the middle and near both ends of the sway.
+  const cameraSpots = () =>
+    [0, -0.7, 0.7].map((u) => {
+      const a = VIEW.yaw + VIEW.yawRange * u;
+      const wx = VIEW.target[0] + Math.sin(a) * VIEW.dist - BERTH.x;
+      const wz = VIEW.target[2] + Math.cos(a) * VIEW.dist - BERTH.z;
+      const c = Math.cos(BERTH.h);
+      const sn = Math.sin(BERTH.h);
+      return { x: wx * c - wz * sn, y: VIEW.target[1] + VIEW.height, z: wx * sn + wz * c };
+    });
+
   // ----- the cleaning crew (rides on the docked ship) -----
   const crewRig = new THREE.Group();
   crewRig.name = 'sparrow-crew';
@@ -2318,20 +2333,33 @@ export function build(scene, ctx = {}) {
   const emitters = []; // {p: Vector3 (ship-local), r: spread, rise, n}
   const crewState = { bosunPath: null, ship: null };
 
+  // The crew works on the camera side of the docked ship: its local -x (port, towards the open water).
+  const S = -1;
   let probe = null; // hullProbe of the current ship's camera side (set up in setShip)
-  // x of the hull skin at (y, z) on one side (ship-local), as a ray from outside would find it
-  const hullX = (mesh, z, y) => probe(z, y);
-  // Gun barrels stick out of the hull side at about y = 0.8 (how many depends on the upgrades):
-  // pick a spot along the hull, near `prefer`, with `clear` units of bare hull either side.
-  function freeZ(mesh, side, zMin, zMax, prefer, clear) {
-    // a barrel at port height reaches well past the bare hull just below the ports
+  // x of the hull skin at (z, y) on the camera side (ship-local), as a ray from outside would find it
+  const hullX = (z, y) => probe(z, y);
+  // Gun barrels stick out of the hull side at about y = 0.8 (how many, and how big, depends on the
+  // upgrades): at port height a barrel reaches well past the bare hull just below the ports.
+  const barrelAt = (z) => {
+    const port = hullX(z, 0.8);
+    const bare = hullX(z, 0.52);
+    return port !== null && bare !== null && (port - bare) * S > 0.16;
+  };
+  // The barrel-free stretch of hull around z (at most `reach` either way), to 0.05.
+  function gapAround(z, reach) {
+    let lo = z;
+    let hi = z;
+    while (lo > z - reach && !barrelAt(lo - 0.05)) lo -= 0.05;
+    while (hi < z + reach && !barrelAt(hi + 0.05)) hi += 0.05;
+    return [lo, hi];
+  }
+  // A spot along the hull, near `prefer`, with `clear` units of bare hull either side.
+  function freeZ(zMin, zMax, prefer, clear) {
     const zs = [];
     const busy = [];
     for (let z = zMin - 1; z <= zMax + 1 + 1e-6; z += 0.1) {
-      const port = hullX(mesh, z, 0.8, side);
-      const bare = hullX(mesh, z, 0.52, side);
       zs.push(z);
-      busy.push(port !== null && bare !== null && (port - bare) * side > 0.16);
+      busy.push(barrelAt(z));
     }
     let best = null;
     for (let i = 0; i < zs.length; i++) {
@@ -2364,20 +2392,95 @@ export function build(scene, ctx = {}) {
       c.p.position.set(p.x, p.y, p.z);
       c.p.rotation.y = h;
     };
-    // the camera side of the docked ship is its local -x (port, towards the open water)
-    const S = -1;
     const a = spot(2, { x: 0.85, y: 1.2, z: -0.15 });
     const b = spot(1, { x: 0, y: 1.2, z: 3.45 });
     const w = spot(3, { x: -0.8, y: 1.2, z: -0.15 });
     const q0 = spot(4, { x: 0.85, y: 2.58, z: -4.05 });
     const q1 = spot(5, { x: -0.85, y: 2.58, z: -4.05 });
-    place(cMopA, a, -PI / 2 + 0.35);
-    place(cMopB, b, -PI / 2 + 0.25);
+    // how far a deck point (ship-local x, z) is from the deck props (u.blockers, they change with
+    // the upgrades) and from the inside of the bulwarks (the hull is symmetric)
+    const blockers = u.blockers || [];
+    const propClear = (x, z) => {
+      let d = Infinity;
+      for (const k of blockers) d = Math.min(d, k.r !== undefined ? Math.hypot(x - k.x, z - k.z) - k.r : Math.max(Math.abs(x - k.x) - k.hx, Math.abs(z - k.z) - k.hz));
+      return d;
+    };
+    const deckClear = (x, z) => {
+      const hx = hullX(z, 1.5);
+      return Math.min(propClear(x, z), hx === null ? -1 : hx * S - 0.14 - Math.abs(x));
+    };
+    const clearOf = (x, z, r) => propClear(x, z) > r;
+    // The moppers. A mop sweeps a wide arc (about 1.4 across) ahead of its mopper, so each mopper is
+    // stood and turned where the whole sweep stays on open deck (clear of the props, which change with
+    // the upgrades, of the other mopper and of the bulwarks) and the camera can see it over the near
+    // bulwark; facing the camera as much as that allows, near his usual spot.
+    const mopLocal = (c) => {
+      place(c, { x: 0, y: 0, z: 0 }, 0);
+      const pts = [];
+      for (let i = 0; i < 8; i++) {
+        animatePerson(c.p, i * 0.25, 'mop', c.aopts); // one 2 s stroke, there and back (any phase)
+        pts.push(c.p.userData.parts.tool.getWorldPosition(V3())); // crewRig has no parent here: ship-local
+      }
+      return pts;
+    };
+    const seenFrom = cameraSpots();
+    // top of the near bulwark along the ship: where its (near vertical) outside ends going up
+    const railTop = [];
+    for (let z = -4; z <= 5.001; z += 0.25) {
+      const x0 = hullX(z, 1.3);
+      let top = null;
+      for (let y = 1.3; y <= 2.8 && x0 !== null; y += 0.05) {
+        const x = hullX(z, y);
+        if (x === null || Math.abs(x - x0) > 0.25) break;
+        top = y;
+      }
+      railTop.push(top);
+    }
+    // Can the camera see a mop head here (q: ship-local, on the deck) over the near bulwark (and its
+    // cap rail, a little inboard) and past the deck props (taken as 0.8 tall: barrels, coils, the
+    // hatch coaming, the foot of a mast)?
+    const visible = (q, cam) => {
+      const top = railTop[clamp(Math.round((q.z + 4) / 0.25), 0, railTop.length - 1)];
+      const xb = top === null ? null : hullX(q.z, top - 0.05);
+      if (xb === null) return false;
+      const y = q.y + 0.08;
+      const xi = xb - S * 0.3;
+      if (cam.y + ((xi - cam.x) / (q.x - cam.x)) * (y - cam.y) < top + 0.05) return false;
+      // the stretch of the sight line low over the deck, from t0 to the mop head (t = 1)
+      const t0 = 1 - 0.8 / (cam.y - y);
+      const ax = cam.x + (q.x - cam.x) * t0;
+      const az = cam.z + (q.z - cam.z) * t0;
+      const dx = q.x - ax;
+      const dz = q.z - az;
+      const dd = dx * dx + dz * dz || 1;
+      for (const k of blockers) {
+        if (k.r !== undefined) {
+          const t = clamp(((k.x - ax) * dx + (k.z - az) * dz) / dd, 0, 1);
+          if (Math.hypot(ax + dx * t - k.x, az + dz * t - k.z) < k.r) return false;
+        } else {
+          // segment against the box (slabs)
+          let lo = 0;
+          let hi = 1;
+          if (Math.abs(dx) > 1e-9) {
+            const t1 = (k.x - k.hx - ax) / dx;
+            const t2 = (k.x + k.hx - ax) / dx;
+            lo = Math.max(lo, Math.min(t1, t2));
+            hi = Math.min(hi, Math.max(t1, t2));
+          } else if (Math.abs(ax - k.x) > k.hx) continue;
+          if (Math.abs(dz) > 1e-9) {
+            const t1 = (k.z - k.hz - az) / dz;
+            const t2 = (k.z + k.hz - az) / dz;
+            lo = Math.max(lo, Math.min(t1, t2));
+            hi = Math.min(hi, Math.max(t1, t2));
+          } else if (Math.abs(az - k.z) > k.hz) continue;
+          if (lo <= hi) return false;
+        }
+      }
+      return true;
+    };
     // the polisher kneels at the waist, scrubbing the inside of the bulwark: as close to it as
-    // the deck props (u.blockers, they change with the upgrades) allow
-    const clearOf = (x, z, r) =>
-      (u.blockers || []).every((k) => (k.r !== undefined ? Math.hypot(x - k.x, z - k.z) - k.r : Math.max(Math.abs(x - k.x) - k.hx, Math.abs(z - k.z) - k.hz)) > r);
-    const wallX = hullX(mesh, w.z, 1.5, S);
+    // the deck props allow
+    const wallX = hullX(w.z, 1.5);
     let px = w.x;
     if (wallX !== null) {
       const want = wallX - S * (0.13 + WALL_Z * cPolish.p.scale.x);
@@ -2390,53 +2493,160 @@ export function build(scene, ctx = {}) {
       }
     }
     place(cPolish, { x: px, y: w.y, z: w.z }, -PI / 2);
+    const q = V3();
+    const bodies = [V3(px, w.y, w.z)]; // the crew on deck so far
+    const mops = []; // and where their mop heads go
+    // Deck maps on a 0.1 grid (ship-local x, z): room around each point, and how much the camera sees
+    // of a mop head there (2 from the middle of its sway, 1 from near each end).
+    const G0X = -1.6;
+    const G0Z = -3.6;
+    const GNX = 33;
+    const GNZ = 92;
+    const roomMap = new Float32Array(GNX * GNZ);
+    const seenMap = new Uint8Array(GNX * GNZ);
+    for (let iz = 0; iz < GNZ; iz++) {
+      for (let ix = 0; ix < GNX; ix++) {
+        q.set(G0X + ix * 0.1, a.y, G0Z + iz * 0.1);
+        const room = deckClear(q.x, q.z);
+        roomMap[iz * GNX + ix] = room;
+        if (room > 0.2) seenMap[iz * GNX + ix] = (visible(q, seenFrom[0]) ? 2 : 0) + (visible(q, seenFrom[1]) ? 1 : 0) + (visible(q, seenFrom[2]) ? 1 : 0);
+      }
+    }
+    const cell = (x, z) => {
+      const ix = Math.round((x - G0X) / 0.1);
+      const iz = Math.round((z - G0Z) / 0.1);
+      return ix >= 0 && ix < GNX && iz >= 0 && iz < GNZ ? iz * GNX + ix : -1;
+    };
+    const roomAt = (x, z) => {
+      const i = cell(x, z);
+      return i < 0 ? -1 : roomMap[i] - 0.05; // (less half a cell)
+    };
+    const mopSpot = (arc, home, penalty, minClear) => {
+      let best = null;
+      for (let x = -0.8; x <= 1.21; x += 0.2) {
+        for (let z = -2.5; z <= 3.76; z += 0.25) {
+          const fx = -S * x;
+          if (roomAt(fx, z) < 0.3 || bodies.some((o) => Math.hypot(o.x - fx, o.z - z) < 0.9) || mops.some((o) => Math.hypot(o.x - fx, o.z - z) < 0.55)) continue;
+          for (let k = 0; k < 16; k++) {
+            const h = -PI + (k / 16) * TAU;
+            const ch = Math.cos(h);
+            const sh = Math.sin(h);
+            // the whole stroke clear of the props, the bulwarks and the others: the mop head
+            // (radius ~0.15), and its handle on the way back to the hands
+            let clear = Infinity;
+            let seen = 0;
+            for (const l of arc) {
+              const hx = fx + l.x * ch + l.z * sh;
+              const hz = z - l.x * sh + l.z * ch;
+              clear = Math.min(clear, roomAt(hx, hz) - 0.15, roomAt(fx + (hx - fx) * 0.6, z + (hz - z) * 0.6) - 0.05);
+              for (const o of bodies) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.55);
+              for (const o of mops) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.35);
+              if (clear < minClear) break;
+              seen += seenMap[cell(hx, hz)];
+            }
+            if (clear < minClear) continue;
+            // (as a last resort, simply the most room)
+            const score = minClear === -Infinity ? clear + seen / 64 : seen / 32 + sh * S * 0.6 - Math.hypot(fx - home.x, z - home.z) * 0.15 - penalty;
+            if (!best || score > best.score) best = { p: { x: fx, y: home.y, z }, h, score };
+          }
+        }
+      }
+      return best;
+    };
+    const pickMop = (c, home, h0) => {
+      // full strokes where there is room, shorter ones on a deck crowded by the upgrades
+      let best = null;
+      for (const minClear of [0.1, 0, -Infinity]) {
+        for (const sweep of minClear === -Infinity ? [0.15] : [1, 0.6, 0.35, 0.15]) {
+          c.aopts.sweep = sweep;
+          const arc = mopLocal(c);
+          const found = mopSpot(arc, home, (1 - sweep) * 0.8, minClear); // long strokes look best
+          if (found && (!best || found.score > best.score)) best = { ...found, arc, sweep };
+        }
+        if (best) break;
+      }
+      if (!best) {
+        // (only if the whole deck were full: his usual spot, short strokes)
+        c.aopts.sweep = 0.15;
+        best = { p: home, h: h0, arc: mopLocal(c), sweep: 0.15 };
+      }
+      c.aopts.sweep = best.sweep;
+      place(c, best.p, best.h);
+      const ch = Math.cos(best.h);
+      const sh = Math.sin(best.h);
+      const heads = best.arc.map((l) => V3(best.p.x + l.x * ch + l.z * sh, best.p.y + l.y, best.p.z - l.x * sh + l.z * ch));
+      bodies.push(V3(best.p.x, best.p.y, best.p.z));
+      mops.push(...heads);
+      return { ...best, heads };
+    };
+    const mA = pickMop(cMopA, a, -PI / 2 + 0.35);
+    const mB = pickMop(cMopB, b, -PI / 2 + 0.25);
     // the bosun walks the quarterdeck with a bucket
     crewState.bosunPath = [V3(q0.x, q0.y, q0.z), V3(q1.x, q1.y, q1.z)];
     place(cBosun, q1, -PI / 2);
-    // suds on the deck around the moppers
+    // suds on the deck where the mops sweep (and by the polisher), with soap bubbles rising from them
     const suds = flat(COL.foam);
-    for (const [p, n] of [[a, 9], [b, 9], [w, 4]]) {
+    const mid = (heads) => heads.reduce((m, h) => m.add(h), V3()).multiplyScalar(1 / heads.length);
+    for (const [p, n, r0, mop] of [[mid(mA.heads), 9, 0.25, true], [mid(mB.heads), 9, 0.25, true], [w, 4, 0.45, false]]) {
       for (let i = 0; i < n; i++) {
         const ang = (i / n) * TAU + 0.4;
-        const r = 0.45 + ((i * 37) % 7) * 0.06;
-        add(props, sphere(8), suds, p.x + Math.cos(ang) * r * 0.8, p.y + 0.02, p.z + Math.sin(ang) * r, 0, 0, 0, [0.16 + (i % 3) * 0.04, 0.06, 0.14 + (i % 2) * 0.05]);
+        const r = r0 + ((i * 37) % 7) * 0.06;
+        const x = p.x + Math.cos(ang) * r * 0.8;
+        const z = p.z + Math.sin(ang) * r;
+        if (mop && deckClear(x, z) < 0.12) continue; // not into the props or the bulwark
+        add(props, sphere(8), suds, x, (mop ? a.y : p.y) + 0.02, z, 0, 0, 0, [0.16 + (i % 3) * 0.04, 0.06, 0.14 + (i % 2) * 0.05]);
       }
-      emitters.push({ p: V3(p.x - 0.4, p.y + 0.15, p.z), spread: 0.6, rise: 1.6, n: 0 });
+      // the moppers' bubbles rise from the mop, not in front of their faces
+      if (mop) emitters.push({ p: V3(p.x, a.y + 0.1, p.z), spread: 0.4, rise: 0.9, n: 0 });
+      else emitters.push({ p: V3(p.x - 0.4, p.y + 0.15, p.z), spread: 0.6, rise: 1.6, n: 0 });
     }
-    // the hull scrubber on a plank hung over the side
+    // the hull scrubber on a plank hung over the side, between two gun barrels: the plank, its
+    // ropes and the bucket on it stay in the barrel-free stretch (narrower with more, bigger guns)
     const hp0 = hs.find((s) => s.side === S && s.z > 0) || { x: -1.4, y: 0.35, z: 1.2, side: S, h: PI / 2 };
-    const hp = { ...hp0, z: freeZ(mesh, S, 0.3, 2.4, hp0.z, 0.42) };
+    const hp = { ...hp0, z: freeZ(0.3, 2.4, hp0.z, 0.42) };
+    const PLANK = 0.75; // half length
+    const [g0, g1] = gapAround(hp.z, 2 * PLANK + 0.2).map((g, i) => g + (i ? -0.05 : 0.05)); // a little clear of the barrels
+    hp.z = g1 - g0 >= 2 * PLANK ? clamp(hp.z, g0 + PLANK, g1 - PLANK) : (g0 + g1) / 2;
+    const pz0 = Math.max(g0, hp.z - PLANK);
+    const pz1 = Math.min(g1, hp.z + PLANK);
     const pS = cPlank.p.scale.x;
     const feetY = 0.62;
-    const hxB = hullX(mesh, hp.z, feetY + 0.6 * pS, S) ?? hp.x - 0.25;
+    const hxB = hullX(hp.z, feetY + 0.6 * pS) ?? hp.x - 0.25;
     const feetX = hxB + S * (WALL_Z * pS + 0.02);
     place(cPlank, V3(feetX, feetY, hp.z), -S * PI / 2);
     const plankX = feetX + S * 0.05;
-    add(props, rbox(0.62, 0.08, 1.5, 0.03), ink(COL.wood3), plankX, feetY - 0.04, hp.z);
-    const railX = (hullX(mesh, hp.z, 1.7, S) ?? hp.x - 0.4) + S * 0.04;
-    for (const dz of [-0.62, 0.62]) {
-      rod(props, thin(COL.rope), V3(plankX + S * 0.15, feetY - 0.02, hp.z + dz), V3(railX, 1.86, hp.z + dz * 0.8), 0.022, 4);
-      rod(props, thin(COL.rope), V3(plankX - S * 0.2, feetY - 0.02, hp.z + dz), V3(plankX + S * 0.15, feetY - 0.02, hp.z + dz), 0.022, 4);
+    add(props, rbox(0.62, 0.08, pz1 - pz0, 0.03), ink(COL.wood3), plankX, feetY - 0.04, (pz0 + pz1) / 2);
+    const railX = (hullX(hp.z, 1.7) ?? hp.x - 0.4) + S * 0.04;
+    for (const rz of [pz0 + 0.13, pz1 - 0.13]) {
+      rod(props, thin(COL.rope), V3(plankX + S * 0.15, feetY - 0.02, rz), V3(railX, 1.86, hp.z + (rz - hp.z) * 0.8), 0.022, 4);
+      rod(props, thin(COL.rope), V3(plankX - S * 0.2, feetY - 0.02, rz), V3(plankX + S * 0.15, feetY - 0.02, rz), 0.022, 4);
     }
-    add(props, cyl(0.15, 0.12, 0.3, 10), ink(COL.wood2), plankX + S * 0.18, feetY + 0.15, hp.z - 0.52);
-    add(props, cyl(0.13, 0.13, 0.02, 10), flat(0x8fd6f0), plankX + S * 0.18, feetY + 0.29, hp.z - 0.52);
+    // his bucket stands beside him, on the side of the plank with more room (none if it is too tight)
+    const room = Math.max(hp.z - pz0, pz1 - hp.z);
+    const br = Math.min(0.15, (room - 0.36) / 2);
+    if (br >= 0.09) {
+      const bz = hp.z + (hp.z - pz0 >= pz1 - hp.z ? -1 : 1) * Math.min(0.52, room - br);
+      const k = br / 0.15;
+      add(props, cyl(br, br * 0.8, 0.3 * k, 10), ink(COL.wood2), plankX + S * 0.18, feetY + 0.15 * k, bz);
+      add(props, cyl(br * 0.87, br * 0.87, 0.02, 10), flat(0x8fd6f0), plankX + S * 0.18, feetY + 0.29 * k, bz);
+    }
     emitters.push({ p: V3(hxB + S * 0.12, feetY + 0.6 * pS, hp.z), spread: 0.35, rise: 1.4, n: 0 });
     for (let i = 0; i < 7; i++) {
       const yy = feetY + 0.35 + (i % 3) * 0.18;
       const zz = hp.z - 0.45 + i * 0.15;
-      const hx = hullX(mesh, zz, yy, S);
-      if (hx !== null) add(props, sphere(8), suds, hx, yy, zz, 0, 0, 0, [0.06, 0.1 + (i % 2) * 0.04, 0.12]);
+      const hx = hullX(zz, yy);
+      if (hx !== null && !barrelAt(zz - 0.12) && !barrelAt(zz + 0.12)) add(props, sphere(8), suds, hx, yy, zz, 0, 0, 0, [0.06, 0.1 + (i % 2) * 0.04, 0.12]);
     }
     // the kid in a rowboat at the waterline
     const bp0 = hs.find((s) => s.side === S && s.z < 0) || { x: -1.4, y: 0.35, z: -1.2, side: S, h: PI / 2 };
-    const bp = { ...bp0, z: freeZ(mesh, S, -2.4, -0.4, bp0.z, 0.42) };
+    const bp = { ...bp0, z: freeZ(-2.4, -0.4, bp0.z, 0.42) };
     const kS = cBoat.p.scale.x;
     const kFeet = -0.06;
-    const hxK = hullX(mesh, bp.z, kFeet + 0.6 * kS, S) ?? bp.x - 0.1;
+    const hxK = hullX(bp.z, kFeet + 0.6 * kS) ?? bp.x - 0.1;
     let kx = hxK + S * (WALL_Z * kS + 0.02);
     let bx = kx + S * 0.3;
     // keep the boat's gunwale off the hull
-    const hxR = hullX(mesh, bp.z, 0.36, S) ?? bp.x;
+    const hxR = hullX(bp.z, 0.36) ?? bp.x;
     const clear = (bx - S * 0.66 - hxR) * S; // > 0 when the gunwale is outside the hull
     if (clear < 0.04) {
       bx += S * (0.04 - clear);
@@ -2456,9 +2666,9 @@ export function build(scene, ctx = {}) {
     add(bk, cyl(0.14, 0.14, 0.02, 10), flat(0x8fd6f0), 0, 0.29, 0);
     emitters.push({ p: V3(hxK + S * 0.1, kFeet + 0.6 * kS, bp.z), spread: 0.3, rise: 1.2, n: 0 });
     // a painter's line from the rowboat to the rail
-    rod(props, thin(COL.rope), V3(bx - S * 0.2, 0.42, bp.z + 1.05), V3((hullX(mesh, bp.z + 1.5, 1.7, S) ?? -1.7) + S * 0.03, 1.86, bp.z + 1.5), 0.02, 4);
-    // bucket bubbles on the quarterdeck
-    emitters.push({ p: V3(0, q0.y + 0.4, q0.z), spread: 0.35, rise: 1.1, n: 0, bosun: true });
+    rod(props, thin(COL.rope), V3(bx - S * 0.2, 0.42, bp.z + 1.05), V3((hullX(bp.z + 1.5, 1.7) ?? -1.7) + S * 0.03, 1.86, bp.z + 1.5), 0.02, 4);
+    // bubbles from the bosun's bucket (where it really is: see updateBubbles), kept below his face
+    emitters.push({ p: V3(0, q0.y + 0.4, q0.z), spread: 0.2, rise: 0.55, n: 0, bosun: true });
     bake(props, { force: 'thin' });
     probe = null;
     mesh.add(crewRig);
@@ -2523,6 +2733,10 @@ export function build(scene, ctx = {}) {
   const tmpV = V3();
   const tmpA = V3();
   const tmpB = V3();
+  const _side = V3();
+  const _upv = V3();
+  const _bucket = V3();
+  const BOSUN = { speed: 0.8 };
   function walkerPose(f, t) {
     const { path, cum, L, v } = f;
     let s;
@@ -2574,8 +2788,8 @@ export function build(scene, ctx = {}) {
       const len = A.distanceTo(B);
       const sag = Math.min(0.6, len * 0.05);
       const d = tmpV.subVectors(B, A).normalize();
-      const side = V3(-d.z, 0, d.x).normalize();
-      const upv = V3().crossVectors(side, d).normalize();
+      const side = _side.set(-d.z, 0, d.x).normalize();
+      const upv = _upv.crossVectors(side, d).normalize();
       for (let i = 0; i <= SEG; i++) {
         const u = i / SEG;
         const cx = A.x + (B.x - A.x) * u;
@@ -2603,7 +2817,6 @@ export function build(scene, ctx = {}) {
     orient(gang, dd);
     gang.scale.set(1, 1, L);
   }
-  const _bucket = V3(0, 0.4, 0);
   const bm = new THREE.Matrix4();
   const bq = new THREE.Quaternion();
   const bp = V3();
@@ -2614,6 +2827,11 @@ export function build(scene, ctx = {}) {
       return;
     }
     bubbles.count = shine.count = NB;
+    // the bosun's bucket hangs from his hand (the tool bone, at its handle); bubbles start at the water in it
+    const bucket = _bucket;
+    cBosun.p.userData.parts.tool.getWorldPosition(bucket);
+    crewRig.worldToLocal(bucket);
+    bucket.y -= 0.12 * cBosun.p.scale.x;
     for (let i = 0; i < NB; i++) {
       const e = emitters[i % emitters.length];
       const P = 2.2 + ((i * 0.618) % 1) * 1.6;
@@ -2622,7 +2840,7 @@ export function build(scene, ctx = {}) {
       const j1 = Math.sin(i * 12.9898) * 0.5;
       const j2 = Math.sin(i * 78.233) * 0.5;
       bp.copy(e.p);
-      if (e.bosun) bp.copy(cBosun.p.position).add(_bucket);
+      if (e.bosun) bp.copy(bucket);
       bp.x += j1 * e.spread + Math.sin(t * 2.1 + i) * 0.12 * u;
       bp.z += j2 * e.spread + Math.cos(t * 1.7 + i) * 0.12 * u;
       bp.y += u * e.rise;
@@ -2736,20 +2954,30 @@ export function build(scene, ctx = {}) {
       for (const c of crew) {
         let act = c.action;
         if (c === cBosun && crewState.bosunPath) {
-          const [A, B] = crewState.bosunPath;
-          const leg = A.distanceTo(B) / Math.max(0.1, walkSpeed(cBosun.p, 'walk', 0.8));
+          const A = crewState.bosunPath[0];
+          const B = crewState.bosunPath[1];
+          const leg = A.distanceTo(B) / Math.max(0.1, walkSpeed(cBosun.p, 'walk', BOSUN.speed));
           const T = 2 * (leg + 1.6);
           const u = t % T;
-          let s;
-          let dir;
-          if (u < leg) [s, dir, act] = [u / leg, 1, 'walk'];
-          else if (u < leg + 1.6) [s, dir, act] = [1, u - leg > 0.8 ? -1 : 1, 'idle'];
-          else if (u < 2 * leg + 1.6) [s, dir, act] = [1 - (u - leg - 1.6) / leg, -1, 'walk'];
-          else [s, dir, act] = [0, u - 2 * leg - 1.6 > 0.8 ? 1 : -1, 'idle'];
+          let s = 0;
+          let dir = 1;
+          act = 'walk';
+          if (u < leg) s = u / leg;
+          else if (u < leg + 1.6) {
+            s = 1;
+            dir = u - leg > 0.8 ? -1 : 1;
+            act = 'idle';
+          } else if (u < 2 * leg + 1.6) {
+            s = 1 - (u - leg - 1.6) / leg;
+            dir = -1;
+          } else {
+            dir = u - 2 * leg - 1.6 > 0.8 ? 1 : -1;
+            act = 'idle';
+          }
           cBosun.p.position.lerpVectors(A, B, s);
           tmpV.subVectors(B, A).multiplyScalar(dir);
           cBosun.p.rotation.y = Math.atan2(tmpV.x, tmpV.z);
-          animatePerson(cBosun.p, t, act, { speed: 0.8 });
+          animatePerson(cBosun.p, t, act, BOSUN);
           continue;
         }
         animatePerson(c.p, t, act, c.aopts);
@@ -2769,6 +2997,7 @@ export function build(scene, ctx = {}) {
     for (const r of [root, crewRig]) {
       r.traverse((o) => {
         if (o.isMesh && o.geometry && !o.isSkinnedMesh) geos.add(o.geometry);
+        if (o.isInstancedMesh) o.dispose(); // frees its instance-matrix buffer (gulls, smoke, bubbles)
       });
     }
     for (const g of geos) g.dispose();
@@ -2787,9 +3016,7 @@ export function build(scene, ctx = {}) {
     enemySpawns: [],
     reefs: [],
     berth: { ...BERTH },
-    // High enough to look over the near bulwark at the crew mopping the deck, with the town and its
-    // people rising behind the ship.
-    view: { target: [0.4, 3.3, -1.2], yaw: 0.15, yawRange: 0.42, dist: 17, height: 5.5 },
+    view: { ...VIEW, target: [...VIEW.target] }, // the showcase camera
     setShip,
     peopleCount: folk.length + crew.length,
     update,

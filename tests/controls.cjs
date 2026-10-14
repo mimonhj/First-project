@@ -580,6 +580,32 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
         button: !document.getElementById('recover-btn').classList.contains('hidden'),
       }));
       check(started.mode === 'paused' && started.recover && started.button, `context restored: a voyage started while the view was gone waits for Continue (${JSON.stringify(started)})`);
+      await page.click('#recover-btn');
+
+      // At the shipyard (opened from the title, so there is no voyage): the dialog talks about the
+      // shipyard, and focus comes back to the Buy button the player was on.
+      await page.evaluate(() => { window.__game.showMenu(); window.__game.dock.open('menu'); });
+      await page.focus('[data-buy="shot"]');
+      await loseRestore(true);
+      const dockLost = await page.evaluate(() => document.getElementById('recover-msg').textContent);
+      await loseRestore(false);
+      await frames(page, 2);
+      const dockBack = await page.evaluate(() => ({ mode: window.__game.state.mode, focus: document.activeElement && document.activeElement.dataset.buy, recover: !document.getElementById('recover-screen').classList.contains('hidden') }));
+      check(/shipyard/.test(dockLost) && !/voyage/.test(dockLost) && dockBack.mode === 'dock' && !dockBack.recover && dockBack.focus === 'shot', `context lost at the shipyard: the dialog talks about the shipyard, and focus returns to the Buy button the player was on (${JSON.stringify({ msg: dockLost, ...dockBack })})`);
+      // Lost in the same moment new scenery is built (the context is gone a little before the
+      // browser's 'webglcontextlost' event says so): no errors, and the shipyard draws again.
+      const errs0 = errors.length;
+      await page.evaluate(() => {
+        window.__game.showMenu();
+        window.__game.dock.open('menu');
+        window.__loseExt.loseContext();
+      });
+      await page.waitForFunction(() => window.__game.state.contextLost === true, null, { timeout: 30000 }).catch(() => {});
+      await frames(page, 2);
+      await loseRestore(false);
+      await frames(page, 3);
+      const drawn = await page.evaluate(() => ({ mode: window.__game.state.mode, calls: window.__game.renderInfo.calls }));
+      check(errors.length === errs0 && drawn.mode === 'dock' && drawn.calls > 0, `context lost while the shipyard is being built: no errors, and it draws again after the restore (${JSON.stringify({ ...drawn, errors: errors.slice(errs0) })})`);
     }
     await ctx.close();
   }
@@ -992,6 +1018,124 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     await ctx.close();
   }
 
+  // A slow device: each purchase (the ship's rebuild) holds the page up for longer than a double-click
+  // lasts, so the second click is only handled long after it happened. It still buys just once.
+  {
+    const { ctx, page } = await open();
+    await page.evaluate(dockHelpers);
+    await page.evaluate(() => {
+      const G = window.__game;
+      G.state.purse = 2000;
+      G.dock.open('menu');
+      // 700 ms of work after every click on a Buy button, as a rebuild takes on a slow phone.
+      let buy = false;
+      document.addEventListener('click', (e) => { buy = e.target instanceof Element && !!e.target.closest('[data-buy]'); }, true);
+      document.addEventListener('click', () => {
+        if (!buy) return;
+        const end = performance.now() + 700;
+        while (performance.now() < end);
+      });
+    });
+    await frames(page, 1);
+    const tiers = () => page.evaluate(() => ({ hull: window.__game.shipConfig.up.hull, crew: window.__game.shipConfig.up.crew, purse: window.__game.state.purse }));
+    await page.dblclick('.up-row[data-id="hull"] .buy-btn');
+    await frames(page, 1);
+    const slowDbl = await tiers();
+    check(slowDbl.hull === 1 && slowDbl.purse === 1880, `shipyard (slow device): a double-click on Buy buys one tier (${JSON.stringify(slowDbl)})`);
+    // Two separate clicks 150 ms apart, the second arriving while the first purchase is still under way.
+    const cdp = await ctx.newCDPSession(page);
+    const box = await page.locator('.up-row[data-id="crew"] .buy-btn').boundingBox();
+    const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    const press = () => Promise.all(['mousePressed', 'mouseReleased'].map((type) => cdp.send('Input.dispatchMouseEvent', { type, ...at, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 })));
+    await page.mouse.move(at.x, at.y);
+    await new Promise((r) => setTimeout(r, 800));
+    const first = press();
+    await new Promise((r) => setTimeout(r, 150));
+    await Promise.all([first, press()]);
+    await frames(page, 1);
+    const slowQuick = await tiers();
+    check(slowQuick.crew === 1 && slowQuick.purse === 1730, `shipyard (slow device): a second click that comes while the purchase is still under way buys nothing more (${JSON.stringify(slowQuick)})`);
+    // Buying again on purpose, once the purchase is done, still works.
+    await new Promise((r) => setTimeout(r, 900));
+    await page.click('.up-row[data-id="crew"] .buy-btn');
+    await frames(page, 1);
+    const again = await tiers();
+    check(again.crew === 2 && again.purse === 1380, `shipyard (slow device): a click after the purchase has finished buys the next tier (${JSON.stringify(again)})`);
+    await ctx.close();
+  }
+
+  // The hull scrubber's plank, its ropes and his bucket (and the rest of the crew's props) stay clear of
+  // the gun barrels, which grow in number (Extra cannons) and size (Heavy shot) with the upgrades.
+  {
+    const { ctx, page } = await open();
+    await page.evaluate(() => window.__game.dock.open('menu'));
+    const clash = await page.evaluate(async () => {
+      const THREE = await import('/vendor/three.module.min.js');
+      const G = window.__game;
+      const { buildShip, disposeShip } = await import('/src/ships.js');
+      const { playerType, parseShipConfig } = await import('/src/upgrades.js');
+      const { SHIP_TYPES } = await import('/src/shipTypes.js');
+      const BARREL = new Set([0x2d2a33, 0xd0903f]); // iron, and bronze for heavy shot
+      const out = [];
+      for (let guns = 0; guns <= 2; guns++) {
+        for (let shot = 0; shot <= 3; shot++) {
+          const cfg = parseShipConfig(JSON.stringify({ up: { guns, shot } }));
+          const mesh = buildShip('player', { type: playerType(SHIP_TYPES.player, cfg), look: cfg.look, upgrades: cfg.up });
+          G.env.setShip(mesh); // the crew boards this ship (ship-local, so it needn't be at the berth)
+          mesh.updateMatrixWorld(true);
+          const crew = mesh.children.find((o) => o.name === 'sparrow-crew');
+          const inCrew = (o) => { for (let n = o; n; n = n.parent) if (n === crew) return true; return false; };
+          const inv = new THREE.Matrix4().copy(mesh.matrixWorld).invert();
+          const m = new THREE.Matrix4();
+          const v = new THREE.Vector3();
+          // Barrel boxes: barrel-coloured vertices out past the camera-side hull at gun height, grouped by z.
+          const pts = [];
+          mesh.traverse((o) => {
+            if (!o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || inCrew(o)) return;
+            const mats = [].concat(o.material);
+            const g = o.geometry;
+            const idx = g.index;
+            m.multiplyMatrices(inv, o.matrixWorld);
+            for (const gr of g.groups.length ? g.groups : [{ start: 0, count: idx ? idx.count : g.attributes.position.count, materialIndex: 0 }]) {
+              const mat = mats[gr.materialIndex] || mats[0];
+              if (!mat || !mat.color || !BARREL.has(mat.color.getHex())) continue;
+              for (let k = gr.start; k < gr.start + gr.count; k++) {
+                v.fromBufferAttribute(g.attributes.position, idx ? idx.getX(k) : k).applyMatrix4(m);
+                if (v.x < -1.2 && v.y > 0.4 && v.y < 1.25) pts.push([v.x, v.y, v.z]);
+              }
+            }
+          });
+          pts.sort((a, b) => a[2] - b[2]);
+          const boxes = [];
+          for (const p of pts) {
+            const b = boxes[boxes.length - 1];
+            if (b && p[2] - b.max[2] < 0.3) for (let i = 0; i < 3; i++) { b.min[i] = Math.min(b.min[i], p[i]); b.max[i] = Math.max(b.max[i], p[i]); }
+            else boxes.push({ min: [...p], max: [...p] });
+          }
+          // The crew's props (not the people, not the bubbles) inside a barrel box.
+          let inside = 0;
+          crew.traverse((o) => {
+            if (!o.isMesh || o.isSkinnedMesh || o.isInstancedMesh) return;
+            const pos = o.geometry.attributes.position;
+            m.multiplyMatrices(inv, o.matrixWorld);
+            for (let i = 0; i < pos.count; i++) {
+              v.fromBufferAttribute(pos, i).applyMatrix4(m);
+              if (boxes.some((b) => [0, 1, 2].every((k) => v.getComponent(k) > b.min[k] + 0.005 && v.getComponent(k) < b.max[k] - 0.005))) inside++;
+            }
+          });
+          out.push({ guns: 3 + guns, shot, barrels: boxes.length, inside });
+          G.env.setShip(null); // the crew off before the ship is disposed
+          disposeShip(mesh);
+        }
+      }
+      G.env.setShip(G.dock.ship); // the crew goes back to the docked ship
+      return out;
+    });
+    const bad = clash.filter((c) => c.inside > 0 || c.barrels !== c.guns);
+    check(clash.length === 12 && bad.length === 0, `shipyard: the hull scrubber's plank, ropes and bucket stay clear of the gun barrels with 3 to 5 guns a side and every heavy-shot tier${bad.length ? ' -> ' + JSON.stringify(bad) : ''}`);
+    await ctx.close();
+  }
+
   // Keyboard only: Tab reaches the tabs, every Buy button, the swatches and the ways out, each with a
   // visible focus ring and scrolled into view; Enter and Space buy (once), arrows switch tabs.
   {
@@ -1009,6 +1153,24 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const first = await page.evaluate(focusProbe);
     const mode = await page.evaluate(() => window.__game.state.mode);
     check(mode === 'dock' && first && first.id === 'dock-tab-up' && first.ring && first.visible, `keyboard: Enter opens the shipyard with focus on the Upgrades tab (${JSON.stringify(first)})`);
+    // M toggles the sound here too, says so, and the sound button shows it; Shift+Tab reaches that button.
+    const sound = [];
+    for (let i = 0; i < 2; i++) {
+      await page.keyboard.press('m');
+      sound.push(await page.evaluate(() => ({ muted: window.__game.audio.muted, pressed: document.getElementById('dock-mute').getAttribute('aria-pressed'), live: document.getElementById('dock-live').textContent.trim() })));
+    }
+    await page.keyboard.press('Shift+Tab');
+    const muteFocus = await page.evaluate(focusProbe);
+    await page.keyboard.press('Enter');
+    const byButton = await page.evaluate(() => ({ muted: window.__game.audio.muted, focus: document.activeElement && document.activeElement.id }));
+    await page.keyboard.press('Space');
+    const byButton2 = await page.evaluate(() => window.__game.audio.muted);
+    check(
+      JSON.stringify(sound) === JSON.stringify([{ muted: true, pressed: 'true', live: 'Sound off.' }, { muted: false, pressed: 'false', live: 'Sound on.' }]) &&
+        muteFocus && muteFocus.id === 'dock-mute' && muteFocus.ring && muteFocus.visible && byButton.muted && byButton.focus === 'dock-mute' && byButton2 === false,
+      `keyboard: M mutes and unmutes in the shipyard and says so; Shift+Tab reaches the sound button, which Enter and Space toggle (${JSON.stringify({ sound, muteFocus, byButton, byButton2 })})`,
+    );
+    await page.focus('#dock-tab-up');
     const order = [];
     for (let i = 0; i < 9; i++) {
       await page.keyboard.press('Tab');
@@ -1135,7 +1297,8 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
   }
 
   // Layout and contrast of the shipyard panel on small and large screens.
-  for (const [w, h, touch] of [[320, 480, true], [390, 844, true], [844, 390, true], [568, 320, true], [1280, 720, false]]) {
+  // 1024x1366 is a portrait tablet (iPad Pro 12.9") wider than the bottom sheet's 620px cap.
+  for (const [w, h, touch] of [[320, 480, true], [390, 844, true], [844, 390, true], [568, 320, true], [1280, 720, false], [1024, 1366, true]]) {
     const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch });
     await page.evaluate(dockHelpers);
     // From the level-cleared screen (two ways out: the widest footer), with a maxed upgrade, some
@@ -1158,10 +1321,12 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       const THREE = await import('/vendor/three.module.min.js');
       const G = window.__game;
       const p = document.getElementById('dock-panel').getBoundingClientRect();
+      const mb = document.getElementById('dock-mute').getBoundingClientRect();
       const v = new THREE.Vector3();
       let n = 0;
       let under = 0;
       let off = 0;
+      let underMute = 0;
       let x0 = Infinity;
       let x1 = -Infinity;
       G.dock.ship.updateMatrixWorld(true);
@@ -1175,15 +1340,29 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
           const y = ((1 - v.y) / 2) * innerHeight;
           n++;
           if (x > p.left && x < p.right && y > p.top && y < p.bottom) under++;
+          if (x > mb.left && x < mb.right && y > mb.top && y < mb.bottom) underMute++;
           if (x < 0 || x > innerWidth || y < 0 || y > innerHeight) off++;
           x0 = Math.min(x0, x);
           x1 = Math.max(x1, x);
         }
       }
       const L = G.dock.layout;
-      return { points: n, underPanel: under, offScreen: off, fill: L ? +((x1 - x0) / L.fw).toFixed(2) : 0, free: L && [L.fx, L.fy, L.fw, L.fh].map(Math.round) };
+      return { points: n, underPanel: under, underMute, offScreen: off, fill: L ? +((x1 - x0) / L.fw).toFixed(2) : 0, free: L && [L.fx, L.fy, L.fw, L.fh].map(Math.round) };
     });
-    check(frame.points > 1000 && frame.underPanel === 0 && frame.offScreen === 0 && frame.fill > 0.5, `shipyard layout ${w}x${h}: the ship is framed in the free space beside the panel (${JSON.stringify(frame)})`);
+    check(frame.points > 1000 && frame.underPanel === 0 && frame.underMute === 0 && frame.offScreen === 0 && frame.fill > 0.5, `shipyard layout ${w}x${h}: the ship is framed in the free space beside the panel (${JSON.stringify(frame)})`);
+    // The sound button: on screen in a corner of the view, clear of the panel, a 44px target that toggles the sound.
+    const mute = await page.evaluate(() => {
+      const b = document.getElementById('dock-mute');
+      const r = b.getBoundingClientRect();
+      const p = document.getElementById('dock-panel').getBoundingClientRect();
+      const ov = Math.max(0, Math.min(r.right, p.right) - Math.max(r.left, p.left)) * Math.max(0, Math.min(r.bottom, p.bottom) - Math.max(r.top, p.top));
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      return { size: [r.width, r.height].map(Math.round), onScreen: r.left >= 0 && r.top >= 0 && r.right <= innerWidth && r.bottom <= innerHeight, overPanel: ov, uncovered: !!hit && b.contains(hit), muted: window.__game.audio.muted };
+    });
+    if (touch) await page.tap('#dock-mute');
+    else await page.click('#dock-mute');
+    const toggled = await page.evaluate(() => ({ muted: window.__game.audio.muted, pressed: document.getElementById('dock-mute').getAttribute('aria-pressed'), label: document.getElementById('dock-mute').getAttribute('aria-label') }));
+    check(mute.onScreen && mute.uncovered && mute.overPanel === 0 && mute.size[0] >= 44 && mute.size[1] >= 44 && !mute.muted && toggled.muted && toggled.pressed === 'true' && toggled.label === 'Unmute sound', `shipyard layout ${w}x${h}${touch ? ' touch' : ''}: a ${mute.size.join('x')} sound button on screen beside the panel ${touch ? 'taps' : 'clicks'} the sound off (${JSON.stringify({ ...mute, after: toggled })})`);
     const contrast = [...(await page.evaluate(dockContrastProbe, '#dock-panel'))];
     await page.evaluate(() => document.getElementById('dock-tab-paint').click());
     contrast.push(...(await page.evaluate(dockContrastProbe, '#dock-panel')));

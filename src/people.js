@@ -19,7 +19,8 @@ import { toon, gradientMap, setOutline, ensureIndex } from './style.js';
 // (~1.3 with a hat; kids are built smaller and default to scale 0.78). The person's
 // left is +x. Seated actions ('sit', 'fish') put the seat (bottom of the hips) at
 // y = SEAT_HEIGHT with the legs dangling; 'lean' rests the forearms on a rail at
-// RAIL.y, RAIL.z; 'scrub' with { wall: true } scrubs a wall WALL_Z in front of the feet.
+// RAIL.y, RAIL.z; 'scrub' with { wall: true } scrubs a wall WALL_Z in front of the feet; 'mop'
+// with { sweep: 0..1 } makes shorter strokes.
 // Tools follow the hands: two-handed tools run through where the hands really are.
 
 const PI = Math.PI;
@@ -74,11 +75,6 @@ const INK = 0;
 const THIN = 1;
 const FLAT = 2;
 const GLOW = 3;
-
-/** True for the materials every person shares (callers must not dispose them). */
-export function isSharedPeopleMaterial(m) {
-  return !!SHARED && SHARED.includes(m);
-}
 
 // ---------------------------------------------------------------------------
 // Palettes
@@ -342,6 +338,35 @@ const SPH_HI = () => cached('sh', () => new THREE.SphereGeometry(1, 20, 14));
 function sphereFor(r) {
   return r < 0.03 ? SPH_LO() : r < 0.062 ? SPH_MID() : SPH();
 }
+
+// Low detail (buildPerson's `detail: 'low'`), for people only ever seen a few dozen pixels tall
+// (the townsfolk behind the shipyard): about a third of the triangles. Spheres, lathes, rings and
+// tubes get fewer segments and specks under SPECK (eye glints, freckles, rivets) are left out; the
+// silhouette, colours and ink lines stay the same. Set only while buildPerson runs.
+let LOW = false;
+const SPECK = 0.01;
+const SPH_TINY = () => cached('st', () => new THREE.SphereGeometry(1, 6, 4));
+const SPH_HEAD_LO = () => cached('shl', () => new THREE.SphereGeometry(1, 11, 8));
+function coarse(geo) {
+  const p = geo.parameters;
+  if (!p) return geo; // lathes are built coarse (paintLathe), rounded boxes are plain already
+  const fewer = (n, k, min) => Math.max(min, Math.round(n * k));
+  switch (geo.type) {
+    case 'SphereGeometry':
+      if (p.thetaLength < PI) return cached(`cap-lo${p.thetaLength}`, () => new THREE.SphereGeometry(1, 10, 5, 0, TAU, 0, p.thetaLength));
+      return p.widthSegments >= 20 ? SPH_HEAD_LO() : p.widthSegments >= 14 ? SPH_LO() : SPH_TINY();
+    case 'TorusGeometry':
+      return torus(p.radius, p.tube, fewer(p.tubularSegments, 0.5, 6), fewer(p.radialSegments, 0.6, 3), p.arc);
+    case 'CylinderGeometry':
+      return cyl(p.radiusTop, p.radiusBottom, p.height, fewer(p.radialSegments, 0.6, 5), p.openEnded);
+    case 'ConeGeometry':
+      return cone(p.radius, p.height, fewer(p.radialSegments, 0.6, 5));
+    case 'CapsuleGeometry':
+      return cached(`c-lo${p.radius.toFixed(4)},${p.length.toFixed(4)}`, () => new THREE.CapsuleGeometry(p.radius, p.length, 1, fewer(p.radialSegments, 0.75, 5)));
+    default:
+      return geo;
+  }
+}
 const CAP_SEG = (r) => cached(`cap${r}`, () => new THREE.SphereGeometry(1, 18, 8, 0, TAU, 0, r));
 const capsule = (r, len, seg = 8) =>
   cached(`c${r.toFixed(4)},${len.toFixed(4)},${seg}`, () => new THREE.CapsuleGeometry(r, Math.max(0.001, len), 2, seg));
@@ -361,6 +386,10 @@ const cone = (r, h, seg = 10) => cached(`o${r},${h},${seg}`, () => new THREE.Con
  * rows facing downwards (undersides).
  */
 function paintLathe(ctrl, rows, segs, paint) {
+  if (LOW) {
+    rows = Math.max(4, Math.ceil(rows * 0.5));
+    segs = Math.max(8, Math.ceil(segs * 0.55));
+  }
   const curve = new THREE.SplineCurve(ctrl.map(([r, y]) => new THREE.Vector2(r, y)));
   const pts = curve.getSpacedPoints(rows);
   for (const p of pts) p.x = Math.max(0, p.x);
@@ -466,12 +495,20 @@ class Kit {
     if (r) q.setFromEuler(new THREE.Euler(r[0], r[1], r[2], r[3] || 'XYZ'));
     const sc = s === undefined ? V3(1, 1, 1) : typeof s === 'number' ? V3(s, s, s) : V3(s[0], s[1], s[2]);
     m.compose(p ? V3(p[0], p[1], p[2]) : V3(), q, sc);
-    this.parts.push({ bone, geo, color, slot, m });
+    this.add(bone, geo, color, slot, m);
     return m;
   }
   /** Add a part with an explicit matrix. */
   putM(bone, geo, color, slot, m) {
     if (geo === SPH()) geo = sphereFor(m.getMaxScaleOnAxis());
+    this.add(bone, geo, color, slot, m);
+  }
+  add(bone, geo, color, slot, m) {
+    if (LOW) {
+      if (!geo.boundingSphere) geo.computeBoundingSphere();
+      if (geo.boundingSphere.radius * m.getMaxScaleOnAxis() < SPECK) return;
+      geo = coarse(geo);
+    }
     this.parts.push({ bone, geo, color, slot, m });
   }
   /** Ellipsoid stretched between two points (tails, brims, moustaches). */
@@ -1029,9 +1066,19 @@ function bake(K) {
  * group.userData = { kind, look, parts: { hips, torso, head, armL, armR, legL, legR, tool,
  *   foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB }, mesh, skeleton, keep: true }.
  * The pivots are THREE.Bone objects. Materials are shared (see disposePerson).
+ * opts.detail = 'low' builds a lighter person (about a third of the triangles) for crowds that are
+ * only ever seen small; it looks the same from a distance.
  */
 export function buildPerson(opts = {}) {
-  const L = resolveLook(opts || {});
+  LOW = !!opts && opts.detail === 'low';
+  try {
+    return build(opts || {});
+  } finally {
+    LOW = false;
+  }
+}
+function build(opts) {
+  const L = resolveLook(opts);
   const P = proportions(L);
   const K = new Kit();
   const group = new THREE.Group();
@@ -1158,8 +1205,12 @@ function makeRig(parts, L, P) {
     qht: new THREE.Quaternion(),
     hand: { pos: new THREE.Vector3(), quat: new THREE.Quaternion() },
     s: Array.from({ length: 8 }, () => new THREE.Vector3()), // pose scratch (helpers never touch these)
+    armsL: [parts.armL, parts.foreL],
+    armsR: [parts.armR, parts.foreR],
   };
 }
+// Left (+1) then right (-1): the animation loops over the sides every frame, without a new array each time.
+const SIDES = Object.freeze([1, -1]);
 
 function reset(R) {
   for (const b of R.bones) {
@@ -1211,7 +1262,7 @@ function bodyDone(R) {
 }
 
 function armBones(R, s) {
-  return s > 0 ? [R.armL, R.foreL] : [R.armR, R.foreR];
+  return s > 0 ? R.armsL : R.armsR;
 }
 
 /** IK an arm to a target given in PERSON space. */
@@ -1284,7 +1335,7 @@ function walkLegs(R, ph, A = 0.5, bounce = 1) {
   const D = L * Math.sin(A);
   const u0 = frac(ph / TAU - 0.25);
   let stanceY = L;
-  for (const sd of [1, -1]) {
+  for (const sd of SIDES) {
     const leg = sd > 0 ? R.legL : R.legR;
     const shin = sd > 0 ? R.shinL : R.shinR;
     const u = frac(u0 + (sd > 0 ? 0 : 0.5));
@@ -1324,10 +1375,9 @@ function footAt(R, sd, x, y, z, pole = 1) {
 
 /** Seated: pelvis bottom on SEAT_HEIGHT, thighs forward, shins dangling (kick swings them). */
 function seated(R, t, kick = 0.2) {
-  const P = R.P;
   R.hips.position.y = SEAT_HEIGHT + 0.125;
   R.hips.position.z = -0.03;
-  for (const sd of [1, -1]) {
+  for (const sd of SIDES) {
     const leg = sd > 0 ? R.legL : R.legR;
     const shin = sd > 0 ? R.shinL : R.shinR;
     leg.rotation.x = -PI / 2 + 0.08;
@@ -1519,20 +1569,23 @@ const POSES = {
     }
   },
 
-  mop(R, t) {
+  mop(R, t, o) {
     const P = R.P;
     const [A, B, C, D] = R.s;
     const w = t * TAU * 0.5;
     const s = Math.sin(w);
     const c = Math.cos(w);
-    const psi = -0.42 + 0.62 * s; // the sweep: everything yaws side to side (offset centres the mop head)
+    // the sweep: everything yaws side to side (offset centres the mop head); { sweep: 0..1 } makes
+    // the strokes shorter, for a cramped deck
+    const k = Number.isFinite(o.sweep) ? clamp(o.sweep, 0, 1) : 1;
+    const psi = -0.42 + 0.62 * k * s;
     // wide stance, knees bending deepest in the middle of each stroke, leaning into it
     R.hips.position.y = P.hipY - (0.04 + 0.035 * Math.abs(c));
-    R.hips.position.x = 0.06 * s;
+    R.hips.position.x = 0.06 * k * s;
     R.hips.rotation.y = 0.4 * psi;
-    for (const sd of [1, -1]) footAt(R, sd, sd * (P.legX + 0.11), 0, -sd * 0.03, 1);
-    R.torso.rotation.set(0.24 + 0.08 * Math.abs(c) + P.hunch * 0.5, 0.65 * psi, -0.2 * s);
-    R.head.rotation.set(-0.1 + 0.06 * Math.abs(c), -0.4 * psi - 0.1, 0.16 * s);
+    for (const sd of SIDES) footAt(R, sd, sd * (P.legX + 0.11), 0, -sd * 0.03, 1);
+    R.torso.rotation.set(0.24 + 0.08 * Math.abs(c) + P.hunch * 0.5, 0.65 * psi, -0.2 * k * s);
+    R.head.rotation.set(-0.1 + 0.06 * Math.abs(c), -0.4 * psi - 0.1, 0.16 * k * s);
     bodyDone(R);
     // grips at chest height in a frame that yaws with the sweep (person space); push / pull
     const cy = Math.cos(psi);
@@ -1568,7 +1621,7 @@ const POSES = {
     if (o.wall) {
       // kneeling upright facing a wall / hull side WALL_Z in front, scrubbing circles at chest height
       R.hips.position.y = P.shinR * 1.05 + P.thigh * 0.97 - P.legY;
-      for (const sd of [1, -1]) {
+      for (const sd of SIDES) {
         const leg = sd > 0 ? R.legL : R.legR;
         const shin = sd > 0 ? R.shinL : R.shinR;
         leg.rotation.set(-0.1, 0, sd * 0.12);
@@ -1590,7 +1643,7 @@ const POSES = {
       // on both knees, bent right over, brush going round in circles on the deck
       R.hips.position.y = P.shinR * 1.05 + P.thigh * 0.86 - P.legY;
       R.hips.position.z = 0.02;
-      for (const sd of [1, -1]) {
+      for (const sd of SIDES) {
         const leg = sd > 0 ? R.legL : R.legR;
         const shin = sd > 0 ? R.shinL : R.shinR;
         leg.rotation.set(-0.5, 0, sd * 0.14);
@@ -1694,7 +1747,7 @@ const POSES = {
     lookAround(R, t, 0.9);
     bodyDone(R);
     // hands resting on the knees
-    for (const sd of [1, -1]) {
+    for (const sd of SIDES) {
       const leg = sd > 0 ? R.legL : R.legR;
       A.set(0, -R.P.thigh, 0).applyQuaternion(leg.quaternion).add(leg.position);
       A.applyMatrix4(local(R.hips, _m1));
@@ -1709,7 +1762,7 @@ const POSES = {
     const hop = Math.abs(Math.sin(w));
     const air = Math.max(0, hop - 0.25) / 0.75;
     R.hips.position.y += 0.1 * air;
-    for (const sd of [1, -1]) {
+    for (const sd of SIDES) {
       const leg = sd > 0 ? R.legL : R.legR;
       const shin = sd > 0 ? R.shinL : R.shinR;
       leg.rotation.x = -0.35 * air;
@@ -1720,7 +1773,7 @@ const POSES = {
     R.head.rotation.set(-0.22, 0.1 * Math.sin(w * 0.5), 0.0);
     bodyDone(R);
     const pump = 0.06 * Math.sin(w * 2);
-    for (const sd of [1, -1]) reachT(R, sd, sd * 0.36, R.P.shY + R.P.reach * 0.86 + pump, 0.06, sd * 1, -0.5, -0.2);
+    for (const sd of SIDES) reachT(R, sd, sd * 0.36, R.P.shY + R.P.reach * 0.86 + pump, 0.06, sd * 1, -0.5, -0.2);
     const k = R.tk;
     if (k === 'mop') {
       // mop raised like a trophy, head up
@@ -1823,27 +1876,30 @@ const POSES = {
     R.head.rotation.set(-0.5, 0.0, 0.0);
     lookAround(R, t, 0.8);
     bodyDone(R);
-    for (const sd of [1, -1]) reachP(R, sd, sd * 0.08, RAIL.y + 0.05, RAIL.z + 0.06, sd * 1, -0.8, -0.2);
+    for (const sd of SIDES) reachP(R, sd, sd * 0.08, RAIL.y + 0.05, RAIL.z + 0.06, sd * 1, -0.8, -0.2);
     setDown(R);
   },
 };
 
+const NO_OPTS = Object.freeze({});
 /**
  * Pose a person for time t (seconds). Deterministic in t; transforms only.
  * opts: { phase? (seconds, defaults to a per-person offset), speed? (tempo, default 1),
- *         wall? ('scrub' only: true scrubs a wall/hull in front instead of the deck) }
+ *         wall? ('scrub' only: true scrubs a wall/hull in front instead of the deck),
+ *         sweep? ('mop' only: 0..1, shorter strokes; default 1) }
  */
-export function animatePerson(person, t, action = 'idle', opts = {}) {
+export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   const u = person && person.userData;
   if (!u || !u.rig) return;
   const R = u.rig;
-  const o = opts || {};
+  const o = opts || NO_OPTS;
   const speed = Number.isFinite(o.speed) ? o.speed : 1;
   const phase = Number.isFinite(o.phase) ? o.phase : R.L.phase;
   const tt = (Number.isFinite(t) ? t : 0) * speed + phase;
   reset(R);
   R.mouth.scale.set(1, 0.001, 1);
-  const pose = POSES[action] || POSES.idle;
+  // (own keys only: an action named like an Object.prototype member falls back to idle too)
+  const pose = Object.prototype.hasOwnProperty.call(POSES, action) ? POSES[action] : POSES.idle;
   pose(R, tt, o);
   // tools that the action didn't place stay hidden
   if (R.tk === 'none') {

@@ -185,6 +185,14 @@
   <!-- The shipyard on Sparrow's Floating Island (main.js builds the rows and the exits). The overlay lets
        pointer events through to the 3D view, which can be dragged to turn the camera. -->
   <section id="dock-screen" class="overlay dock hidden" aria-labelledby="dock-title">
+    <!-- Sound on/off in a top corner of the view (the HUD and the title screen, which have their own, are hidden here). -->
+    <button id="dock-mute" class="mute-btn dock-mute" type="button" aria-label="Mute sound" aria-pressed="false">
+      <svg class="ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+        <path class="spk" d="M3 9.5h3.6L12 5v14l-5.4-4.5H3z" />
+        <path class="waves" d="M15.4 9a4.2 4.2 0 0 1 0 6M18.2 6.2a8.2 8.2 0 0 1 0 11.6" />
+        <path class="cross" d="M16 9.5l5 5M21 9.5l-5 5" />
+      </svg>
+    </button>
     <div id="dock-panel" class="panel dock-panel">
       <header class="dock-head">
         <p class="dock-kicker">Shipyard</p>

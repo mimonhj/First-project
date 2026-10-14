@@ -1858,6 +1858,7 @@ function buildPlayer(S, T, opts) {
   block(0.95, 1.25, 0.27);
   block(-1.0, -1.9, 0.39); // rope coil
   S.blockers.push({ x: 0, z: 0.75, hx: 0.62, hz: 0.52 }); // hatch
+  S.blockers.push({ x: 0, z: (cab.z0 + cab.z1) / 2, hx: cab.w / 2, hz: (cab.z1 - cab.z0) / 2 }); // stern castle
   // heavy shot: cannonball pyramids
   const pyramids = [[0.62, 2.78, 0.35], [1.0, -1.45, 0.1], [-0.95, -0.98, -0.1]];
   for (const [x, z, yaw] of pyramids.slice(0, UP.shot)) {
