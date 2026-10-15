@@ -1,12 +1,40 @@
 import * as THREE from 'three';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
-import { buildShip, animateShip, disposeShip } from './ships.js';
+import { buildShip, animateShip, disposeShip, projectileMesh, addHole, clearHoles, setShipDamage, hoistFlag } from './ships.js';
 import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
 import { toon, noOutline, gradientMap } from './style.js';
 import { createAudio } from './audio.js';
-import { animatePerson } from './people.js';
+import { buildPerson, animatePerson, disposePerson, releaseSharedPeople } from './people.js';
 import * as sparrow from './env/sparrow.js';
 import { LEVELS } from './levels.js';
+// "Boarders Away!" (SPEC2): the combat rules, the tavern upgrades, the looks and feats records, the enemy
+// name tags, the pop words and the sailors that go overboard.
+import * as combat from './combat.js';
+import {
+  AMMO,
+  AMMO_IDS,
+  AMMO_SWAP,
+  CRIT,
+  EFFECTS,
+  STATES,
+  CREW,
+  BOARD,
+  RAIDERS,
+  CAPTURE,
+  WORDS,
+  mulberry32,
+  shotResult,
+  ammoUnlocked,
+  captureGold,
+  plunderGold,
+} from './combat.js';
+import { parseArmoryConfig, serializeArmoryConfig, armoryStats, armoryNextCost } from './armory.js';
+import { parseLook, serializeLook, sanitizeLook, parseFeats, serializeFeats, captainOpts, crewOpts, enemyCrewOpts } from './cosmetics.js';
+import { createTags } from './tags.js';
+import { createPops } from './pops.js';
+import { createOverboard } from './overboard.js';
+import { createBoarding } from './boarding.js';
+import { createMechanics } from './mechanics.js';
 import {
   UPGRADES,
   LOOKS,
@@ -38,6 +66,7 @@ const REGEN_RATE = 2; // hp per second (ships without their own value; the playe
 const WAIT_DIST = 50; // distance waiting pirates keep from the player
 const WAVE_REPAIR = 0.35; // fraction of the hull your crew patches when reinforcements arrive
 const REEF_SLOW = 0.45; // speed multiplier for deep-hulled ships on a reef
+const ICE_SLOW = 0.55; // speed multiplier for every ship on an ice floe (Frostbite Straits)
 const BOMB_RADIUS = 5; // lava bomb blast radius
 const BOMB_DAMAGE = 16;
 const PARTICLE_CAP = 600;
@@ -51,24 +80,39 @@ const PROGRESS_KEY = 'pirates-ahoy-unlocked';
 const TUTOR_KEY = 'pirates-ahoy-tutorial-done';
 const PURSE_KEY = 'pirates-ahoy-purse'; // the treasure chest: banked gold to spend at the shipyard
 const SHIP_KEY = 'pirates-ahoy-ship'; // the player's upgrades and paint (see upgrades.js)
+const ARMORY_KEY = 'pirates-ahoy-armory'; // the tavern's crew upgrades (see armory.js)
+const LOOK_KEY = 'pirates-ahoy-look'; // the captain's and the crew's looks (see cosmetics.js)
+const FEATS_KEY = 'pirates-ahoy-feats'; // captures, boardings, rakes, crits... (trophies, see cosmetics.js)
+const TIPS_KEY = 'pirates-ahoy-tips'; // one-time battle tips already shown (bitmask, see showTip())
+const HELM_SCALE = 1.1; // the captain at the helm: his hands meet the Sea Biscuit's wheel at this scale (people.js WHEEL)
+const LIST_BATTERED = 0.04; // radians a battered ship lists toward the side with more hits
+const LIST_WRECKED = 0.09;
+const WRECK_SIT = 0.15; // a wreck sits this much lower in the water
+const AMMO_NAMES = { round: 'Round', chain: 'Chain', grape: 'Grape' };
+// Ammo icons (gun card and the touch Ammo pill): round shot, two half-balls on a chain, a bunch of grape shot.
+const AMMO_SVG = 'viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
+const AMMO_INK = 'stroke="#1d1330" stroke-width="2" stroke-linejoin="round"';
+const AMMO_ICONS = {
+  round: `<svg ${AMMO_SVG}><circle cx="12" cy="12.5" r="8" fill="#3a3443" ${AMMO_INK}/><circle cx="9.2" cy="9.6" r="2.2" fill="#fff" opacity=".75"/></svg>`,
+  chain:
+    `<svg ${AMMO_SVG}><path d="M7.5 12.5h9" stroke="#1d1330" stroke-width="4.4" stroke-linecap="round"/><path d="M7.5 12.5h9" stroke="#b9b2c4" stroke-width="1.8" stroke-dasharray="2.2 1.4"/>` +
+    `<path d="M7.5 6.6a5.9 5.9 0 0 0 0 11.8z" fill="#3a3443" ${AMMO_INK}/><path d="M16.5 6.6a5.9 5.9 0 0 1 0 11.8z" fill="#3a3443" ${AMMO_INK}/></svg>`,
+  grape:
+    `<svg ${AMMO_SVG}><g fill="#3a3443" ${AMMO_INK}><circle cx="8" cy="15.6" r="3.6"/><circle cx="16" cy="15.6" r="3.6"/><circle cx="12" cy="18.6" r="3.6"/>` +
+    '<circle cx="8.4" cy="8.6" r="3.6"/><circle cx="15.6" cy="8.6" r="3.6"/><circle cx="12" cy="12" r="3.6"/></g></svg>',
+};
+// One-time battle tips (bits of TIPS_KEY, SPEC2 §5.5).
+const TIP = { board: 1, chain: 2, grape: 4, raiders: 8, ashore: 16, rake: 32, counter: 64, surrender: 128 };
+// Why an ammo can't be loaded yet (hint bubble), and the level that unlocks it.
+const AMMO_LOCKED = { chain: 'Chain shot unlocks after the Coast of Europe', grape: 'Grape shot unlocks after the Bali Islands' };
 
 // The levels (environment, enemy waves, difficulty knobs, audio scene, finale) live in levels.js.
 // Beating a finale level wins the voyage (the Victory screen); so does beating the last level.
 const isFinale = (n) => !!LEVELS[n - 1]?.finale || n >= LEVELS.length;
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Helpers (mulberry32, the seeded random numbers, comes from combat.js)
 // ---------------------------------------------------------------------------
-function mulberry32(seed) {
-  let a = seed >>> 0;
-  return () => {
-    a = (a + 0x6d2b79f5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
-
 function wrapAngle(a) {
   return ((((a + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
 }
@@ -117,6 +161,13 @@ const ui = {
   menu: $('menu-screen'),
   levelCards: $('level-cards'),
   pause: $('pause-screen'),
+  pauseChoices: $('pause-choices'),
+  pauseConfirm: $('pause-confirm'),
+  quitDock: $('quit-dock-btn'),
+  quitMenu: $('quit-menu-btn'),
+  leavePrompt: $('leave-prompt'),
+  leaveQ: $('leave-q'),
+  leaveWhy: $('leave-why'),
   levelDone: $('level-screen'),
   levelTitle: $('level-title'),
   levelSummary: $('level-summary'),
@@ -139,6 +190,24 @@ const ui = {
   dockExits: $('dock-exits'),
   dockLive: $('dock-live'),
   dockToast: $('dock-toast'),
+  crewChip: $('crew-chip'),
+  crewNum: document.querySelector('#crew-chip .crew-num') || document.createElement('b'),
+  firePort: document.querySelector('#gun-port .fire-tag') || document.createElement('span'),
+  fireStar: document.querySelector('#gun-star .fire-tag') || document.createElement('span'),
+  ammoIcon: document.querySelector('#gun-ammo .ammo-ico') || document.createElement('span'),
+  gunAmmo: $('gun-ammo'),
+  ammoName: $('ammo-name'),
+  gunBoard: $('gun-board'),
+  boardTag: $('board-tag'),
+  touchAct: document.querySelector('.touch .pad.act') || document.createElement('div'),
+  touchAmmo: $('touch-ammo'),
+  touchBoard: $('touch-board'),
+  bossCrew: $('boss-crew'),
+  bossCrewFill: $('boss-crew-fill'),
+  objective: $('objective'),
+  boardingStrip: $('boarding-strip'),
+  pops: $('pops'),
+  gameLive: $('game-live'),
   error: $('error-screen'),
   recover: $('recover-screen'),
   recoverTitle: $('recover-title'),
@@ -275,6 +344,11 @@ function saveRecord(key, serialize, value) {
   } catch {
     return false; // storage blocked or full: it just won't persist
   }
+}
+// Feats counted in battle (rakes, crits, captures...) are saved at the end of a level, on pause, when the
+// page is hidden and when leaving to the menu or the dock (not on every shot).
+function saveFeats() {
+  if (featsDirty && saveRecord(FEATS_KEY, serializeFeats, feats)) featsDirty = false;
 }
 
 // Another tab of the game may have banked gold or changed the ship since this one last read or
@@ -478,6 +552,23 @@ function trackPerformance(rawDt) {
 // Game state
 // ---------------------------------------------------------------------------
 let shipConfig = loadShipConfig(); // upgrades bought and paint chosen at the shipyard
+// The "Boarders Away!" records (each validated by its module; a record that needed fixing is rewritten).
+// Feats first: a trophy worn in the look must have been earned.
+let feats = loadRecord(FEATS_KEY, parseFeats, serializeFeats);
+let featsDirty = false; // counted this voyage, not saved yet (see saveFeats())
+let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
+{
+  const clean = sanitizeLook(look, feats);
+  if (serializeLook(clean) !== serializeLook(look)) saveRecord(LOOK_KEY, serializeLook, clean);
+  look = clean;
+}
+let armoryCfg = loadRecord(ARMORY_KEY, parseArmoryConfig, serializeArmoryConfig); // the tavern's crew upgrades
+let tips = loadInt(TIPS_KEY, 0, 255, 0); // one-time tips already shown (SPEC2 §5.5)
+// Gameplay dice for hits (crits), reseeded at every level start so a level plays out the same way.
+let combatRng = mulberry32(1 * 7919 + 13);
+let forcedCrit = null; // tests: null | 'none' | 'crit' | 'rudder' | 'mast' | 'keg' | 'routed'
+const shotLog = []; // the last 40 hits (tests: __game.combat.log)
+let nextShipId = 1;
 
 const state = {
   mode: 'menu', // menu | playing | paused | levelDone | over | won | dock
@@ -511,6 +602,25 @@ const state = {
   ghostHold: 0,
   ghostPct: 100,
   hint: { step: 0, t: 0, offBeam: 0, hits: 0, text: '' },
+  // "Boarders Away!"
+  ammo: 'round', // loaded in both broadsides (round | chain | grape), back to round at every level start
+  crew: 12, // your hands aboard (full at every level start)
+  crewMax: 12, // from the tavern's Boarding party upgrade
+  critBase: CRIT.base[0], // your crit chance before rakes and point blank (Master gunner)
+  hitStop: { left: 0, lastAt: -Infinity }, // a crit freezes the frame for a moment (real seconds)
+  flash: { text: '', until: 0 }, // a short message in the hint bubble (why that key did nothing), in simulated time
+  tip: { text: '', until: 0 }, // a one-time tip showing in the hint bubble
+  ammoTipDue: 0, // bits of the new-ammo tips to show once the fly-in is over
+  // Boarding and captures (SPEC2 §3)
+  boardCooldown: 0, // seconds until your grapples are coiled again (after any boarding)
+  grappleRange: 14, // from the tavern (Long grapples), set at every level start
+  reelTime: 1.2,
+  blade: 1, // Cutlass drills
+  captures: 0, // ships captured this level (prize bonus at the level's end)
+  plundered: 0, // gold raiders grabbed this level
+  lastCaptureAt: -Infinity,
+  lastBossCaptured: '',
+  waveHorn: null, // { at, pitch }: the reinforcements' horn, waiting for a capture fanfare to end
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
 seen[SHIP_KEY] = readRaw(SHIP_KEY);
@@ -624,75 +734,28 @@ function clearParticles() {
 }
 
 // ---------------------------------------------------------------------------
-// Floating labels and health bars above enemy ships
+// Floating name tags (hull bar, crew pips) above enemy ships, pop words over the view and the
+// sailors who go overboard: see tags.js, pops.js and overboard.js.
 // ---------------------------------------------------------------------------
-const labelCache = new Map();
-function drawLabel(canvas, text) {
-  const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.font = '40px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.lineJoin = 'round';
-  ctx.lineWidth = 10;
-  ctx.strokeStyle = '#1d1330';
-  ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
-  ctx.fillStyle = '#fff4d6';
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
-}
-function labelTexture(typeName) {
-  let entry = labelCache.get(typeName);
-  if (!entry) {
-    const canvas = document.createElement('canvas');
-    canvas.width = 512;
-    canvas.height = 80;
-    const text = SHIP_TYPES[typeName].name;
-    drawLabel(canvas, text);
-    const tex = new THREE.CanvasTexture(canvas);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    tex.anisotropy = 4;
-    entry = { canvas, tex, text };
-    labelCache.set(typeName, entry);
-  }
-  return entry.tex;
-}
-// Re-draw labels once the cartoon font has loaded (fonts load late, without blocking the page).
-function redrawLabels() {
-  for (const e of labelCache.values()) {
-    drawLabel(e.canvas, e.text);
-    e.tex.needsUpdate = true;
-  }
-}
-document.fonts?.ready.then(redrawLabels);
-document.fonts?.addEventListener?.('loadingdone', redrawLabels);
-
-const barBgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0x1d1330, fog: false }));
-const barFgMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xe63946, fog: false }));
-const barGeoBg = new THREE.PlaneGeometry(4.4, 0.75);
-const barGeoFg = new THREE.PlaneGeometry(4, 0.4);
-const labelMats = new Map();
-function buildTag(typeName) {
-  const g = new THREE.Group();
-  const bg = new THREE.Mesh(barGeoBg, barBgMat);
-  const fg = new THREE.Mesh(barGeoFg, barFgMat);
-  fg.position.z = 0.01;
-  // Only the glyph pixels write depth, so the outline pass can't smear ink over the name.
-  let mat = labelMats.get(typeName);
-  if (!mat) {
-    mat = new THREE.SpriteMaterial({ map: labelTexture(typeName), fog: false, depthWrite: true, alphaTest: 0.4 });
-    labelMats.set(typeName, mat);
-  }
-  const label = new THREE.Sprite(mat);
-  label.scale.set(8, 1.25, 1);
-  label.position.y = 1.3;
-  g.add(bg, fg, label);
-  g.userData.fg = fg;
-  return g;
-}
-function setTag(tag, ratio) {
-  const r = clamp(ratio, 0.001, 1);
-  tag.userData.fg.scale.x = r;
-  tag.userData.fg.position.x = -(1 - r) * 2;
+const tags = createTags(scene);
+// (reducedMotion is declared further down: the lambda reads it when a pop appears.)
+const pops = createPops(ui.pops, camera, { reducedMotion: () => reducedMotion() });
+const overboardCtx = {
+  foam,
+  sfx: (name, x, z) => audio.play(name, sfxAt(x, z)),
+  heightAt: (x, z, t) => ocean.heightAt(x, z, t),
+};
+let overboard = createOverboard(scene, overboardCtx);
+// Off to the title screen or the dock: the battle's prebuilt people (hidden, but still in the scene) are
+// let go, so they don't weigh on those scenes; the next level prebuilds its own.
+function releaseBattlePeople() {
+  overboard.dispose();
+  overboard = createOverboard(scene, overboardCtx);
+  boarding.release();
+  mechanics.dispose(); // the level's twist ends with the level
+  mechanics = createMechanics([], {});
+  releaseSharedPeople(); // their shared geometry too, once nobody wears that look any more
+  lastLevelStarted = 0;
 }
 
 // Height of the tallest part of each ship type (masts and flags), measured once.
@@ -710,14 +773,17 @@ function playerStats() {
   return playerType(SHIP_TYPES.player, shipConfig);
 }
 function buildPlayerMesh(type = playerStats()) {
-  return buildShip('player', { type, look: shipConfig.look, upgrades: shipConfig.up });
+  // Long grapples show as coiled grapnels on the rail (in battle and at the shipyard).
+  return buildShip('player', { type, look: shipConfig.look, upgrades: shipConfig.up, armory: { grapple: armoryCfg.up.grapple } });
 }
 
 function createShip(typeName, kind, x, z, h) {
   const isPlayer = kind === 'player' && typeName === 'player';
   const type = isPlayer ? playerStats() : SHIP_TYPES[typeName];
   const mesh = isPlayer ? buildPlayerMesh(type) : buildShip(typeName);
+  const crew0 = isPlayer ? 0 : Math.max(0, Math.floor(type.crew || 0));
   const ship = {
+    id: nextShipId++,
     kind,
     typeName,
     type,
@@ -728,9 +794,11 @@ function createShip(typeName, kind, x, z, h) {
     hp: type.hp,
     maxHp: type.hp,
     reload: { port: 0, star: 0 },
+    reloadMax: { port: type.reload, star: type.reload }, // the reload a side's last shot set (HUD bars)
     sinking: 0, // > 0 while sinking (seconds since it started)
     roll: 0,
     onReef: false,
+    reefIce: false, // the reef it is on is ice (slows every hull)
     mesh,
     tag: null,
     tagY: tagHeight(typeName, mesh),
@@ -738,55 +806,117 @@ function createShip(typeName, kind, x, z, h) {
     wakeAcc: 0,
     sprayAcc: 0,
     smokeAcc: 0,
+    fxAcc: 0, // battered / wrecked smoke and keg fire, per simulated second
     pinned: 0,
     escapeUntil: 0,
     escapeH: 0,
+    // ---- crew (SPEC2 §3.1; the player's crew is state.crew)
+    crew0, // full complement
+    killed: 0, // lost to grape, crits and boardings
+    hpLow: type.hp, // the lowest hull she has had (repairs never bring sailors back)
+    crewShown: crew0, // what her tag's pips show (a boarding ticks them down one by one)
+    strikeAt: combat.strikeAt(crew0), // the surrender notch
+    tagIcon: null, // 'capture' | 'fight' | 'risky' | 'white' | 'hot' | 'cooldown' | null (see tags.js)
+    tagCool: 0,
+    tagPulse: false, // her tag's hull bar throbs (wrecked)
+    surrendered: false,
+    captured: false,
+    escaped: false,
+    removeAt: Infinity,
+    boardCooldown: 0,
+    // ---- damage (SPEC2 §2.3, §2.4)
+    effects: { slow: 0, slowTurn: 0, mast: 0, rudder: 0, burn: 0 }, // seconds left (chain shot, crit effects)
+    burnAcc: 0, // seconds towards the next keg-fire tick
+    burnTicks: 0, // keg-fire ticks (1 hp each) still to come
+    lastEffectAt: -Infinity, // simulated time of her last new crit effect (one per CRIT.effectGap)
+    hitsBySide: { port: 0, star: 0 }, // hull hits on each side: she lists toward the side with more
+    firstHole: null, // { z, y, side } of her first hole: the battered smoke rises from it
+    list: 0, // eased list angle (radians, + = toward starboard)
+    rise: 0, // > 0: rising from the deep (the Phantom), the hull sits lower
+    captain: null, // the player's captain at the helm (people.js)
   };
   scene.add(mesh);
-  // The boss has its own HUD bar, so it gets no floating tag.
-  if (kind === 'enemy' && !type.boss) {
-    ship.tag = buildTag(typeName);
-    scene.add(ship.tag);
-  }
+  if (isPlayer) addHelmCaptain(ship);
+  // The boss has its own HUD bar, so it gets no floating tag (tags.add returns null for it).
+  if (kind === 'enemy') ship.tag = tags.add(ship);
   return ship;
 }
 
-function removeShip(s) {
-  disposeShip(s.mesh);
-  if (s.tag) scene.remove(s.tag);
+// Your captain at the helm of the Sea Biscuit, in the looks from Polly's (a child of the ship's model).
+function addHelmCaptain(ship) {
+  const h = ship.mesh.userData.helm;
+  if (!h) return;
+  let person = null;
+  try {
+    person = buildPerson({ ...captainOpts(look), scale: HELM_SCALE });
+  } catch (err) {
+    console.warn('captain at the helm:', err);
+    return;
+  }
+  person.position.set(h.x, h.y, h.z);
+  person.rotation.y = h.h;
+  person.name = 'helm-captain';
+  ship.mesh.add(person);
+  ship.captain = person;
+  helm.point = -1;
+  helm.cheer = -1;
+}
+// What the helm captain does: 'point' after a broadside, 'cheer' on SUNK! / CAPTURED!, else steer.
+const helm = { point: -1, cheer: -1, hidden: false };
+function hideHelm(on) {
+  helm.hidden = !!on;
+  if (player && player.captain) player.captain.visible = !helm.hidden;
 }
 
-const ballGeo = new THREE.SphereGeometry(0.34, 12, 8);
-const ballMat = toon(0x2b2b38);
+function removeShip(s) {
+  // The captain is ours (people.js), not part of the ship model: off the ship before it is disposed.
+  if (s.captain) {
+    if (s.captain.parent) s.captain.parent.remove(s.captain);
+    disposePerson(s.captain);
+    s.captain = null;
+  }
+  tags.remove(s);
+  s.tag = null;
+  overboard.clearSurrender(s);
+  if (s.kind === 'enemy') mechanics.onRemove(s);
+  disposeShip(s.mesh);
+}
+
 const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.2, 20);
 const coinMat = toon(0xffc93c, { emissive: 0x6b4a00, emissiveIntensity: 0.5 });
 const bombGeo = new THREE.IcosahedronGeometry(1.1, 1);
 const bombMat = toon(0x3a2a2a, { emissive: 0xff5a1f, emissiveIntensity: 0.9 });
 
-// Lava bomb danger zone: a thick ring (plus a ghost copy that shows through anything in
-// front of it, like your own sails) and a filling disc that shows the time to impact.
+// Danger zone of a lava bomb or a lightning strike: a thick ring (plus a ghost copy that shows through
+// anything in front of it, like your own sails) and a filling disc that shows the time to impact.
+// Lava is red; lightning is white-blue. Drawn for BOMB_RADIUS and scaled to the level's radius.
 const zoneRingGeo = new THREE.RingGeometry(BOMB_RADIUS - 1.6, BOMB_RADIUS, 48).rotateX(-Math.PI / 2);
 const zoneDiscGeo = new THREE.CircleGeometry(BOMB_RADIUS, 48).rotateX(-Math.PI / 2);
-const zoneRingMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xff3b1f, transparent: true, opacity: 0.8, depthWrite: false }));
-const zoneGhostMat = noOutline(
-  new THREE.MeshBasicMaterial({ color: 0xff3b1f, transparent: true, opacity: 0.35, depthWrite: false, depthFunc: THREE.GreaterDepth })
-);
-const zoneDiscMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xff5a1f, transparent: true, opacity: 0.3, depthWrite: false }));
-function buildZone() {
+function zoneMaterials(ring, disc) {
+  return {
+    ring: noOutline(new THREE.MeshBasicMaterial({ color: ring, transparent: true, opacity: 0.8, depthWrite: false })),
+    ghost: noOutline(new THREE.MeshBasicMaterial({ color: ring, transparent: true, opacity: 0.35, depthWrite: false, depthFunc: THREE.GreaterDepth })),
+    disc: noOutline(new THREE.MeshBasicMaterial({ color: disc, transparent: true, opacity: 0.3, depthWrite: false })),
+  };
+}
+const ZONE_MATS = { lava: zoneMaterials(0xff3b1f, 0xff5a1f), lightning: zoneMaterials(0xe8f6ff, 0x8fd0ff) };
+function buildZone(kind = 'lava', radius = BOMB_RADIUS) {
+  const M = ZONE_MATS[kind] || ZONE_MATS.lava;
   const g = new THREE.Group();
-  const ring = new THREE.Mesh(zoneRingGeo, zoneRingMat);
-  const ghost = new THREE.Mesh(zoneRingGeo, zoneGhostMat);
-  const disc = new THREE.Mesh(zoneDiscGeo, zoneDiscMat);
+  const ring = new THREE.Mesh(zoneRingGeo, M.ring);
+  const ghost = new THREE.Mesh(zoneRingGeo, M.ghost);
+  const disc = new THREE.Mesh(zoneDiscGeo, M.disc);
   ring.renderOrder = ghost.renderOrder = disc.renderOrder = 5;
   g.add(disc, ring, ghost);
+  g.scale.setScalar(radius / BOMB_RADIUS);
   g.userData.disc = disc;
   return g;
 }
 
 function removeBomb(b) {
-  scene.remove(b.mesh);
+  if (b.mesh) scene.remove(b.mesh);
   scene.remove(b.zone);
-  b.whistle.stop();
+  if (b.whistle) b.whistle.stop();
 }
 
 function clearProjectiles(enemyOnly = false) {
@@ -800,6 +930,8 @@ function clearProjectiles(enemyOnly = false) {
 }
 
 function clearLevelEntities() {
+  boarding.clear();
+  boardView = null;
   for (const e of enemies) removeShip(e);
   if (player) removeShip(player);
   clearProjectiles();
@@ -808,6 +940,9 @@ function clearLevelEntities() {
   volleys.clear();
   player = null;
   clearParticles();
+  overboard.clear();
+  pops.clear();
+  state.hitStop.left = 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -820,7 +955,7 @@ function loadEnvironment(n) {
 // Build an environment module (a level, or Sparrow's Floating Island for the shipyard).
 function setEnvironment(mod, seed) {
   if (env) env.dispose();
-  env = mod.build(scene, { rng: mulberry32(seed) });
+  env = mod.build(scene, { rng: mulberry32(seed), reducedMotion: reducedMotion() });
   colliders.length = 0;
   for (const c of env.colliders) colliders.push({ h: 3, ...c });
   reefs.length = 0;
@@ -911,22 +1046,37 @@ function spawnWave(index) {
   const def = LEVELS[state.level - 1];
   const wave = def.waves[index];
   const spots = pickSpawns(wave.length, index);
+  const fresh = [];
   wave.forEach((typeName, i) => {
     const s = spots[i];
     const px = player ? player.x : 0;
     const pz = player ? player.z : 0;
-    enemies.push(createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z)));
+    const e = createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z));
+    enemies.push(e);
+    fresh.push(e);
   });
   state.wave = index;
+  let hands = 0;
   if (index > 0 && player && !player.sinking) {
     player.hp = Math.min(player.maxHp, player.hp + player.maxHp * WAVE_REPAIR);
+    // Fresh hands come aboard with the reinforcements (never above the full crew).
+    const before = state.crew;
+    state.crew = clamp(state.crew + CREW.waveRefill, 1, state.crewMax);
+    hands = state.crew - before;
   }
   if (index > 0) {
     const boss = wave.find((t) => SHIP_TYPES[t].boss);
-    audio.play('wave', { pitch: boss ? 0.8 : 1 });
+    // (Right after a capture its fanfare plays out first: the horn waits, SPEC2 §9.1 audio.)
+    const pitch = boss ? 0.8 : 1;
+    if (state.time - state.lastCaptureAt < 1.5) state.waveHorn = { at: state.lastCaptureAt + 1.5, pitch };
+    else audio.play('wave', { pitch });
     const label = boss ? `${SHIP_TYPES[boss].name} appears!` : 'Reinforcements!';
-    showBanner(`${label}<small>${describeWave(wave)}</small><small>Your crew patches the hull</small>`, 3);
+    const crewLine = hands > 0 ? ` &middot; ${hands} more ${hands === 1 ? 'hand' : 'hands'} aboard` : '';
+    showBanner(`${label}<small>${describeWave(wave)}</small><small>Your crew patches the hull${crewLine}</small>`, 3);
   }
+  // The level's mechanics may place a new ship (a galleon at a convoy start, the Phantom rising beside the
+  // eye, with her own banner): after the banner above, so theirs wins.
+  for (const e of fresh) mechanics.onSpawn(e, index);
 }
 
 function describeWave(wave) {
@@ -943,6 +1093,7 @@ function controlsLine() {
     : 'Steer <kbd>A</kbd><kbd>D</kbd> &middot; Sails <kbd>W</kbd><kbd>S</kbd> &middot; Fire <kbd>Q</kbd> / <kbd>E</kbd>. Cannons fire sideways!';
 }
 
+let lastLevelStarted = 0;
 function startLevel(n, { retry = false } = {}) {
   if (activeModal() && !state.contextLost) closeModal(modal);
   closeDock();
@@ -970,13 +1121,72 @@ function startLevel(n, { retry = false } = {}) {
   if (!retry) state.bombWarned = false;
   state.goldAtLevelStart = state.gold;
   clearSteering();
+  // People built with share: true (overboard sailors, boarding parties) belong to one level's looks.
+  if (n !== lastLevelStarted) releaseSharedPeople();
+  lastLevelStarted = n;
+  // The same level always rolls the same crits (tests pin them with __game.combat.seed()).
+  combatRng = mulberry32(n * 7919 + 13);
+  // Round shot loaded, every hand aboard (the tavern's Boarding party decides how many).
+  const stats = armoryStats(armoryCfg);
+  state.ammo = 'round';
+  state.crewMax = stats.crew;
+  state.crew = stats.crew;
+  state.critBase = stats.critBase;
+  // Boarding: the tavern's Long grapples and Cutlass drills, nothing captured or plundered yet.
+  state.grappleRange = stats.grappleRange;
+  state.reelTime = stats.reel;
+  state.blade = stats.blade;
+  state.boardCooldown = 0;
+  state.captures = 0;
+  state.plundered = 0;
+  state.lastCaptureAt = -Infinity;
+  state.lastBossCaptured = '';
+  state.waveHorn = null;
+  state.hitStop.left = 0;
+  state.flash = { text: '', until: 0 };
+  state.tip = { text: '', until: 0 };
+  // New ammo this voyage: say so once the fly-in is over (one-time tips, SPEC2 §5.5).
+  state.ammoTipDue = (ammoUnlocked('chain', state.unlocked) ? TIP.chain : 0) | (ammoUnlocked('grape', state.unlocked) ? TIP.grape : 0);
+  state.ammoTipDue &= ~tips;
+  shown.ammo = null;
 
   loadEnvironment(n);
   const def = LEVELS[n - 1];
   const ps = env.playerStart;
   player = createShip('player', 'player', ps.x, ps.z, ps.h);
   state.nextBomb = def.bombs ? def.grace + rand(...def.bombs.every) : Infinity;
+  // The level's mechanics exist before its first wave, so wave 0 meets onSpawn (SPEC2 §6.3).
+  mechanics.dispose();
+  mechanics = createMechanics(def.mechanics || [], {
+    env: () => env,
+    player: () => player,
+    enemies,
+    fighting,
+    relative,
+    damage,
+    escape: escapeShip,
+    pop: (text, x, y, z, style) => pops.pop(text, x, y, z, style),
+    showBanner,
+    announce: gameAnnounce,
+    sfx: (name, x, z) => audio.play(name, sfxAt(x, z)),
+    rng: () => combatRng(),
+    time: () => state.time,
+    def,
+    types: SHIP_TYPES,
+  });
   spawnWave(0);
+  mechanics.init();
+  // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
+  const types = [...new Set(def.waves.flat())];
+  overboard.prepare(types.flatMap((t) => [enemyCrewOpts(t, 1), enemyCrewOpts(t, 2)]));
+  // Your boarding party (captain and four hands in your looks) and, where raiders sail, their boarders:
+  // built one per frame during the fly-in (boarding.js).
+  const paint = LOOKS.hull.find((l) => l.id === shipConfig.look.hull);
+  boarding.prepare({
+    captain: { ...captainOpts(look), tool: 'cutlass' },
+    crew: [1, 2, 3, 4].map((seed) => ({ ...crewOpts(look, seed, { kind: 'pirate', seed }, paint), tool: 'cutlass' })),
+    raiders: types.some((t) => SHIP_TYPES[t] && SHIP_TYPES[t].boarder) ? [1, 2, 3, 4].map((seed) => enemyCrewOpts('raider', seed)) : null,
+  });
   snapCamera();
   state.intro = retry ? 0 : INTRO_TIME;
   state.introRate = 1;
@@ -993,7 +1203,8 @@ function startLevel(n, { retry = false } = {}) {
   if (retry) {
     showBanner(`Try again!<small>${describeWave(def.waves[0])}</small>`, 2);
   } else {
-    const sub = firstVoyage ? controlsLine() : def.mechanic ?? m.subtitle;
+    // (A level whose mechanic names a key has touch wording too: def.mechanicTouch.)
+    const sub = firstVoyage ? controlsLine() : (isTouch() && def.mechanicTouch) || def.mechanic || m.subtitle;
     showBanner(`Level ${n}: ${m.name}<small>${sub}</small><small>${describeWave(def.waves[0])}</small>`, firstVoyage ? 6 : 4.5);
   }
   updateHud(true);
@@ -1024,28 +1235,39 @@ function blurActive() {
 function showBanner(html, seconds) {
   ui.banner.innerHTML = html;
   show(ui.banner, true);
-  retrigger(ui.banner, 'pop');
+  retrigger(ui.banner, 'popped');
   state.bannerTimer = seconds;
 }
 
 function finishLevel() {
+  boarding.cancel('level');
   clearProjectiles();
   // Sweep up any loot still floating around.
   state.gold += coins.length * COIN_VALUE;
   for (const c of coins) scene.remove(c.mesh);
   coins.length = 0;
   const def = LEVELS[state.level - 1];
-  state.gold += def.bonus;
+  // Bonuses: the level's own, +50 for every prize taken (SPEC2 §3.7), and the mechanic's (galleons taken).
+  const prize = state.captures * CAPTURE.prizeBonus;
+  const mech = Math.max(0, Math.round(Number(mechanics.bonus()) || 0));
+  const mechLines = (mechanics.summary() || []).filter((l) => typeof l === 'string' && l);
+  state.gold += def.bonus + prize + mech;
   show(ui.banner, false);
   show(ui.hint, false);
   // This level's earnings (loot and bonus) go into the treasure chest for the shipyard.
   // (Gold from an attempt that is lost is never banked: a retry restores the voyage gold.)
   bankGold(state.gold - state.goldAtLevelStart);
+  saveFeats();
   const banked =
     `Banked <b>+${state.banked}</b> gold &middot; Treasure chest: <b>${state.purse}</b> gold`;
 
   if (isFinale(state.level)) {
     state.mode = 'won';
+    // A finale with more voyage after it (Act II) opens the next level too.
+    if (state.level < LEVELS.length && state.level + 1 > state.unlocked) {
+      state.unlocked = state.level + 1;
+      saveNumber(PROGRESS_KEY, state.unlocked);
+    }
     const isBest = state.gold > state.best;
     if (isBest) {
       state.best = state.gold;
@@ -1063,8 +1285,16 @@ function finishLevel() {
     }
     const next = LEVELS[state.level].env.meta;
     ui.levelTitle.textContent = `${def.env.meta.name} cleared!`;
+    // "Ships sunk: 3 · Captured: 2 · Level bonus: +500 gold", the prize and mechanic bonuses, the plunder.
+    const esc = (t) => String(t).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+    const extra = [];
+    if (prize) extra.push(`Prize bonus: <b>+${prize}</b> gold`);
+    for (const line of mechLines) extra.push(esc(line));
+    if (mech) extra.push(`Treasure bonus: <b>+${mech}</b> gold`);
+    if (state.plundered) extra.push(`Raiders grabbed: <b>${state.plundered}</b> gold`);
     ui.levelSummary.innerHTML =
-      `Ships sunk: <b>${state.sunk}</b> &middot; Level bonus: <b>+${def.bonus}</b> gold<br>` +
+      `Ships sunk: <b>${state.sunk}</b> &middot; Captured: <b>${state.captures}</b> &middot; Level bonus: <b>+${def.bonus}</b> gold<br>` +
+      (extra.length ? `${extra.join(' &middot; ')}<br>` : '') +
       `Total plunder: <b>${state.gold}</b> gold` +
       `<small class="chest-line">${banked}</small>`;
     ui.nextBtn.textContent = `Sail to ${next.name}`;
@@ -1095,8 +1325,10 @@ function exitVoyage() {
 }
 
 function playerSunk() {
+  boarding.cancel('player');
   state.mode = 'over';
   clearProjectiles();
+  saveFeats();
   show(ui.hint, false);
   audio.play('defeat');
   if (state.gold > state.best) {
@@ -1107,6 +1339,8 @@ function playerSunk() {
   const worst = Object.entries(state.hurtBy).sort((a, b) => b[1] - a[1])[0];
   let tip = '';
   if (worst && worst[0] === 'lava') tip = 'Tip: lava lands inside the red circles. Steer out of them!';
+  else if (worst && worst[0] === 'lightning') tip = 'Tip: lightning strikes inside the white circles. Steer out of them!';
+  else if (worst && worst[0] === 'maelstrom') tip = 'Tip: keep clear of the whirlpool\'s eye. Sail across the current, not into it!';
   else if (worst && SHIP_TYPES[worst[0]]) {
     tip = `Tip: the ${SHIP_TYPES[worst[0]].name.replace(/^The /, '')} did the most damage. Keep moving, and fire when the FIRE! light is on.`;
   }
@@ -1125,7 +1359,7 @@ function launchVy(t) {
   return clamp((0.8 - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
 }
 
-// Still in the fight: afloat, and not captured, escaped or surrendered (those arrive with boarding).
+// Still in the fight: afloat, and not captured, escaped or surrendered.
 function fighting(e) {
   return e.hp > 0 && !e.captured && !e.escaped && !e.surrendered;
 }
@@ -1141,9 +1375,330 @@ function relative(ship, tx, tz) {
   };
 }
 
-// Is `e` inside the firing arc on `side` of `ship`, taking its motion into account?
+// ---------------------------------------------------------------------------
+// Boarding (SPEC2 §3). The set-piece itself (hooks, reel, swing, brawl, the camera) lives in boarding.js;
+// main decides who may board whom, shows the odds, and applies the results: crew, hull, gold, captures.
+// ---------------------------------------------------------------------------
+const boarding = createBoarding({
+  scene,
+  player: () => player,
+  sfx: (name, x, z, extra) => audio.play(name, sfxAt(x, z, extra)),
+  particles: { puff, foam, spawnParticle },
+  reducedMotion: () => reducedMotion(),
+  hideHelm,
+  enemyCrewOpts,
+  pops,
+  overboard: () => overboard, // main rebuilds the pool in releaseBattlePeople()
+  time: () => state.time,
+});
+// The level's twist (Act II: the treasure convoy, drifting floes, the maelstrom), see mechanics.js.
+// A level without mechanics gets an instance that does nothing.
+let mechanics = createMechanics([], {});
+// After any boarding, raiders give you this long before the next one throws its hooks (on top of their own cooldown).
+const RAID_GAP = 3;
+// A raider sheers off and circles wide until its own boarding cooldown is down to this (then it closes in again).
+const RAID_SHEER = 4;
+
+// The two sides of a boarding, fresh (boarding.js asks for them again at the start of 'swing'):
+// { crew, crew0, blade | grit, hpFrac } for you and for her.
+function boardingSides(e, kind) {
+  const me = { crew: state.crew, crew0: state.crewMax, blade: state.blade, hpFrac: player ? player.hp / player.maxHp : 1 };
+  const foe = { crew: crewOf(e), crew0: e.crew0, grit: e.type.grit ?? 1, hpFrac: e.hp / e.maxHp };
+  return kind === 'defend' ? { att: foe, def: me, attIsPlayer: false } : { att: me, def: foe, attIsPlayer: true };
+}
+
+// Why G can't board a ship (SPEC2 §3.2): the first rule that fails. null: she can be boarded.
+const GRAPPLE_WHY = {
+  busy: 'Busy!',
+  none: 'Nothing to board!',
+  immune: 'Too hot to board!',
+  range: 'Get closer!',
+  cooldown: 'Hooks coiling…',
+  crew: 'Not enough hands!',
+};
+function canGrapple(e) {
+  if (state.mode !== 'playing' || state.intro > 0 || state.clearTimer > 0 || state.deathTimer > 0) return 'busy';
+  if (!player || player.sinking || player.hp <= 0 || boarding.active) return 'busy';
+  if (!e || e.kind !== 'enemy' || e.hp <= 0 || e.sinking || e.captured || e.escaped || e.rise > 0) return 'none';
+  if (!fighting(e) && !e.surrendered) return 'none';
+  if (e.type.boardable === false) return 'immune';
+  if (Math.hypot(e.x - player.x, e.z - player.z) > state.grappleRange + BOARD.lenFactor * e.type.len) return 'range';
+  if (state.boardCooldown > 0) return 'cooldown';
+  if (!e.surrendered && state.crew < CREW.minToBoard) return 'crew';
+  return null;
+}
+// The odds of boarding her now, with no heave: resolveBoarding's numbers + label
+// ('take' a struck ship, 'capture', 'fight' or 'risky'). This is exactly what boarding.js will resolve.
+function boardOdds(e, kind = e.surrendered ? 'surrender' : 'attack') {
+  return boarding.odds(boardingSides(e, kind === 'counter' ? 'attack' : kind), { kind, surrendered: !!e.surrendered });
+}
+const LABEL_RANK = { take: 4, capture: 3, fight: 2, risky: 1 };
+// The ship G would board: of those that can be boarded, the one with the best odds, then the nearest.
+// Without one: the nearest ship still afloat and why she can't be boarded (`reason`).
+function boardPick() {
+  if (!player) return { target: null, odds: null, label: null, reason: 'busy', near: null };
+  let best = null;
+  let near = null;
+  for (const e of enemies) {
+    if (e.hp <= 0 || e.sinking || e.captured || e.escaped) continue;
+    const d = Math.hypot(e.x - player.x, e.z - player.z);
+    const why = canGrapple(e);
+    if (why === null) {
+      const odds = boardOdds(e);
+      const rank = LABEL_RANK[odds.label] || 0;
+      if (!best || rank > best.rank || (rank === best.rank && d < best.d)) best = { e, odds, rank, d };
+    } else if (!near || d < near.d) near = { e, why, d };
+  }
+  if (best) return { target: best.e, odds: best.odds, label: best.odds.label, reason: null, near: best.e };
+  return { target: null, odds: null, label: null, reason: near ? near.why : 'none', near: near ? near.e : null };
+}
+// Throw the grapples at the best ship in reach (SPEC2 §3.2). { ok, reason } (reason: why not).
+function grapple() {
+  const pick = boardPick();
+  const e = pick.target;
+  if (!e) return { ok: false, reason: pick.reason };
+  const kind = e.surrendered ? 'surrender' : 'attack';
+  const ok = boarding.start({ kind, enemy: e, reel: state.reelTime, getSides: () => boardingSides(e, 'attack') });
+  return ok ? { ok: true, reason: null, kind, label: pick.label } : { ok: false, reason: 'busy' };
+}
+// G / the Board button, by what is going on: heave in your reel, cut the raiders' ropes, skip the brawl,
+// counter-board in the window, else grapple (or say why not in the hint bubble).
+function boardPress() {
+  if (state.mode !== 'playing' || !player || player.sinking) return false;
+  if (boarding.active) {
+    const ph = boarding.phase;
+    if (ph === 'reel' && boarding.kind === 'attack') {
+      boarding.heave();
+      return true;
+    }
+    if (ph === 'threat') {
+      boarding.cut();
+      return true;
+    }
+    if (ph === 'brawl') return boarding.skip();
+    return false;
+  }
+  if (state.intro > 0) return false; // the key fast-forwards the fly-in instead
+  const ct = boarding.counterTarget;
+  if (ct && state.clearTimer <= 0 && state.deathTimer <= 0) {
+    return boarding.start({ kind: 'counter', enemy: ct, getSides: () => boardingSides(ct, 'counter') });
+  }
+  const r = grapple();
+  if (!r.ok && GRAPPLE_WHY[r.reason]) flashHint(GRAPPLE_WHY[r.reason], 2);
+  return r.ok;
+}
+// A raider in an attack slot throws its hooks at you when it can (SPEC2 §3.6). Returns whether it did.
+function raiderTry(e, dist) {
+  if (!e.type.boarder || boarding.active || e.boardCooldown > 0 || !fighting(e) || e.sinking) return false;
+  if (!player || player.sinking || state.clearTimer > 0 || state.deathTimer > 0 || state.intro > 0) return false;
+  const def = LEVELS[state.level - 1];
+  if (state.combatTime <= def.grace || dist > RAIDERS.reach || crewOf(e) < RAIDERS.minCrew) return false;
+  if (state.boardCooldown > BOARD.cooldown - RAID_GAP) return false; // a breather after any boarding
+  return boarding.start({ kind: 'defend', enemy: e, getSides: () => boardingSides(e, 'defend') });
+}
+const theName = (name) => (/^The /.test(name) ? name : `The ${name}`);
+const theNameLower = (name) => theName(name).replace(/^The /, 'the ');
+const hands = (n) => `${n} ${n === 1 ? 'hand' : 'hands'}`;
+
+// SPEC2 §3.4 "Applying a result": the defender's hull damage first, then her `killed` so that her crew is
+// exactly what the fight left (the boarding's own hull damage never thins it further); your crew too.
+boarding.onResult((r) => {
+  const e = r.enemy;
+  if (!e || !player) return;
+  if (r.kind === 'defend') {
+    if (r.playerHullDmg > 0) {
+      player.hp = Math.max(1, player.hp - r.playerHullDmg);
+      state.lastHit = state.time;
+      state.hurtBy[e.typeName] = (state.hurtBy[e.typeName] || 0) + r.playerHullDmg;
+      retrigger(ui.hullCard, 'hurt');
+    }
+    state.crew = clamp(r.playerCrewLeft, 1, state.crewMax);
+    e.killed += r.result.attLoss;
+  } else {
+    e.hp = Math.max(1, e.hp - r.enemyHullDmg);
+    e.hpLow = Math.min(e.hpLow, e.hp);
+    e.killed = Math.max(0, crewOf({ ...e, killed: 0 }) - r.enemyCrewLeft);
+    state.crew = clamp(r.playerCrewLeft, 1, state.crewMax);
+  }
+  if (r.captured) {
+    // boarding.js shows the CAPTURED! pop and the shower of gold
+    captureShip(e, r.kind === 'defend' ? 'raider' : 'boarded', r.gold);
+  } else if (r.overrun) {
+    // They win the fight on your deck: a quarter of this level's plunder goes with them (never the chest).
+    const n = plunderGold(state.gold - state.goldAtLevelStart);
+    if (n > 0) {
+      state.gold -= n;
+      state.plundered += n;
+      pops.pop(`−${n} gold`, player.x, popHeight(player) + 1.6, player.z, 'bad');
+    }
+    gameAnnounce(`Overrun! The raiders ${n > 0 ? `grabbed ${n} gold and ` : ''}cast off. You lost ${hands(r.playerCrewLost)}.`);
+  } else if (r.held) {
+    audio.play('cheer', { volume: 0.8 });
+    gameAnnounce(`Boarders driven back! You lost ${hands(r.playerCrewLost)}.`);
+  } else {
+    gameAnnounce(`Driven back from ${theNameLower(e.type.name)}! You lost ${hands(r.playerCrewLost)}.`);
+  }
+});
+boarding.onPhase((ev) => {
+  const e = ev.enemy;
+  if (!e) return;
+  // "Close enough to board!" has done its job once hooks fly (and G means something else now).
+  // ("She struck her colours! Grapple her" too.)
+  if ((ev.phase === 'hook' || ev.phase === 'threat') && (state.tip.bit === TIP.board || state.tip.bit === TIP.surrender)) state.tip.until = 0;
+  if (ev.phase === 'reel' && ev.kind === 'defend') {
+    // too late to cut: they're coming aboard
+    if (state.tip.bit === TIP.raiders) state.tip.until = 0;
+    if (state.bannerTimer > 0.3) state.bannerTimer = 0.3;
+  }
+  if (ev.phase === 'hook') {
+    gameAnnounce(`Grappling ${theNameLower(e.type.name)}!`);
+  } else if (ev.phase === 'threat') {
+    const touch = isTouch();
+    showBanner(`Boarders!<small>${touch ? 'Tap <b>CUT!</b> 3 times or hold it' : 'Cut the ropes: <kbd>G</kbd> 3 times or hold it'}</small>`, RAIDERS.threat);
+    showTip(TIP.raiders, 'Boarders! Press <kbd>G</kbd> 3 times (or hold it) to cut the ropes', 'Tap <b>CUT!</b> 3 times or hold it', RAIDERS.threat + 1);
+    gameAnnounce(`Boarders! ${theName(e.type.name)} is grappling you. Cut the ropes: press G three times or hold it.`);
+  } else if (ev.phase === 'brawl') {
+    feats.boardings++;
+    featsDirty = true;
+  }
+});
+boarding.onCut(() => {
+  if (state.bannerTimer > 0.3) state.bannerTimer = 0.3; // "Boarders!" goes
+  if (state.tip.bit === TIP.raiders) state.tip.until = 0; // and so does "cut the ropes"
+  gameAnnounce('Ropes cut!');
+});
+boarding.onEnd((ev) => {
+  state.boardCooldown = BOARD.cooldown;
+  if (state.tip.bit === TIP.raiders) state.tip.until = 0;
+  if (ev.reason === 'broke' && ev.kind !== 'defend') gameAnnounce('She broke free!');
+  // A held defence: her lines are still on for a moment. Board her back!
+  if (ev.reason === 'done' && ev.counterTarget && state.clearTimer <= 0) {
+    const touch = isTouch();
+    showBanner(`Counter-board!<small>${touch ? 'Tap <b>Again!</b> to board them back' : 'Press <kbd>G</kbd> to board them back'}</small>`, RAIDERS.counterWindow);
+    showTip(TIP.counter, 'Counter-board! Press <kbd>G</kbd>', 'Tap <b>Again!</b> to board them back', RAIDERS.counterWindow);
+    gameAnnounce(`Counter-board! ${touch ? 'Tap Again' : 'Press G'} to board them back.`);
+  }
+});
+
+// A ship strikes her colours at the surrender notch (SPEC2 §3.1): white flag, two sailors with their hands up,
+// no more shooting; she drifts until you grapple her (or the level ends: she is yours anyway).
+function checkSurrender(ship) {
+  if (!ship || ship.kind !== 'enemy' || ship.surrendered || ship.captured || ship.escaped || ship.hp <= 0 || ship.sinking) return false;
+  if (ship.type.boardable === false || crewOf(ship) > ship.strikeAt) return false;
+  if (boarding.active && boarding.target === ship) return false; // the boarding's result decides
+  ship.surrendered = true;
+  ship.spectral = false;
+  try {
+    hoistFlag(ship.mesh, 'white');
+  } catch (err) {
+    console.warn('white flag:', err);
+  }
+  overboard.showSurrender(ship, [enemyCrewOpts(ship.typeName, 1), enemyCrewOpts(ship.typeName, 2)]);
+  const name = theName(ship.type.name);
+  const touch = isTouch();
+  if (ship.type.ghost) {
+    audio.play('ghost', sfxAt(ship.x, ship.z));
+    showBanner(`The ghost crew is banished!<small>Take ${name.replace(/^The /, 'the ')} for ${captureGold(ship.type.gold)} gold</small>`, 2.8);
+    gameAnnounce('The ghost crew is banished! Grapple the Phantom Galleon to take her.');
+  } else {
+    showBanner(`${name} strikes her colours!<small>Take her for ${captureGold(ship.type.gold)} gold</small>`, 2.2);
+    gameAnnounce(`${name} strikes her colours. Grapple her to take her.`);
+  }
+  showTip(
+    TIP.surrender,
+    'She struck her colours! Grapple her to take her: <kbd>G</kbd>',
+    touch ? 'She struck her colours! Tap <b>Board</b> to take her' : undefined
+  );
+  return true;
+}
+
+// She is yours (SPEC2 §3.7): the gold at once, hull and hands back, your flag up, and a prize crew sails her
+// off to the nearest edge of the sea (removed after CAPTURE.sailAway s). how: 'boarded' | 'raider' | 'auto'.
+function captureShip(e, how = 'boarded', gold = captureGold(e.type.gold)) {
+  if (!e || e.captured || e.escaped || e.hp <= 0 || e.sinking) return 0;
+  e.captured = true;
+  e.surrendered = false;
+  e.spectral = false;
+  overboard.clearSurrender(e);
+  try {
+    hoistFlag(e.mesh, 'player', LOOKS.flag.find((l) => l.id === shipConfig.look.flag) || null);
+  } catch (err) {
+    console.warn('prize flag:', err);
+  }
+  state.gold += gold;
+  state.captures++;
+  state.lastCaptureAt = state.time;
+  if (player && !player.sinking) {
+    player.hp = Math.min(player.maxHp, player.hp + CAPTURE.hull);
+    state.crew = clamp(state.crew + CAPTURE.crew, 1, state.crewMax);
+  }
+  feats.captures++;
+  feats.prizes = feats.prizes || {};
+  feats.prizes[e.typeName] = (feats.prizes[e.typeName] || 0) + 1;
+  if (e.type.ghost) feats.legend = 1;
+  featsDirty = true;
+  saveFeats();
+  mechanics.onCapture(e);
+  e.removeAt = state.time + CAPTURE.sailAway;
+  e.speed = Math.min(e.speed, 2);
+  if (e.type.boss) state.lastBossCaptured = e.type.name;
+  helm.cheer = visualTime + 1.5;
+  audio.play('capture');
+  audio.play('cheer', { volume: 0.9 });
+  // (A boarding shows its own CAPTURED! pop and the gold; a struck ship taken at the level's end gets one here.)
+  if (how === 'auto') pops.pop(`CAPTURED!\n+${gold} gold`, e.x, popHeight(e) + 0.8, e.z, 'capture');
+  const name = how === 'raider' ? 'The raider is yours' : `${theName(e.type.name)} is yours`;
+  gameAnnounce(`${name}! Captured for ${gold} gold.`);
+  return gold;
+}
+
+// A ship got away (a treasure galleon through its escape gate): out of the fight, gone in a puff of spray.
+function escapeShip(e) {
+  if (!e || e.escaped || e.captured || e.hp <= 0 || e.sinking) return;
+  e.escaped = true;
+  e.surrendered = false;
+  overboard.clearSurrender(e);
+  e.removeAt = state.time;
+  foam(e.x, 0.6, e.z, 22, 9, 7, 0.8, 1.1);
+}
+
+// The ammo a ship fires: the player's loaded shot; everyone else always fires round shot.
+function ammoOf(ship) {
+  return ship.kind === 'player' ? state.ammo : 'round';
+}
+
+// An enemy's fighting crew now (SPEC2 §3.1): hull damage thins it (by half at most), grape, crits and
+// boardings kill sailors outright. (The player's crew is state.crew.)
+function crewOf(s) {
+  return combat.crewNow({ crew0: s.crew0, hpLow: s.hpLow, maxHp: s.maxHp, killed: s.killed });
+}
+
+// The Phantom while her ghost crew stands: round and chain shot do half, and her hull never drops below 1.
+function ghostActive(s) {
+  return !!s.type.ghost && !s.surrendered && !s.captured && crewOf(s) > s.strikeAt;
+}
+
+
+// Effects of chain shot and crits (SPEC2 §2.3). They don't add up: the smallest active multiplier wins,
+// for speed (chain 0.55, mast down 0.5) and for turning (chain 0.7, rudder smashed 0.25).
+function speedMul(s) {
+  const f = s.effects;
+  let m = 1;
+  if (f.slow > 0) m = Math.min(m, EFFECTS.chain.speed);
+  if (f.mast > 0) m = Math.min(m, EFFECTS.mast.speed);
+  return m;
+}
+function turnMul(s) {
+  const f = s.effects;
+  let m = 1;
+  if (f.slowTurn > 0) m = Math.min(m, EFFECTS.chain.turn);
+  if (f.rudder > 0) m = Math.min(m, EFFECTS.rudder.turn);
+  return m;
+}
+
+// Is `e` inside the firing arc on `side` of `ship` (within `range`), taking its motion into account?
 // (The same intercept that fire() solves, from the ship's centre.)
-function inArc(ship, e, side) {
+function inArc(ship, e, side, range = MAX_RANGE) {
   if (!fighting(e)) return false;
   const rvx = fwdX(e.h) * e.speed - fwdX(ship.h) * ship.speed;
   const rvz = fwdZ(e.h) * e.speed - fwdZ(ship.h) * ship.speed;
@@ -1152,18 +1707,32 @@ function inArc(ship, e, side) {
   let t = Math.hypot(px, pz) / BALL_SPEED;
   for (let k = 0; k < 3; k++) t = Math.hypot(px + rvx * t, pz + rvz * t) / BALL_SPEED;
   const r = relative(ship, e.x + rvx * t, e.z + rvz * t);
-  if (Math.sign(r.lat) !== side || r.dist > MAX_RANGE + 2) return false;
+  if (Math.sign(r.lat) !== side || r.dist > range + 2) return false;
   return Math.atan2(Math.abs(r.along), Math.abs(r.lat)) - Math.atan2(e.type.len / 2, r.dist) <= MAX_TRAVERSE;
+}
+
+// Who may fire now: your gun crews are on the ropes during a boarding (except while raiders' hooks bite,
+// SPEC2 §3.6); a struck, captured or escaped ship, the ship being boarded and everyone during the truce
+// hold their fire.
+function mayFire(ship) {
+  if (ship.kind === 'player') return !boarding.active || (boarding.kind === 'defend' && boarding.phase === 'threat');
+  if (ship.surrendered || ship.captured || ship.escaped || boarding.truce || boarding.target === ship) return false;
+  return !mechanics.holdFire(ship); // e.g. a treasure galleon only fires at a player abeam and close
 }
 
 // side: +1 starboard (right), -1 port (left). Returns true if it fired.
 // With a target, each gun leads it: it aims where the target will be when the
 // ball arrives (scaled by `lead`), within a small swivel arc either side of the beam.
-// rangeErr scales the flight time to make enemy gunners imperfect.
+// rangeErr scales the flight time to make enemy gunners imperfect. The loaded ammo (SPEC2 §2.2) sets
+// the range, the spread and the reload; every gun fires one projectile whatever the ammo.
 function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1 } = {}) {
   const key = side > 0 ? 'star' : 'port';
   if (ship.reload[key] > 0 || ship.sinking || ship.hp <= 0) return false;
+  if (!mayFire(ship)) return false;
   const t = ship.type;
+  const ammo = ammoOf(ship);
+  const A = AMMO[ammo];
+  const maxFlight = A.range / BALL_SPEED;
   const fx = fwdX(ship.h);
   const fz = fwdZ(ship.h);
   const beam = ship.h - (side * Math.PI) / 2; // angle of the beam on that side
@@ -1172,7 +1741,7 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
   let volley = 0;
   if (ship.kind === 'player') {
     volley = ++volleyId;
-    volleys.set(volley, { side, hits: 0, sunk: false, left: t.guns });
+    volleys.set(volley, { side, hits: 0, sunk: false, left: t.guns, targets: new Map(), tags: new Set() });
   }
   for (let i = 0; i < t.guns; i++) {
     const along = gunOffset(t, i);
@@ -1180,7 +1749,7 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
     const z = ship.z + fz * along + rightZ(ship.h) * side * (t.wid / 2 + 0.4);
 
     let a = beam;
-    let flight = DEFAULT_RANGE / BALL_SPEED;
+    let flight = Math.min(DEFAULT_RANGE / BALL_SPEED, maxFlight);
     if (target) {
       // Solve the intercept in the shooter's frame (balls inherit the ship's velocity).
       const rvx = (fwdX(target.h) * target.speed - svx) * lead;
@@ -1193,13 +1762,14 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
       }
       const qa = Math.atan2(px + rvx * flight, pz + rvz * flight);
       a = beam + clamp(wrapAngle(qa - beam), -MAX_TRAVERSE, MAX_TRAVERSE);
-      flight = clamp(flight * rangeErr, 6 / BALL_SPEED, MAX_RANGE / BALL_SPEED);
+      flight = clamp(flight * rangeErr, 6 / BALL_SPEED, maxFlight);
     }
-    a += (Math.random() - 0.5) * spread * 2;
+    a += (Math.random() - 0.5) * spread * A.spreadMul * 2;
     const dx = Math.sin(a);
     const dz = Math.cos(a);
 
-    const mesh = new THREE.Mesh(ballGeo, ballMat);
+    // Shared geometry and material (ships.js): removed from the scene when the ball is gone, never disposed.
+    const mesh = projectileMesh(ammo);
     mesh.position.set(x, BALL_Y, z);
     scene.add(mesh);
     balls.push({
@@ -1208,6 +1778,9 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
       src: ship.typeName,
       volley,
       dmg: t.dmg,
+      ammo,
+      ox: x, // the muzzle: range fall-off is measured from here
+      oz: z,
       x,
       y: BALL_Y,
       z,
@@ -1222,16 +1795,22 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
   }
   const sx = ship.x + rightX(ship.h) * side * t.wid * 0.5;
   const sz = ship.z + rightZ(ship.h) * side * t.wid * 0.5;
-  audio.play('cannon', sfxAt(sx, sz, { volume: Math.min(1, 0.55 + 0.12 * t.guns) }));
-  ship.reload[key] = t.reload;
+  const volume = Math.min(1, 0.55 + 0.12 * t.guns);
+  audio.play('cannon', sfxAt(sx, sz, { volume }));
+  // Chain shot whirrs and grape shot rattles on top of the bang.
+  if (ammo !== 'round') audio.play(ammo, sfxAt(sx, sz, { volume }));
+  const reload = t.reload * A.reloadMul;
+  ship.reload[key] = reload;
+  ship.reloadMax[key] = reload;
   ship.roll -= side * 0.09;
+  if (ship.kind === 'player') helm.point = visualTime + 0.6; // "Fire!"
   return true;
 }
 
-// The player's guns aim at the nearest enemy inside that side's firing arc, or
-// failing that the nearest one roughly abeam.
-function playerFire(side) {
-  if (state.mode !== 'playing' || !player || player.sinking) return false;
+// What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
+// firing arc (inArc: true), failing that the nearest one roughly abeam.
+function aimTarget(side) {
+  const range = AMMO[state.ammo].range;
   let aim = null;
   let bestDist = Infinity;
   let fallback = null;
@@ -1239,46 +1818,346 @@ function playerFire(side) {
   for (const e of enemies) {
     if (!fighting(e)) continue;
     const r = relative(player, e.x, e.z);
-    if (inArc(player, e, side)) {
+    if (inArc(player, e, side, range)) {
       if (r.dist < bestDist) {
         bestDist = r.dist;
         aim = e;
       }
       continue;
     }
-    if (Math.sign(r.lat) !== side || r.dist > MAX_RANGE + 4) continue;
+    if (Math.sign(r.lat) !== side || r.dist > range + 4) continue;
     if (Math.abs(r.along) > Math.abs(r.lat) * 1.2 + e.type.len / 2) continue;
     if (r.dist < fallbackDist) {
       fallbackDist = r.dist;
       fallback = e;
     }
   }
-  return fire(player, side, aim ?? fallback);
+  return { target: aim ?? fallback, inArc: !!aim };
 }
 
-// A player volley finished: flash HIT!/SUNK! on the side it was fired from.
+// The player's guns aim at the nearest enemy inside that side's firing arc, or
+// failing that the nearest one roughly abeam.
+function playerFire(side) {
+  if (state.mode !== 'playing' || !player || player.sinking) return false;
+  return fire(player, side, aimTarget(side).target);
+}
+
+// The RAKE! cue: does the target in that side's arc show you her stern or her bow (the beam lies within
+// about 37° of her keel)? 'stern' | 'bow' | null.
+function rakeCue(side) {
+  if (!player) return null;
+  const { target, inArc: aimed } = aimTarget(side);
+  if (!target || !aimed) return null;
+  const c = rightX(player.h) * side * fwdX(target.h) + rightZ(player.h) * side * fwdZ(target.h);
+  if (Math.abs(c) < combat.RAKE.cos) return null;
+  return c > 0 ? 'stern' : 'bow'; // the shot would fly the way she faces: in over her stern
+}
+
+// Where pop words over a ship start: a little above her deck.
+function popHeight(s) {
+  return s.mesh.position.y + (s.mesh.userData.deckY ?? 1.2) + 2.2;
+}
+
+// Hitmark stickers (fx.css), in this order.
+const STICKERS = [
+  [/^RAKE/, 'rake'],
+  [/^CRIT/, 'crit'],
+  [/^POINT BLANK/, 'blank'],
+  [/^CAPTURED/, 'captured'],
+];
+// A player volley finished: the summed damage (and crew lost) pops over each ship it hit, and HIT!/SUNK!
+// flashes on the side it was fired from with what the volley did ("RAKE ×2", "CRIT!", "POINT BLANK").
 function volleyDone(v) {
+  for (const T of (v.targets || new Map()).values()) {
+    if (T.dmg > 0) pops.pop(String(Math.round(T.dmg)), T.x, T.y, T.z, 'dmg');
+    if (T.crew > 0) pops.pop(`−${T.crew} CREW`, T.x, T.y, T.z, 'crew');
+  }
   if (!v.hits) return;
   ui.hitmark.textContent = v.sunk ? 'SUNK!' : v.hits > 1 ? `HIT ×${v.hits}` : 'HIT!';
+  const labels = [...(v.tags || [])].sort(
+    (a, b) => STICKERS.findIndex(([re]) => re.test(a)) - STICKERS.findIndex(([re]) => re.test(b))
+  );
+  if (labels.length) {
+    const box = document.createElement('span');
+    box.className = 'hm-tags';
+    for (const label of labels) {
+      const tag = document.createElement('span');
+      const kind = STICKERS.find(([re]) => re.test(label));
+      tag.className = `hm-tag${kind ? ` ${kind[1]}` : ''}`;
+      tag.textContent = label;
+      box.appendChild(tag);
+    }
+    ui.hitmark.appendChild(box);
+  }
   ui.hitmark.className = `hitmark ${v.side > 0 ? 'right' : 'left'}${v.sunk ? ' sunk' : ''}`;
-  retrigger(ui.hitmark, 'pop');
+  retrigger(ui.hitmark, 'popped');
 }
 
-function damage(ship, amount, x, z, source = 'other') {
-  if (ship.hp <= 0) return;
-  if (ship.kind === 'player' && state.clearTimer > 0) return; // the level is already won
-  ship.hp -= amount;
-  ship.flash = 0.3;
-  const hx = x ?? ship.x;
-  const hz = z ?? ship.z;
-  for (let i = 0; i < 7; i++) {
-    // Flat little planks flying off the hull.
+// The volley's running total on one target (pops and stickers are summed per volley, SPEC2 §2.5).
+function volleyTarget(v, s) {
+  let T = v.targets.get(s);
+  if (!T) {
+    T = { dmg: 0, crew: 0, rake: false, crit: false, blank: false, chain: false, overboard: false, x: s.x, y: 0, z: s.z };
+    v.targets.set(s, T);
+  }
+  return T;
+}
+
+// A crit's effect (SPEC2 §2.3), at most one new effect per target every CRIT.effectGap seconds (a crit
+// inside the gap still hits ×1.75); bosses keep effects for half as long. Returns the effect applied.
+function applyCritEffect(s, id) {
+  if (!id || state.time - s.lastEffectAt < CRIT.effectGap) return null;
+  s.lastEffectAt = state.time;
+  const k = s.type.boss ? CRIT.bossDuration : 1;
+  const f = s.effects;
+  if (id === 'rudder') f.rudder = Math.max(f.rudder, EFFECTS.rudder.time * k);
+  else if (id === 'mast') {
+    f.mast = Math.max(f.mast, EFFECTS.mast.time * k);
+    setShipDamage(s.mesh, { mast: true }); // her top sail comes down for the time
+  } else if (id === 'keg') {
+    f.burn = EFFECTS.keg.time * k;
+    s.burnTicks = Math.round(EFFECTS.keg.dps * f.burn); // 1 hp every 1/dps seconds
+    s.burnAcc = 0;
+  }
+  // 'routed': its extra kills are counted with the shot's own
+  return id;
+}
+
+// Chain shot tears her rigging: slower and clumsier for a while (each hit adds, up to the maximum).
+function applySlow(s) {
+  const k = s.type.boss ? CRIT.bossDuration : 1;
+  const c = EFFECTS.chain;
+  const f = s.effects;
+  f.slow = Math.min(c.max * k, Math.max(0, f.slow) + c.time * k);
+  f.slowTurn = f.slow;
+}
+
+// Effects wear off; a powder keg burns 1 hp at a time (simulated time).
+function updateEffects(s, dt) {
+  const f = s.effects;
+  if (f.slow > 0) f.slow = Math.max(0, f.slow - dt);
+  if (f.slowTurn > 0) f.slowTurn = Math.max(0, f.slowTurn - dt);
+  if (f.rudder > 0) f.rudder = Math.max(0, f.rudder - dt);
+  if (f.mast > 0) {
+    f.mast = Math.max(0, f.mast - dt);
+    if (f.mast === 0) setShipDamage(s.mesh, { mast: false });
+  }
+  if (s.burnTicks > 0) {
+    f.burn = Math.max(0, f.burn - dt);
+    s.burnAcc += dt;
+    const every = 1 / EFFECTS.keg.dps;
+    while (s.burnTicks > 0 && s.burnAcc >= every - 1e-9) {
+      s.burnAcc -= every;
+      s.burnTicks--;
+      if (s.hp > 0 && !s.sinking) damage(s, 1, s.x, s.z, 'fire');
+    }
+    if (s.burnTicks <= 0) {
+      f.burn = 0;
+      s.burnAcc = 0;
+    }
+  }
+}
+
+// A crit freezes the frame for a moment (hit-stop), at most once per CRIT.hitStop.gap; never with reduced motion.
+function hitStop() {
+  if (reducedMotion()) return;
+  const now = performance.now() / 1000;
+  if (now - state.hitStop.lastAt < CRIT.hitStop.gap) return;
+  state.hitStop.lastAt = now;
+  state.hitStop.left = CRIT.hitStop.time;
+}
+
+// What a ball does when it hits a ship (combat.js decides the numbers).
+function ballHit(b, s) {
+  const def = LEVELS[state.level - 1];
+  const r = relative(s, b.x, b.z);
+  const mine = b.owner === 'player';
+  const dist = Math.hypot(b.x - b.ox, b.z - b.oz);
+  const info = shotResult({
+    ammo: b.ammo,
+    base: b.dmg,
+    dist,
+    vx: b.vx,
+    vz: b.vz,
+    target: { h: s.h, len: s.type.len, ghost: ghostActive(s), boss: !!s.type.boss },
+    along: r.along,
+    shooter: mine ? { player: true, critBase: state.critBase } : { player: false, enemyRake: def.enemyRake ?? 1 },
+    rng: combatRng,
+    force: mine ? forcedCrit : null,
+  });
+  info.owner = b.owner;
+  info.ammo = b.ammo;
+  info.volley = b.volley;
+  info.y = b.y;
+  info.dist = dist;
+  return info;
+}
+
+function logShot(b, s, info) {
+  shotLog.push({
+    t: Math.round(state.time * 1000) / 1000,
+    owner: b.owner,
+    shooter: b.src,
+    target: s.kind === 'player' ? 'player' : s.typeName,
+    targetId: s.id,
+    ammo: info.ammo,
+    x: b.x,
+    y: b.y,
+    z: b.z,
+    dist: info.dist,
+    dmg: info.dmg,
+    rangeMul: info.rangeMul,
+    aspect: info.aspect,
+    aspectMul: info.aspectMul,
+    pointBlank: info.pointBlank,
+    crit: info.crit,
+    critEffect: info.critEffect,
+    effect: info.applied ?? null, // the crit effect that took hold (null inside the effect gap)
+    zone: info.zone,
+    crewKill: info.crewKill,
+    killed: info.killed ?? 0, // sailors it really killed
+    slow: info.slow,
+    tags: info.tags,
+    hp: s.hp,
+  });
+  if (shotLog.length > 40) shotLog.splice(0, shotLog.length - 40);
+}
+
+// The hull side a ball hit: a hole, crew lost, and the player's own shots say what they did.
+function hullHit(ship, hx, hz, amount, info, effect) {
+  const r = relative(ship, hx, hz);
+  const side = r.lat > 0 ? 1 : -1;
+  // A splintered hole where it hit (placed analytically on the hull side by ships.js).
+  const hy = (info.y ?? 1.2) - ship.mesh.position.y;
+  addHole(ship.mesh, { z: r.along, y: hy, side });
+  if (!ship.firstHole) ship.firstHole = { z: r.along, y: clamp(hy, 0.5, 2.5), side };
+  ship.hitsBySide[side > 0 ? 'star' : 'port']++;
+  // Sailors lost: grape (1 a ball, 2 on a rake) and CREW ROUTED! (+2). Only enemies lose crew to shots.
+  let killed = 0;
+  if (ship.kind === 'enemy') {
+    const kills = (info.crewKill || 0) + (effect === 'routed' ? EFFECTS.routed.crew : 0);
+    if (kills > 0) {
+      const before = crewOf(ship);
+      ship.killed += kills;
+      killed = before - crewOf(ship);
+      if (killed > 0) checkSurrender(ship);
+    }
+  }
+  info.killed = killed;
+  if (info.owner !== 'player') return;
+  // ---- the player's shots: pops, stickers, feats
+  const v = info.volley ? volleys.get(info.volley) : null;
+  const T = v ? volleyTarget(v, ship) : null;
+  const py = popHeight(ship);
+  if (T) {
+    T.dmg += amount;
+    T.crew += killed;
+    T.x = hx;
+    T.y = py;
+    T.z = hz;
+    for (const tag of info.tags) v.tags.add(tag);
+  } else {
+    // a hit outside a volley pops at once
+    pops.pop(String(Math.round(amount)), hx, py, hz, 'dmg');
+    if (killed > 0) pops.pop(`−${killed} CREW`, hx, py, hz, 'crew');
+  }
+  if (info.aspect) {
+    feats.rakes++;
+    featsDirty = true;
+    if (!T || !T.rake) {
+      if (T) T.rake = true;
+      pops.pop(info.aspect === 'stern' ? WORDS.stern : WORDS.bow, hx, py + 0.4, hz, 'rake');
+      audio.play('rake', sfxAt(hx, hz));
+      if (!reducedMotion()) state.shake = Math.max(state.shake, 0.15);
+      splinters(hx, hz, 9); // a double burst down her length
+    }
+  }
+  if (info.crit) {
+    feats.crits++;
+    featsDirty = true;
+    // One CRIT! word per volley and target (with the effect's line when one took hold), a star burst per crit.
+    if (!T || !T.crit || effect) {
+      if (T) T.crit = true;
+      pops.pop(effect ? `CRIT! ${WORDS[effect]}` : WORDS.crit, hx, py + 0.8, hz, 'crit');
+      audio.play('crit', sfxAt(hx, hz));
+    }
+    for (let i = 0; i < 12; i++) {
+      const a = (i / 12) * Math.PI * 2;
+      spawnParticle('glow', i % 2 ? 0xfff2a8 : 0xffd23f, hx, 2.2, hz, Math.cos(a) * 7, rand(1, 4), Math.sin(a) * 7, 0.35, 0.4, 0);
+    }
+    hitStop();
+  }
+  if (info.pointBlank && (!T || !T.blank)) {
+    if (T) T.blank = true;
+    pops.pop(WORDS.pointBlank, hx, py - 0.6, hz, 'info');
+  }
+  if (info.slow) {
+    // shredded sailcloth flutters down
+    for (let i = 0; i < 12; i++) {
+      const c = [0xfff4d6, 0xf2e2bd, 0xe8d3a8, 0xffffff][i % 4];
+      spawnParticle('puff', c, hx + rand(-1.5, 1.5), rand(3, 6), hz + rand(-1.5, 1.5), rand(-3, 3), rand(1, 4), rand(-3, 3), rand(1.2, 1.8), rand(0.28, 0.45), GRAVITY * 0.12, false, true);
+    }
+    if (!T || !T.chain) {
+      if (T) T.chain = true;
+      pops.pop(WORDS.chain, hx, py - 0.2, hz, 'info');
+    }
+  }
+  // Grape sweeps a sailor over the side (one per volley per ship).
+  if (killed > 0 && info.ammo === 'grape' && (!T || !T.overboard)) {
+    if (T) T.overboard = true;
+    overboard.throwOver(ship, side, enemyCrewOpts(ship.typeName, 1 + (ship.killed % 2)));
+  }
+}
+
+// Flat little planks flying off the hull.
+function splinters(hx, hz, n = 7) {
+  for (let i = 0; i < n; i++) {
     spawnParticle('puff', 0x8b5a2b, hx, 1.4, hz, rand(-3.5, 3.5), rand(2, 7), rand(-3.5, 3.5), rand(0.6, 1.1), rand(0.22, 0.32), GRAVITY, false, true);
   }
-  puff(hx, 1.6, hz, 3, 0xffb627, 3, 3, 0.5, 0.3, 0, false, 'glow');
-  audio.play('hit', sfxAt(hx, hz));
+}
+
+// Hurt a ship. Tests call damage(e, 9999). `info` (a shot's result from combat.js, see ballHit) adds what
+// the shot did: crew lost, a crit's effect, chain shot's slow, a hole, the pops. source 'fire' is a
+// powder keg burning (quiet: no splinters, no sound).
+function damage(ship, amount, x, z, source = 'other', info = null) {
+  if (ship.hp <= 0) return;
+  if (ship.kind === 'player' && state.clearTimer > 0) return; // the level is already won
+  const hx = x ?? ship.x;
+  const hz = z ?? ship.z;
+  const quiet = source === 'fire';
+  let amt = amount;
+  let effect = null;
+  if (info) {
+    if (info.crit) effect = applyCritEffect(ship, info.critEffect);
+    if (effect === 'keg') amt += EFFECTS.keg.burst * (info.ghostMul ?? 1); // the keg blows at once
+    if (info.slow) applySlow(ship);
+    info.applied = effect;
+  }
+  const ghost = ghostActive(ship);
+  ship.hp -= amt;
+  // The Phantom Galleon is never sunk: her ghost crew holds her together (SPEC2 §6.6); at 1 hp she turns
+  // spectral and only grape and cutlasses can beat her.
+  if (ship.type.ghost && !ship.captured && ship.hp < 1) {
+    ship.hp = 1;
+    if (ghost && !ship.spectral) {
+      ship.spectral = true;
+      audio.play('ghost', sfxAt(ship.x, ship.z));
+      showBanner(`${ship.type.name} turns spectral!<small>Round shot can't sink her: grape her crew and board her!</small>`, 2.8);
+      gameAnnounce(`${ship.type.name} turns spectral. Thin her ghost crew with grape shot, then board her.`);
+    }
+  }
+  ship.hpLow = Math.min(ship.hpLow, Math.max(0, ship.hp));
+  if (quiet) {
+    ship.flash = Math.max(ship.flash, 0.1);
+  } else {
+    ship.flash = 0.3;
+    splinters(hx, hz);
+    puff(hx, 1.6, hz, 3, 0xffb627, 3, 3, 0.5, 0.3, 0, false, 'glow');
+    audio.play('hit', sfxAt(hx, hz));
+  }
+  if (info) hullHit(ship, hx, hz, amt, info, effect);
   if (ship.kind === 'player') {
-    state.hurtBy[source] = (state.hurtBy[source] || 0) + amount;
+    state.hurtBy[source] = (state.hurtBy[source] || 0) + amt;
     state.lastHit = state.time;
     state.shake = Math.max(state.shake, 0.4);
     state.ghostHold = 0.45;
@@ -1298,11 +2177,22 @@ function damage(ship, amount, x, z, source = 'other') {
     puff(ship.x, 2, ship.z, 10, 0x6e6878, 6, 5, 1.2, 1.6, 1.5, true);
     if (ship.kind === 'enemy') {
       state.sunk++;
+      helm.cheer = visualTime + 1.5;
+      overboard.clearSurrender(ship);
+      mechanics.onSink(ship);
+      // A ship drops her gold once: any of her coins still afloat from an earlier sinking go first (a ship
+      // only sinks twice when a test puts her back afloat; point-blank broadsides now sink a cutter outright).
+      for (let i = coins.length - 1; i >= 0; i--) {
+        if (coins[i].from === ship.id) {
+          scene.remove(coins[i].mesh);
+          coins.splice(i, 1);
+        }
+      }
       for (let i = 0; i < ship.type.gold; i++) {
         const a = (i / ship.type.gold) * Math.PI * 2;
         const mesh = new THREE.Mesh(coinGeo, coinMat);
         scene.add(mesh);
-        coins.push({ mesh, x: ship.x + Math.cos(a) * 2.5, z: ship.z + Math.sin(a) * 2.5, spin: Math.random() * 6 });
+        coins.push({ mesh, x: ship.x + Math.cos(a) * 2.5, z: ship.z + Math.sin(a) * 2.5, spin: Math.random() * 6, from: ship.id });
       }
       const left = enemies.filter(fighting).length;
       const def = LEVELS[state.level - 1];
@@ -1321,13 +2211,24 @@ function damage(ship, amount, x, z, source = 'other') {
 }
 
 // ---------------------------------------------------------------------------
-// Lava bombs (volcano level)
+// Bombs (SPEC2 §6.2), by the level's def.bombs.kind: 'lava' (lobbed from the volcano, a whistle and a red
+// circle) or 'lightning' (no projectile: a white-blue circle for `warn` s, then a bolt from the sky).
+// Radius, damage and warning time come from def.bombs (defaults: the volcano's numbers).
 // ---------------------------------------------------------------------------
+function bombSpec(def) {
+  const B = def.bombs || {};
+  const kind = B.kind === 'lightning' ? 'lightning' : 'lava';
+  const warn = Array.isArray(B.warn) && B.warn.length === 2 ? B.warn : [2.4, 3.2];
+  return { kind, radius: B.radius ?? BOMB_RADIUS, damage: B.damage ?? BOMB_DAMAGE, warn, spread: B.spread ?? 9 };
+}
 function launchBomb() {
-  const v = env.volcano;
-  if (!v || !player || player.sinking) return;
+  if (!player || player.sinking || !env) return;
   const def = LEVELS[state.level - 1];
-  const T = rand(2.4, 3.2);
+  if (!def.bombs) return;
+  const spec = bombSpec(def);
+  const v = env.volcano;
+  if (spec.kind === 'lava' && !v) return;
+  const T = rand(...spec.warn);
   // Aim where the player will be, following the current turn, with some scatter so you can dodge.
   const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
   const w = turn * player.type.turn * (0.35 + 0.65 * Math.min(1, player.speed / player.type.maxSpeed));
@@ -1343,14 +2244,23 @@ function launchBomb() {
     pz = player.z + (player.speed / w) * (Math.sin(player.h + w * tt) - Math.sin(player.h));
   }
   const a = Math.random() * Math.PI * 2;
-  const d = Math.random() * def.bombs.spread;
+  const d = Math.random() * spec.spread;
   const tx = px + Math.cos(a) * d;
   const tz = pz + Math.sin(a) * d;
+  const zone = buildZone(spec.kind, spec.radius);
+  scene.add(zone);
+  if (spec.kind === 'lightning') {
+    bombs.push({ kind: 'lightning', mesh: null, zone, tx, tz, t: 0, T, radius: spec.radius, damage: spec.damage, whistle: null });
+    if (!state.bombWarned) {
+      state.bombWarned = true;
+      showBanner('Lightning!<small>Steer out of the white circle</small>', 2.5);
+    }
+    return;
+  }
   const mesh = new THREE.Mesh(bombGeo, bombMat);
-  const zone = buildZone();
-  scene.add(mesh, zone);
+  scene.add(mesh);
   const whistle = audio.play('bombWhistle', sfxAt(tx, tz, { duration: T }));
-  bombs.push({ mesh, zone, sx: v.x, sy: v.craterY, sz: v.z, tx, tz, t: 0, T, H: 30 + Math.random() * 15, whistle });
+  bombs.push({ kind: 'lava', mesh, zone, sx: v.x, sy: v.craterY, sz: v.z, tx, tz, t: 0, T, H: 30 + Math.random() * 15, radius: spec.radius, damage: spec.damage, whistle });
   if (!state.bombWarned) {
     state.bombWarned = true;
     showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
@@ -1358,6 +2268,7 @@ function launchBomb() {
 }
 
 function bombPos(b, u) {
+  if (b.kind === 'lightning') return { x: b.tx, y: 0, z: b.tz };
   return {
     x: b.sx + (b.tx - b.sx) * u,
     y: b.sy * (1 - u) + 4 * b.H * u * (1 - u),
@@ -1365,13 +2276,22 @@ function bombPos(b, u) {
   };
 }
 
-function updateBombs(dt) {
+// `frozen`: the boarding truce holds every bomb and warning where it is.
+function updateBombs(dt, frozen = false) {
   for (let i = bombs.length - 1; i >= 0; i--) {
     const b = bombs[i];
+    if (frozen) continue;
     b.t += dt;
     const u = b.t / b.T;
     if (u < 1) {
-      if (Math.random() < dt * 20) {
+      if (b.kind === 'lightning') {
+        // static crackling inside the circle as the strike nears
+        if (Math.random() < dt * 14 * u) {
+          const a = Math.random() * Math.PI * 2;
+          const r = Math.random() * b.radius;
+          spawnParticle('glow', Math.random() < 0.5 ? 0xe8f6ff : 0x8fd0ff, b.tx + Math.cos(a) * r, 0.6, b.tz + Math.sin(a) * r, 0, rand(1, 3), 0, 0.25, 0.3, 0);
+        }
+      } else if (Math.random() < dt * 20) {
         const p = bombPos(b, u);
         spawnParticle('glow', Math.random() < 0.5 ? 0xff7b1c : 0xffd23f, p.x, p.y, p.z, rand(-1, 1), rand(-1, 1), rand(-1, 1), 0.5, 0.5, 0);
         spawnParticle('puff', 0x8a7f8e, p.x, p.y, p.z, rand(-0.5, 0.5), 1, rand(-0.5, 0.5), 1.0, 0.5, 0, true, false, true);
@@ -1379,17 +2299,27 @@ function updateBombs(dt) {
       continue;
     }
     // Impact.
-    b.whistle.stop(0.03);
-    audio.play('bombBoom', sfxAt(b.tx, b.tz));
-    foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
-    puff(b.tx, 1, b.tz, 10, 0xff7b1c, 7, 9, 0.6, 0.7, GRAVITY, false, 'glow');
-    puff(b.tx, 1, b.tz, 6, foamColor, 5, 4, 0.9, 1.4, 2, true, 'glow'); // steam
+    const radius = b.radius ?? BOMB_RADIUS;
+    const dmg = b.damage ?? BOMB_DAMAGE;
+    const source = b.kind === 'lightning' ? 'lightning' : 'lava';
+    if (b.kind === 'lightning') {
+      if (env && env.flash) env.flash(b.tx, b.tz); // the bolt and the sky flash (photosensitivity caps in the env)
+      audio.play('thunder', sfxAt(b.tx, b.tz));
+      foam(b.tx, 0.5, b.tz, 14, 7, 10, 0.6, 0.9);
+      puff(b.tx, 1, b.tz, 12, 0xe8f6ff, 7, 9, 0.5, 0.5, GRAVITY, false, 'glow');
+    } else {
+      b.whistle.stop(0.03);
+      audio.play('bombBoom', sfxAt(b.tx, b.tz));
+      foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
+      puff(b.tx, 1, b.tz, 10, 0xff7b1c, 7, 9, 0.6, 0.7, GRAVITY, false, 'glow');
+      puff(b.tx, 1, b.tz, 6, foamColor, 5, 4, 0.9, 1.4, 2, true, 'glow'); // steam
+    }
     const ships = player ? [player, ...enemies] : enemies;
     for (const s of ships) {
-      if (s.hp <= 0) continue;
+      if (s.hp <= 0 || s.captured || s.escaped) continue;
       const d = Math.hypot(s.x - b.tx, s.z - b.tz);
-      const reach = BOMB_RADIUS + s.type.wid * 0.4;
-      if (d < reach) damage(s, Math.round(BOMB_DAMAGE * (1 - (0.5 * d) / reach)), b.tx, b.tz, 'lava');
+      const reach = radius + s.type.wid * 0.4;
+      if (d < reach) damage(s, Math.round(dmg * (1 - (0.5 * d) / reach)), b.tx, b.tz, source);
     }
     if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) state.shake = Math.max(state.shake, 0.5);
     removeBomb(b);
@@ -1402,46 +2332,86 @@ function updateBombs(dt) {
 // ---------------------------------------------------------------------------
 function steerToward(ship, desired, dt, fullRate = false) {
   const t = ship.type;
-  const rate = fullRate ? t.turn : t.turn * (0.35 + 0.65 * Math.min(1, ship.speed / t.maxSpeed));
+  const rate = (fullRate ? t.turn : t.turn * (0.35 + 0.65 * Math.min(1, ship.speed / t.maxSpeed))) * turnMul(ship);
   const diff = wrapAngle(desired - ship.h);
   ship.h = wrapAngle(ship.h + clamp(diff, -rate * dt, rate * dt));
 }
 
+// Top speed now: reefs slow deep hulls (ice slows every hull), then chain shot and a dropped mast.
 function speedCap(s) {
-  return s.onReef && !s.type.shallow ? s.type.maxSpeed * REEF_SLOW : s.type.maxSpeed;
+  let cap = s.type.maxSpeed;
+  if (s.onReef && s.reefIce) cap *= ICE_SLOW;
+  else if (s.onReef && !s.type.shallow) cap *= REEF_SLOW;
+  return cap * speedMul(s);
 }
 
 function updatePlayer(dt) {
   const p = player;
   if (p.sinking) return;
   const t = p.type;
-  const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
-  const rate = t.turn * (0.35 + 0.65 * Math.min(1, p.speed / t.maxSpeed));
+  // No steering while the ships are glued together in a boarding (SPEC2 §3.4).
+  const turn = boarding.locked ? 0 : (input.left ? 1 : 0) - (input.right ? 1 : 0);
+  const rate = t.turn * (0.35 + 0.65 * Math.min(1, p.speed / t.maxSpeed)) * turnMul(p) * boarding.turnScale;
   p.h = wrapAngle(p.h + turn * rate * dt);
-  const target = SAIL_LEVELS[state.sail] * speedCap(p);
+  const target = Math.min(SAIL_LEVELS[state.sail] * speedCap(p), boarding.speedCap);
   p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
 
-  if (state.time - state.lastHit > (t.regenDelay ?? REGEN_DELAY) && p.hp < p.maxHp) {
+  // (No repairs while a boarding is on: every hand is on the ropes or fighting.)
+  if (state.time - state.lastHit > (t.regenDelay ?? REGEN_DELAY) && p.hp < p.maxHp && !boarding.active) {
     p.hp = Math.min(p.maxHp, p.hp + (t.regen ?? REGEN_RATE) * dt);
     if (!state.regenShown && state.bannerTimer <= 0 && state.clearTimer <= 0) {
       state.regenShown = true;
       showBanner('Repairing!<small>Out of the fight, your crew patches the hull</small>', 2.2);
     }
+    // Hull back to full: the holes are patched too.
+    if (p.hp >= p.maxHp) {
+      clearHoles(p.mesh);
+      p.firstHole = null;
+      p.hitsBySide.port = p.hitsBySide.star = 0;
+    }
   }
 }
 
 function updateEnemy(e, dt, attacking) {
-  if (e.sinking) return;
+  if (e.sinking || e.escaped) return;
+  if (boarding.suspends(e)) return; // grappled: the boarding hauls her in and holds her alongside
   const t = e.type;
+  if (e.captured) {
+    // A prize crew sails her off under your flag: clear of you first, then straight out to the nearest
+    // edge of the sea.
+    const p = player;
+    const away = p && Math.hypot(e.x - p.x, e.z - p.z) < 16 ? Math.atan2(e.x - p.x, e.z - p.z) : Math.atan2(e.x, e.z);
+    steerToward(e, away, dt, true);
+    e.speed += clamp(CAPTURE.sailSpeed - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
+    return;
+  }
+  if (e.rise > 0) {
+    // (Rising from the deep: she surfaces where she is, then sails.)
+    e.speed = 0;
+    return;
+  }
+  if (e.surrendered) {
+    // Struck: nobody at the helm. She keeps her heading and drifts (at most 1.5 u/s).
+    e.speed += clamp(Math.min(1.2, speedCap(e)) - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
+    return;
+  }
   const p = player;
   const def = LEVELS[state.level - 1];
   let desired = e.h;
   let targetSpeed = t.maxSpeed * 0.6;
+  // A level mechanic may sail her instead (a treasure galleon running for her escape gate).
+  const steered = mechanics.steer(e, dt);
+  if (steered) {
+    desired = steered.h;
+    targetSpeed = steered.speed;
+  }
 
   if (p && !p.sinking) {
     const r = relative(e, p.x, p.z);
     const toPlayer = Math.atan2(p.x - e.x, p.z - e.z);
-    if (!attacking) {
+    if (steered) {
+      // (the mechanic decides)
+    } else if (!attacking) {
       // Waiting for a free attack slot: circle at a distance, out of gun range.
       const a1 = wrapAngle(toPlayer + Math.PI / 2);
       const a2 = wrapAngle(toPlayer - Math.PI / 2);
@@ -1453,6 +2423,27 @@ function updateEnemy(e, dt, attacking) {
     } else if (r.dist > t.engage + 8) {
       desired = toPlayer;
       targetSpeed = t.maxSpeed;
+    } else if (t.boarder && e.boardCooldown > RAID_SHEER) {
+      // A raider whose ropes were just cut (or who was beaten off) sheers away and circles wide for a while.
+      const a1 = wrapAngle(toPlayer + Math.PI / 2);
+      const a2 = wrapAngle(toPlayer - Math.PI / 2);
+      desired = Math.abs(wrapAngle(a1 - e.h)) < Math.abs(wrapAngle(a2 - e.h)) ? a1 : a2;
+      const sideOfPlayer = Math.sign(wrapAngle(desired - toPlayer));
+      if (r.dist < 22) desired += sideOfPlayer * 0.7;
+      targetSpeed = t.maxSpeed * 0.75;
+    } else if (t.boarder) {
+      // Raiders (SPEC2 §3.6) don't circle: they run in for a spot RAIDERS.beside off your beam, on the side
+      // they are already on, and match your course there to throw their hooks.
+      const pr = relative(p, e.x, e.z);
+      const side = pr.lat >= 0 ? 1 : -1;
+      const tx = p.x + rightX(p.h) * side * RAIDERS.beside + fwdX(p.h) * p.speed * 0.5;
+      const tz = p.z + rightZ(p.h) * side * RAIDERS.beside + fwdZ(p.h) * p.speed * 0.5;
+      const gap = Math.hypot(tx - e.x, tz - e.z);
+      const toSpot = Math.atan2(tx - e.x, tz - e.z);
+      // close in on the spot; alongside, sail your course
+      const k = clamp((gap - 2) / 6, 0, 1);
+      desired = wrapAngle(p.h + wrapAngle(toSpot - p.h) * k);
+      targetSpeed = clamp(p.speed + gap * 0.9, 2, t.maxSpeed);
     } else {
       // Circle the player, keeping a broadside pointed at them.
       const a1 = wrapAngle(toPlayer + Math.PI / 2);
@@ -1464,10 +2455,12 @@ function updateEnemy(e, dt, attacking) {
       else if (r.dist > t.engage + 2) desired -= sideOfPlayer * 0.4;
     }
 
-    // Fire when the player is roughly abeam and in range.
-    if (attacking && state.combatTime > def.grace && r.dist < MAX_RANGE - 4 && Math.abs(r.along) < Math.abs(r.lat) * 0.45) {
+    // Fire when the player is roughly abeam and in range (mayFire() asks the mechanics and the boarding).
+    if ((attacking || steered) && state.combatTime > def.grace && r.dist < MAX_RANGE - 4 && Math.abs(r.along) < Math.abs(r.lat) * 0.45) {
       fire(e, r.lat > 0 ? 1 : -1, p, { spread: t.spread * def.spreadMul, lead: def.lead, rangeErr: rand(0.88, 1.12) });
     }
+    // A raider alongside throws its hooks.
+    if (attacking && t.boarder) raiderTry(e, r.dist);
   }
 
   // Avoid obstacles: the nearest one in the way (land, reefs for deep hulls, other
@@ -1488,8 +2481,9 @@ function updateEnemy(e, dt, attacking) {
   };
   if (!t.shallow) for (const reef of reefs) avoid(reef, 2);
   for (const c of colliders) avoid(c, t.wid + 5);
+  for (const o of mechanics.avoid()) avoid(o, t.wid + 2); // e.g. the maelstrom's eye
   for (const o of enemies) {
-    if (o === e || o.sinking) continue;
+    if (o === e || o.sinking || o.captured || o.escaped) continue;
     const r = relative(e, o.x, o.z);
     if (r.along > 0 && r.along < t.len + 6 && Math.abs(r.lat) < (t.wid + o.type.wid) * 0.5 + 2 && r.along < nearestGap) {
       nearestGap = r.along;
@@ -1556,18 +2550,31 @@ function moveShip(s, dt) {
     s.sinking += dt;
     s.speed *= 1 - Math.min(1, dt * 1.5);
   }
-  s.x += fwdX(s.h) * s.speed * dt;
-  s.z += fwdZ(s.h) * s.speed * dt;
+  // (Grappled ships are moved by the boarding: it hauls her in and then sails the glued pair.)
+  if (!boarding.moves(s)) {
+    s.x += fwdX(s.h) * s.speed * dt;
+    s.z += fwdZ(s.h) * s.speed * dt;
+    // A level's current (the maelstrom) carries every ship along.
+    const d = mechanics.drift(s);
+    if (d) {
+      s.x += d.vx * dt;
+      s.z += d.vz * dt;
+    }
+  }
   resolveLand(s, dt);
 
-  // Reefs slow deep hulls.
+  // Reefs slow deep hulls; ice floes slow every hull.
   const wasOnReef = s.onReef;
-  s.onReef = reefs.some((r) => Math.hypot(s.x - r.x, s.z - r.z) < r.r);
-  if (s.onReef && !wasOnReef && !s.sinking && (s.kind === 'player' || !s.type.shallow)) audio.play('reef', sfxAt(s.x, s.z));
+  const reef = reefs.find((r) => Math.hypot(s.x - r.x, s.z - r.z) < r.r);
+  s.onReef = !!reef;
+  s.reefIce = !!(reef && reef.ice);
+  const slowed = s.onReef && (s.reefIce || !s.type.shallow);
+  if (s.onReef && !wasOnReef && !s.sinking && (s.kind === 'player' || slowed)) audio.play('reef', sfxAt(s.x, s.z));
   if (s.kind === 'player' && s.onReef && !wasOnReef && !s.sinking && state.bannerTimer <= 0) {
-    showBanner('Scraping the reef!<small>Shallow water slows you down</small>', 1.6);
+    if (s.reefIce) showBanner('Ice floe!<small>The ice slows every ship down</small>', 1.6);
+    else showBanner('Scraping the reef!<small>Shallow water slows you down</small>', 1.6);
   }
-  if (s.onReef && !s.type.shallow) s.speed = Math.min(s.speed, s.type.maxSpeed * REEF_SLOW + 0.5);
+  if (slowed) s.speed = Math.min(s.speed, s.type.maxSpeed * (s.reefIce ? ICE_SLOW : REEF_SLOW) + 0.5);
   // Edge of the world.
   const d = Math.hypot(s.x, s.z);
   if (d > env.worldRadius) {
@@ -1579,12 +2586,14 @@ function moveShip(s, dt) {
 
 // Ships bump each other instead of overlapping.
 function separateShips(dt) {
-  const all = enemies.filter((e) => e.sinking < 1.5);
+  // (Prizes sailing off and escaped ships no longer collide.)
+  const all = enemies.filter((e) => e.sinking < 1.5 && !e.captured && !e.escaped);
   if (player) all.push(player);
   for (let i = 0; i < all.length; i++) {
     for (let j = i + 1; j < all.length; j++) {
       const a = all[i];
       const b = all[j];
+      if ((a === player && boarding.apart(b)) || (b === player && boarding.apart(a))) continue;
       const min = (a.type.len + b.type.len) * 0.36;
       const dx = b.x - a.x;
       const dz = b.z - a.z;
@@ -1618,10 +2627,14 @@ function separateShips(dt) {
   }
 }
 
+// Does ball b hit ship s? Each ammo has its own reach (chain shot also tears through the sails, AMMO.top);
+// balls pass through ships that are out of the fight (struck, captured, escaped).
 function hitsShip(b, s) {
-  if (s.hp <= 0 || b.y > 3.8) return false;
+  if (s.hp <= 0 || s.captured || s.surrendered || s.escaped || s.rise > 0) return false;
+  const A = AMMO[b.ammo] || AMMO.round;
+  if (b.y > A.top) return false;
   const r = relative(s, b.x, b.z);
-  return Math.abs(r.along) < s.type.len / 2 + 0.3 && Math.abs(r.lat) < s.type.wid / 2 + 0.3;
+  return Math.abs(r.along) < s.type.len / 2 + A.pad && Math.abs(r.lat) < s.type.wid / 2 + A.pad;
 }
 
 function ballGone(b) {
@@ -1647,7 +2660,11 @@ function updateBalls(dt) {
     const targets = b.owner === 'player' ? enemies : player ? [player] : [];
     for (const s of targets) {
       if (hitsShip(b, s)) {
-        damage(s, b.dmg, b.x, b.z, b.src);
+        const info = ballHit(b, s);
+        damage(s, info.dmg, b.x, b.z, b.src, info);
+        logShot(b, s, info);
+        // A cannonball into the raider whose hooks are biting cuts her lines (SPEC2 §3.6).
+        if (b.owner === 'player' && boarding.kind === 'defend' && boarding.phase === 'threat' && boarding.target === s) boarding.cut('hit');
         if (b.volley && volleys.has(b.volley)) {
           const v = volleys.get(b.volley);
           v.hits++;
@@ -1721,6 +2738,53 @@ function emitShipFx(s, dt) {
     }
     return;
   }
+  // Battered (grey wisps from her first hole), wrecked (dark smoke) and a burning powder keg (fire at the bow).
+  const frac = s.hp / s.maxHp;
+  // (No smoke from a ship the boarding party is fighting on: it would hide the brawl.)
+  const brawlDeck = boarding.locked && boarding.target === s;
+  const smoke = brawlDeck ? 0 : frac < STATES.wrecked ? 5 : frac < STATES.battered ? 3 : 0;
+  const burning = s.burnTicks > 0;
+  if (smoke || burning) {
+    s.fxAcc += dt * (smoke + (burning ? 16 : 0));
+    const lift = s.mesh.position.y;
+    while (s.fxAcc >= 1) {
+      s.fxAcc -= 1;
+      if (burning && Math.random() * (smoke + 16) < 16) {
+        // the keg fire: flames licking up from the bow deck, with dark smoke
+        const along = s.type.len * 0.28 + rand(-0.6, 0.6);
+        const across = rand(-0.5, 0.5) * s.type.wid * 0.5;
+        const px = s.x + fx * along + rightX(s.h) * across;
+        const pz = s.z + fz * along + rightZ(s.h) * across;
+        const deck = lift + (s.mesh.userData.deckY ?? 1.2) + 0.2;
+        if (Math.random() < 0.72) {
+          spawnParticle('glow', Math.random() < 0.5 ? 0xff7b1c : 0xffd23f, px, deck, pz, rand(-0.4, 0.4), rand(2.5, 4.5), rand(-0.4, 0.4), rand(0.35, 0.6), rand(0.45, 0.75), 0, false, false, true);
+        } else {
+          spawnParticle('puff', 0x3e3846, px, deck + 0.6, pz, rand(-0.3, 0.3), rand(2, 3), rand(-0.3, 0.3), rand(1.2, 1.7), rand(0.5, 0.75), 0, true, false, true);
+        }
+        continue;
+      }
+      // smoke wisps from the oldest hole (or amidships), grey when battered, dark when wrecked
+      const h = s.firstHole;
+      const along = h ? h.z : rand(-0.2, 0.2) * s.type.len;
+      const across = h ? h.side * s.type.wid * 0.45 : rand(-0.3, 0.3) * s.type.wid;
+      const px = s.x + fx * along + rightX(s.h) * across;
+      const pz = s.z + fz * along + rightZ(s.h) * across;
+      const py = lift + (h ? h.y : (s.mesh.userData.deckY ?? 1.2)) + 0.2;
+      const color = smoke >= 5 ? 0x2e2836 : 0xa8a2b4; // (smoke lightens as it rises: wrecked starts near ink)
+      spawnParticle('puff', color, px, py, pz, rand(-0.4, 0.4), rand(1.4, 2.2), rand(-0.4, 0.4), rand(1.3, 1.9), rand(0.45, 0.7), 0, true, false, true);
+    }
+  } else s.fxAcc = 0;
+  // The spectral Phantom: green wisps rise off her deck.
+  if (s.spectral && !s.captured) {
+    s.ghostAcc = (s.ghostAcc || 0) + dt * 6;
+    while (s.ghostAcc >= 1) {
+      s.ghostAcc -= 1;
+      const along = rand(-0.4, 0.4) * s.type.len;
+      const across = rand(-0.4, 0.4) * s.type.wid;
+      const deck = s.mesh.position.y + (s.mesh.userData.deckY ?? 1.8) + 0.3;
+      spawnParticle('glow', Math.random() < 0.5 ? 0x7dffb8 : 0xc8ffe2, s.x + fx * along + rightX(s.h) * across, deck, s.z + fz * along + rightZ(s.h) * across, rand(-0.3, 0.3), rand(1.2, 2.4), rand(-0.3, 0.3), rand(0.8, 1.3), rand(0.25, 0.45), 0, false, false, true);
+    }
+  }
   if (s.speed > 2) {
     s.wakeAcc += dt * 60 * (s.speed / 18);
     while (s.wakeAcc >= 1) {
@@ -1741,15 +2805,27 @@ function emitShipFx(s, dt) {
   }
 }
 
-// First-voyage hints in a bubble above the gun card (level 1 only).
+// The hint bubble above the gun card: the first-voyage tutorial (level 1, until it is done), else the
+// one-time tips (SPEC2 §5.5); a short "why that did nothing" message (flashHint) shows over either.
 function updateHints(dt) {
-  if (state.tutorialDone || state.level !== 1 || !player || player.sinking || state.intro > 0) {
-    show(ui.hint, false);
-    return;
+  let text = '';
+  if (player && !player.sinking && state.intro <= 0) {
+    if (!state.tutorialDone && state.level === 1) text = tutorialHint(dt);
+    else text = tipText();
   }
+  if (state.time < state.flash.until && player && !player.sinking) text = state.flash.text;
+  const h = state.hint;
+  if (text && h.text !== text) ui.hint.innerHTML = text;
+  h.text = text;
+  show(ui.hint, !!text);
+}
+
+// First-voyage hints (level 1 only).
+function tutorialHint(dt) {
   const h = state.hint;
   h.t += dt;
   const touch = isTouch();
+  const range = AMMO[state.ammo].range;
   let text = '';
   if (h.step === 0) {
     text = touch ? 'Hold &#9664; &#9654; to steer &middot; tap <b>+ Sail</b> for speed' : 'Steer with <kbd>A</kbd> <kbd>D</kbd> &middot; more sail with <kbd>W</kbd>';
@@ -1759,9 +2835,9 @@ function updateHints(dt) {
       h.step = 2;
       h.t = 0;
     } else {
-      const port = enemies.some((e) => inArc(player, e, -1));
-      const star = enemies.some((e) => inArc(player, e, 1));
-      const near = enemies.some((e) => fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) < MAX_RANGE);
+      const port = enemies.some((e) => inArc(player, e, -1, range));
+      const star = enemies.some((e) => inArc(player, e, 1, range));
+      const near = enemies.some((e) => fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) < range);
       h.offBeam = near && !port && !star ? h.offBeam + dt : 0;
       if (port || star) {
         const side = port ? 'port (left)' : 'starboard (right)';
@@ -1778,9 +2854,48 @@ function updateHints(dt) {
       saveNumber(TUTOR_KEY, 1);
     }
   }
-  if (text && h.text !== text) ui.hint.innerHTML = text;
-  h.text = text;
-  show(ui.hint, !!text);
+  return text;
+}
+
+// One-time tips (bits of TIPS_KEY, SPEC2 §5.5), one at a time in the hint bubble, never during the
+// first-voyage tutorial. Returns whether it shows (false: shown before, or not now).
+function showTip(bit, keys, touch = keys, seconds = 6) {
+  if (tips & bit) return false;
+  if (!state.tutorialDone && state.level === 1) return false;
+  if (state.time < state.tip.until) return false;
+  tips |= bit;
+  saveNumber(TIPS_KEY, tips);
+  state.tip = { text: isTouch() ? touch : keys, until: state.time + seconds, bit };
+  return true;
+}
+function tipText() {
+  // New ammo this voyage: once the level's banner has gone.
+  if (state.ammoTipDue && state.bannerTimer <= 0 && state.time >= state.tip.until && !boarding.active) newAmmoTip();
+  return state.time < state.tip.until ? state.tip.text : '';
+}
+function newAmmoTip() {
+  const id = state.ammoTipDue & TIP.chain ? 'chain' : 'grape';
+  state.ammoTipDue &= ~TIP[id];
+  const key = id === 'chain' ? 2 : 3;
+  const ok = showTip(
+    TIP[id],
+    id === 'chain' ? 'New: chain shot slows ships! <kbd>2</kbd> or <kbd>R</kbd>' : 'New: grape shot clears decks! <kbd>3</kbd>',
+    id === 'chain' ? 'New: chain shot! Tap <b>Ammo</b>' : 'New: grape shot! Tap <b>Ammo</b>',
+    7
+  );
+  if (!ok) return;
+  const touch = isTouch();
+  showBanner(`New ammo: ${AMMO_NAMES[id]} shot!<small>${touch ? 'Tap Ammo' : `Press <kbd>${key}</kbd>`}</small>`, 2.6);
+  gameAnnounce(`New ammo: ${AMMO_NAMES[id].toLowerCase()} shot. ${touch ? 'Tap Ammo to load it.' : `Press ${key} to load it.`}`);
+}
+
+// A short message in the hint bubble (why that key did nothing), for `seconds` of play.
+function flashHint(text, seconds = 2) {
+  state.flash = { text, until: state.time + seconds };
+  if (state.mode !== 'playing' || !player) return;
+  ui.hint.innerHTML = text;
+  state.hint.text = text;
+  show(ui.hint, true);
 }
 
 function step(dt) {
@@ -1791,6 +2906,17 @@ function step(dt) {
   const def = LEVELS[state.level - 1];
   // Gameplay motion of the environment itself (drifting ice floes), in simulated time.
   if (env && env.step) env.step(state.time, dt);
+  // Chain-shot slows and crit effects wear off; a burning powder keg ticks (SPEC2 §2.3).
+  if (player) updateEffects(player, dt);
+  for (const e of enemies) {
+    updateEffects(e, dt);
+    if (e.rise > 0) e.rise = Math.max(0, e.rise - dt); // rising from the deep (syncShip lowers her meanwhile)
+    if (e.boardCooldown > 0) e.boardCooldown = Math.max(0, e.boardCooldown - dt); // a raider's hooks coiling
+  }
+  state.boardCooldown = Math.max(0, state.boardCooldown - dt); // your grapples coiling (SPEC2 §3.4)
+  // The boarding truce (swing..result): bombs and lightning wait (their timers are pushed back).
+  const truce = boarding.truce;
+  if (truce) state.nextBomb += dt;
   if (player) updatePlayer(dt);
   // The nearest pirates get the attack slots (ships escaping from land, and treasure galleons, don't count).
   const attackers = new Set(
@@ -1800,20 +2926,36 @@ function step(dt) {
       .slice(0, def.maxAttackers)
   );
   for (const e of enemies) updateEnemy(e, dt, attackers.has(e));
+  // The boarding set-piece (simulated time): phases, the reel, the glued pair (it moves those two ships).
+  boarding.step(dt);
   if (player) moveShip(player, dt);
   for (const e of enemies) moveShip(e, dt);
+  mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
   separateShips(dt);
   updateBalls(dt);
   updateCoins(dt);
-  updateBombs(dt);
+  updateBombs(dt, truce);
   if (player) emitShipFx(player, dt);
   for (const e of enemies) emitShipFx(e, dt);
   updateHints(dt);
 
-  // Remove fully sunk enemies.
+  // The horn of reinforcements waits for a capture's fanfare to finish (stingers don't stack).
+  if (state.waveHorn && state.time >= state.waveHorn.at) {
+    audio.play('wave', { pitch: state.waveHorn.pitch });
+    state.waveHorn = null;
+  }
+
+  // Remove fully sunk enemies, prizes that have sailed off (a puff of gold) and ships that escaped.
   for (let i = enemies.length - 1; i >= 0; i--) {
-    if (enemies[i].sinking > 4) {
-      removeShip(enemies[i]);
+    const e = enemies[i];
+    if (e.sinking > 4 || state.time >= e.removeAt) {
+      if (e.captured && !e.sinking) {
+        for (let k = 0; k < 14; k++) {
+          spawnParticle('glow', k % 2 ? 0xffe27a : 0xffffff, e.x + rand(-2, 2), rand(1, 4), e.z + rand(-2, 2), rand(-2, 2), rand(1, 4), rand(-2, 2), rand(0.4, 0.8), rand(0.3, 0.6), 0);
+        }
+        foam(e.x, 0.5, e.z, 10, 6, 4, 0.7, 0.9);
+      }
+      removeShip(e);
       enemies.splice(i, 1);
     }
   }
@@ -1841,10 +2983,27 @@ function step(dt) {
   } else if (alive === 0 && state.wave === def.waves.length - 1) {
     state.clearTimer = 2.5;
     clearProjectiles(true); // enemy shots and lava still in the air fizzle out
+    // Ships that struck their colours and were never boarded are yours anyway (SPEC2 §3.1).
+    let taken = 0;
+    for (const e of enemies) {
+      if (e.surrendered && !e.captured && e.hp > 0 && !e.sinking) {
+        if (boarding.active && boarding.target === e) boarding.cancel('level');
+        captureShip(e, 'auto');
+        taken++;
+      }
+    }
     const won = isFinale(state.level);
     audio.play(won ? 'victory' : 'levelClear');
-    const boss = state.lastBossSunk ? `<small>${state.lastBossSunk} is sunk!</small>` : '';
-    showBanner(won ? `Victory!${boss}<small>The seas are yours</small>` : `Level cleared!${boss}<small>Grab the loot</small>`, 2.5);
+    const bossLine = state.lastBossCaptured
+      ? `<small>${theName(state.lastBossCaptured)} is yours!</small>`
+      : state.lastBossSunk
+        ? `<small>${state.lastBossSunk} is sunk!</small>`
+        : '';
+    const struckLine = taken ? `<small>${taken === 1 ? 'The surrendered ship is yours!' : 'The surrendered ships are yours!'}</small>` : '';
+    showBanner(
+      won ? `Victory!${bossLine}${struckLine}<small>The seas are yours</small>` : `Level cleared!${bossLine}${struckLine}<small>Grab the loot</small>`,
+      2.5
+    );
   }
 }
 
@@ -1856,6 +3015,43 @@ function changeSail(d) {
   const before = state.sail;
   state.sail = clamp(state.sail + d, 0, SAIL_LEVELS.length - 1);
   if (state.sail !== before) audio.play(d > 0 ? 'sailUp' : 'sailDown');
+}
+
+// Ammo unlocked with the voyage's progress (chain after the Coast of Europe, grape after Bali).
+function unlockedAmmo() {
+  return AMMO_IDS.filter((id) => ammoUnlocked(id, state.unlocked));
+}
+// Load another shot in both broadsides: the gun crews need at least AMMO_SWAP seconds to change it.
+// A locked one says why in the hint bubble. Returns whether that ammo is loaded now.
+function setAmmo(id) {
+  if (!AMMO_IDS.includes(id)) return false;
+  if (!ammoUnlocked(id, state.unlocked)) {
+    flashHint(AMMO_LOCKED[id], 2);
+    return false;
+  }
+  if (state.ammo === id) return true;
+  state.ammo = id;
+  if (player) {
+    for (const k of ['port', 'star']) {
+      if (player.reload[k] < AMMO_SWAP) {
+        player.reload[k] = AMMO_SWAP;
+        player.reloadMax[k] = AMMO_SWAP;
+      }
+    }
+  }
+  audio.play('click', { pitch: id === 'round' ? 0.85 : id === 'chain' ? 1 : 1.15 });
+  gameAnnounce(`${AMMO_NAMES[id]} shot loaded.`);
+  return true;
+}
+// R / the touch Ammo pill: the next unlocked ammo.
+function cycleAmmo() {
+  const list = unlockedAmmo();
+  if (list.length < 2) {
+    flashHint(AMMO_LOCKED.chain, 2);
+    return state.ammo;
+  }
+  setAmmo(list[(list.indexOf(state.ammo) + 1) % list.length]);
+  return state.ammo;
 }
 
 // ---------------------------------------------------------------------------
@@ -1940,6 +3136,8 @@ function closeModal(el) {
 function pauseGame() {
   state.mode = 'paused';
   clearSteering();
+  boarding.cutHold(false); // a held G (or Board) is let go too
+  saveFeats();
   audio.stopAll(0.2);
   audio.setMusicVolume(0.35);
 }
@@ -1956,10 +3154,93 @@ function togglePause() {
   }
   if (state.mode === 'playing') {
     pauseGame();
-    openModal(ui.pause);
+    openPause();
   } else if (state.mode === 'paused') {
+    if (dockSoon) return; // Leave was pressed: on the way to the shipyard
     closeModal(ui.pause);
     resumeGame();
+  }
+}
+
+// The pause dialog offers Resume (first, focused) and a way to leave this battle: for the shipyard or for
+// the title. Leaving can't be undone, so it asks once, in the same dialog: the question takes the place of
+// the choices and focus moves to it (screen readers read it); Leave goes, Keep fighting (or Escape) comes
+// back to the choices with focus on the button that asked. P still resumes the game from either step.
+// step: 'choose' | 'confirm' | 'leaving' (Leave pressed; the shipyard opens two frames later); to: 'dock' | 'menu'.
+const pauseUi = { step: 'choose', to: null, askedAt: -Infinity };
+function openPause() {
+  showPauseChoices();
+  openModal(ui.pause); // focus on Resume
+}
+function showPauseChoices(focus = null) {
+  pauseUi.step = 'choose';
+  pauseUi.to = null;
+  show(ui.pauseConfirm, false);
+  show(ui.pauseChoices, true);
+  if (focus) focus.focus({ preventScroll: true });
+}
+function askLeave(to) {
+  if (activeModal() !== ui.pause || state.mode !== 'paused' || dockSoon) return;
+  pauseUi.step = 'confirm';
+  pauseUi.to = to;
+  pauseUi.askedAt = performance.now();
+  ui.leaveQ.textContent = to === 'dock' ? 'Leave the battle for the shipyard?' : 'Leave the battle for the main menu?';
+  // "The 120 gold plundered in this level won't be banked." (it goes as it does in a shipwreck)
+  const lost = Math.max(0, Math.round(state.gold - state.goldAtLevelStart));
+  ui.leaveWhy.textContent = '';
+  if (lost > 0) {
+    const b = document.createElement('b');
+    b.textContent = `${lost} gold`;
+    ui.leaveWhy.append('The ', b, " plundered in this level won't be banked.");
+  } else {
+    ui.leaveWhy.append('Nothing plundered in this level yet.');
+  }
+  ui.leaveWhy.append(' Your treasure chest, upgrades and unlocked levels stay.');
+  show(ui.pauseConfirm, true);
+  show(ui.pauseChoices, false);
+  ui.leavePrompt.focus({ preventScroll: true });
+}
+function confirmLeave(e) {
+  if (activeModal() !== ui.pause || pauseUi.step !== 'confirm' || state.mode !== 'paused') return;
+  // The second click of a double-click (or a double tap) on Shipyard / Main menu lands here: not an answer.
+  if (e && e.detail > 0 && (e.detail > 1 || performance.now() - pauseUi.askedAt < 350)) return;
+  // Decided: the shipyard opens two frames from now (nothing in the dialog undoes that in between).
+  pauseUi.step = 'leaving';
+  leaveBattle(pauseUi.to);
+}
+function cancelLeave() {
+  if (pauseUi.step !== 'confirm') return;
+  showPauseChoices(pauseUi.to === 'menu' ? ui.quitMenu : ui.quitDock);
+}
+
+// Leave the battle in play (paused, or through the test API): for the shipyard ('dock'; its ways out are a
+// shipwreck's: try this level again, or the title) or for the title ('menu': the voyage ends there). This
+// level's plunder goes as in a shipwreck (see abandonLevel). From a button the dock opens two frames later
+// (openDockSoon); `now` opens it at once.
+function leaveBattle(to, now = false) {
+  if (state.mode !== 'paused' && state.mode !== 'playing') return false;
+  if (to === 'dock') {
+    if (now) return openDock('quit');
+    openDockSoon('quit');
+    return true;
+  }
+  if (to !== 'menu') return false;
+  abandonLevel();
+  showMenu();
+  return true;
+}
+// This level's unbanked plunder is dropped exactly as in a shipwreck: the voyage's gold goes back to what it
+// was when the level started (a retry starts from there), the treasure chest is untouched (nothing of this
+// level was banked) and the best voyage counts that gold. Everything of the battle itself (ships, shots,
+// bombs, a boarding, tags, pops, sailors overboard, the helm captain, the level's mechanics) is cleared by
+// the caller: openDock or showMenu (clearLevelEntities + releaseBattlePeople).
+function abandonLevel() {
+  clearSteering();
+  boarding.cutHold(false);
+  state.gold = state.goldAtLevelStart;
+  if (state.gold > state.best) {
+    state.best = state.gold;
+    saveNumber(BEST_KEY, state.best);
   }
 }
 
@@ -2010,7 +3291,7 @@ function onContextRestored() {
     focusInto(ui.recover);
   } else {
     closeModal(ui.recover);
-    if (recovery.pauseWasOpen) openModal(ui.pause); // it was paused before: stay paused
+    if (recovery.pauseWasOpen) openPause(); // it was paused before: stay paused (back at the choices)
     else if (state.mode === 'dock') {
       // back to the shipyard panel, where the player was if that control is still there
       const f = recovery.focus;
@@ -2092,11 +3373,17 @@ window.addEventListener('keydown', (e) => {
     else if (state.mode === 'won') showMenu();
     else if (state.mode === 'levelDone') nextLevel();
     else if (state.mode === 'over') retryLevel();
+    else if (boarding.phase === 'brawl') boarding.skip();
     else skipIntro();
     return;
   }
   if (k === 'm') {
     if (!e.repeat) toggleMute();
+    return;
+  }
+  // Escape on "Leave the battle?" goes back to the pause choices (P resumes the game, as always).
+  if (k === 'escape' && open === ui.pause && pauseUi.step === 'confirm') {
+    if (!e.repeat) cancelLeave();
     return;
   }
   if (k === 'p' || k === 'escape') {
@@ -2105,29 +3392,51 @@ window.addEventListener('keydown', (e) => {
   }
   if (state.mode !== 'playing') return;
   skipIntro();
+  // Ammo: R cycles, 1 / 2 / 3 pick (by physical key, so AZERTY works).
+  const ammoKey = /^(?:Digit|Numpad)([123])$/.exec(e.code || '');
   if (KEYMAP[k]) steerPress(KEYMAP[k], keySource(e));
   else if (!e.repeat && (k === 'w' || k === 'arrowup')) changeSail(1);
   else if (!e.repeat && (k === 's' || k === 'arrowdown')) changeSail(-1);
+  else if (k === 'r') {
+    if (!e.repeat) cycleAmmo();
+  } else if (k === 'g') {
+    // Board (SPEC2 §5.1): grapple, heave, cut the raiders' ropes (3 presses, or hold it), counter-board,
+    // skip the brawl. Holding G during a raider's threat cuts the ropes after RAIDERS.cutHold s.
+    if (!e.repeat) boardPress();
+    boarding.cutHold(true);
+  } else if (ammoKey) {
+    if (!e.repeat) setAmmo(AMMO_IDS[Number(ammoKey[1]) - 1]);
+  }
   // Holding a fire key keeps firing whenever the guns reload.
   else if (k === 'q' || k === 'j') playerFire(-1);
   else if (k === 'e' || k === 'l') playerFire(1);
   else if (k === ' ') {
-    playerFire(-1);
-    playerFire(1);
+    // (No gun crew fires during a boarding; Space skips the brawl instead.)
+    if (boarding.phase === 'brawl') {
+      if (!e.repeat) boarding.skip();
+    } else {
+      playerFire(-1);
+      playerFire(1);
+    }
   }
 });
 
 window.addEventListener('keyup', (e) => {
+  if (e.key.toLowerCase() === 'g' || e.code === 'KeyG') boarding.cutHold(false);
   const src = keySource(e);
   for (const dir of ['left', 'right']) if (steerSources[dir].has(src)) steerRelease(dir, src);
 });
 
 // Keys released while the window is unfocused never send keyup: forget everything held.
-window.addEventListener('blur', clearSteering);
+window.addEventListener('blur', () => {
+  clearSteering();
+  boarding.cutHold(false);
+});
 
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) {
     clearSteering();
+    saveFeats();
     if (state.mode === 'playing') togglePause();
   } else {
     resetPerfWindow(1);
@@ -2208,9 +3517,13 @@ const TAP_ACTIONS = {
   sailDown: () => changeSail(-1),
   firePort: () => playerFire(-1),
   fireStar: () => playerFire(1),
-  // The act pad (hidden until the boarding update wires these up: cycle ammo; grapple / heave / cut).
-  ammo: () => {},
-  board: () => {},
+  // The act pad: cycle the ammo; Board (grapple / heave / cut, wired with the boarding set-piece).
+  ammo: () => {
+    if (state.mode === 'playing') cycleAmmo();
+  },
+  board: () => {
+    if (state.mode === 'playing') boardPress();
+  },
 };
 for (const btn of document.querySelectorAll('[data-tap]')) {
   const act = () => {
@@ -2242,14 +3555,36 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   btn.addEventListener('keydown', (e) => {
     if (e.key !== 'Enter' && e.key !== ' ') return;
     e.stopPropagation();
-    // A held Enter clicks again on every auto-repeat: one press is one sail step.
+    // A held Enter clicks again on every auto-repeat: one press is one sail step (one grapple, one heave).
     // (Fire buttons keep repeating, like a held fire key.)
-    if (e.key === 'Enter' && e.repeat && btn.dataset.tap.startsWith('sail')) e.preventDefault();
+    if (e.key === 'Enter' && e.repeat && (btn.dataset.tap.startsWith('sail') || btn.dataset.tap === 'board')) e.preventDefault();
   });
+}
+// Hold-to-cut on the Board button (SPEC2 §5.2): while a raider's hooks bite, holding it for RAIDERS.cutHold s
+// cuts the ropes (a tap still counts as one of the three cuts). Pointer capture: sliding off still lets go.
+{
+  const btn = ui.touchBoard;
+  const release = () => boarding.cutHold(false);
+  btn.addEventListener('pointerdown', (e) => {
+    try {
+      btn.setPointerCapture(e.pointerId);
+    } catch {
+      // synthetic events have no capturable pointer
+    }
+    boarding.cutHold(true);
+  });
+  btn.addEventListener('pointerup', release);
+  btn.addEventListener('pointercancel', release);
+  btn.addEventListener('lostpointercapture', release);
 }
 
 $('start-btn').addEventListener('click', () => newGame(1));
 $('resume-btn').addEventListener('click', togglePause);
+// Leave this battle (pause dialog): ask first, then go.
+ui.quitDock.addEventListener('click', () => askLeave('dock'));
+ui.quitMenu.addEventListener('click', () => askLeave('menu'));
+$('leave-yes-btn').addEventListener('click', confirmLeave);
+$('leave-no-btn').addEventListener('click', cancelLeave);
 $('next-btn').addEventListener('click', nextLevel);
 $('retry-btn').addEventListener('click', retryLevel);
 $('menu-btn').addEventListener('click', showMenu);
@@ -2308,11 +3643,14 @@ function renderLevelCards() {
 function showMenu() {
   if (activeModal() && !state.contextLost) closeModal(modal);
   blurActive();
+  saveFeats();
   closeDock();
   clearLevelEntities();
+  releaseBattlePeople();
   for (const el of [ui.pause, ui.levelDone, ui.over, ui.won, ui.dock, ui.hud, ui.banner, ui.boss, ui.hint]) show(el, false);
   state.mode = 'menu';
   audio.stopAll();
+  audio.setMusicVolume(1); // (from the pause dialog the music was turned down)
   audio.setScene('menu');
   loadEnvironment(1);
   menuShip();
@@ -2335,9 +3673,12 @@ function menuShip() {
 // the camera sways slowly around it (drag the view, or ←/→, to turn it) and the panel sells
 // upgrades (paid from the treasure chest) and paint (free). Every change rebuilds the ship.
 // ---------------------------------------------------------------------------
-const DOCK_FROM = ['menu', 'levelDone', 'over', 'won'];
-// Ways out of the dock, by where the player came from; the first one is the main action.
-const DOCK_EXITS = { levelDone: ['next', 'menu'], over: ['retry', 'menu'], menu: ['title'], won: ['title'] };
+// Where the dock was opened from: the title, the level-cleared, shipwrecked or victory screen, or 'quit' (the
+// pause dialog's Shipyard: the battle was left before its end, see leaveBattle()).
+const DOCK_FROM = ['menu', 'levelDone', 'over', 'won', 'quit'];
+// Ways out of the dock, by where the player came from; the first one is the main action. A battle left from
+// the pause dialog ends like a shipwreck: try the level again, or go back to the title.
+const DOCK_EXITS = { levelDone: ['next', 'menu'], over: ['retry', 'menu'], quit: ['retry', 'menu'], menu: ['title'], won: ['title'] };
 function dockExits(from) {
   // After a finale with more voyage to come (Act II), the dock can also sail on to the next level.
   if (from === 'won') return state.level < LEVELS.length ? ['next', 'title'] : DOCK_EXITS.won;
@@ -2405,6 +3746,23 @@ function announce(text) {
   ui.dockLive.textContent = ui.dockLive.textContent === text ? `${text} ` : text;
 }
 
+// Big battle events for screen readers (#game-live: new ammo, ammo loaded, captures, boardings...), at most
+// one every 1.5 s: a message that comes sooner waits (the newest one wins), a repeat is read again.
+const gameLive = { at: -Infinity, pending: '' };
+function gameAnnounce(text) {
+  const now = performance.now();
+  if (now - gameLive.at < 1500) {
+    gameLive.pending = text;
+    return;
+  }
+  gameLive.at = now;
+  gameLive.pending = '';
+  ui.gameLive.textContent = ui.gameLive.textContent === text ? `${text}\u00a0` : text;
+}
+function flushGameAnnounce() {
+  if (gameLive.pending && performance.now() - gameLive.at >= 1500) gameAnnounce(gameLive.pending);
+}
+
 // Building the island and the ship holds the page up for a moment (seconds on a slow device). From a
 // button, first say where we're going and let that be drawn (two animation frames), then open the dock.
 // The test API's dock.open() opens it at once.
@@ -2425,11 +3783,18 @@ function openDockSoon(from) {
 
 function openDock(from) {
   if (state.mode === 'dock') return true;
-  if (!DOCK_FROM.includes(from)) from = DOCK_FROM.includes(state.mode) ? state.mode : 'menu';
+  // 'quit' leaves a battle in play (or paused); with no battle there is nothing to leave. Unnamed, a battle
+  // in play is left ('quit') and an end screen or the title is where the dock was opened from.
+  const inBattle = state.mode === 'playing' || state.mode === 'paused';
+  if (from === 'quit' && !inBattle) from = undefined;
+  if (!DOCK_FROM.includes(from)) from = inBattle ? 'quit' : DOCK_FROM.includes(state.mode) ? state.mode : 'menu';
   if (from === 'levelDone' && isFinale(state.level)) from = 'won';
   if (activeModal() && !state.contextLost) closeModal(modal);
   blurActive();
+  if (from === 'quit') abandonLevel(); // this level's plunder goes, as in a shipwreck
+  saveFeats();
   clearLevelEntities();
+  releaseBattlePeople();
   if (menuShipMesh) {
     disposeShip(menuShipMesh);
     menuShipMesh = null;
@@ -2621,6 +3986,27 @@ function buyUpgrade(id) {
   celebrate(true);
   const tier = shipConfig.up[id];
   announce(`Bought ${u.name}. ${u.stat}: ${statText(id, tier)}.`);
+  return true;
+}
+
+// A tavern upgrade (SPEC2 §4), paid from the treasure chest; it counts from the next level start. The
+// upgrade's record is saved first and the chest only after it: if storage refuses the record, nothing is
+// bought (no gold is ever spent on an upgrade that would be lost). (The tavern panel comes with the town.)
+function buyArmory(id) {
+  const cost = armoryNextCost(armoryCfg, id);
+  if (cost === null) return false;
+  syncSaved();
+  if (state.purse < cost) return false;
+  const next = parseArmoryConfig(armoryCfg);
+  next.up[id] += 1;
+  if (!saveRecord(ARMORY_KEY, serializeArmoryConfig, next)) return false;
+  armoryCfg = parseArmoryConfig(next);
+  state.purse -= cost;
+  saveChest();
+  if (state.mode === 'dock') {
+    rebuildDockShip(); // Long grapples show on the rail
+    renderDock();
+  }
   return true;
 }
 
@@ -3029,23 +4415,305 @@ function updateHud(force = false, dt = 0) {
   setText(ui.ships, 'ships', pending ? `${alive} +${pending}` : `${alive}`, force);
   setText(ui.gold, 'gold', state.gold, force);
   setText(ui.sails, 'sails', `${SAIL_NAMES[state.sail]} ${'▮'.repeat(state.sail)}${'▯'.repeat(3 - state.sail)}`, force);
-  const t = player.type;
-  setWidth(ui.reloadPort, 'rp', (1 - player.reload.port / t.reload) * 100, force);
-  setWidth(ui.reloadStar, 'rs', (1 - player.reload.star / t.reload) * 100, force);
-  // Gun lights: loaded, and a pirate inside that side's firing arc.
-  const live = !player.sinking && state.mode === 'playing';
+  // Reload bars: what is left of the reload the side's last shot (or an ammo change) set.
+  const rp = player.reloadMax.port || player.type.reload;
+  const rs = player.reloadMax.star || player.type.reload;
+  setWidth(ui.reloadPort, 'rp', (1 - player.reload.port / rp) * 100, force);
+  setWidth(ui.reloadStar, 'rs', (1 - player.reload.star / rs) * 100, force);
+  // Gun lights: loaded, and a pirate inside that side's firing arc (for the loaded ammo's range).
+  // (Your gun crews are on the ropes during a boarding: no FIRE! light then, SPEC2 §3.4.)
+  const live = !player.sinking && state.mode === 'playing' && mayFire(player);
+  const range = AMMO[state.ammo].range;
+  const portIn = live && enemies.some((e) => inArc(player, e, -1, range));
+  const starIn = live && enemies.some((e) => inArc(player, e, 1, range));
   setClass(ui.gunPort, 'gp', 'ready', live && player.reload.port === 0, force);
   setClass(ui.gunStar, 'gs', 'ready', live && player.reload.star === 0, force);
-  setClass(ui.gunPort, 'gp', 'target', live && enemies.some((e) => inArc(player, e, -1)), force);
-  setClass(ui.gunStar, 'gs', 'target', live && enemies.some((e) => inArc(player, e, 1)), force);
+  setClass(ui.gunPort, 'gp', 'target', portIn, force);
+  setClass(ui.gunStar, 'gs', 'target', starIn, force);
+  // RAKE! instead of FIRE! when that side's target shows you her stern or bow.
+  const rakeP = portIn ? rakeCue(-1) : null;
+  const rakeS = starIn ? rakeCue(1) : null;
+  setClass(ui.gunPort, 'gp', 'rake', !!rakeP, force);
+  setClass(ui.gunStar, 'gs', 'rake', !!rakeS, force);
+  setText(ui.firePort, 'fireP', rakeP ? 'RAKE!' : 'FIRE!', force);
+  setText(ui.fireStar, 'fireS', rakeS ? 'RAKE!' : 'FIRE!', force);
+  const rake = (rakeP && player.reload.port === 0 ? rakeP : null) || (rakeS && player.reload.star === 0 ? rakeS : null);
+  if (rake && !(tips & TIP.rake)) {
+    showTip(
+      TIP.rake,
+      rake === 'stern'
+        ? 'Her stern is open! A shot down her length hits twice as hard'
+        : 'Her bow is open! A shot down her length hits half again as hard'
+    );
+  }
+
+  // Crew aboard (crossed cutlasses): it bumps when it changes (a brawl ticks it down one by one).
+  const crewNow = Math.round(boarding.crewShown(player) ?? state.crew);
+  const crewKey = `${crewNow}/${state.crewMax}`;
+  if (force || shown.crew !== crewKey) {
+    show(ui.crewChip, true);
+    ui.crewNum.textContent = String(crewNow);
+    ui.crewChip.setAttribute('aria-label', `Crew ${crewNow} of ${state.crewMax}`);
+    if (!force && shown.crew !== undefined) retrigger(ui.crewChip, 'bump');
+    shown.crew = crewKey;
+  }
+
+  // The Board cell and button (always there in play: a stable layout; see updateBoardHud()).
+  if (force || !shown.boardOn) {
+    show(ui.gunBoard, true);
+    show(ui.touchBoard, true);
+    shown.boardOn = true;
+  }
+  // The loaded ammo: the gun-card cell (keyboard) and the touch Ammo pill, once chain shot is unlocked.
+  const choice = unlockedAmmo().length > 1;
+  if (force || shown.ammoOn !== choice) {
+    show(ui.gunAmmo, choice);
+    show(ui.touchAmmo, choice);
+    shown.ammoOn = choice;
+  }
+  const actOn = !ui.touchAmmo.classList.contains('hidden') || !ui.touchBoard.classList.contains('hidden');
+  if (force || shown.actOn !== actOn) {
+    show(ui.touchAct, actOn);
+    shown.actOn = actOn;
+  }
+  if (force || shown.ammo !== state.ammo) {
+    const name = AMMO_NAMES[state.ammo];
+    ui.ammoName.textContent = name;
+    ui.gunAmmo.dataset.ammo = state.ammo;
+    ui.ammoIcon.innerHTML = AMMO_ICONS[state.ammo];
+    ui.touchAmmo.dataset.ammo = state.ammo;
+    ui.touchAmmo.innerHTML = `<span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[state.ammo]}</span><span class="ammo-word">${name}</span>`;
+    ui.touchAmmo.setAttribute('aria-label', `Ammo: ${name.toLowerCase()} shot. Change ammo`);
+    if (shown.ammo !== undefined && shown.ammo !== null && !force) {
+      retrigger(ui.gunAmmo, 'bump');
+      retrigger(ui.touchAmmo, 'bump');
+    }
+    shown.ammo = state.ammo;
+  }
+
+  updateBoardHud(force, dt);
 
   const boss = enemies.find((e) => e.type.boss && e.hp > 0 && !e.captured && !e.escaped);
   if (force || shown.boss !== !!boss) {
     show(ui.boss, !!boss);
     shown.boss = !!boss;
-    if (boss) ui.bossName.textContent = boss.type.name;
   }
-  if (boss) setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
+  if (boss) {
+    // The Phantom Galleon, spectral (or struck): only a boarding takes her (SPEC2 §5.3).
+    const boardHer = boss.type.ghost && (boss.spectral || boss.surrendered);
+    setText(ui.bossName, 'bossName', boardHer ? `${boss.type.name} — BOARD HER!` : boss.type.name, force);
+    setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
+    // The boss's crew: 10 pips with the surrender notch (SPEC2 §5.3).
+    const c0 = boss.crew0 || 0;
+    show(ui.bossCrew, c0 > 0);
+    if (c0 > 0) {
+      const pct = String(Math.round((1000 * crewOf(boss)) / c0) / 10);
+      if (force || shown.bossCrew !== pct) {
+        ui.bossCrew.style.setProperty('--crew', pct);
+        shown.bossCrew = pct;
+      }
+      const notch = `${Math.round((1000 * boss.strikeAt) / c0) / 10}%`;
+      if (force || shown.bossNotch !== notch) {
+        ui.bossCrew.style.setProperty('--notch', notch);
+        shown.bossNotch = notch;
+      }
+    }
+  }
+}
+
+// ---- Board (G, the touch Board button): what it does now and the odds (SPEC2 §5.2, §5.3), the boarding
+// strip during a set-piece, and the level's objective pill.
+const BOARD_SVG = 'viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
+const BOARD_INK = 'stroke="#1d1330" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"';
+// Icon + word + colour for every state (never colour alone).
+const BOARD_ICONS = {
+  // a grapnel: ring, shaft and three curved prongs
+  hook:
+    `<svg ${BOARD_SVG}><g fill="none" ${BOARD_INK}><circle cx="12" cy="4.2" r="2.2"/><path d="M12 6.4v13.2"/>` +
+    '<path d="M4.6 12.4c.4 4.4 3.4 7.2 7.4 7.2s7-2.8 7.4-7.2"/><path d="M4.6 12.4l-1.4 2.2M4.6 12.4l2.4.9M19.4 12.4l1.4 2.2M19.4 12.4l-2.4.9"/></g></svg>',
+  // CAPTURE!: a green ring with a tick
+  capture:
+    `<svg ${BOARD_SVG}><circle cx="12" cy="12" r="9.2" fill="#2fbf8f" ${BOARD_INK}/><path d="M7.4 12.4l3.1 3.1 6-6.4" fill="none" stroke="#fff" stroke-width="2.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  // FIGHT!: crossed cutlasses on gold
+  fight:
+    `<svg ${BOARD_SVG}><circle cx="12" cy="12" r="9.2" fill="#ffc93c" ${BOARD_INK}/>` +
+    `<g fill="none" ${BOARD_INK}><path d="M7 6.5l9.4 10M17 6.5l-9.4 10"/><path d="M14.6 17.8l3.2-3M9.4 17.8l-3.2-3"/></g></svg>`,
+  // RISKY!: a red ring with "!"
+  risky:
+    `<svg ${BOARD_SVG}><circle cx="12" cy="12" r="9.2" fill="#e63946" ${BOARD_INK}/><path d="M12 6.8v6.4" stroke="#fff" stroke-width="3" stroke-linecap="round"/><circle cx="12" cy="17" r="1.7" fill="#fff"/></svg>`,
+  // TAKE HER!: a white flag
+  take:
+    `<svg ${BOARD_SVG}><g ${BOARD_INK}><path d="M6 3v18" fill="none"/><path d="M6.6 4.2c3.6-1.6 6.4 1.6 11.6 0v8.4c-5.2 1.6-8-1.6-11.6 0z" fill="#fff"/></g></svg>`,
+  // CUT!: an axe
+  cut:
+    `<svg ${BOARD_SVG}><g ${BOARD_INK}><path d="M15 9L5.2 20.4" fill="none" stroke-width="3"/><path d="M15 9L5.2 20.4" fill="none" stroke="#d9a066" stroke-width="1.2"/>` +
+    '<path d="M11.6 6.6c2.2-3.4 6-4.6 9.4-3.8.4 3.6-1 7.2-4.4 9.4z" fill="#e63946"/></g></svg>',
+  // HEAVE!: two arrows hauling in
+  heave:
+    `<svg ${BOARD_SVG}><g fill="none" ${BOARD_INK} stroke-width="2.4"><path d="M4 12h12M11 7l5 5-5 5"/><path d="M19.5 5v14"/></g></svg>`,
+  // SKIP: fast forward
+  skip: `<svg ${BOARD_SVG}><g fill="#fff4d6" ${BOARD_INK}><path d="M4 6l7.5 6L4 18zM12 6l7.5 6L12 18z"/></g></svg>`,
+};
+BOARD_ICONS.again = BOARD_ICONS.fight;
+BOARD_ICONS.idle = BOARD_ICONS.busy = BOARD_ICONS.cool = BOARD_ICONS.hook;
+const BOARD_WORD = { take: 'Take!', capture: 'Take!', fight: 'Fight', risky: 'Risky' };
+// "capture likely, about 1 hand lost" (aria-labels).
+function oddsWords(o) {
+  if (!o) return '';
+  if (o.label === 'take') return 'she has struck her colours, no fight';
+  const n = o.attLoss;
+  const lost = n > 0 ? `about ${hands(n)} lost` : 'no hands lost';
+  const what = { capture: 'capture likely', fight: "a fair fight, but she won't strike yet", risky: 'risky' }[o.label] || '';
+  return `${what}, ${lost}`;
+}
+let boardView = null; // this frame's grapple pick (frame() works it out once; the HUD and the tags read it)
+// What G / the Board button does right now.
+function boardButtonState() {
+  if (!player || player.sinking) return { key: 'off', state: 'idle', tag: '—', word: 'Board', aria: 'Board', disabled: true };
+  if (boarding.active) {
+    const ph = boarding.phase;
+    if (ph === 'threat') {
+      return { key: 'cut', state: 'cut', tag: 'CUT!', word: 'Cut!', aria: "Cut the boarders' ropes: tap three times or hold", disabled: false };
+    }
+    if (ph === 'reel' && boarding.kind === 'attack') {
+      return { key: 'heave', state: 'heave', tag: 'HEAVE!', word: 'Heave!', aria: 'Heave: haul her in harder', disabled: false };
+    }
+    if (ph === 'brawl') return { key: 'skip', state: 'skip', tag: 'SKIP', word: 'Skip', aria: 'Skip to the end of the fight', disabled: false };
+    return { key: 'busy', state: 'busy', tag: '—', word: 'Board', aria: 'Board: a boarding is under way', disabled: true };
+  }
+  const ct = boarding.counterTarget;
+  if (ct) {
+    const o = boardOdds(ct, 'counter');
+    return { key: `again${o.label}${o.attLoss}`, state: 'again', tag: 'AGAIN!', word: 'Again!', aria: `Counter-board ${theNameLower(ct.type.name)}: ${oddsWords(o)}`, disabled: false };
+  }
+  const pick = boardView || boardPick();
+  if (pick.target) {
+    const o = pick.odds;
+    const label = pick.label;
+    const tag = label === 'take' ? WORDS.take : `${WORDS[label]} −${o.attLoss}`;
+    return {
+      key: `t${label}${o.attLoss}${pick.target.id}`,
+      state: label,
+      tag,
+      word: BOARD_WORD[label] || 'Board',
+      aria: `Board ${theNameLower(pick.target.type.name)}: ${oddsWords(o)}`,
+      disabled: false,
+    };
+  }
+  if (state.boardCooldown > 0) {
+    const n = Math.ceil(state.boardCooldown);
+    return { key: `cool${n}`, state: 'cool', tag: `${n} s`, word: `${n} s`, aria: `Board: hooks coiling, ${n} ${n === 1 ? 'second' : 'seconds'}`, disabled: true };
+  }
+  const why = GRAPPLE_WHY[pick.reason] || GRAPPLE_WHY.none;
+  return { key: `idle${pick.reason}`, state: 'idle', tag: '—', word: 'Board', aria: `Board: ${why.replace(/[!…]+$/, '').toLowerCase()}`, disabled: true };
+}
+
+// The boarding strip (top centre, during a set-piece): the phase, "⚔ 12 vs 9 ☠", the tug-of-war of the two
+// sides' strength and the heave (or rope-cutting) pips.
+const strip = (() => {
+  const el = ui.boardingStrip;
+  el.innerHTML =
+    '<div class="bs-title"></div>' +
+    '<div class="bs-row"><span class="bs-side bs-us"><svg class="bs-ico" viewBox="0 0 24 24"><path d="M5 4l12 13M19 4L7 17M4.5 16.5l3 3M19.5 16.5l-3 3"/></svg><b></b></span>' +
+    '<span class="bs-tug"><span class="bs-tug-fill"></span></span>' +
+    '<span class="bs-side bs-them"><b></b><svg class="bs-ico" viewBox="0 0 24 24"><path d="M12 3.5c-4.4 0-7.5 3-7.5 7 0 2.4 1.2 4.2 3 5.2V19h9v-3.3c1.8-1 3-2.8 3-5.2 0-4-3.1-7-7.5-7z"/><circle cx="9.2" cy="11" r="1.7"/><circle cx="14.8" cy="11" r="1.7"/></svg></span></div>' +
+    '<div class="bs-pips"><i></i><i></i><i></i><i></i><i></i></div>';
+  const q = (sel) => el.querySelector(sel) || document.createElement('span');
+  return { el, title: q('.bs-title'), us: q('.bs-us b'), them: q('.bs-them b'), fill: q('.bs-tug-fill'), pips: q('.bs-pips'), pip: [...el.querySelectorAll('.bs-pips i')] };
+})();
+function stripTitle() {
+  const ph = boarding.phase;
+  const kind = boarding.kind;
+  if (ph === 'hook') return kind === 'surrender' ? 'Take her!' : 'Grapple!';
+  if (ph === 'threat') return 'Cut the ropes!';
+  if (ph === 'reel') return kind === 'defend' ? 'Repel boarders!' : kind === 'surrender' ? 'Take her!' : 'Heave!';
+  if (ph === 'swing') return kind === 'defend' ? 'Repel boarders!' : 'Charge!';
+  if (ph === 'brawl') return 'Fight!';
+  const L = boarding.last || {};
+  if (L.captured) return kind === 'defend' ? 'Raider taken!' : 'Captured!';
+  if (L.overrun) return 'Overrun!';
+  if (L.held) return 'Repelled!';
+  return 'Driven back!';
+}
+function updateBoardHud(force, dt) {
+  const b = boardButtonState();
+  if (force || shown.board !== b.key) {
+    shown.board = b.key;
+    const icon = BOARD_ICONS[b.state] || BOARD_ICONS.hook;
+    ui.boardTag.innerHTML = `<span class="board-ico">${icon}</span><span class="board-word"></span>`;
+    ui.boardTag.querySelector('.board-word').textContent = b.tag;
+    ui.boardTag.dataset.state = b.state;
+    ui.gunBoard.dataset.state = b.state;
+    ui.touchBoard.innerHTML = `<span class="board-ico" aria-hidden="true">${icon}</span><span class="board-word"></span>`;
+    ui.touchBoard.querySelector('.board-word').textContent = b.word;
+    ui.touchBoard.dataset.state = b.state;
+    ui.touchBoard.setAttribute('aria-label', b.aria);
+    ui.touchBoard.setAttribute('aria-disabled', String(!!b.disabled));
+    if (!force && /^t|^again|^cut/.test(b.key)) {
+      retrigger(ui.touchBoard, 'bump');
+      retrigger(ui.gunBoard, 'bump');
+    }
+  }
+  // First boardable ship in reach: a one-time tip.
+  if (boardView && boardView.target && state.intro <= 0 && !(tips & TIP.board)) {
+    showTip(TIP.board, 'Close enough to board! Press <kbd>G</kbd>', 'Tap <b>&#9875; Board</b> to board her!');
+  }
+
+  // The boarding strip (not in 'result': the outcome pops over the decks then).
+  const on = boarding.active && boarding.phase !== 'result';
+  if (force || shown.strip !== on) {
+    show(strip.el, on);
+    shown.strip = on;
+  }
+  if (on) {
+    const e = boarding.target;
+    setText(strip.title, 'bsTitle', stripTitle(), force);
+    const us = Math.max(0, Math.round(boarding.crewShown(player) ?? state.crew));
+    const them = e ? Math.max(0, Math.round(boarding.crewShown(e) ?? crewOf(e))) : 0;
+    setText(strip.us, 'bsUs', String(us), force);
+    setText(strip.them, 'bsThem', String(them), force);
+    // the two sides' strength: your share of P×M against D (with the heaves so far)
+    let share = 0.5;
+    const L = boarding.last;
+    const r = L && L.result ? L.result : e ? boarding.odds(boardingSides(e, boarding.kind === 'defend' ? 'defend' : 'attack'), { kind: boarding.kind, heave: boarding.heaveBonus, surrendered: boarding.kind === 'surrender' }) : null;
+    if (r) {
+      const R = Number.isFinite(r.R) ? Math.max(0, r.R) : 99;
+      share = boarding.kind === 'defend' ? 1 / (1 + R) : R / (1 + R);
+    }
+    setWidth(strip.fill, 'bsFill', clamp(share, 0.04, 0.96) * 100, force);
+    // pips: heaves during your reel (5 max), rope cuts while the raiders' hooks bite (3)
+    const ph = boarding.phase;
+    let mode = '';
+    let filled = 0;
+    if (ph === 'reel' && boarding.kind === 'attack') {
+      mode = 'heave';
+      filled = Math.min(5, boarding.heaves);
+    } else if (ph === 'threat') {
+      mode = 'cut';
+      filled = Math.min(3, Math.floor(boarding.cutProgress * 3 + 1e-6));
+    }
+    const pipKey = `${mode}${filled}`;
+    if (force || shown.bsPips !== pipKey) {
+      shown.bsPips = pipKey;
+      strip.pips.className = `bs-pips${mode ? ` ${mode}` : ''}`;
+      strip.pip.forEach((p, i) => {
+        p.className = i < filled ? 'on' : '';
+        p.style.display = mode === 'cut' && i >= 3 ? 'none' : '';
+      });
+    }
+  }
+
+  // The level's goal (Act II), at most 4 times a second.
+  shown.objT = (shown.objT ?? 1) + dt;
+  if (force || shown.objT >= 0.25) {
+    shown.objT = 0;
+    const text = String(mechanics.objective() || '');
+    if (force || shown.objective !== text) {
+      ui.objective.textContent = text;
+      show(ui.objective, !!text);
+      shown.objective = text;
+    }
+  }
 }
 
 // Minimap rotates with the ship so "up" is always the bow.
@@ -3077,12 +4745,45 @@ function drawMinimap() {
   mm.rect(0, 0, S, S);
   mm.arc(ox, oy, R * scale, 0, Math.PI * 2, true);
   mm.fill();
-  mm.fillStyle = '#7fe0d6';
+  // The level's own marks first (SPEC2 §9.2): the maelstrom's rings and eye, ice floes, escape gates.
+  const marks = mechanics.minimap() || [];
+  for (const m of marks) {
+    const [x, y] = toMap(m.x, m.z);
+    const r = Math.max(2, (m.r || 0) * scale);
+    mm.beginPath();
+    if (m.kind === 'vortex') {
+      mm.strokeStyle = 'rgba(216, 242, 255, 0.55)';
+      mm.lineWidth = 1.5;
+      for (const f of [1, 0.72, 0.46]) {
+        mm.beginPath();
+        mm.arc(x, y, r * f, 0, Math.PI * 2);
+        mm.stroke();
+      }
+    } else if (m.kind === 'eye') {
+      mm.fillStyle = '#123050';
+      mm.arc(x, y, Math.max(3, r), 0, Math.PI * 2);
+      mm.fill();
+    }
+  }
   for (const r of reefs) {
     const [x, y] = toMap(r.x, r.z);
+    mm.fillStyle = r.ice ? '#e8f7ff' : '#7fe0d6'; // ice floes pale, reefs and sandbars teal
     mm.beginPath();
     mm.arc(x, y, Math.max(2, r.r * scale), 0, Math.PI * 2);
     mm.fill();
+  }
+  for (const m of marks) {
+    if (m.kind !== 'gate') continue;
+    // An escape gate: a green ring (a treasure galleon is running for it).
+    const [x, y] = toMap(m.x, m.z);
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 4;
+    mm.beginPath();
+    mm.arc(x, y, Math.max(4, (m.r || 10) * scale), 0, Math.PI * 2);
+    mm.stroke();
+    mm.strokeStyle = '#3ee08f';
+    mm.lineWidth = 2;
+    mm.stroke();
   }
   mm.fillStyle = '#f2d98a';
   for (const col of colliders) {
@@ -3098,12 +4799,12 @@ function drawMinimap() {
     mm.arc(x, y, 4, 0, Math.PI * 2);
     mm.fill();
   }
-  mm.strokeStyle = '#ff3b1f';
   mm.lineWidth = 2;
   for (const b of bombs) {
     const [x, y] = toMap(b.tx, b.tz);
+    mm.strokeStyle = b.kind === 'lightning' ? '#e8f6ff' : '#ff3b1f';
     mm.beginPath();
-    mm.arc(x, y, Math.max(3, BOMB_RADIUS * scale), 0, Math.PI * 2);
+    mm.arc(x, y, Math.max(3, (b.radius ?? BOMB_RADIUS) * scale), 0, Math.PI * 2);
     mm.stroke();
   }
   mm.fillStyle = '#ffc93c';
@@ -3112,7 +4813,9 @@ function drawMinimap() {
     mm.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
   for (const e of enemies) {
-    if (!fighting(e)) continue;
+    // Ships still fighting (red, the boss orange) and struck ones (white: board them to take them).
+    const struck = e.surrendered && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
+    if (!fighting(e) && !struck) continue;
     let [x, y] = toMap(e.x, e.z);
     // Pin off-map enemies to the rim so you can always find them.
     const dx = x - c;
@@ -3123,13 +4826,16 @@ function drawMinimap() {
       y = c + (dy / dl) * (c - 7);
     }
     const r = e.type.boss ? 6 : 4;
+    const fill = struck ? '#ffffff' : e.type.merchant ? '#ffc93c' : e.type.boss ? '#ff9f1c' : '#e63946';
     mm.fillStyle = '#1d1330';
     mm.beginPath();
-    mm.arc(x, y, r + 1.5, 0, Math.PI * 2);
+    if (e.type.merchant) mm.rect(x - r - 1.5, y - r - 1.5, 2 * r + 3, 2 * r + 3); // treasure galleons: gold squares
+    else mm.arc(x, y, r + 1.5, 0, Math.PI * 2);
     mm.fill();
-    mm.fillStyle = e.type.boss ? '#ff9f1c' : '#e63946';
+    mm.fillStyle = fill;
     mm.beginPath();
-    mm.arc(x, y, r, 0, Math.PI * 2);
+    if (e.type.merchant) mm.rect(x - r, y - r, 2 * r, 2 * r);
+    else mm.arc(x, y, r, 0, Math.PI * 2);
     mm.fill();
   }
   // The player: a little arrow pointing up.
@@ -3169,23 +4875,57 @@ function syncShip(s, t) {
   const star = ocean.heightAt(s.x + rightX(s.h) * side, s.z + rightZ(s.h) * side, t);
   s.roll *= 0.92;
   const sink = s.sinking ? Math.min(s.sinking, 4) : 0;
-  s.mesh.position.set(s.x, wy - sink * 1.5, s.z);
+  // Visible damage (SPEC2 §2.4): battered below 60 % (slack sails, a slight list), wrecked below 30 %
+  // (deck fire, a drooping sail, a heavier list, sitting lower). She lists toward the side with more hits.
+  const frac = s.hp / s.maxHp;
+  const level = s.sinking ? s.mesh.userData.damageLevel ?? 0 : frac < STATES.wrecked ? 2 : frac < STATES.battered ? 1 : 0;
+  setShipDamage(s.mesh, { level }); // nothing to do when it hasn't changed
+  const lean = level === 2 ? LIST_WRECKED : level === 1 ? LIST_BATTERED : 0;
+  const listTo = lean * (s.hitsBySide.star >= s.hitsBySide.port ? 1 : -1);
+  s.list += (listTo - s.list) * 0.05;
+  const low = (level === 2 ? WRECK_SIT : 0) + (s.rise > 0 ? 2 * s.rise : 0); // a Phantom rising: 6 u down at rise 3
+  s.mesh.position.set(s.x, wy - sink * 1.5 - low, s.z);
   s.mesh.rotation.set(0, 0, 0);
   s.mesh.rotation.y = s.h;
   s.mesh.rotateX(Math.atan2(behind - ahead, half * 2) * 0.8 + sink * 0.1);
-  s.mesh.rotateZ(Math.atan2(port - star, side * 2) * 0.6 + s.roll + sink * 0.28);
+  s.mesh.rotateZ(Math.atan2(port - star, side * 2) * 0.6 + s.roll + sink * 0.28 + s.list);
   animateShip(s.mesh, t, s.sinking ? 0 : s.speed / s.type.maxSpeed);
-
-  if (s.tag) {
-    s.tag.position.set(s.x, wy + s.tagY, s.z);
-    // Keep the tag about the same size on screen, and hide it right in front of the lens.
-    const d = s.tag.position.distanceTo(camera.position);
-    s.tag.visible = s.hp > 0 && d > 10;
-    const pulse = s.flash > 0 ? 1 + s.flash : 1;
-    s.tag.scale.setScalar(clamp(d / 30, 0.6, 2.6) * pulse);
-    s.tag.quaternion.copy(camera.quaternion);
-    setTag(s.tag, s.hp / s.maxHp);
+  // The spectral Phantom (SPEC2 §6.6): her ghost-green lights blaze and throb.
+  if (s.spectral && s.mesh.userData.glows) {
+    const k = 1.9 + 0.5 * Math.sin(t * 4.2);
+    for (const g of s.mesh.userData.glows) g.material.emissiveIntensity *= k;
   }
+}
+
+// What each enemy's tag shows this frame (tags.js draws it): crew pips (a brawl ticks them down one by one)
+// and the surrender notch, the hull bar throbbing on a wreck, and an icon: a white flag when struck, the
+// odds on the ship G would board (green tick / gold cutlasses / red "!"), the hook recharging after a boarding.
+function updateTagState(e) {
+  e.crewShown = boarding.crewShown(e) ?? crewOf(e);
+  e.strikeAt = combat.strikeAt(e.crew0);
+  e.tagPulse = e.hp > 0 && e.hp / e.maxHp < STATES.wrecked;
+  let icon = e.surrendered ? 'white' : null;
+  const v = boardView;
+  if (!icon && !boarding.active) {
+    if (boarding.counterTarget === e) icon = boardOdds(e, 'counter').label;
+    else if (v && v.target === e && v.label !== 'take') icon = v.label;
+    else if (v && !v.target && v.reason === 'cooldown' && v.near === e) {
+      icon = 'cooldown';
+      e.tagCool = clamp(state.boardCooldown / BOARD.cooldown, 0, 1);
+    }
+  }
+  e.tagIcon = icon;
+}
+
+// The captain at the helm steers with your turn input, points "Fire!" after a broadside and cheers a sinking.
+function animateHelm(t, dt) {
+  const c = player && player.captain;
+  if (!c || !c.visible) return;
+  const want = player.sinking ? 0 : (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  helm.turn = (helm.turn ?? 0) + (want - (helm.turn ?? 0)) * Math.min(1, dt * 7);
+  if (t < helm.cheer) animatePerson(c, t, 'cheer');
+  else if (t < helm.point) animatePerson(c, t, 'point');
+  else animatePerson(c, t, 'steer', { turn: helm.turn });
 }
 
 const chasePos = new THREE.Vector3(); // where the chase camera wants to be (smoothed)
@@ -3278,6 +5018,13 @@ function updateCamera(dt, paused) {
       camera.position.lerpVectors(camStart, camFinal, e);
       camLook.lerpVectors(camFar, camLook, e);
     }
+    // A boarding takes the camera to a raised view over the two decks (boarding.js eases it in and out).
+    const bc = boarding.camera(camera.aspect, { pos: camera.position, look: camLook });
+    if (bc) {
+      camera.position.lerp(bc.pos, bc.blend);
+      camLook.lerp(bc.look, bc.blend);
+    }
+    if (state.shake > 0 && !paused && boarding.locked) state.shake = 0; // no shake while the decks are glued
     if (state.shake > 0 && !paused) {
       state.shake = Math.max(0, state.shake - dt);
       camera.position.x += (Math.random() - 0.5) * state.shake;
@@ -3321,9 +5068,14 @@ function frame() {
   // before the 'webglcontextlost' event says so: don't build shaders on a dead context then.
   if (state.contextLost || gl.isContextLost()) return;
   trackPerformance(rawDt);
-  const dt = Math.min(rawDt, MAX_FRAME_DT);
+  let dt = Math.min(rawDt, MAX_FRAME_DT);
   audio.update(dt);
   const paused = state.mode === 'paused';
+  // Hit-stop: a crit slows the whole frame to a crawl for a moment (real time).
+  if (state.hitStop.left > 0 && !paused) {
+    state.hitStop.left -= rawDt;
+    dt *= CRIT.hitStop.scale;
+  }
   // While paused the picture doesn't change: draw it once, then idle.
   if (!paused) pausedDrawn = false;
   else if (pausedDrawn) return;
@@ -3351,10 +5103,16 @@ function frame() {
     poseDockShip(t);
     if (dock.shownPurse !== state.purse) renderDock(); // the chest changed behind the panel's back
   }
+  // The ship G would board now (tags, the Board cell and button read it).
+  if (!paused) boardView = state.mode === 'playing' && player && !player.sinking ? boardPick() : null;
   for (const e of enemies) {
     if (!paused) e.flash = Math.max(0, e.flash - dt);
     syncShip(e, t);
+    updateTagState(e);
   }
+  animateHelm(t, paused ? 0 : dt);
+  // The boarding's visuals (grapnels, ropes, swings, the brawl): after every ship is placed, before the camera.
+  boarding.render(t, paused ? 0 : dt);
   for (const b of balls) b.mesh.position.set(b.x, b.y, b.z);
   for (const c of coins) {
     c.mesh.position.set(c.x, ocean.heightAt(c.x, c.z, t) + 0.8, c.z);
@@ -3363,15 +5121,25 @@ function frame() {
   for (const b of bombs) {
     const u = Math.min(1, b.t / b.T);
     const p = bombPos(b, u);
-    b.mesh.position.set(p.x, p.y, p.z);
-    b.mesh.rotation.set(t * 3, t * 2, 0);
+    if (b.mesh) {
+      b.mesh.position.set(p.x, p.y, p.z);
+      b.mesh.rotation.set(t * 3, t * 2, 0);
+    }
     b.zone.position.set(b.tx, ocean.heightAt(b.tx, b.tz, t) + 0.25, b.tz);
     b.zone.userData.disc.scale.setScalar(Math.max(0.05, u));
   }
-  zoneRingMat.opacity = 0.65 + 0.25 * Math.sin(t * 12);
-  zoneDiscMat.opacity = 0.25 + 0.1 * Math.sin(t * 12);
+  for (const M of Object.values(ZONE_MATS)) {
+    M.ring.opacity = 0.65 + 0.25 * Math.sin(t * 12);
+    M.disc.opacity = 0.25 + 0.1 * Math.sin(t * 12);
+  }
 
   updateCamera(dt, paused);
+  camera.updateMatrixWorld();
+  // After the ships and the camera have moved: name tags, sailors going overboard, pop words.
+  tags.update(enemies, camera, t, paused ? 0 : dt);
+  overboard.update(t, paused ? 0 : dt);
+  pops.update(paused ? 0 : dt);
+  flushGameAnnounce();
 
   const focusX = player ? player.x : camera.position.x;
   const focusZ = player ? player.z : camera.position.z;
@@ -3395,6 +5163,8 @@ function frame() {
 
 resize();
 updateMuteButtons();
+// The battle's live region is visually hidden (sr-only) but must not be display:none, or nothing is read.
+show(ui.gameLive, true);
 showMenu();
 frame();
 window.__gameReady = true;
@@ -3424,6 +5194,14 @@ window.__game = {
   retryLevel,
   showMenu,
   togglePause,
+  // Leave the battle in play for 'dock' (the shipyard, opened at once) or 'menu' (the title), as the pause
+  // dialog's Shipyard / Main menu and Leave do: this level's plunder is dropped as in a shipwreck.
+  leaveBattle: (to) => leaveBattle(to, true),
+  // The pause dialog's step: 'choose' (Resume, Shipyard, Main menu), 'confirm' ("Leave the battle?") or
+  // 'leaving', and where to ('dock' | 'menu').
+  get pauseStep() {
+    return { step: pauseUi.step, to: pauseUi.to };
+  },
   changeSail,
   playerFire,
   fire,
@@ -3441,76 +5219,214 @@ window.__game = {
     ship.z = z;
     if (h !== undefined) ship.h = h;
   },
-  // ---- "Boarders Away!" test API (SPEC2 §9.3): placeholders with safe defaults until the systems land.
+  // ---- "Boarders Away!" test API (SPEC2 §9.3).
   combat: {
-    rules: {},
+    rules: combat, // the combat.js module (tables and formulas)
     get ammo() {
-      return 'round';
+      return state.ammo;
     },
-    setAmmo: () => false,
-    cycleAmmo: () => 'round',
+    // Load an ammo now (false, with the reason in the hint bubble, when it is still locked).
+    setAmmo: (id) => setAmmo(id),
+    cycleAmmo: () => cycleAmmo(),
     get unlockedAmmo() {
-      return ['round'];
+      return unlockedAmmo();
     },
-    seed: () => {},
-    forceCrit: () => {},
+    // Reseed the crit dice (each level start reseeds them with level × 7919 + 13).
+    seed(n) {
+      combatRng = mulberry32(Number(n) || 0);
+    },
+    // Every player shot from now on: null (roll the dice) | 'none' | 'crit' | 'rudder' | 'mast' | 'keg' | 'routed'.
+    forceCrit(kind = null) {
+      forcedCrit = ['none', 'crit', 'rudder', 'mast', 'keg', 'routed'].includes(kind) ? kind : null;
+      return forcedCrit;
+    },
+    // The last 40 hits: what combat.js made of each ball (see logShot()).
     get log() {
-      return [];
+      return shotLog.map((r) => ({ ...r, tags: [...r.tags] }));
     },
-    setCrew: () => false,
+    clearLog() {
+      shotLog.length = 0;
+    },
+    // Set a ship's crew: an enemy's killed count so that crewNow is n (at most what her hull leaves her),
+    // or your own hands (ship = the player or 'player'; 1..crewMax). Returns the crew now.
+    setCrew(ship, n) {
+      const k = Math.max(0, Math.floor(Number(n) || 0));
+      if (ship === 'player' || ship === player) {
+        state.crew = clamp(k, 1, state.crewMax);
+        return state.crew;
+      }
+      if (!ship || ship.kind !== 'enemy') return null;
+      ship.killed = 0;
+      ship.killed = Math.max(0, crewOf(ship) - k);
+      checkSurrender(ship);
+      return crewOf(ship);
+    },
+    crewOf: (ship) => (ship && ship.kind === 'enemy' ? crewOf(ship) : state.crew),
+    // A ship's effects (seconds left) and the multipliers they put on her speed cap and turning.
+    effects: (ship) => (ship ? { ...ship.effects, burnTicks: ship.burnTicks, speedMul: speedMul(ship), turnMul: turnMul(ship), speedCap: speedCap(ship) } : null),
+    rakeCue: (side) => rakeCue(side),
+    get hitStop() {
+      return { ...state.hitStop };
+    },
   },
-  grapple: () => ({ ok: false, reason: 'none' }),
+  // Tags (tags.js): what a ship's tag shows, with the crew pips read back from the pip InstancedMesh.
+  tagInfo: (ship) => tags.read(ship),
+  get pops() {
+    return { count: pops.count };
+  },
+  get overboard() {
+    return { active: overboard.active, surrendering: overboard.surrendering };
+  },
+  tip: (bit) => !!(tips & bit),
+  // Boarding (SPEC2 §9.3). grapple(): throw the hooks at the best ship in reach, or say why not.
+  grapple: () => grapple(),
+  // Why G can't board this ship now (null: it can): 'busy' | 'none' | 'immune' | 'range' | 'cooldown' | 'crew'.
+  canGrapple: (e) => canGrapple(e),
+  boardPress: () => boardPress(),
   boarding: {
     get active() {
-      return false;
+      return boarding.active;
     },
     get phase() {
-      return null;
+      return boarding.phase;
     },
     get kind() {
-      return null;
+      return boarding.kind;
     },
     get target() {
-      return null;
+      return boarding.target;
+    },
+    get truce() {
+      return boarding.truce;
+    },
+    get locked() {
+      return boarding.locked;
     },
     get heave() {
-      return 0;
+      return boarding.heaveBonus;
+    },
+    get heaves() {
+      return boarding.heaves;
     },
     get last() {
-      return null;
+      return boarding.last;
     },
-    odds: () => null,
-    heavePress: () => 0,
-    cut: () => false,
-    cutHold: () => {},
-    skip: () => {},
-    resolveNow: () => false,
+    get cooldown() {
+      return state.boardCooldown;
+    },
+    get counterTarget() {
+      return boarding.counterTarget;
+    },
+    get counterLeft() {
+      return boarding.counterLeft;
+    },
+    get cutProgress() {
+      return boarding.cutProgress;
+    },
+    // The ship G would board now and its odds ({ target, odds, label, reason, near }).
+    pick: () => boardPick(),
+    // The preview for boarding this ship now: resolveBoarding's numbers + label (no heave); kind defaults
+    // to what G would do ('surrender' for a struck ship), or pass 'defend' for a raider boarding you.
+    odds: (e, kind) => {
+      if (!e || !player) return null;
+      const k = kind || (e.surrendered ? 'surrender' : 'attack');
+      return k === 'defend' ? boarding.odds(boardingSides(e, 'defend'), { kind: 'defend' }) : boardOdds(e, k);
+    },
+    // A raider boards you now (tests): starts the 'defend' set-piece if a boarding can start.
+    raid: (e) => (e && player ? boarding.start({ kind: 'defend', enemy: e, getSides: () => boardingSides(e, 'defend') }) : false),
+    heavePress: () => boarding.heave(),
+    cut: (how) => boarding.cut(how),
+    cutHold: (down) => boarding.cutHold(!!down),
+    skip: () => boarding.skip(),
+    cancel: (reason) => boarding.cancel(reason),
+    resolveNow: () => boarding.resolveNow(),
+    get figures() {
+      return boarding.figures;
+    },
+    module: boarding,
+  },
+  // Captures and surrenders (tests): strike her colours now, capture her now (gold and all), let her escape.
+  capture: {
+    strike(e) {
+      if (!e || e.kind !== 'enemy') return false;
+      e.killed = 0;
+      e.killed = Math.max(0, crewOf(e) - e.strikeAt);
+      return checkSurrender(e);
+    },
+    take: (e) => captureShip(e, 'auto'),
+    escape: (e) => escapeShip(e),
+    get count() {
+      return state.captures;
+    },
+    get plundered() {
+      return state.plundered;
+    },
   },
   get crew() {
-    return { crew: 0, max: 0 };
+    return { crew: state.crew, max: state.crewMax };
   },
-  spawn: () => null,
+  // Put an enemy of any type on the sea (tests): it joins the fight like a wave's ship.
+  spawn(typeName, x, z, h) {
+    if (!SHIP_TYPES[typeName] || typeName === 'player' || !player) return null;
+    const px = Number.isFinite(x) ? x : player.x + 30;
+    const pz = Number.isFinite(z) ? z : player.z;
+    const e = createShip(typeName, 'enemy', px, pz, Number.isFinite(h) ? h : Math.atan2(player.x - px, player.z - pz));
+    enemies.push(e);
+    mechanics.onSpawn(e, -1); // a galleon gets its gate, a Phantom rises (where the test put her)
+    return e;
+  },
   mechanics: {
     get state() {
-      return {};
+      return mechanics.state;
     },
+    get objective() {
+      return mechanics.objective();
+    },
+    minimap: () => mechanics.minimap(),
+    summary: () => mechanics.summary(),
+    bonus: () => mechanics.bonus(),
   },
   armory: {
     get config() {
-      return null;
+      return parseArmoryConfig(armoryCfg); // a copy
     },
-    set: () => false,
-    buy: () => false,
+    // Validated and saved; the crew and the crit chance change at the next level start.
+    set(cfg) {
+      armoryCfg = parseArmoryConfig(cfg);
+      saveRecord(ARMORY_KEY, serializeArmoryConfig, armoryCfg);
+      if (state.mode === 'dock') rebuildDockShip();
+      return parseArmoryConfig(armoryCfg);
+    },
+    buy: (id) => buyArmory(id),
+    get stats() {
+      return armoryStats(armoryCfg);
+    },
   },
   get feats() {
-    return null;
+    return parseFeats(feats); // a copy
   },
-  setFeats: () => false,
+  // Validated and saved; a worn trophy the new feats have not earned goes back to its default.
+  setFeats(f) {
+    feats = parseFeats(f);
+    featsDirty = true;
+    saveFeats();
+    const clean = sanitizeLook(look, feats);
+    if (serializeLook(clean) !== serializeLook(look)) {
+      look = clean;
+      saveRecord(LOOK_KEY, serializeLook, look);
+    }
+    return parseFeats(feats);
+  },
   get look() {
-    return null;
+    return parseLook(look); // a copy
   },
   get tips() {
-    return 0;
+    return tips;
+  },
+  // The captain at the helm of the Sea Biscuit (people.js person) and what he is doing.
+  get helm() {
+    const c = player && player.captain;
+    return c ? { person: c, visible: c.visible, look: c.userData.look, point: helm.point, cheer: helm.cheer } : null;
   },
   // Validated and saved; the player's ship is rebuilt at the next level (and at once in the shipyard).
   setShipConfig(cfg) {
@@ -3556,8 +5472,10 @@ window.__game = {
     back: () => false,
     simulate: () => {},
   },
-  // The shipyard: open('menu' | 'levelDone' | 'over' | 'won'), leave(['next' | 'retry' | 'menu' | 'title'];
-  // default: the main way out for where it was opened from), buy(upgrade id), paint(part, look id).
+  // The shipyard: open('menu' | 'levelDone' | 'over' | 'won' | 'quit'), at once (the buttons wait two frames);
+  // 'quit' leaves the battle in play as the pause dialog's Shipyard does (this level's plunder is dropped as
+  // in a shipwreck; ways out: 'retry', 'menu'). leave(['next' | 'retry' | 'menu' | 'title']; default: the main
+  // way out for where it was opened from), buy(upgrade id), paint(part, look id).
   dock: {
     open: (from) => openDock(from),
     leave: (action) => leaveDock(action),

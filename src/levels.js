@@ -38,6 +38,11 @@ export const ACT1 = [
     bonus: 100,
     enemyRake: 0.4,
     mechanics: [],
+    rumour: {
+      title: 'Coast of Europe',
+      lines: ['Corsair cutters prowl the bay below the lighthouse.', 'Turn side-on: your cannons fire sideways!'],
+      ammo: null,
+    },
   },
   {
     env: bali,
@@ -55,6 +60,11 @@ export const ACT1 = [
     bonus: 200,
     enemyRake: 0.6,
     mechanics: [],
+    rumour: {
+      title: 'Bali Islands',
+      lines: ['Prahus skim right over the light coral. Your keel cannot!', 'Chain shot slows the fast ones down.'],
+      ammo: 'chain',
+    },
   },
   {
     env: volcano,
@@ -73,6 +83,11 @@ export const ACT1 = [
     bonus: 400,
     enemyRake: 0.8,
     mechanics: [],
+    rumour: {
+      title: 'The Volcano',
+      lines: ['The Molten Maw is too hot to board: sink her!', 'Grape shot thins a corsair crew for a capture.'],
+      ammo: 'grape',
+    },
     finale: true,
     finaleText:
       'The Molten Maw is sunk and every pirate fleet of the Old World is at the bottom of the sea. But sailors whisper of the Far Seas…',

@@ -3,6 +3,8 @@
 // - touch sail/fire buttons work by tap (exactly once), Enter, Space and native click
 // - steering: overlapping key bindings, keyboard-held and pointer-held on-screen buttons
 // - the pause dialog keeps focus, makes the HUD inert and hands focus back to the game
+// - leaving a battle from the pause dialog (Shipyard / Main menu, asked once): the level's plunder is not
+//   banked, the chest is untouched, nothing of the battle is left behind; the dialog's layout on small screens
 // - saved best score / progress / tutorial records are validated
 // - losing the WebGL context pauses the fight and waits for the player after it comes back
 // - the shipyard on Sparrow's Floating Island: the level-cleared choices, banking into the treasure
@@ -338,7 +340,9 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       await page.keyboard.press('Shift+Tab');
       seen.push(await active());
     }
-    check(seen.every((id) => id === 'resume-btn'), `pause: Tab and Shift+Tab stay inside the dialog (${seen.join(', ')})`);
+    // (Resume, then the dialog's two ways out of the battle, Shipyard and Main menu, and round again.)
+    const cycle = ['quit-dock-btn', 'quit-menu-btn', 'resume-btn', 'quit-dock-btn', 'resume-btn', 'quit-menu-btn'];
+    check(seen.join() === cycle.join(), `pause: Tab and Shift+Tab stay inside the dialog (${seen.join(', ')})`);
     await page.keyboard.press('p');
     const closed = await page.evaluate(() => ({ mode: window.__game.state.mode, focus: document.activeElement === document.body, inert: document.getElementById('hud').inert }));
     check(closed.mode === 'playing' && closed.focus && closed.inert === false, `pause: P resumes and hands focus back to the game (${JSON.stringify(closed)})`);
@@ -1470,6 +1474,394 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     contrast.push(...(await page.evaluate(dockContrastProbe, '#dock-panel')));
     const bad = contrast.filter((r) => r.ratio < r.need);
     check(contrast.length >= 30 && bad.length === 0, `shipyard contrast ${w}x${h}: all ${contrast.length} texts in the panel reach 4.5:1 (3:1 for large text; lowest ${Math.min(...contrast.map((r) => r.ratio))})${bad.length ? ' -> ' + JSON.stringify(bad) : ''}`);
+    await ctx.close();
+  }
+
+  // ------------------------------------------------------------------ Leave the battle (pause dialog)
+  // Besides Resume, the pause dialog offers two ways out of the battle: Shipyard and Main menu. Leaving asks
+  // once first (in the same dialog). It drops this level's unbanked plunder as a shipwreck does (the chest
+  // is untouched) and clears everything of the battle.
+  const pauseShown = (page) => page.evaluate(() => {
+    const d = document.getElementById('pause-screen');
+    const vis = (el) => !!el && !el.closest('.hidden') && el.getClientRects().length > 0;
+    const prompt = document.getElementById('leave-prompt');
+    const G = window.__game;
+    return {
+      open: vis(d),
+      mode: G.state.mode,
+      buttons: [...d.querySelectorAll('button')].filter(vis).map((b) => b.id),
+      focus: document.activeElement && (document.activeElement.id || document.activeElement.tagName),
+      prompt: vis(prompt) ? prompt.textContent.replace(/\s+/g, ' ').trim() : '',
+      gold: G.state.gold,
+      purse: G.state.purse,
+    };
+  });
+  // Sounds played from now on (the spy is installed once per page); battleSounds() leaves out the click of
+  // the buttons themselves.
+  const sfxSpy = (page) => page.evaluate(() => {
+    const A = window.__game.audio;
+    if (!window.__sfx) {
+      window.__sfx = [];
+      const play = A.play.bind(A);
+      A.play = (name, o) => { window.__sfx.push(name); return play(name, o); };
+    }
+    window.__sfx.length = 0;
+  });
+  const battleSounds = (page) => page.evaluate(() => window.__sfx.filter((n) => n !== 'click'));
+  // Level 1 in play with plunder: the voyage had 200 gold when the level started and has won 120 since;
+  // 450 gold in the treasure chest, a best voyage of 50.
+  const plunderLevel = (page) => page.evaluate(() => {
+    const G = window.__game;
+    G.newGame(1);
+    G.state.intro = 0;
+    G.enemies.forEach((e, k) => { e.x = 400 + k * 30; e.z = 400; e.speed = 0; });
+    G.state.goldAtLevelStart = 200;
+    G.state.gold = 320;
+    G.state.purse = 450;
+    G.state.best = 50;
+    localStorage.setItem('pirates-ahoy-purse', '450');
+    localStorage.setItem('pirates-ahoy-best', '50');
+  });
+  const CHOICES = 'resume-btn,quit-dock-btn,quit-menu-btn';
+  const CONFIRM = 'leave-yes-btn,leave-no-btn';
+  // The pause dialog on screen: no page scroll, the panel doesn't scroll (so nothing in it is cut off) and
+  // no text sticks out of it, every button is at least 44x44, inside the panel, uncovered, with its whole
+  // label, and no two buttons overlap.
+  const pauseLayoutProbe = () => {
+    const W = innerWidth;
+    const H = innerHeight;
+    const R = (el) => el.getBoundingClientRect();
+    const inside = (r, b) => r.left >= b.left - 0.5 && r.top >= b.top - 0.5 && r.right <= b.right + 0.5 && r.bottom <= b.bottom + 0.5;
+    const ov = (a, b) => Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top));
+    const vis = (el) => !el.closest('.hidden') && el.getClientRects().length > 0;
+    const out = [];
+    const de = document.documentElement;
+    if (de.scrollWidth > W + 1 || de.scrollHeight > H + 1 || window.scrollX || window.scrollY) out.push(`the page scrolls (${de.scrollWidth}x${de.scrollHeight})`);
+    const dlg = document.getElementById('pause-screen');
+    const panelEl = dlg.querySelector('.panel');
+    const panel = R(panelEl);
+    if (!vis(dlg)) out.push('the dialog is not shown');
+    if (!inside(panel, { left: 0, top: 0, right: W, bottom: H })) out.push('the panel is off screen');
+    if (panelEl.scrollHeight > panelEl.clientHeight + 1 || panelEl.scrollWidth > panelEl.clientWidth + 1) out.push(`the panel scrolls (${panelEl.scrollWidth}x${panelEl.scrollHeight} in ${panelEl.clientWidth}x${panelEl.clientHeight})`);
+    const walker = document.createTreeWalker(panelEl, NodeFilter.SHOW_TEXT);
+    for (let t = walker.nextNode(); t; t = walker.nextNode()) {
+      if (!t.textContent.trim() || !vis(t.parentElement)) continue;
+      const range = document.createRange();
+      range.selectNodeContents(t);
+      const r = range.getBoundingClientRect();
+      if (r.width && !inside(r, panel)) out.push(`"${t.textContent.trim().slice(0, 20)}" sticks out of the panel`);
+    }
+    const buttons = [...dlg.querySelectorAll('button')].filter(vis);
+    for (const b of buttons) {
+      const r = R(b);
+      if (r.width < 44 || r.height < 44) out.push(`#${b.id} is only ${Math.round(r.width)}x${Math.round(r.height)}`);
+      if (!inside(r, panel)) out.push(`#${b.id} is outside the panel`);
+      const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+      if (!hit || !b.contains(hit)) out.push(`#${b.id} is covered by ${hit && (hit.id || hit.className)}`);
+      if ([b, ...b.querySelectorAll('*')].some((n) => n.scrollWidth > n.clientWidth + 1 && getComputedStyle(n).display !== 'inline')) out.push(`#${b.id}'s label is cut off`);
+    }
+    for (let i = 0; i < buttons.length; i++) for (let j = i + 1; j < buttons.length; j++) if (ov(R(buttons[i]), R(buttons[j])) > 1) out.push(`#${buttons[i].id} and #${buttons[j].id} overlap`);
+    return { problems: out, buttons: buttons.map((b) => b.id), mode: window.__game.state.mode };
+  };
+  {
+    const { ctx, page } = await open();
+    await page.evaluate(dockHelpers);
+    await sfxSpy(page);
+    const here1 = await page.evaluate(() => window.__game.LEVELS[0].env.meta.name);
+    await plunderLevel(page);
+    await page.keyboard.press('p');
+    const choices = await pauseShown(page);
+    const group = await page.evaluate(() => {
+      const g = document.querySelector('#pause-screen [role="group"]');
+      const label = g && document.getElementById(g.getAttribute('aria-labelledby'));
+      const name = (id) => { const b = document.getElementById(id); return b ? b.getAttribute('aria-label') || b.textContent.trim() : ''; };
+      return {
+        label: label && label.textContent.trim(),
+        inGroup: !!g && ['quit-dock-btn', 'quit-menu-btn'].every((id) => g.contains(document.getElementById(id))),
+        names: [name('quit-dock-btn'), name('quit-menu-btn')],
+        text: ['quit-dock-btn', 'quit-menu-btn'].map((id) => (document.getElementById(id) || {}).textContent?.trim()),
+      };
+    });
+    check(
+      choices.open && choices.mode === 'paused' && choices.buttons.join() === CHOICES && choices.focus === 'resume-btn' && group.label === 'Leave this battle' && group.inGroup &&
+        group.text.join() === 'Shipyard,Main menu' && /^Shipyard\b/.test(group.names[0]) && /^Main menu\b/.test(group.names[1]),
+      `leave the battle: the pause dialog offers Resume (focused) and, under "Leave this battle", Shipyard and Main menu (${JSON.stringify({ ...choices, group })})`,
+    );
+    const big = await page.evaluate(pauseLayoutProbe);
+
+    // Shipyard asks first, in the same dialog; focus moves to the question (so it is read out).
+    await page.click('#quit-dock-btn');
+    const asked = await pauseShown(page);
+    const bigAsk = await page.evaluate(pauseLayoutProbe);
+    check(
+      asked.open && asked.mode === 'paused' && asked.buttons.join() === CONFIRM && asked.focus === 'leave-prompt' && /^Leave the battle for the shipyard\?/.test(asked.prompt) &&
+        /The 120 gold plundered in this level won't be banked\./.test(asked.prompt) && /treasure chest, upgrades and unlocked levels stay/.test(asked.prompt),
+      `leave the battle: Shipyard first asks, in the same dialog, with focus on the question ("${asked.prompt}"; ${asked.buttons.join(', ')}; focus ${asked.focus})`,
+    );
+    check(big.problems.length === 0 && bigAsk.problems.length === 0, `pause dialog layout 1280x720: both steps fit, 44px buttons, nothing clipped or covered${[...big.problems, ...bigAsk.problems].length ? ' -> ' + [...big.problems, ...bigAsk.problems].join('; ') : ''}`);
+    // Keep fighting: back to the choices, focus on the button that asked, nothing lost.
+    await page.click('#leave-no-btn');
+    const kept = await pauseShown(page);
+    check(kept.open && kept.mode === 'paused' && kept.buttons.join() === CHOICES && kept.focus === 'quit-dock-btn' && kept.gold === 320 && kept.purse === 450, `leave the battle: Keep fighting goes back to the choices with focus on Shipyard, still paused, nothing lost (${JSON.stringify(kept)})`);
+    // Escape on the question does the same (focus on Main menu, which asked).
+    await page.click('#quit-menu-btn');
+    const askedMenu = await pauseShown(page);
+    await page.keyboard.press('Escape');
+    const escaped = await pauseShown(page);
+    check(
+      /^Leave the battle for the main menu\?/.test(askedMenu.prompt) && askedMenu.focus === 'leave-prompt' && escaped.open && escaped.mode === 'paused' && escaped.buttons.join() === CHOICES && escaped.focus === 'quit-menu-btn',
+      `leave the battle: Escape on the question goes back to the choices, with focus on Main menu (${JSON.stringify({ askedMenu: askedMenu.focus, escaped: [escaped.mode, escaped.buttons.join(' '), escaped.focus] })})`,
+    );
+    if (escaped.mode !== 'paused') await page.keyboard.press('p'); // (carry on from the pause dialog)
+    // P on the question resumes the game, and the next pause starts at the choices.
+    await page.click('#quit-dock-btn');
+    await page.keyboard.press('p');
+    const resumed = await pauseShown(page);
+    await page.keyboard.press('p');
+    const again = await pauseShown(page);
+    check(
+      resumed.mode === 'playing' && !resumed.open && again.mode === 'paused' && again.buttons.join() === CHOICES && again.focus === 'resume-btn',
+      `leave the battle: P on the question resumes the game, and the next pause starts at the choices (${JSON.stringify({ resumed: resumed.mode, again: [again.mode, again.focus] })})`,
+    );
+
+    // Leave for the shipyard. A double-click (or double tap) on Shipyard only asks: the second click, landing
+    // on Leave where it now shows, is not taken as the answer (nor is a click straight after it).
+    const dbl = await page.evaluate(() => {
+      const click = (id, detail) => document.getElementById(id).dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, detail }));
+      click('quit-dock-btn', 1);
+      click('leave-yes-btn', 2);
+      click('leave-yes-btn', 1);
+      return { mode: window.__game.state.mode, step: window.__game.pauseStep.step };
+    });
+    await frames(page, 3);
+    const dblAfter = await pauseShown(page);
+    check(dbl.mode === 'paused' && dbl.step === 'confirm' && dblAfter.mode === 'paused' && dblAfter.buttons.join() === CONFIRM, `leave the battle: a double-click on Shipyard only asks the question (${JSON.stringify({ ...dbl, after: [dblAfter.mode, dblAfter.buttons.join(' ')] })})`);
+    await page.waitForTimeout(400);
+    await sfxSpy(page);
+    await page.click('#leave-yes-btn');
+    await docked(page);
+    await frames(page, 2);
+    const ds = await dockState(page);
+    const left = await page.evaluate(() => {
+      const G = window.__game;
+      return { gold: G.state.gold, start: G.state.goldAtLevelStart, purse: G.state.purse, savedPurse: localStorage.getItem('pirates-ahoy-purse'), best: G.state.best, savedBest: localStorage.getItem('pirates-ahoy-best'), pause: window.__dockTest.shown('pause-screen') };
+    });
+    check(
+      ds.mode === 'dock' && ds.from === 'quit' && JSON.stringify(ds.exits) === JSON.stringify([`Try again: ${here1}`, 'Main menu']) && ds.panel && !ds.hud && !left.pause && ds.focus === 'dock-tab-up',
+      `leave the battle: Leave opens the shipyard, whose ways out are a shipwreck's (${ds.exits.map((e) => `"${e}"`).join(' and ')}; from ${ds.from}, focus ${ds.focus})`,
+    );
+    check(
+      left.purse === 450 && left.savedPurse === '450' && left.gold === 200 && left.start === 200 && left.best === 200 && left.savedBest === '200',
+      `leave the battle: the 120 gold plundered in the level is not banked: chest 450 -> ${left.purse} (saved ${left.savedPurse}), voyage gold 320 -> ${left.gold}, best voyage 50 -> ${left.best} (saved ${left.savedBest})`,
+    );
+    const shipyardSounds = await battleSounds(page);
+    check(shipyardSounds.length === 0, `leave the battle: no battle sounds once it is left (${shipyardSounds.join(', ') || 'none'})`);
+    // Try again restarts the same level from the gold the voyage had when it started.
+    await page.click('#dock-retry-btn');
+    const retried = await page.evaluate(() => {
+      const G = window.__game;
+      return { mode: G.state.mode, level: G.state.level, wave: G.state.wave, gold: G.state.gold, start: G.state.goldAtLevelStart, purse: G.state.purse, hp: !!G.player && G.player.hp === G.player.maxHp, enemies: G.enemies.length, dock: window.__dockTest.shown('dock-screen'), hud: window.__dockTest.shown('hud') };
+    });
+    check(
+      retried.mode === 'playing' && retried.level === 1 && retried.wave === 0 && retried.gold === 200 && retried.start === 200 && retried.purse === 450 && retried.hp && retried.enemies > 0 && !retried.dock && retried.hud,
+      `leave the battle: "Try again" at the shipyard restarts the same level with the voyage's gold from its start (${JSON.stringify(retried)})`,
+    );
+
+    // Keyboard only, to the main menu: P, Tab, Tab (Main menu), Enter (the question), Tab (Leave), Enter.
+    await page.evaluate(() => {
+      const G = window.__game;
+      G.state.intro = 0;
+      G.enemies.forEach((e, k) => { e.x = 400 + k * 30; e.z = 400; e.speed = 0; });
+      G.state.gold = 260; // 60 plundered since the level started (200)
+      G.state.best = 50;
+      localStorage.setItem('pirates-ahoy-best', '50');
+    });
+    await sfxSpy(page);
+    const active = () => page.evaluate(() => document.activeElement && (document.activeElement.id || document.activeElement.tagName));
+    const keys = [];
+    await page.keyboard.press('p');
+    for (const key of ['Tab', 'Tab', 'Enter', 'Tab']) {
+      await page.keyboard.press(key);
+      keys.push(await active());
+    }
+    const kPrompt = (await pauseShown(page)).prompt;
+    await page.keyboard.press('Enter');
+    await frames(page, 2);
+    const title = await page.evaluate(() => {
+      const G = window.__game;
+      const T = window.__dockTest;
+      return { mode: G.state.mode, menu: T.shown('menu-screen'), hud: T.shown('hud'), pause: T.shown('pause-screen'), chest: document.getElementById('menu-chest').textContent, purse: G.state.purse, best: G.state.best, savedBest: localStorage.getItem('pirates-ahoy-best') };
+    });
+    const menuSounds = await battleSounds(page);
+    check(
+      keys.join() === 'quit-dock-btn,quit-menu-btn,leave-prompt,leave-yes-btn' && /^Leave the battle for the main menu\? The 60 gold plundered/.test(kPrompt) &&
+        title.mode === 'menu' && title.menu && !title.hud && !title.pause && title.purse === 450 && title.chest === '450' && title.best === 200 && title.savedBest === '200' && menuSounds.length === 0,
+      `leave the battle (keyboard only): P, Tab, Tab, Enter, Tab, Enter leaves for the title, with the chest unchanged and the best voyage counting the gold from the level's start (${JSON.stringify({ keys, prompt: kPrompt, ...title, sounds: menuSounds })})`,
+    );
+    // Keyboard only, to the shipyard: P, Tab (Shipyard), Enter, Tab (Leave), Enter.
+    await plunderLevel(page);
+    await page.keyboard.press('p');
+    for (const key of ['Tab', 'Enter', 'Tab', 'Enter']) await page.keyboard.press(key);
+    await docked(page);
+    await frames(page, 2);
+    const kDock = await dockState(page);
+    check(kDock.mode === 'dock' && kDock.from === 'quit' && kDock.focus === 'dock-tab-up' && kDock.purse === 450, `leave the battle (keyboard only): P, Tab, Enter, Tab, Enter leaves for the shipyard, focus on its Upgrades tab (${JSON.stringify(kDock)})`);
+
+    // Leaving in the middle of a boarding leaves nothing behind: afterwards the scene holds exactly as many
+    // objects as a freshly started level (or the title) does.
+    const ref = await page.evaluate(() => {
+      const G = window.__game;
+      window.__count = () => { let n = 0; G.scene.traverse(() => n++); return n; };
+      G.showMenu();
+      const menu = window.__count();
+      G.newGame(3);
+      return { menu, level3: window.__count() };
+    });
+    await frames(page, 6); // the fly-in builds the sailors who can go overboard and the boarding party
+    const battle = await page.evaluate(() => {
+      const G = window.__game;
+      G.state.mode = 'playing';
+      G.state.intro = 0;
+      G.state.unlocked = Math.max(G.state.unlocked, 3); // grape shot (in memory only)
+      const p = G.player;
+      p.x = 0; p.z = 0; p.h = 0; p.speed = 0; p.hp = p.maxHp;
+      G.colliders.forEach((c) => (c.x += 5000));
+      G.reefs.forEach((r) => (r.x += 5000));
+      G.enemies.forEach((e, k) => { e.x = 300 + k * 30; e.z = 300; e.speed = 0; });
+      G.state.combatTime = 50;
+      // A privateer alongside to starboard: grape sweeps a sailor overboard, then the hooks fly and the
+      // boarding runs to the brawl; a lava bomb is on its way (frozen by the truce).
+      const e = G.spawn('privateer', p.x - Math.cos(p.h) * 8.5, p.z + Math.sin(p.h) * 8.5, p.h);
+      e.speed = 0;
+      G.combat.setAmmo('grape');
+      p.reload.port = p.reload.star = 0;
+      G.playerFire(1);
+      for (let i = 0; i < 120 && !e.killed; i++) G.step(1 / 120);
+      const g = G.grapple();
+      for (let i = 0; i < 120 * 3 && G.boarding.phase !== 'brawl'; i++) G.step(1 / 120);
+      G.launchBomb();
+      G.togglePause();
+      return { killed: e.killed, g: g.ok, kind: G.boarding.kind, phase: G.boarding.phase, mode: G.state.mode };
+    });
+    await frames(page, 3);
+    const during = await page.evaluate(() => {
+      const G = window.__game;
+      return { figures: G.boarding.figures, overboard: G.overboard.active, pops: G.pops.count, bombs: G.bombs.length, enemies: G.enemies.length, helm: !!G.helm, count: window.__count() };
+    });
+    await page.click('#quit-dock-btn');
+    await page.waitForTimeout(400);
+    await sfxSpy(page);
+    await page.click('#leave-yes-btn');
+    await docked(page);
+    await frames(page, 2);
+    const cleared = await page.evaluate(() => {
+      const G = window.__game;
+      const out = { mode: G.state.mode, from: G.dock.from, active: G.boarding.active, figures: G.boarding.figures, overboard: G.overboard.active, pops: G.pops.count, balls: G.balls.length, bombs: G.bombs.length, enemies: G.enemies.length, player: !!G.player, coins: G.coins.length, mechanics: JSON.stringify(G.mechanics.state) };
+      G.dock.leave('retry');
+      out.retryCount = window.__count();
+      out.level = G.state.level;
+      return out;
+    });
+    const boardSounds = await battleSounds(page);
+    check(battle.g && battle.kind === 'attack' && battle.phase === 'brawl' && battle.mode === 'paused' && battle.killed > 0 && during.figures > 0 && during.overboard > 0 && during.pops > 0 && during.bombs > 0 && during.helm && during.count > ref.level3, `leave the battle mid-boarding: set up a brawl on deck, a sailor overboard, pops and a lava bomb in the air (${JSON.stringify({ ...battle, ...during, fresh: ref.level3 })})`);
+    check(
+      cleared.mode === 'dock' && cleared.from === 'quit' && !cleared.active && cleared.figures === 0 && cleared.overboard === 0 && cleared.pops === 0 && cleared.balls === 0 && cleared.bombs === 0 && cleared.enemies === 0 && !cleared.player && cleared.coins === 0 &&
+        boardSounds.length === 0 && cleared.level === 3 && cleared.retryCount === ref.level3,
+      `leave the battle mid-boarding for the shipyard: nothing is left (no boarding, figures, sailors overboard, pops, shots, bombs or ships; no battle sounds), and trying again gives a scene exactly like a fresh level 3 (${cleared.retryCount} objects, fresh ${ref.level3}; ${JSON.stringify({ ...cleared, sounds: boardSounds })})`,
+    );
+    // Raiders on your deck, then Main menu: back at the title, the scene exactly like a fresh title's.
+    const raid = await page.evaluate(() => {
+      const G = window.__game;
+      G.newGame(1);
+      G.state.intro = 0;
+      G.step(1 / 120);
+      const p = G.player;
+      p.x = 0; p.z = 0; p.h = 0; p.speed = 0;
+      G.colliders.forEach((c) => (c.x += 5000));
+      G.enemies.forEach((e, k) => { e.x = 300 + k * 30; e.z = 300; e.speed = 0; });
+      G.state.combatTime = 50;
+      const e = G.spawn('raider', p.x - Math.cos(p.h) * 7.5, p.z + Math.sin(p.h) * 7.5, p.h);
+      e.speed = 0;
+      const ok = G.boarding.raid(e);
+      for (let i = 0; i < 120 * 5 && G.boarding.phase !== 'brawl'; i++) G.step(1 / 120);
+      G.togglePause();
+      return { ok, kind: G.boarding.kind, phase: G.boarding.phase };
+    });
+    await frames(page, 3);
+    const onDeck = await page.evaluate(() => window.__game.boarding.figures);
+    await page.click('#quit-menu-btn');
+    await page.waitForTimeout(400);
+    await sfxSpy(page);
+    await page.click('#leave-yes-btn');
+    await frames(page, 3);
+    const home = await page.evaluate(() => {
+      const G = window.__game;
+      return { mode: G.state.mode, menu: window.__dockTest.shown('menu-screen'), active: G.boarding.active, figures: G.boarding.figures, overboard: G.overboard.active, pops: G.pops.count, enemies: G.enemies.length, player: !!G.player, count: window.__count() };
+    });
+    const raidSounds = await battleSounds(page);
+    check(
+      raid.ok && raid.kind === 'defend' && raid.phase === 'brawl' && onDeck > 0 && home.mode === 'menu' && home.menu && !home.active && home.figures === 0 && home.overboard === 0 && home.pops === 0 && home.enemies === 0 && !home.player && raidSounds.length === 0 && home.count === ref.menu,
+      `leave the battle with raiders on your deck for the main menu: the title's scene is exactly a fresh title's (${home.count} objects, fresh ${ref.menu}; ${JSON.stringify({ ...raid, onDeck, ...home, sounds: raidSounds })})`,
+    );
+
+    // The graphics-recovery dialog keeps priority over the pause dialog (here at the question): while the view
+    // is gone the pause dialog can't be used, and afterwards it is back at its choices, nothing lost.
+    const ext = await page.evaluate(() => !!document.getElementById('game').getContext('webgl2')?.getExtension('WEBGL_lose_context'));
+    if (!ext) {
+      console.log('SKIP  WEBGL_lose_context is not available in this browser; the pause dialog\'s context-loss check was not run');
+    } else {
+      await plunderLevel(page);
+      await page.keyboard.press('p');
+      await page.click('#quit-dock-btn');
+      const leaveBox = await page.locator('#leave-yes-btn').boundingBox();
+      await page.evaluate(() => {
+        window.__loseExt = document.getElementById('game').getContext('webgl2').getExtension('WEBGL_lose_context');
+        window.__loseExt.loseContext();
+      });
+      await page.waitForFunction(() => window.__game.state.contextLost === true, null, { timeout: 30000 }).catch(() => {});
+      const lost = await page.evaluate((b) => {
+        const at = document.elementFromPoint(b.x + b.width / 2, b.y + b.height / 2);
+        return { mode: window.__game.state.mode, recover: window.__dockTest.shown('recover-screen'), pause: window.__dockTest.shown('pause-screen'), atLeave: at && at.closest('.overlay')?.id };
+      }, leaveBox);
+      await page.keyboard.press('p');
+      await page.keyboard.press('Escape');
+      await page.mouse.click(leaveBox.x + leaveBox.width / 2, leaveBox.y + leaveBox.height / 2);
+      await frames(page, 2);
+      const still = await page.evaluate(() => ({ mode: window.__game.state.mode, recover: window.__dockTest.shown('recover-screen'), gold: window.__game.state.gold }));
+      await page.evaluate(() => window.__loseExt.restoreContext());
+      await page.waitForFunction(() => window.__game.state.contextLost === false, null, { timeout: 30000 }).catch(() => {});
+      await frames(page, 3);
+      const back = { ...(await pauseShown(page)), recover: await page.evaluate(() => window.__dockTest.shown('recover-screen')) };
+      check(
+        lost.mode === 'paused' && lost.recover && !lost.pause && lost.atLeave === 'recover-screen' && still.mode === 'paused' && still.recover && still.gold === 320 &&
+          back.mode === 'paused' && back.open && !back.recover && back.buttons.join() === CHOICES && back.focus === 'resume-btn' && back.gold === 320,
+        `leave the battle: the graphics-recovery dialog keeps priority over the pause dialog's question (P, Escape and a click where Leave was do nothing), and after the restore the pause dialog is back at its choices (${JSON.stringify({ lost, still, back: { mode: back.mode, buttons: back.buttons, focus: back.focus, gold: back.gold } })})`,
+      );
+    }
+    await ctx.close();
+  }
+  // The pause dialog and its question on small screens (touch players open it with the II button).
+  for (const [w, h, touch] of [[320, 480, true], [360, 480, true], [390, 844, true], [568, 320, true], [568, 320, false], [640, 360, false], [844, 390, true]]) {
+    const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch });
+    await plunderLevel(page);
+    if (touch) await page.tap('#pause-btn');
+    else await page.keyboard.press('p');
+    await settle(page);
+    const choose = await page.evaluate(pauseLayoutProbe);
+    const c1 = await page.evaluate(dockContrastProbe, '#pause-screen .panel');
+    if (touch) await page.tap('#quit-dock-btn');
+    else await page.click('#quit-dock-btn');
+    await settle(page);
+    const confirm = await page.evaluate(pauseLayoutProbe);
+    const c2 = await page.evaluate(dockContrastProbe, '#pause-screen .panel');
+    const problems = [...choose.problems.map((p) => `choices: ${p}`), ...confirm.problems.map((p) => `question: ${p}`)];
+    check(
+      choose.mode === 'paused' && choose.buttons.join() === CHOICES && confirm.buttons.join() === CONFIRM && problems.length === 0,
+      `pause dialog layout ${w}x${h}${touch ? ' touch (opened with the II button)' : ''}: Resume, Shipyard, Main menu and the question fit with no page scroll, nothing clipped or covered, 44px buttons${problems.length ? ' -> ' + problems.join('; ') : ''}`,
+    );
+    const contrast = [...c1, ...c2];
+    const bad = contrast.filter((r) => r.ratio < r.need);
+    check(c1.length >= 6 && c2.length >= 4 && bad.length === 0, `pause dialog contrast ${w}x${h}: all ${contrast.length} texts in both steps reach 4.5:1 (3:1 for large text; lowest ${Math.min(...contrast.map((r) => r.ratio))})${bad.length ? ' -> ' + JSON.stringify(bad) : ''}`);
     await ctx.close();
   }
 

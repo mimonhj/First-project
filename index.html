@@ -29,7 +29,7 @@
     <div id="edge" class="edge" aria-hidden="true"></div>
     <div class="hud-top">
       <div id="hull-card" class="card hull">
-        <div class="label">The Sea Biscuit</div>
+        <div class="label"><span class="ship-name">The Sea Biscuit</span><span class="ship-short">Hull</span></div>
         <!-- Crew count (crossed cutlasses), at the right end of the label row. -->
         <span id="crew-chip" class="crew-chip hidden" role="img" aria-label="Crew">
           <svg class="crew-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M5 4l12 13M19 4L7 17M4.5 16.5l3 3M19.5 16.5l-3 3" /></svg>
@@ -81,12 +81,12 @@
           <span class="label">Speed <kbd>W</kbd><kbd>S</kbd></span>
           <div id="sails" class="sails">Cruising &#9646;&#9646;&#9647;</div>
         </div>
-        <div id="gun-ammo" class="gun ammo hidden">
-          <span class="label">Ammo <kbd>R</kbd></span>
+        <div id="gun-ammo" class="gun ammo hidden" data-ammo="round">
+          <span class="label"><span class="ammo-word">Ammo </span><kbd>R</kbd></span>
           <div class="ammo-val"><span class="ammo-ico" aria-hidden="true"></span><span id="ammo-name" class="ammo-name">Round</span></div>
         </div>
         <div id="gun-board" class="gun board hidden">
-          <span class="label">Board <kbd>G</kbd></span>
+          <span class="label"><span class="board-label">Board </span><kbd>G</kbd></span>
           <div id="board-tag" class="board-tag">&mdash;</div>
         </div>
         <div id="gun-star" class="gun star">
@@ -111,7 +111,7 @@
       </div>
       <!-- Ammo and Board pills (top right, level with the sail pills). -->
       <div class="pad act hidden">
-        <button type="button" id="touch-ammo" class="hidden" data-tap="ammo" aria-label="Ammo: round shot">Round</button>
+        <button type="button" id="touch-ammo" class="hidden" data-tap="ammo" data-ammo="round" aria-label="Ammo: round shot. Change ammo">Round</button>
         <button type="button" id="touch-board" class="hidden" data-tap="board" aria-label="Board" aria-disabled="true">Board</button>
       </div>
     </div>
@@ -142,12 +142,14 @@
         <li><kbd>A</kbd><kbd>D</kbd> or <kbd>&larr;</kbd><kbd>&rarr;</kbd> steer</li>
         <li><kbd>W</kbd><kbd>S</kbd> sails up / down (speed)</li>
         <li><kbd>Q</kbd> fire left &middot; <kbd>E</kbd> fire right &middot; <kbd>Space</kbd> both</li>
+        <li><kbd>G</kbd> board &middot; <kbd>R</kbd> / <kbd>1</kbd>&ndash;<kbd>3</kbd> ammo</li>
         <li><kbd>P</kbd> pause</li>
       </ul>
       <ul class="controls touch-help">
         <li><b>&#9664;</b><b>&#9654;</b> steer</li>
         <li><b>+</b> / <b>&minus;</b> sails (speed)</li>
         <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot left / right</li>
+        <li><b>&#9875; Board</b> &middot; <b>Ammo</b> change shot</li>
         <li><b>II</b> pause</li>
       </ul>
       <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
@@ -155,22 +157,51 @@
     </div>
   </div>
 
+  <!-- Paused: Resume, or leave this battle for the shipyard or the title. Leaving asks once first, in the
+       same dialog (#pause-confirm replaces #pause-choices; focus moves to the question). -->
   <div id="pause-screen" class="overlay hidden" role="dialog" aria-modal="true" aria-labelledby="pause-title">
-    <div class="panel">
+    <div class="panel pause-panel">
       <h2 id="pause-title">Paused</h2>
-      <button id="resume-btn" class="btn" type="button">Resume</button>
-      <ul class="controls">
-        <li><kbd>A</kbd><kbd>D</kbd> steer</li>
-        <li><kbd>W</kbd><kbd>S</kbd> speed</li>
-        <li><kbd>Q</kbd> / <kbd>E</kbd> fire left / right</li>
-        <li><kbd>P</kbd> resume</li>
-      </ul>
-      <ul class="controls touch-help">
-        <li><b>&#9664;</b><b>&#9654;</b> steer</li>
-        <li><b>+</b> / <b>&minus;</b> speed</li>
-        <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot sideways</li>
-      </ul>
-      <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
+      <div id="pause-choices" class="pause-choices">
+        <button id="resume-btn" class="btn" type="button">Resume</button>
+        <div class="leave-group" role="group" aria-labelledby="leave-head">
+          <h3 id="leave-head" class="leave-head">Leave this battle</h3>
+          <div class="leave-actions">
+            <button id="quit-dock-btn" class="btn alt leave-btn" type="button" aria-label="Shipyard: leave this battle">
+              <svg class="leave-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="5" r="2.4" /><path d="M12 7.4V21M7.5 11h9M4.5 14.5c.6 3.6 3.6 6.5 7.5 6.5s6.9-2.9 7.5-6.5" /></svg>
+              Shipyard
+            </button>
+            <button id="quit-menu-btn" class="btn alt leave-btn" type="button" aria-label="Main menu: leave this battle">
+              <svg class="leave-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M3.5 11.5L12 4l8.5 7.5" /><path d="M6 9.6V20h12V9.6" /><path d="M10 20v-5.5h4V20" /></svg>
+              Main menu
+            </button>
+          </div>
+        </div>
+        <ul class="controls">
+          <li><kbd>A</kbd><kbd>D</kbd> steer</li>
+          <li><kbd>W</kbd><kbd>S</kbd> speed</li>
+          <li><kbd>Q</kbd> / <kbd>E</kbd> fire left / right</li>
+          <li><kbd>G</kbd> board &middot; <kbd>R</kbd> / <kbd>1</kbd>&ndash;<kbd>3</kbd> ammo</li>
+          <li><kbd>P</kbd> resume</li>
+        </ul>
+        <ul class="controls touch-help">
+          <li><b>&#9664;</b><b>&#9654;</b> steer</li>
+          <li><b>+</b> / <b>&minus;</b> speed</li>
+          <li><b class="fire">&#9664; Fire</b> / <b class="fire">Fire &#9654;</b> shoot sideways</li>
+          <li><b>&#9875; Board</b> &middot; <b>Ammo</b> change shot</li>
+        </ul>
+        <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
+      </div>
+      <div id="pause-confirm" class="pause-confirm hidden">
+        <p id="leave-prompt" class="leave-prompt" tabindex="-1">
+          <strong id="leave-q" class="leave-q">Leave the battle?</strong>
+          <span id="leave-why" class="leave-why"></span>
+        </p>
+        <div class="leave-actions">
+          <button id="leave-yes-btn" class="btn leave-yes" type="button">Leave</button>
+          <button id="leave-no-btn" class="btn alt" type="button">Keep fighting</button>
+        </div>
+      </div>
     </div>
   </div>
 

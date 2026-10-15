@@ -315,7 +315,9 @@ html, body {
 .hitmark.left { left: 12%; transform-origin: 30% 60%; }
 .hitmark.right { right: 12%; transform-origin: 70% 60%; }
 .hitmark.sunk { color: var(--orange); font-size: clamp(38px, 6.4vw, 74px); }
-.hitmark.pop { animation: hitmark 0.7s ease-out both; }
+/* (Not "pop": that is the class of the pop words in fx.css, which would take the hitmark and the banner
+   out of place: position absolute at the top left.) */
+.hitmark.popped { animation: hitmark 0.7s ease-out both; }
 @keyframes hitmark {
   0% { opacity: 0; transform: scale(0.3) rotate(-10deg); }
   14% { opacity: 1; transform: scale(1.18) rotate(4deg); }
@@ -408,7 +410,7 @@ html, body {
 }
 .banner small + small { margin-top: 2px; }
 .banner kbd { -webkit-text-stroke: 0; text-shadow: none; font-size: 0.85em; padding: 0 5px; }
-.banner.pop { animation: pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
+.banner.popped { animation: pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
 @keyframes pop {
   from { transform: translateX(-50%) scale(0.4) rotate(-6deg); opacity: 0; }
   to { transform: translateX(-50%) scale(1) rotate(0); opacity: 1; }
@@ -893,6 +895,47 @@ kbd {
 .panel p .chest-line, .panel p.chest-line { display: block; font-size: 14px; line-height: 1.4; opacity: 1; margin-top: 6px; color: var(--ink); }
 .chest-line b { color: var(--gold-text); }
 
+/* ---------- The pause dialog: Resume, or leave this battle for the shipyard or the title ----------
+   Leaving asks once, in the same panel: #pause-confirm takes the place of #pause-choices. */
+.leave-group { margin: 12px -8px 0; padding-top: 8px; border-top: 3px dashed rgba(29, 19, 48, 0.25); }
+.leave-head { margin: 0; font-family: var(--body); font-size: 13px; font-weight: 700; line-height: 1.3; letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink); }
+.leave-actions { display: flex; flex-wrap: wrap; justify-content: center; gap: 0 2px; }
+.leave-actions .btn { font-size: 18px; min-height: 44px; padding: 11px 20px 9px; border-width: 3px; box-shadow: 0 5px 0 var(--ink); }
+.leave-actions .btn:active { box-shadow: 0 1px 0 var(--ink); }
+.leave-btn { display: inline-flex; align-items: center; justify-content: center; gap: 7px; }
+.leave-ico { width: 21px; height: 21px; fill: none; stroke: var(--ink); stroke-width: 2.4; stroke-linecap: round; stroke-linejoin: round; flex: none; margin-top: -3px; }
+.pause-choices .controls { margin-top: 12px; }
+/* The question: where you are going, what it costs (this level's plunder) and what you keep. Focus moves
+   here so screen readers read it; it is not a control, so it shows no focus ring. */
+.leave-prompt { margin: 2px 0 8px; outline: none; }
+.leave-q { display: block; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 23px; line-height: 1.15; letter-spacing: 0.02em; color: var(--ink); margin-bottom: 6px; text-wrap: balance; }
+.leave-why { display: block; font-size: 15px; line-height: 1.45; text-wrap: pretty; }
+.leave-why b { color: var(--gold-text); white-space: nowrap; }
+.btn.leave-yes { min-width: 120px; background: var(--fire); color: #fff; text-shadow: 0 2px 0 var(--ink); }
+/* Phones: the two ways out share one row (or take a row each), filling it. */
+@media (max-width: 480px) {
+  .leave-group { margin-top: 10px; }
+  .leave-actions .btn { flex: 1 1 auto; font-size: 16px; padding: 10px 12px 8px; margin: 5px 4px; }
+  .leave-ico { width: 19px; height: 19px; }
+  .leave-q { font-size: 21px; }
+  .leave-why { font-size: 14px; }
+}
+@media (max-width: 340px) {
+  /* 320px wide: the words alone, so both still fit on one row under Resume. */
+  .leave-actions .btn { padding: 10px 10px 8px; margin: 5px 3px; }
+  .leave-btn .leave-ico { display: none; }
+}
+/* Short screens (landscape phones): tighter, so the whole dialog fits without scrolling. */
+@media (max-height: 500px) {
+  .leave-group { margin-top: 6px; padding-top: 4px; }
+  .leave-head { font-size: 11px; }
+  .leave-actions .btn { font-size: 16px; padding: 9px 16px 7px; margin: 3px 4px; box-shadow: 0 4px 0 var(--ink); }
+  .pause-choices .controls { margin-top: 6px; }
+  .leave-q { font-size: 20px; margin-bottom: 3px; }
+  .leave-why { font-size: 13px; line-height: 1.35; }
+  .leave-prompt { margin: 0 0 4px; }
+}
+
 .sr-only {
   position: absolute !important;
   width: 1px;
@@ -1330,11 +1373,180 @@ body.docked.dragging #game { cursor: grabbing; }
   box-shadow: 0 5px 0 var(--ink);
 }
 
+/* ---------- Battle HUD: crew, ammo, rakes, the boss's crew ("Boarders Away!", SPEC2 §5.3) ---------- */
+/* Crew aboard: crossed cutlasses and the count, at the right end of the hull card's label row. */
+.hull { position: relative; }
+.crew-chip {
+  position: absolute;
+  top: 4px;
+  right: 9px;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  font-family: var(--body);
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.crew-chip .crew-num { font-weight: 700; }
+.crew-ico { width: 14px; height: 14px; flex: none; fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linecap: round; }
+.hull:has(.crew-chip:not(.hidden)) .label { padding-right: 42px; }
+/* Narrow phones: the ship's name would be cut to "T…" beside the crew count, so the row just says Hull. */
+.hull .label .ship-short { display: none; }
+@media (max-width: 400px) {
+  .hull:has(.crew-chip:not(.hidden)) .label .ship-name { display: none; }
+  .hull:has(.crew-chip:not(.hidden)) .label .ship-short { display: inline; }
+}
+/* The narrowest phones: the crew count alone heads the bar (no room for a word beside it). */
+@media (max-width: 340px) {
+  .hull:has(.crew-chip:not(.hidden)) .label > span { visibility: hidden; }
+  .hull .crew-chip { right: auto; left: 9px; }
+}
+@keyframes chip-bump {
+  0% { transform: scale(1); }
+  35% { transform: scale(1.35) rotate(-4deg); }
+  100% { transform: scale(1); }
+}
+.crew-chip.bump { animation: chip-bump 0.5s cubic-bezier(0.2, 1.8, 0.4, 1); }
+
+/* The loaded ammo in the gun card (keyboard layouts; the touch act pad has its own pill). */
+.gun.ammo .ammo-val { display: flex; align-items: center; gap: 5px; }
+.ammo-ico { display: inline-flex; flex: none; width: 20px; height: 20px; }
+.ammo-ico svg { width: 100%; height: 100%; display: block; }
+.ammo-name {
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 17px;
+  line-height: 1.2;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+.gun.ammo.bump .ammo-val { animation: chip-bump 0.45s cubic-bezier(0.2, 1.8, 0.4, 1); }
+/* Board (G): the odds preview, ink-dark colours on parchment (wired with the boarding set-piece). */
+.board-tag {
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 15px;
+  line-height: 1.3;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  white-space: nowrap;
+}
+
+/* RAKE!: the side's target shows you her stern or bow. Ink on gold, a brighter glow. */
+.gun.rake .fire-tag { background: var(--gold); color: var(--ink); text-shadow: none; }
+.gun.target.ready.rake { box-shadow: 0 0 0 3px var(--gold), 0 0 0 5px var(--ink), 0 0 18px 10px rgba(255, 201, 60, 1); }
+.gun.target.ready.rake .fire-tag { animation-duration: 0.35s; }
+#hud:has(#gun-port.target.ready.rake) button[data-tap="firePort"],
+#hud:has(#gun-star.target.ready.rake) button[data-tap="fireStar"] {
+  box-shadow: 0 0 0 5px var(--gold), 0 4px 0 5px var(--ink), 0 0 24px 12px rgba(255, 201, 60, 0.95);
+}
+.touch button.fire { position: relative; }
+#hud:has(#gun-port.target.ready.rake) button[data-tap="firePort"]::after,
+#hud:has(#gun-star.target.ready.rake) button[data-tap="fireStar"]::after {
+  content: "RAKE!";
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px 0;
+  font-size: 11px;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-shadow: none;
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  pointer-events: none;
+}
+
+/* Touch act pad: Ammo and Board pills, the size of the sail pills but never under 44px tall. */
+.pad.act button {
+  width: 66px;
+  height: 44px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px 2px 1px;
+  font-size: 12px;
+  line-height: 1;
+}
+.pad.act .ammo-ico { width: 19px; height: 19px; }
+.pad.act .ammo-word { display: block; font-size: 12px; line-height: 1; letter-spacing: 0.02em; }
+#touch-ammo.bump .ammo-ico { animation: chip-bump 0.45s cubic-bezier(0.2, 1.8, 0.4, 1); }
+
+/* The boss's crew under her bar: 10 pips (cream aboard, dark lost) and the gold surrender notch. */
+.boss-crew {
+  grid-area: 2 / 1;
+  position: relative;
+  height: 13px;
+  margin: 6px 10px 0;
+  border: 2px solid var(--ink);
+  border-radius: 6px;
+  overflow: hidden;
+  background: repeating-linear-gradient(90deg, #4a3b5c 0 calc(10% - 2px), var(--ink) calc(10% - 2px) 10%);
+  box-shadow: 0 3px 0 var(--ink);
+  --crew: 100;
+  --notch: 20%;
+}
+.boss-crew-fill {
+  position: absolute;
+  inset: 0;
+  background: repeating-linear-gradient(90deg, #fff4d6 0 calc(10% - 2px), var(--ink) calc(10% - 2px) 10%);
+  clip-path: inset(0 calc(100% - var(--crew) * 1%) 0 0);
+}
+.boss-crew::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: var(--notch);
+  width: 4px;
+  margin-left: -3px;
+  background: var(--gold);
+  box-shadow: 0 0 0 1px var(--ink);
+}
+
+/* Touch layouts: ammo and board live on the act pad, not in the gun card. */
+@media (hover: none) and (pointer: coarse) {
+  .gun.ammo, .gun.board { display: none; }
+}
+/* Narrow keyboard layouts: the ammo cell shows its icon and key only. */
+@media (max-width: 640px) {
+  .gun.ammo .ammo-word, .gun.ammo .ammo-name { display: none; }
+  .gun.ammo .ammo-val { min-height: 20px; }
+}
+@media (max-width: 380px) {
+  .pad.act button { width: 62px; }
+}
+@media (max-height: 500px) {
+  .pad.act button { width: 56px; height: 44px; }
+  .boss-crew { height: 11px; margin-top: 4px; }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .pad.act button { width: 52px; height: 44px; }
+  .pad.act .ammo-ico { width: 17px; height: 17px; }
+  .pad.act .ammo-word { font-size: 11px; }
+  /* The act pills are taller than the sail pills here: the hint bubble moves up to clear them. */
+  #hud:has(.pad.act:not(.hidden)) .hint-bubble { bottom: 178px; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   .hint-bubble, .gun.target.ready, .gun.target.ready .fire-tag { animation: none; }
   .hull.hurt { animation-name: hurt-flash; } /* keep the red flash, drop the shake */
-  .hitmark.pop { animation-name: hitmark-fade; }
-  .banner.pop { animation: none; }
+  .hitmark.popped { animation-name: hitmark-fade; }
+  .banner.popped { animation: none; }
+  .crew-chip.bump, .gun.ammo.bump, #touch-ammo.bump { animation: none; }
+  .gun.target.ready.rake .fire-tag { animation: none; }
   .dock-panel, .dock-chest.bump { animation: none; }
 }
 @keyframes hitmark-fade {
@@ -1344,4 +1556,164 @@ body.docked.dragging #game { cursor: grabbing; }
 @keyframes hurt-flash {
   0% { background: #ffc2bd; border-color: var(--red); }
   100% { background: var(--paper); border-color: var(--ink); }
+}
+
+/* ---------- Boarding HUD ("Boarders Away!", SPEC2 §5.2, §5.3) ---------- */
+/* Board (G) in the gun card: an icon and the odds (CAPTURE! −1, FIGHT! −3, RISKY! −4, TAKE HER!, HEAVE!,
+   CUT!, AGAIN!, a cooldown, or a dash). Colour on parchment is only the third cue after the icon and word. */
+.gun.board .board-tag { display: flex; align-items: center; justify-content: center; gap: 4px; min-height: 20px; }
+.board-ico { display: inline-flex; flex: none; width: 18px; height: 18px; }
+.board-ico svg { width: 100%; height: 100%; display: block; }
+.board-tag[data-state="capture"] .board-word { color: var(--teal-text); }
+.board-tag[data-state="fight"] .board-word, .board-tag[data-state="again"] .board-word { color: var(--gold-text); }
+.board-tag[data-state="risky"] .board-word, .board-tag[data-state="cut"] .board-word { color: var(--red-text); }
+.board-tag[data-state="idle"] .board-ico, .board-tag[data-state="busy"] .board-ico, .board-tag[data-state="cool"] .board-ico { opacity: 0.55; }
+/* Something to do: the cell lights up like a loaded gun. */
+.gun.board:is([data-state="capture"], [data-state="fight"], [data-state="risky"], [data-state="take"], [data-state="again"], [data-state="heave"], [data-state="cut"], [data-state="skip"]) {
+  background: #fff;
+  box-shadow: 0 0 0 2px var(--ink);
+}
+.gun.board[data-state="capture"] { box-shadow: 0 0 0 2px var(--ink), 0 0 0 5px #2fbf8f; }
+.gun.board[data-state="fight"], .gun.board[data-state="again"] { box-shadow: 0 0 0 2px var(--ink), 0 0 0 5px var(--gold); }
+.gun.board[data-state="risky"], .gun.board[data-state="cut"] { box-shadow: 0 0 0 2px var(--ink), 0 0 0 5px var(--red); }
+.gun.board.bump .board-tag { animation: chip-bump 0.45s cubic-bezier(0.2, 1.8, 0.4, 1); }
+
+/* The touch Board pill (act pad): icon + one word, ringed in the state's colour. */
+#touch-board .board-ico { width: 19px; height: 19px; }
+#touch-board .board-word { display: block; font-size: 12px; line-height: 1; letter-spacing: 0.02em; }
+#touch-board[aria-disabled="true"] { background: #efe3c4; }
+#touch-board[aria-disabled="true"] .board-ico { opacity: 0.55; }
+#touch-board[data-state="capture"] { background: #dcf7ea; box-shadow: 0 0 0 3px #2fbf8f, 0 4px 0 3px var(--ink); }
+#touch-board[data-state="fight"], #touch-board[data-state="again"] { background: #fff1c2; box-shadow: 0 0 0 3px var(--gold), 0 4px 0 3px var(--ink); }
+#touch-board[data-state="risky"] { background: #ffe0dd; box-shadow: 0 0 0 3px var(--red), 0 4px 0 3px var(--ink); }
+#touch-board[data-state="take"], #touch-board[data-state="heave"], #touch-board[data-state="skip"] { background: #fff; box-shadow: 0 0 0 3px #fff, 0 4px 0 3px var(--ink); }
+#touch-board[data-state="cut"] { background: #ffe0dd; box-shadow: 0 0 0 3px var(--red), 0 4px 0 3px var(--ink); animation: cut-pulse 0.5s ease-in-out infinite alternate; }
+@keyframes cut-pulse {
+  from { box-shadow: 0 0 0 3px var(--red), 0 4px 0 3px var(--ink); }
+  to { box-shadow: 0 0 0 5px var(--red), 0 4px 0 5px var(--ink), 0 0 16px 6px rgba(230, 57, 70, 0.7); }
+}
+#touch-board.bump .board-ico { animation: chip-bump 0.45s cubic-bezier(0.2, 1.8, 0.4, 1); }
+
+/* The boarding strip: top centre (below the boss bar when it shows), only during a set-piece. */
+.boarding-strip {
+  position: fixed;
+  top: calc(var(--edge) + var(--top-h) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(320px, 64vw);
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+#hud:has(#boss:not(.hidden)) .boarding-strip { top: calc(var(--edge) + var(--top-h) + 70px); }
+.bs-title {
+  font-family: var(--head);
+  font-size: 22px;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  color: var(--paper);
+  -webkit-text-stroke: 1.5px var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 2px 0 var(--ink);
+}
+.bs-row { display: flex; align-items: center; gap: 6px; width: 100%; }
+.bs-side {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 7px 1px;
+  font-family: var(--body);
+  font-size: 15px;
+  font-weight: 700;
+  line-height: 1.1;
+  color: var(--ink);
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.bs-ico { width: 15px; height: 15px; flex: none; fill: none; stroke: var(--ink); stroke-width: 2.6; stroke-linecap: round; stroke-linejoin: round; }
+.bs-them .bs-ico { stroke-width: 2; }
+.bs-them .bs-ico path { fill: #fff; }
+.bs-them .bs-ico circle { fill: var(--ink); stroke: none; }
+.bs-tug {
+  position: relative;
+  flex: 1;
+  height: 14px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  overflow: hidden;
+  background: var(--red);
+  box-shadow: 0 2px 0 var(--ink);
+}
+.bs-tug-fill { display: block; height: 100%; width: 50%; background: var(--teal); border-right: 2px solid var(--ink); transition: width 0.3s ease-out; }
+.bs-pips { display: none; gap: 6px; }
+.bs-pips.heave, .bs-pips.cut { display: flex; }
+.bs-pips i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); background: #4a3b5c; box-shadow: 0 2px 0 var(--ink); }
+.bs-pips i.on { background: var(--gold); }
+.bs-pips.cut i.on { background: var(--red); }
+
+/* The level's goal (Act II): a small pill under the hull card. */
+.objective {
+  position: fixed;
+  top: calc(var(--edge) + var(--top-h) + 8px);
+  left: var(--edge);
+  max-width: min(360px, 44vw);
+  padding: 3px 10px 4px;
+  font-family: var(--body);
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 1.25;
+  color: var(--ink);
+  background: var(--paper);
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  box-shadow: 0 3px 0 var(--ink);
+  pointer-events: none;
+}
+
+@media (max-width: 640px) {
+  .gun.board .board-label, .gun.board .board-word { display: none; }
+  .bs-title { font-size: 19px; }
+  .objective { font-size: 12px; max-width: min(300px, 60vw); }
+}
+@media (max-width: 640px) and (hover: none) and (pointer: coarse) {
+  /* Left of the top-right minimap, like the boss bar. */
+  .boarding-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+  .objective { top: auto; bottom: calc(222px + 52px); max-width: calc(100vw - 2 * var(--edge)); }
+}
+@media (max-height: 500px) {
+  .boarding-strip { top: calc(var(--edge) + var(--top-h) + 6px); width: min(300px, 46vw); gap: 3px; }
+  #hud:has(#boss:not(.hidden)) .boarding-strip { top: calc(var(--edge) + var(--top-h) + 56px); }
+  .bs-title { font-size: 17px; }
+  .bs-side { font-size: 13px; padding: 1px 6px 0; }
+  .bs-tug { height: 12px; }
+  .bs-pips i { width: 10px; height: 10px; }
+  .objective { top: calc(var(--edge) + var(--top-h) + 6px); font-size: 12px; max-width: 30vw; }
+}
+@media (max-height: 500px) and (hover: none) and (pointer: coarse) {
+  .boarding-strip { width: min(300px, calc(100vw - 2 * (var(--mm) + 30px))); }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .boarding-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .gun.board.bump, #touch-board.bump, .gun.board.bump .board-tag, #touch-board.bump .board-ico { animation: none; }
+  #touch-board[data-state="cut"] { animation: none; box-shadow: 0 0 0 5px var(--red), 0 4px 0 5px var(--ink); }
+  .bs-tug-fill { transition: none; }
+}
+/* The narrowest keyboard windows: Port, Speed, Ammo, Board and Starboard still fit in one gun card. */
+@media (max-width: 400px) and (hover: hover), (max-width: 400px) and (pointer: fine) {
+  .guns { gap: 4px; padding: 4px 5px 5px; }
+  .gun { padding: 2px 3px 3px; }
+  .bar.small { width: 44px; }
+  .sails { font-size: 13px; }
+}
+/* A boss bar and the boarding strip both up top: banners start below them. */
+body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: max(24%, 228px); }
+@media (max-height: 500px) {
+  body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: max(27%, 172px); }
 }
