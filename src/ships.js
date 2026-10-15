@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { toon, mergeStatic, ensureIndex } from './style.js';
+import { toon, mergeStatic, ensureIndex, gradientMap, noOutline } from './style.js';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
 import { findLook, maxTier } from './upgrades.js';
 
@@ -16,6 +16,14 @@ import { findLook, maxTier } from './upgrades.js';
 // Geometry contract (see shipTypes.js): origin at the waterline amidships, bow
 // towards +z, hull length ~len along z, overall width ~wid, deck ~1.2 (big ships
 // up to 1.8), keel ~-0.8, cannons at z = gunOffset(type, i), y ~0.8 on both sides.
+// With mesh.rotation.y = heading, ship-local +x is PORT and -x is STARBOARD.
+//
+// Battle damage (SPEC2 §2.4) is shown without rebuilding anything: addHole() stamps a
+// splintered hole decal (one InstancedMesh per ship), setShipDamage() slackens the sails,
+// lights a deck fire, lets one sail droop and drops the top sail on MAST DOWN (a sail
+// merged into its mast's mesh is split off by index range, sharing the buffers), and
+// hoistFlag() strikes her colours for a white flag or your own. projectileMesh() makes
+// the round, chain and grape shot.
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -271,9 +279,14 @@ function taperTube(points, rFn, segs = 24, radial = 10, closedCurve = false) {
   return g;
 }
 
-/** Merge geometries into one, with one draw group per distinct material. */
+/**
+ * Merge geometries into one, with one draw group per distinct material. Also returns
+ * where each part ended up: ranges[i] = { materialIndex, start, count } (index range of
+ * parts[i] inside the merged geometry), so a piece can later be drawn on its own.
+ */
 function mergeByMaterial(parts) {
   const byMat = new Map();
+  const where = [];
   for (const { geo, material } of parts) {
     const g = new THREE.BufferGeometry().copy(geo);
     for (const name of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(name)) g.deleteAttribute(name);
@@ -281,6 +294,7 @@ function mergeByMaterial(parts) {
     g.morphAttributes = {};
     ensureIndex(g);
     const list = byMat.get(material) || [];
+    where.push({ material, at: list.reduce((n, q) => n + q.index.count, 0), count: g.index.count });
     list.push(g);
     byMat.set(material, list);
   }
@@ -291,7 +305,22 @@ function mergeByMaterial(parts) {
     geos.push(list.length === 1 ? list[0] : mergeGeometries(list, false));
   }
   const merged = mergeGeometries(geos, true);
-  return { geometry: merged, materials: mats.length === 1 ? mats[0] : mats };
+  const ranges = where.map((w) => {
+    const mi = mats.indexOf(w.material);
+    return { materialIndex: mi, start: merged.groups[mi].start + w.at, count: w.count };
+  });
+  return { geometry: merged, materials: mats.length === 1 ? mats[0] : mats, ranges };
+}
+
+/** Join index ranges (same material and touching) into as few draw groups as possible. */
+function joinRanges(list) {
+  const out = [];
+  for (const r of [...list].sort((a, b) => a.start - b.start)) {
+    const last = out[out.length - 1];
+    if (last && last.materialIndex === r.materialIndex && last.start + last.count === r.start) last.count += r.count;
+    else out.push({ ...r });
+  }
+  return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -892,6 +921,8 @@ function flagMesh(S, o) {
   const parent = o.parent || S.group;
   parent.add(mesh);
   S.flags.push(mesh);
+  // the first flag is the ship's colours: struck, white and prize flags fly in its place
+  if (!S.flagSpot && o.p && parent === S.group) S.flagSpot = { p: o.p.clone(), len, h, yaw: o.yaw ?? 0 };
   // flagstaff: a short pole from the masthead up past the flag's top edge with a
   // ball finial, so the flag never floats above the truck
   if (o.p && o.staff !== false) {
@@ -937,7 +968,9 @@ function squareRig(S, mastGroup, sails, o = {}) {
   const rig = new THREE.Group();
   rig.rotation.y = o.brace ?? S.brace ?? 0.42;
   mastGroup.add(rig);
+  const info = []; // per sail: its parts (for the battle-damage poses) and its yard
   for (const s of sails) {
+    info.push({ y: s.y, h: s.h, wt: s.wt, wb: s.wb, p0: parts.length, yard: { y: s.y + 0.02, z: zOff, half: (s.wt * 1.04 + 0.15) / 2 + (o.yardR ?? 0.1) } });
     const def = squareDef(s.h, s.wt, s.wb, s.belly, s);
     // s.trim = { mat, w }: a band of another colour along the foot (w = fraction of the height)
     const foot = s.trim ? 1 - (s.trim.w ?? 0.15) : 1;
@@ -966,14 +999,17 @@ function squareRig(S, mastGroup, sails, o = {}) {
       }
     }
     yard(rig, o.spar ?? 0x7a4a28, s.y + 0.02, zOff, s.wt * 1.04 + 0.15, o.yardR ?? 0.1);
+    info[info.length - 1].p1 = parts.length;
   }
-  const { geometry, materials } = mergeByMaterial(parts);
+  const { geometry, materials, ranges } = mergeByMaterial(parts);
   const mesh = new THREE.Mesh(geometry, materials);
   mesh.position.set(0, 0, zOff);
   mesh.userData.keep = true;
   mesh.userData.sail = { ph: Math.random() * TAU };
   rig.add(mesh);
   S.sails.push(mesh);
+  for (const si of info) si.ranges = joinRanges(ranges.slice(si.p0, si.p1));
+  S.rigs.push({ mesh, rig, sails: info });
   return mesh;
 }
 
@@ -1093,7 +1129,7 @@ function lantern(S, parent, x, y, z, o = {}) {
   const g = new THREE.Group();
   g.position.set(x, y, z);
   parent.add(g);
-  add(g, sphere(), glow(S, o.color ?? 0xffc04a, 1.05), [0, 0, 0], null, [0.17 * s, 0.22 * s, 0.17 * s]);
+  add(g, sphere(), glow(S, o.color ?? 0xffc04a, o.intensity ?? 1.05), [0, 0, 0], null, [0.17 * s, 0.22 * s, 0.17 * s]);
   add(g, cone(0.2 * s, 0.18 * s, 10), iron, [0, 0.27 * s, 0]);
   add(g, sphere(), iron, [0, 0.4 * s, 0], null, 0.05 * s);
   add(g, cyl(0.14 * s, 0.11 * s, 0.07 * s, 10), iron, [0, -0.23 * s, 0]);
@@ -1324,8 +1360,8 @@ function brazier(S, x, y, z, o = {}) {
     [0.0001, 1.15],
   ], 12);
   const big = s * (o.big ?? 1);
-  const outerM = glow(S, 0xff7a1a, 1.15, true, 0.12);
-  const coreM = glow(S, 0xffd84a, 1.2, false, 0.1);
+  const outerM = glow(S, o.flame ? o.flame[0] : 0xff7a1a, 1.15, true, 0.12);
+  const coreM = glow(S, o.flame ? o.flame[1] : 0xffd84a, 1.2, false, 0.1);
   const tongue = (m, p, r, sc) => {
     const g = fl.clone();
     g.applyMatrix4(new THREE.Matrix4().compose(V3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), V3(...sc)));
@@ -1343,9 +1379,10 @@ function brazier(S, x, y, z, o = {}) {
   if (o.smoke) {
     // a rising column of cartoon smoke puffs (each a lumpy cluster, so it reads
     // as smoke rather than a ball), alternating two sooty tones
-    const n = 5;
+    const n = o.puffs ?? 5;
     for (let k = 0; k < n; k++) {
-      const puff = add(S.group, puffGeo(), toon(k % 2 ? 0x7d76a0 : 0x655e8a, { outline: THIN }), [x, y + 1.6 * s, z], [0, k * 1.9, 0], 0.3);
+      const puffMat = o.smokeMat ? o.smokeMat(k) : toon(k % 2 ? 0x7d76a0 : 0x655e8a, { outline: THIN });
+      const puff = add(S.group, puffGeo(), puffMat, [x, y + 1.6 * s, z], [0, k * 1.9, 0], 0.3);
       puff.userData.keep = true;
       S.fx.push({ kind: 'smoke', obj: puff, ph: k / n, base: V3(x, y + 1.45 * s, z), s: s * 1.35 });
     }
@@ -1424,17 +1461,19 @@ const ROPE = 0xd9c39a; // the stock rope coil
 const STAVE = 0x9a6233; // the stock barrels
 const FRESH = 0xe2b77c; // the stock deck: fresh planks and patches
 
-/** Resolve buildShip opts for the player: paint entries (defaults for unknown ids) and upgrade tiers. */
+/** Resolve buildShip opts for the player: paint entries (defaults for unknown ids), upgrade and tavern tiers. */
 function playerSetup(opts) {
   const o = opts && typeof opts === 'object' ? opts : {};
   const look = o.look && typeof o.look === 'object' ? o.look : {};
   const up = o.upgrades && typeof o.upgrades === 'object' ? o.upgrades : {};
   const tier = (id) => (Number.isInteger(up[id]) ? clamp(up[id], 0, maxTier(id)) : 0);
+  const armory = o.armory && typeof o.armory === 'object' ? o.armory : {};
   return {
     paint: findLook('hull', look.hull),
     sails: findLook('sails', look.sails),
     flag: findLook('flag', look.flag),
     up: { guns: tier('guns'), shot: tier('shot'), crew: tier('crew'), hull: tier('hull'), sails: tier('sails'), carpenter: tier('carpenter') },
+    grapple: Number.isInteger(armory.grapple) ? clamp(armory.grapple, 0, GRAPPLE_COILS.length - 1) : 0,
   };
 }
 
@@ -1667,9 +1706,43 @@ function hullPatch(S, hull, z, y, side, o = {}) {
   for (const sx of [-1, 1]) for (const sy of [-1, 1]) add(g, sphere(), nail, [sx * (w / 2 - 0.07), sy * (h / 2 - 0.07), 0.04], null, 0.03);
 }
 
+// Long grapples tiers 0..2: z of each pair of coils, hung on the quarterdeck side rails (out of the
+// deck crew's way, between the cabin's side windows, and in sight of the chase camera).
+const GRAPPLE_COILS = [[], [-3.12], [-3.12, -4.5]];
+
+/**
+ * A grapnel ready for boarding, hung outside a quarterdeck side rail: a coil of rope hanging from
+ * the rail cap and an iron grapnel hooked over the cap beside it. x: the rail's x (+ port, - starboard).
+ */
+function grappleCoil(S, x, yRail, z) {
+  const side = Math.sign(x);
+  const rope = mat(ROPE);
+  const iron = mat(BAND_IRON);
+  const cx = x + side * 0.1;
+  // four loops of rope hanging from the cap, sagging to different depths, bound at the top
+  for (const [k, R, dz, a, sag] of [[0, 0.23, 0, 0, 0.02], [1, 0.21, 0.025, 0.14, 0.06], [2, 0.2, -0.02, -0.12, 0.03], [3, 0.18, 0.01, 0.06, 0.08]]) {
+    const g = add(S.group, torus(R, 0.036, 18, 6), rope, [cx + side * (k * 0.03 - 0.03), yRail - 0.08 - R - sag, z + dz], [a, PI / 2, 0, 'YXZ']);
+    g.scale.set(1, 1 + sag * 2.5, 1); // loops hang long
+  }
+  add(S.group, torus(0.075, 0.04, 10, 5), rope, [cx + side * 0.015, yRail - 0.1, z], [0, 0, PI / 2], [1, 1.3, 1]);
+  // the grapnel: hooked over the cap by its ring, shank hanging down, four flukes curling up at the foot
+  const gz = z + 0.38;
+  const top = V3(x + side * 0.06, yRail + 0.05, gz);
+  const foot = V3(x + side * 0.12, yRail - 0.62, gz);
+  add(S.group, torus(0.07, 0.025, 10, 5), iron, [x + side * 0.02, yRail + 0.02, gz], [0, 0, 0]);
+  rod(S.group, iron, top, foot, 0.04, 6);
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * TAU + PI / 4;
+    const out = V3(Math.cos(a) * 0.6, 0, Math.sin(a));
+    const pts = [foot, foot.clone().addScaledVector(out, 0.12).add(V3(0, -0.03, 0)), foot.clone().addScaledVector(out, 0.2).add(V3(0, 0.07, 0)), foot.clone().addScaledVector(out, 0.17).add(V3(0, 0.2, 0))];
+    add(S.group, taperTube(pts, (t) => 0.035 * (1 - 0.5 * t), 8, 6), iron);
+  }
+  add(S.group, sphere(), iron, foot.toArray(), null, 0.055);
+}
+
 function buildPlayer(S, T, opts) {
   S.brace = 0.32;
-  const { paint: P, sails: SL, flag: FL, up: UP } = playerSetup(opts);
+  const { paint: P, sails: SL, flag: FL, up: UP, grapple } = playerSetup(opts);
   const C = {
     deck: 0xe2b77c,
     plank: 0xbf8a52,
@@ -1702,6 +1775,7 @@ function buildPlayer(S, T, opts) {
     wall: mat(P.wall),
     deck: mat(C.deck),
   });
+  S.hull = hull;
   deckPlanks(S, hull, C.plank, -3.0, 4.2, 5);
   if (UP.hull < 3) cutwater(S, hull, P.rim, 0.12);
 
@@ -1732,6 +1806,8 @@ function buildPlayer(S, T, opts) {
   }
   rail(S, V3(-(cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(cab.w / 2 - 0.12, yq, cab.z0 + 0.15), 0.42, P.rim, 4);
   wheel(S, 0, yq, cab.z1 - 0.55, P.rim, 0.9);
+  // the captain's place at the helm: on the quarterdeck planks behind the wheel, facing the bow
+  S.helm = { x: 0, y: r3(cab.y1), z: r3(cab.z1 - 1.0), h: 0 };
 
   // stern charm (this is the view the player sees all game):
   // a rubbing band ties the cabin into the hull stripe ...
@@ -1916,6 +1992,9 @@ function buildPlayer(S, T, opts) {
     }
   }
   if (UP.hull >= 3) armouredBow(S, hull);
+  // long grapples (tavern): coiled grapnels hung on the quarterdeck rails
+  for (const z of GRAPPLE_COILS[grapple]) for (const sd of [-1, 1]) grappleCoil(S, sd * (cab.w / 2 - 0.12), yq + 0.42, z);
+  S.coils = GRAPPLE_COILS[grapple].length * 2;
 
   // Free standing spots for deck hands (ship-local; y = deck height; h = facing yaw) and
   // hull spots for a scrubber at the waterline. Kept clear of every prop above.
@@ -1927,6 +2006,7 @@ function buildPlayer(S, T, opts) {
     { x: 0.85, y: cab.y1, z: -4.05, h: PI }, // on the quarterdeck
     { x: -0.85, y: cab.y1, z: -4.05, h: PI },
   ];
+  S.fireSpots = [[0, 1.56, 0.75, 0.8]]; // flames out of the main hatch when wrecked
   S.hullSpots = [];
   for (const z of [-1.2, 1.2]) {
     for (const side of [1, -1]) {
@@ -1962,6 +2042,7 @@ function buildCutter(S, T) {
     breaks: [{ rel: -0.24 }],
   });
   addHull(S, hull, { bands: [mat(C.cream), mat(C.green)], rim: mat(C.rim), wall: mat(C.greenDark), deck: mat(C.deck) });
+  S.hull = hull;
   deckPlanks(S, hull, 0xa87d4a, -2.9, 2.8, 4);
   cutwater(S, hull, C.rim, 0.1);
   for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.85, sd, { frame: C.cream, scale: 0.9 });
@@ -1976,7 +2057,7 @@ function buildCutter(S, T) {
   const clew = [-3.55, 2.15];
   const tack = [mz - 0.25, 2.05];
   const gaff = quadDef(throat, peak, clew, tack, 0.55, { nu: 16, nv: 12, leechBow: 0.35 });
-  foreAftSail(S, S.group, gaff, (d) => {
+  const gaffSail = foreAftSail(S, S.group, gaff, (d) => {
     const parts = [];
     const n = 7;
     for (let k = 0; k < n; k++) parts.push({ geo: pillowGeometry(d, k / n, (k + 1) / n, 0, 1), material: k % 2 ? white : red });
@@ -1993,6 +2074,9 @@ function buildCutter(S, T) {
     for (let k = 0; k < n; k++) parts.push({ geo: pillowGeometry(d, 0, 1, k / n, (k + 1) / n), material: k % 2 ? red : white });
     return parts;
   }, { color: 0x6a4a30, r: 0.03 });
+  S.dropSail = { mesh: gaffSail, kind: 'foreaft', yb: 2.05 };
+  S.yardTips = { port: { x: 1.15, y: 5.4, z: mz }, star: { x: -1.15, y: 5.4, z: mz } }; // gaff-rigged: spreader ends
+  S.droopSail = { mesh: S.sails[S.sails.length - 1], kind: 'foreaft', yb: 2.0 };
   // tiller, stern lantern and a painted skull on the transom
   rod(S.group, mat(C.rim), V3(0, 1.45, -3.1), V3(0, 1.75, -2.2), 0.06, 6);
   transomDecal(S, hull, [skullShape()], 0.55, 1.0, mat(0xf6f1e4, { outline: THIN }));
@@ -2010,6 +2094,17 @@ function buildCutter(S, T) {
     yaw: -0.2,
     staff: WOOD,
   });
+
+  // battle data: free deck spots (boarders, surrendering hands) and where a wrecked ship burns
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 0.6, y: D, z: -0.3, h: PI / 2 },
+    { x: -0.55, y: D, z: -0.3, h: -PI / 2 },
+    { x: -0.55, y: D, z: -1.7, h: -PI / 2 },
+    { x: 0.6, y: D, z: -2.05, h: PI / 2 },
+    { x: -0.25, y: D, z: 1.38, h: 0 },
+  ];
+  S.fireSpots = [[-0.45, D, -2.45, 0.7]];
 }
 
 function buildPrivateer(S, T) {
@@ -2043,6 +2138,7 @@ function buildPrivateer(S, T) {
     wall: mat(0x8e2b25),
     deck: mat(C.deck),
   });
+  S.hull = hull;
   deckPlanks(S, hull, 0xa0703e, -2.7, 4.0, 5);
   cutwater(S, hull, C.gold, 0.11);
   for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.82, sd, { frame: C.gold });
@@ -2096,6 +2192,17 @@ function buildPrivateer(S, T) {
   });
   barrel(S, -0.95, 1.2, 0.8);
   add(S.group, rbox(1.1, 0.3, 0.9, 0.1), mat(0x5a3320), [0, 1.33, 0.55]);
+
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 0.8, y: D, z: -0.2, h: PI / 2 },
+    { x: -0.85, y: D, z: -0.15, h: -PI / 2 },
+    { x: 0.75, y: D, z: -1.95, h: PI / 2 },
+    { x: -0.75, y: D, z: -1.95, h: -PI / 2 },
+    { x: 0.55, y: D, z: 2.9, h: PI / 2 },
+    { x: -0.55, y: D, z: 2.9, h: -PI / 2 },
+  ];
+  S.fireSpots = [[0, 1.48, 0.55, 0.8]];
 }
 
 function buildPrahu(S, T) {
@@ -2126,6 +2233,7 @@ function buildPrahu(S, T) {
     breaks: [{ rel: -0.16 }, { rel: -0.3 }, { abs: 0.62 }],
   });
   addHull(S, hull, { bands: [mat(C.red), mat(C.yellow), mat(C.white), mat(C.hull)], rim: mat(C.red), wall: mat(C.hullDark), deck: mat(C.deck) });
+  S.hull = hull;
   // carved upswept scroll tips at bow and stern
   const L2 = hull.L / 2;
   const bowTop = V3(0, hull.rail(1) - 0.05, hull.zAt(1, hull.rail(1)) - 0.02);
@@ -2214,7 +2322,7 @@ function buildPrahu(S, T) {
   };
   const saffron = mat(C.sail);
   const stripe = mat(C.stripe);
-  foreAftSail(S, S.group, claw, (d) => {
+  const clawSail = foreAftSail(S, S.group, claw, (d) => {
     const parts = [];
     const cuts = [0, 0.2, 0.28, 0.72, 0.8, 1];
     for (let k = 0; k < cuts.length - 1; k++) parts.push({ geo: pillowGeometry(d, cuts[k], cuts[k + 1], 0, 1), material: k % 2 ? stripe : saffron });
@@ -2225,11 +2333,24 @@ function buildPrahu(S, T) {
     }
     return parts;
   }, { p: V3() });
+  S.dropSail = S.droopSail = { mesh: clawSail, kind: 'foreaft', yb: 1.5 };
+  S.yardTips = { port: { x: 1.0, y: 5.2, z: 0.3 }, star: { x: -1.0, y: 5.2, z: 0.3 } }; // crab claw: at the tripod head
   flagMesh(S, { p: upEnd.clone().add(V3(0, 0.15, 0)), len: 1.6, h: 0.6, shape: 'pennant', mat: mat(0x1c1820), yaw: -0.3, staff: C.wood, staffDown: 0.05, finial: C.yellow });
   // little hut amidships with a peaked thatch (atap) roof and a ridge pole
   add(S.group, rbox(0.8, 0.45, 1.2, 0.1), mat(0x9b6a3a), [0, 1.38, -1.1]);
   for (const sd of [-1, 1]) add(S.group, rbox(0.74, 0.11, 1.55, 0.05), mat(0xc9a35a), [sd * 0.27, 1.83, -1.1], [0, 0, -sd * 0.62]);
   rod(S.group, sparM, V3(0, 2.07, -1.95), V3(0, 2.07, -0.25), 0.065, 8);
+
+  const D = hull.D;
+  // a narrow boat: two hands fit on the stern deck, the rest balance on the outrigger booms
+  S.deckSpots = [
+    { x: 0, y: D, z: -2.2, h: PI / 2 },
+    { x: 0, y: D, z: -2.65, h: -PI / 2 },
+    { x: 0.68, y: 1.78, z: -1.5, h: PI / 2 },
+    { x: -0.68, y: 1.78, z: -1.5, h: -PI / 2 },
+    { x: -0.68, y: 1.78, z: 1.6, h: -PI / 2 },
+  ];
+  S.fireSpots = [[0, D, -2.6, 0.6]];
 }
 
 function buildJunk(S, T) {
@@ -2258,6 +2379,7 @@ function buildJunk(S, T) {
     breaks: [{ rel: -0.2 }, { abs: 0.42 }],
   });
   addHull(S, hull, { bands: [mat(C.gold), mat(C.red), mat(0x2a1c1c)], rim: mat(C.rim), wall: mat(C.redDark), deck: mat(C.deck) });
+  S.hull = hull;
   deckPlanks(S, hull, 0x8f6236, -3.0, 4.6, 6);
   for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.85, sd, { frame: C.gold });
   // oculi (dragon eyes) on the bow
@@ -2347,7 +2469,7 @@ function buildJunk(S, T) {
       },
       belly: (a, b) => 0.22 * Math.sin(PI * Math.min(1, a * 0.9 + 0.05)) * (0.4 + Math.pow(Math.abs(Math.sin(PI * nb * b)), 0.8)),
     };
-    foreAftSail(S, S.group, def, (d) => {
+    const fan = foreAftSail(S, S.group, def, (d) => {
       const parts = [];
       for (let k = 0; k < nb; k++) parts.push({ geo: pillowGeometry(d, 0, 1, k / nb, (k + 1) / nb), material: k % 2 ? ochre : orange });
       for (let k = 0; k <= nb; k++) {
@@ -2368,6 +2490,11 @@ function buildJunk(S, T) {
       }
       return parts;
     }, { p: V3(0, 0, mm.z) });
+    if (mi === 1) {
+      S.dropSail = { mesh: fan, kind: 'foreaft', yb: s.bot };
+      S.yardTips = { port: { x: 1.4, y: 7.2, z: mm.z }, star: { x: -1.4, y: 7.2, z: mm.z } }; // battened: the main mast's middle batten height
+    }
+    if (mi === 0) S.droopSail = { mesh: fan, kind: 'foreaft', yb: s.bot };
   });
   // flag high enough to clear the main sail's raised peak
   flagMesh(S, {
@@ -2381,6 +2508,15 @@ function buildJunk(S, T) {
     finial: C.gold,
   });
   for (const z of [1.4, -1.4]) lanternR(1.2, 2.2, z, 0.8);
+
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 0.65, y: D, z: -1.2, h: PI / 2 },
+    { x: -0.7, y: D, z: -1.2, h: -PI / 2 },
+    { x: -0.7, y: D, z: 1.5, h: -PI / 2 },
+    { x: 0.6, y: D, z: 1.6, h: PI / 2 },
+  ];
+  S.fireSpots = [[-0.7, D, 2.4, 0.8]];
 }
 
 function buildCorsair(S, T) {
@@ -2411,6 +2547,7 @@ function buildCorsair(S, T) {
   });
   const seam = glow(S, C.seam, 1.0, false, 0.25);
   addHull(S, hull, { bands: [mat(C.hull), seam, mat(C.hull), seam, mat(C.hull)], rim: mat(C.rim), wall: mat(0x4a2a24), deck: mat(C.deck) });
+  S.hull = hull;
   deckPlanks(S, hull, 0x3a2c26, -2.6, 3.3, 5);
   cutwater(S, hull, C.rim, 0.1);
   for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.88, sd, { style: 'hot', frame: C.rim, hole: 0xff5a14 });
@@ -2450,6 +2587,16 @@ function buildCorsair(S, T) {
     yaw: -0.15,
     staff: C.spar,
   });
+
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 0.7, y: D, z: -0.2, h: PI / 2 },
+    { x: -0.7, y: D, z: -0.2, h: -PI / 2 },
+    { x: 0.65, y: D, z: -2.2, h: PI / 2 },
+    { x: -0.65, y: D, z: -2.2, h: -PI / 2 },
+    { x: 0, y: D, z: 2.45, h: PI },
+  ];
+  S.fireSpots = [[0, D, 0.5, 0.8]];
 }
 
 function buildManowar(S, T) {
@@ -2479,6 +2626,7 @@ function buildManowar(S, T) {
     breaks: [{ rel: -0.12 }, { abs: 1.88 }, { abs: 1.12 }, { abs: 0.42 }],
   });
   addHull(S, hull, { bands: [mat(C.gold), mat(C.wood), mat(C.red), mat(C.wood), mat(C.woodDark)], rim: mat(C.rim), wall: mat(0x7a1f22), deck: mat(C.deck) });
+  S.hull = hull;
   deckPlanks(S, hull, 0x82593a, -3.6, 5.6, 6);
   cutwater(S, hull, C.gold, 0.13);
   for (let i = 0; i < T.guns; i++) {
@@ -2550,6 +2698,17 @@ function buildManowar(S, T) {
   flagMesh(S, { p: V3(0, 11.75, 0.2), len: 2.6, h: 1.65, mat: mat(C.black), decal: roger, yaw: -0.12, staff: sparC });
   flagMesh(S, { p: V3(0, 10.4, 3.7), len: 2.0, h: 0.55, shape: 'pennant', mat: mat(C.black), yaw: -0.2, staff: sparC });
   flagMesh(S, { p: V3(0, 9.2, -3.3), len: 1.8, h: 0.5, shape: 'pennant', mat: mat(C.black), yaw: -0.2, staff: sparC });
+
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 1.0, y: D, z: -1.3, h: PI / 2 },
+    { x: -1.0, y: D, z: -1.3, h: -PI / 2 },
+    { x: 1.0, y: D, z: 1.9, h: PI / 2 },
+    { x: -1.0, y: D, z: 1.9, h: -PI / 2 },
+    { x: 0, y: D, z: -2.2, h: 0 },
+    { x: 0, y: D, z: 2.0, h: PI },
+  ];
+  S.fireSpots = [[0.9, D, 0.3, 0.9], [-0.8, D, -2.6, 0.8]];
 }
 
 function buildInferno(S, T) {
@@ -2580,6 +2739,7 @@ function buildInferno(S, T) {
   });
   const magma = glow(S, C.magma, 1.1, false, 0.3);
   addHull(S, hull, { bands: [mat(C.obsLight), mat(C.obs), magma, mat(C.rim)], rim: mat(C.rim), wall: mat(0x4a1a1a), deck: mat(C.deck) });
+  S.hull = hull;
   deckPlanks(S, hull, 0x2a1e1c, -3.5, 6.5, 6);
   // magma cracks: tapered, meandering glowing fissures with small forks. Hot
   // orange (a yellower base colour saturates to lemon under the emissive), and
@@ -2736,6 +2896,691 @@ function buildInferno(S, T) {
   flagMesh(S, { p: V3(0, 13.4, 0.3), len: 3.0, h: 1.9, shape: 'swallow', mat: mat(0x0f0c12), decal: roger, yaw: -0.12, staff: sparC, staffR: 0.07 });
   flagMesh(S, { p: V3(0, 11.8, 4.4), len: 2.4, h: 0.6, shape: 'pennant', mat: mat(0x0f0c12), yaw: -0.2, staff: sparC });
   flagMesh(S, { p: V3(0, 10.6, -3.9), len: 2.2, h: 0.55, shape: 'pennant', mat: mat(0x0f0c12), yaw: -0.2, staff: sparC });
+
+  const D = hull.D;
+  S.deckSpots = [
+    { x: 1.2, y: D, z: -1.6, h: PI / 2 },
+    { x: -1.2, y: D, z: -1.6, h: -PI / 2 },
+    { x: 1.2, y: D, z: 2.2, h: PI / 2 },
+    { x: -1.2, y: D, z: 2.2, h: -PI / 2 },
+  ];
+  S.fireSpots = [[1.0, D, 0.3, 1.0], [-1.0, D, -2.6, 0.9]];
+}
+
+// ---------------------------------------------------------------------------
+// Act II ships: the Treasure Galleon, the Frost Raider and the Phantom Galleon
+// ---------------------------------------------------------------------------
+
+/** Cartoon sun: a smiling disc ringed by triangular rays, ~1 unit across. */
+function sunShapes(n = 12) {
+  const disc = new THREE.Shape();
+  disc.absarc(0, 0, 0.3, 0, TAU, false);
+  disc.holes.push(circlePath(-0.105, 0.07, 0.045), circlePath(0.105, 0.07, 0.045));
+  const smile = new THREE.Path();
+  smile.absarc(0, 0.02, 0.19, PI * 1.18, PI * 1.82, false);
+  smile.absarc(0, 0.02, 0.135, PI * 1.82, PI * 1.18, true);
+  smile.closePath();
+  disc.holes.push(smile);
+  const out = [disc];
+  for (let k = 0; k < n; k++) {
+    const a = (k / n) * TAU + PI / n;
+    const c = Math.cos(a);
+    const sn = Math.sin(a);
+    const r0 = 0.34;
+    const r1 = k % 2 ? 0.46 : 0.53;
+    const w = 0.085;
+    out.push(polyShape([[c * r0 + sn * w, sn * r0 - c * w], [c * r1, sn * r1], [c * r0 - sn * w, sn * r0 + c * w]]));
+  }
+  return out;
+}
+
+/** Six-armed snowflake with little branches, ~1 unit across. */
+function snowflakeShapes() {
+  const out = [];
+  const bar = (x0, y0, x1, y1, w) => {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const l = Math.hypot(dx, dy);
+    const nx = (-dy / l) * w;
+    const ny = (dx / l) * w;
+    return polyShape([[x0 + nx, y0 + ny], [x1 + nx, y1 + ny], [x1 - nx, y1 - ny], [x0 - nx, y0 - ny]]);
+  };
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * TAU + PI / 2;
+    const c = Math.cos(a);
+    const sn = Math.sin(a);
+    const P = (r, off) => [c * r - sn * off, sn * r + c * off];
+    out.push(bar(...P(0.1, 0), ...P(0.5, 0), 0.045));
+    for (const sd of [-1, 1]) out.push(bar(...P(0.3, 0), ...P(0.42, sd * 0.13), 0.035));
+  }
+  const hex = [];
+  for (let k = 0; k < 6; k++) hex.push([Math.cos((k / 6) * TAU) * 0.15, Math.sin((k / 6) * TAU) * 0.15]);
+  out.push(polyShape(hex));
+  return out;
+}
+
+/** Extruded emblem standing on a vertical face that looks aft (-z). */
+function aftDecal(S, shapes, size, x, y, z, material, depth = 0.08) {
+  const g = extrude(shapes, depth / size, 8);
+  g.scale(size, size, size);
+  g.rotateY(PI);
+  return add(S.group, g, material, [x, y, z - depth * 0.5]);
+}
+
+/** Lion figurehead: a round golden face with big eyes in a mane of curls, facing +z. */
+function lionHead(S, p, s, face, mane, pitch = 0) {
+  const g = new THREE.Group();
+  g.position.copy(p);
+  g.rotation.x = pitch;
+  g.scale.setScalar(s);
+  S.group.add(g);
+  const gold = mat(face);
+  const curls = mat(mane);
+  const dark = toon(0x3b2a22, { outline: false }); // the rigging's ink (no extra draw call)
+  for (let k = 0; k < 12; k++) {
+    const a = (k / 12) * TAU + 0.13;
+    const r = k % 2 ? 0.47 : 0.43;
+    add(g, sphere(), curls, [Math.cos(a) * r, Math.sin(a) * r + 0.03, -0.08], null, [0.22, 0.22, 0.2]);
+  }
+  add(g, sphere(), gold, [0, 0.02, 0.08], null, [0.37, 0.38, 0.3]);
+  add(g, sphere(), gold, [0, -0.13, 0.32], null, [0.21, 0.15, 0.16]);
+  add(g, sphere(), dark, [0, -0.05, 0.47], [0.3, 0, 0], [0.085, 0.06, 0.05]);
+  add(g, torus(0.07, 0.018, 10, 5, PI), dark, [0, -0.19, 0.44], [0, 0, PI], [1, 0.8, 1]);
+  for (const sd of [-1, 1]) {
+    add(g, sphere(), dark, [sd * 0.14, 0.12, 0.31], null, [0.06, 0.08, 0.04]);
+    add(g, sphere(), curls, [sd * 0.27, 0.33, 0.04], null, 0.1);
+  }
+  return g;
+}
+
+/** Treasure chest: banded wooden box, open (lid thrown back on a heap of coins) or shut. */
+function treasureChest(S, x, y, z, yaw, o = {}) {
+  const g = new THREE.Group();
+  g.position.set(x, y, z);
+  g.rotation.y = yaw;
+  S.group.add(g);
+  const wood = mat(o.wood);
+  const gold = mat(o.gold);
+  const w = o.w ?? 0.82;
+  add(g, rbox(w, 0.44, 0.54, 0.06), wood, [0, 0.22, 0]);
+  for (const sx of [-1, 1]) add(g, rbox(0.09, 0.46, 0.58, 0.03), gold, [sx * w * 0.3, 0.23, 0]);
+  add(g, rbox(0.16, 0.18, 0.06, 0.03), gold, [0, 0.33, 0.28]);
+  if (o.open) {
+    const lid = new THREE.Group();
+    lid.position.set(0, 0.44, -0.27);
+    lid.rotation.x = -1.95;
+    g.add(lid);
+    add(lid, rbox(w, 0.16, 0.54, 0.06), wood, [0, 0.07, 0.27]);
+    for (const sx of [-1, 1]) add(lid, rbox(0.09, 0.18, 0.58, 0.03), gold, [sx * w * 0.3, 0.07, 0.27]);
+    // heaped coins inside, spilling over the front
+    add(g, sphere(), gold, [0, 0.43, 0.0], null, [w * 0.44, 0.17, 0.24]);
+    for (const [cx, cy, cz, r] of [[-0.2, 0.55, 0.04, 0.09], [0.12, 0.57, -0.06, 0.08], [0.24, 0.5, 0.12, 0.07], [-0.05, 0.6, -0.02, 0.06]]) {
+      add(g, cyl(r, r, 0.03, 12), gold, [cx, cy, cz], [0.5, 0, 0.3]);
+    }
+    for (const [cx, cz, a] of [[0.18, 0.42, 0.1], [-0.12, 0.5, -0.2], [0.42, 0.36, 0.3]]) add(g, cyl(0.075, 0.075, 0.03, 12), gold, [cx, 0.015, cz], [0, a, 0]);
+    if (o.gem) add(g, gemGeo(), o.gem, [0.06, 0.66, 0.02], [0.35, 0.4, -0.2], 1.1);
+  } else {
+    add(g, capsule(0.24, w - 0.48, 10), wood, [0, 0.44, 0], [0, 0, PI / 2], [1, 0.7, 1.05]);
+    for (const sx of [-1, 1]) add(g, torus(0.25, 0.035, 14, 5, PI), gold, [sx * w * 0.3, 0.44, 0], [0, PI / 2, 0], [1, 0.72, 1.06]);
+  }
+}
+
+/** A cut gem: a stretched octahedron, ~0.2 across. */
+const gemGeo = () => cached('gem', () => new THREE.OctahedronGeometry(0.1, 0).scale(1, 1.35, 1));
+
+/**
+ * A heap of gold coins on the deck: a lumpy mound (so the toon bands and the ink outline show its
+ * shape from above), loose coins lying on its slopes and round its foot, and a few gems on top.
+ */
+function coinHeap(S, x, y, z, s, color, gems = []) {
+  const gold = mat(color);
+  const R = 0.58 * s; // mound half-widths and height
+  const Rz = 0.5 * s;
+  const H = 0.3 * s;
+  add(S.group, sphere(), gold, [x, y, z], null, [R, H, Rz]);
+  const rnd = mulberry(23);
+  // a point on the mound's surface at (fraction f of the way out, angle a) and its normal
+  const onMound = (f, a) => {
+    const px = Math.cos(a) * f * R;
+    const pz = Math.sin(a) * f * Rz;
+    const py = H * Math.sqrt(Math.max(0, 1 - f * f));
+    const n = V3(px / (R * R), py / (H * H), pz / (Rz * Rz)).normalize();
+    return { p: V3(x + px, y + py, z + pz), n };
+  };
+  // lumps of coins
+  for (let k = 0; k < 7; k++) {
+    const a = (k / 7) * TAU + rnd() * 0.5;
+    const { p } = onMound(k === 6 ? 0.05 : 0.45 + rnd() * 0.2, a);
+    const r = (0.15 + rnd() * 0.06) * s;
+    add(S.group, sphere(), gold, [p.x, p.y - r * 0.45, p.z], null, [r, r * 0.62, r]);
+  }
+  // coins lying on the slopes, tilted with them
+  const coin = cyl(0.075 * s, 0.075 * s, 0.026, 12);
+  for (let k = 0; k < 10; k++) {
+    const { p, n } = onMound(0.3 + rnd() * 0.55, rnd() * TAU);
+    const c = add(S.group, coin, gold, p.addScaledVector(n, 0.03).toArray());
+    c.quaternion.setFromUnitVectors(UP, n).multiply(new THREE.Quaternion().setFromAxisAngle(UP, rnd() * TAU));
+  }
+  // and round its foot
+  for (let k = 0; k < 7; k++) {
+    const a = rnd() * TAU;
+    const f = 1.08 + rnd() * 0.35;
+    add(S.group, coin, gold, [x + Math.cos(a) * f * R, y + 0.014, z + Math.sin(a) * f * Rz], [rnd() * 0.12, rnd() * 3, rnd() * 0.12]);
+  }
+  // gems on the top
+  gems.forEach((m, k) => {
+    const { p, n } = onMound(0.18 + 0.2 * (k % 2), (k / gems.length) * TAU + 0.6);
+    const gem = add(S.group, gemGeo(), m, p.addScaledVector(n, 0.06).toArray(), null, s);
+    gem.quaternion.setFromUnitVectors(UP, n.lerp(UP, 0.4).normalize()).multiply(new THREE.Quaternion().setFromAxisAngle(UP, k * 1.3));
+  });
+}
+
+/** A stack of gold coins (n high), each a little off the one below. */
+function coinStack(S, x, y, z, n, color, seed = 5) {
+  const gold = mat(color);
+  const rnd = mulberry(seed);
+  const coin = cyl(0.085, 0.085, 0.036, 12);
+  for (let k = 0; k < n; k++) add(S.group, coin, gold, [x + (rnd() - 0.5) * 0.03, y + 0.018 + k * 0.038, z + (rnd() - 0.5) * 0.03], [0, rnd() * 3, 0]);
+}
+
+function buildGalleon(S, T) {
+  S.brace = 0.34;
+  const C = { plum: 0x5e2d78, plumDark: 0x40205a, gold: 0xf4c23a, wood: 0x6e3c22, dark: 0x2c1912, deck: 0xd2a266, plank: 0xa87a45, rim: 0x3a2014, sail: 0xf8eed6, sun: 0xee9a1c, red: 0xc8322e, spar: 0x5a3420, chest: 0x8a4e26 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 2.3,
+    deck: 1.4,
+    keel: -0.95,
+    bw: 0.24,
+    yc: 1.05,
+    n: 2.4,
+    tumble: 0.2,
+    sternLen: 0.08,
+    sternP: 3,
+    bowStart: 0.58,
+    bowP: 2,
+    bowQ: 0.62,
+    bowRise: 0.7,
+    sternRise: 0.6,
+    sternRiseSpan: 0.3,
+    bowLift: 1.15,
+    sternLift: 0.85,
+    bowRake: 0.75,
+    sternRake: 0.28,
+    midPinch: 0.07,
+    breaks: [{ rel: -0.13 }, { abs: 1.78 }, { abs: 1.62 }, { abs: 0.38 }],
+  });
+  addHull(S, hull, { bands: [mat(C.gold), mat(C.plum), mat(C.gold), mat(C.wood), mat(C.dark)], rim: mat(C.rim), wall: mat(C.plumDark), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -3.5, 4.6, 6);
+  cutwater(S, hull, C.gold, 0.13);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.85, sd, { frame: C.gold, scale: 1.05 });
+  const gold = mat(C.gold);
+
+  // the tall gilded stern castle: three tiers of glowing windows, gold caps, a smiling sun crest
+  const cab = sternCastle(S, hull, { z1: -3.7, y0: 1.5, y1: 3.45, color: C.plum, cap: C.gold, top: C.deck, r: 0.26, over: 0.12 });
+  const cab2 = sternCastle(S, hull, { z0: cab.z0 + 0.08, z1: -4.95, y0: 3.45, y1: 4.65, color: C.plum, cap: C.gold, top: C.deck, r: 0.24, w: cab.w - 0.45 });
+  const cab3 = sternCastle(S, hull, { z0: cab.z0 + 0.16, z1: -5.85, y0: 4.65, y1: 5.55, color: C.plum, cap: C.gold, top: C.deck, r: 0.22, w: cab2.w - 0.6 });
+  const winGlow = 0xffc85a;
+  windows(S, S.group, [-1.35, -0.45, 0.45, 1.35], 1.92, cab.z0, -1, { w: 0.42, h: 0.6, frame: C.gold, glow: winGlow });
+  windows(S, S.group, [-0.9, 0, 0.9], 3.72, cab2.z0, -1, { w: 0.4, h: 0.56, frame: C.gold, glow: winGlow });
+  windows(S, S.group, [-0.42, 0.42], 4.86, cab3.z0, -1, { w: 0.34, h: 0.46, frame: C.gold, glow: winGlow });
+  aftDecal(S, sunShapes(), 0.82, 0, 3.0, cab.z0 - 0.02, gold, 0.09);
+  for (const sd of [-1, 1]) {
+    add(S.group, rbox(0.12, 0.12, cab.z1 - cab.z0 - 0.2, 0.05), gold, [sd * (cab.w / 2 + 0.02), 3.05, (cab.z0 + cab.z1) / 2]);
+    add(S.group, rbox(0.1, 0.1, cab2.z1 - cab2.z0 - 0.2, 0.04), gold, [sd * (cab2.w / 2 + 0.02), 4.12, (cab2.z0 + cab2.z1) / 2]);
+  }
+  // a gilded rail round the poop deck
+  for (const sd of [-1, 1]) rail(S, V3(sd * (cab3.w / 2 - 0.1), cab3.y1, cab3.z0 + 0.15), V3(sd * (cab3.w / 2 - 0.1), cab3.y1, cab3.z1 - 0.12), 0.32, C.gold, 2);
+  // gold finials on the tier corners
+  for (const c of [cab, cab2, cab3]) {
+    for (const sx of [-1, 1]) add(S.group, sphere(), gold, [sx * (c.w / 2 - 0.08), c.y1 + 0.1, c.z0 + 0.08], null, 0.13);
+  }
+  // quarter galleries: glowing side windows in gold frames
+  for (const sd of [-1, 1]) {
+    for (const z of [-6.55, -5.6, -4.65]) {
+      const holder = new THREE.Group();
+      holder.position.set(sd * (cab.w / 2 + 0.01), 2.45, z);
+      holder.rotation.y = (sd * PI) / 2;
+      S.group.add(holder);
+      add(holder, rbox(0.44, 0.56, 0.1, 0.06), mat(C.gold, { outline: THIN }));
+      add(holder, rbox(0.3, 0.42, 0.1, 0.05), glow(S, winGlow, 1), [0, 0, 0.03]);
+    }
+  }
+  // stern lanterns on the taffrail
+  const iron = mat(0x2b2530);
+  for (const x of [-0.85, 0, 0.85]) {
+    const s = x === 0 ? 1.3 : 1.0;
+    rod(S.group, iron, V3(x, cab3.y1 - 0.05, cab3.z0 + 0.14), V3(x, cab3.y1 + 0.32, cab3.z0 + 0.14), 0.045, 6);
+    lantern(S, S.group, x, cab3.y1 + 0.32 + 0.24 * s, cab3.z0 + 0.14, { s, color: winGlow, intensity: 1 });
+  }
+  add(S.group, rbox(0.75, 1.05, 0.12, 0.1), mat(C.wood), [0, D + 0.55, cab.z1 + 0.02]);
+  add(S.group, sphere(), gold, [0.24, D + 0.52, cab.z1 + 0.1], null, 0.065);
+  // forecastle
+  add(S.group, rbox(2.2, 0.5, 1.7, 0.2), mat(C.plum), [0, D + 0.24, 4.75]);
+  add(S.group, rbox(2.3, 0.12, 1.8, 0.05), gold, [0, D + 0.5, 4.75]);
+
+  // rig: square main and fore courses with the golden sun, a lateen mizzen, a jib
+  const sail = mat(C.sail);
+  const sunM = mat(C.sun, { outline: THIN });
+  const main = mast(S, 0.4, D, 12.5, 0.24, C.spar);
+  const fore = mast(S, 4.0, D, 11.1, 0.21, C.spar);
+  const miz = mast(S, -3.1, D, 8.8, 0.17, C.spar);
+  shrouds(S, hull, 0.4, 11.7, { n: 4, spread: 0.45 });
+  shrouds(S, hull, 4.0, 10.4, { n: 3, spread: 0.42 });
+  shrouds(S, hull, -3.1, 8.1, { n: 2, spread: 0.4 });
+  squareRig(S, main, [
+    { y: 11.7, h: 2.3, wt: 3.3, wb: 4.1, belly: 0.5, mat: sail },
+    { y: 9.1, h: 3.9, wt: 5.0, wb: 5.9, belly: 0.9, mat: sail, decals: [{ shapes: sunShapes(), size: 2.5, cy: -1.95, mat: sunM }] },
+  ], { spar: C.spar, yardR: 0.13 });
+  squareRig(S, fore, [
+    { y: 10.4, h: 2.1, wt: 2.9, wb: 3.6, belly: 0.45, mat: sail },
+    { y: 8.0, h: 3.3, wt: 4.3, wb: 5.1, belly: 0.75, mat: sail, decals: [{ shapes: sunShapes(), size: 1.75, cy: -1.65, mat: sunM }] },
+  ], { spar: C.spar, yardR: 0.12 });
+  // lateen: a long yard slung diagonally across the mizzen, the triangular sail hanging under it
+  const A = [-1.55, 4.75];
+  const B = [-6.1, 10.1];
+  const Q = [-4.85, 5.7];
+  const lateen = {
+    nu: 12,
+    nv: 10,
+    thick: 0.08,
+    p: 6,
+    map: (a, b) => {
+      const tx = lerp(-A[0], -B[0], a);
+      const ty = lerp(A[1], B[1], a);
+      return [lerp(tx, -Q[0], b), lerp(ty, Q[1], b)];
+    },
+    belly: (a, b) => 0.5 * Math.sin(PI * a) * Math.sin(PI * Math.min(1, b * 0.95)) * (1 - 0.3 * b),
+  };
+  foreAftSail(S, S.group, lateen, (d) => [{ geo: pillowGeometry(d), material: sail }], { p: V3(0.28, 0, 0) });
+  const spar = mat(C.spar);
+  const dirL = V3(0, B[1] - A[1], B[0] - A[0]).normalize();
+  rod(S.group, spar, V3(0.2, A[1], A[0]).addScaledVector(dirL, -0.7), V3(0.2, B[1], B[0]).addScaledVector(dirL, 0.25), 0.09, 8);
+  const tip = bowsprit(S, hull, 3.4, 0.3, C.spar, 0.15);
+  jibSail(S, [4.1, 9.9], tip, [4.6, 4.45], 0.4, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: C.spar, r: 0.04 });
+  const head = hull.stem(4).at(-1);
+  lionHead(S, V3(0, head.y - 0.62, head.z + 0.06), 0.82, C.gold, C.chest, -0.25);
+
+  // the treasure fleet's colours (the golden sun on royal purple), and a gold pennant on the fore
+  flagMesh(S, {
+    p: V3(0, 13.15, 0.4),
+    len: 2.4,
+    h: 1.5,
+    mat: mat(C.plum),
+    decal: { shapes: sunShapes(), size: 1.2, cx: 0.5, cy: 0, mat: mat(C.gold, { outline: false }) },
+    yaw: -0.12,
+    staff: C.spar,
+    finial: C.gold,
+  });
+  flagMesh(S, { p: V3(0, 11.75, 4.0), len: 2.2, h: 0.55, shape: 'pennant', mat: gold, yaw: -0.2, staff: C.spar });
+
+  // the treasure: open chests heaped with coins, a coin pile, a strongbox
+  const ruby = mat(C.red);
+  const amethyst = mat(C.plum);
+  treasureChest(S, 1.15, D, 2.25, 0.35, { wood: C.chest, gold: C.gold, open: true, gem: ruby });
+  treasureChest(S, -1.12, D, 2.75, -0.25, { wood: C.chest, gold: C.gold });
+  treasureChest(S, 1.05, D, -1.75, -0.45, { wood: C.chest, gold: C.gold, open: true, w: 0.72, gem: amethyst });
+  coinHeap(S, -1.0, D, -1.55, 0.9, C.gold, [ruby, amethyst, ruby, amethyst]);
+  coinStack(S, -0.38, D, -2.15, 6, C.gold, 5);
+  coinStack(S, -0.6, D, -2.42, 4, C.gold, 9);
+  coinStack(S, 0.55, D, 2.85, 5, C.gold, 13);
+  barrel(S, -1.35, D, 0.65, C.chest, C.gold, 0.85);
+  barrel(S, -1.3, D, 1.2, C.chest, C.gold, 0.75);
+  rod(S.group, iron, V3(0, D + 0.45, 5.62), V3(0, D + 1.25, 5.62), 0.05, 6);
+  lantern(S, S.group, 0, D + 1.5, 5.62, { s: 0.95, color: winGlow, intensity: 1 });
+
+  S.deckSpots = [
+    { x: 0.95, y: D, z: 0.95, h: PI / 2 },
+    { x: -0.7, y: D, z: -0.25, h: -PI / 2 },
+    { x: 0.1, y: D, z: -1.15, h: PI / 2 },
+    { x: 0, y: D, z: 1.8, h: -PI / 2 },
+    { x: 0.95, y: D, z: -0.35, h: PI / 2 },
+  ];
+  S.fireSpots = [[-0.15, D, 3.1, 0.9], [0.35, D, -2.55, 0.8]];
+}
+
+function buildRaider(S, T) {
+  S.brace = 0.22;
+  const C = { blue: 0x2f6db5, oak: 0xb57d45, oakDark: 0x8a5a32, tar: 0x2e2420, deck: 0xc49a66, plank: 0x9c7346, rim: 0x5a3a22, white: 0xf5f1e6, red: 0xd2402f, yellow: 0xf2c23a, spar: 0x6b4428, navy: 0x1e2f5a };
+  const hull = makeHull({
+    L: T.len - 0.8,
+    W: 2.45,
+    rail: 1.4,
+    deck: 1.0,
+    keel: -0.55,
+    bw: 0.14,
+    yc: 0.62,
+    n: 1.8,
+    tumble: 0.0,
+    sternLen: 0.34,
+    sternP: 1.7,
+    bowStart: 0.6,
+    bowP: 1.7,
+    bowQ: 1.0,
+    bowRise: 1.3,
+    sternRise: 1.2,
+    sternRiseSpan: 0.4,
+    bowLift: 0.85,
+    sternLift: 0.85,
+    bowRake: 0.35,
+    sternRake: 0.4,
+    midPinch: 0.1,
+    breaks: [{ rel: -0.12 }, { rel: -0.24 }, { rel: -0.36 }, { rel: -0.5 }, { rel: -0.64 }, { abs: 0.18 }],
+  });
+  const blue = mat(C.blue);
+  const oak = mat(C.oak);
+  const oakDark = mat(C.oakDark);
+  addHull(S, hull, { bands: [blue, oak, oakDark, oak, oakDark, oak, mat(C.tar)], rim: mat(C.rim), wall: oakDark, deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -2.9, 2.9, 4);
+  // clinker laps: a dark line along the lower edge of every strake
+  const lap = toon(0x3a2616, { outline: false });
+  for (const rel of [-0.24, -0.36, -0.5, -0.64]) {
+    for (const sd of [-1, 1]) {
+      const pts = [];
+      for (let i = 0; i <= 24; i++) {
+        const u = lerp(0.04, 0.96, i / 24);
+        const y = hull.rail(u) - hull.rb + rel;
+        if (y < hull.keel(u) + 0.15) continue;
+        pts.push(V3(sd * (hull.xAt(u, y) + 0.012), y, hull.zAt(u, y)));
+      }
+      if (pts.length > 3) add(S.group, taperTube(pts, () => 0.022, 48, 4), lap);
+    }
+  }
+  // serpent prow and a curled tail
+  const serpent = blue;
+  const stemTop = V3(0, hull.rail(1) - 0.06, hull.zAt(1, hull.rail(1)) - 0.04);
+  const neck = [stemTop.clone().add(V3(0, -0.5, -0.12)), stemTop.clone(), stemTop.clone().add(V3(0, 0.42, 0.2)), stemTop.clone().add(V3(0, 0.78, 0.16)), stemTop.clone().add(V3(0, 1.02, 0.36))];
+  add(S.group, taperTube(neck, (t) => 0.19 - 0.06 * t, 28, 10), serpent);
+  const hg = new THREE.Group();
+  hg.position.copy(neck.at(-1));
+  hg.rotation.x = 0.28;
+  S.group.add(hg);
+  const yellow = mat(C.yellow);
+  const red = mat(C.red);
+  add(hg, sphere(), serpent, [0, 0.02, 0.1], null, [0.23, 0.22, 0.34]);
+  add(hg, sphere(), serpent, [0, -0.02, 0.42], null, [0.15, 0.12, 0.25]);
+  add(hg, sphere(), serpent, [0, -0.17, 0.33], [0.32, 0, 0], [0.12, 0.05, 0.22]);
+  add(hg, sphere(), red, [0, -0.11, 0.38], [0.15, 0, 0], [0.11, 0.045, 0.2]);
+  for (const sd of [-1, 1]) {
+    add(hg, sphere(), mat(C.white, { outline: THIN }), [sd * 0.15, 0.1, 0.27], null, [0.075, 0.085, 0.06]);
+    add(hg, sphere(), toon(0x120e14, { outline: false }), [sd * 0.18, 0.1, 0.31], null, [0.035, 0.05, 0.03]);
+    add(hg, taperTube([V3(sd * 0.12, 0.17, 0.02), V3(sd * 0.2, 0.36, -0.14), V3(sd * 0.22, 0.42, -0.38)], (t) => 0.06 * (1 - t * 0.85), 10, 6), yellow);
+    add(hg, cone(0.025, 0.14, 6), red, [sd * 0.035, -0.12, 0.66], [PI / 2, sd * 0.35, 0]);
+  }
+  for (let k = 0; k < 4; k++) {
+    const p = new THREE.CatmullRomCurve3(neck).getPointAt(0.25 + k * 0.2);
+    add(S.group, cone(0.07, 0.2, 6), yellow, [p.x, p.y + 0.02, p.z - 0.16], [-0.9, 0, 0]);
+  }
+  const sternTop = V3(0, hull.rail(0) - 0.06, hull.zAt(0, hull.rail(0)) + 0.04);
+  const r0 = 0.46;
+  const cz = sternTop.z - 0.02 - r0;
+  const cy = sternTop.y + 0.55;
+  const tail = [sternTop.clone().add(V3(0, -0.5, 0.12)), sternTop.clone(), V3(0, cy - 0.05, sternTop.z - 0.08)];
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const ang = t * TAU * 1.2;
+    const r = r0 * (1 - 0.7 * t);
+    tail.push(V3(0, cy + Math.sin(ang) * r, cz + Math.cos(ang) * r));
+  }
+  add(S.group, taperTube(tail, (t) => 0.17 * (1 - 0.62 * t), 40, 10), serpent);
+  add(S.group, sphere(), yellow, tail.at(-1).toArray(), null, 0.07);
+
+  // round painted shields along both rails, oars out between them, a swivel gun amidships
+  const rim = mat(C.rim);
+  const boss = mat(IRON);
+  const shieldMats = [red, mat(C.white), yellow, blue];
+  // painted quarters: white on the red and blue shields, red on the white and yellow ones
+  const quarterMats = [toon(C.white, { outline: false }), toon(C.red, { outline: false })];
+  const quarter = cached('shieldq', () => mergeGeometries([new THREE.CircleGeometry(0.36, 6, 0, PI / 2), new THREE.CircleGeometry(0.36, 6, PI, PI / 2)], false));
+  const zs = [-2.45, -1.62, -0.78, 0.78, 1.62, 2.45];
+  for (const sd of [-1, 1]) {
+    zs.forEach((z, i) => {
+      const y = hull.railAt(z) - 0.2;
+      const { p, n } = hull.surface(z, y, sd);
+      const g = new THREE.Group();
+      g.position.copy(p).addScaledVector(n, 0.05);
+      aim(g, V3(n.x, 0, n.z));
+      S.group.add(g);
+      const c = (i + (sd > 0 ? 0 : 2)) % 4;
+      add(g, cyl(0.4, 0.4, 0.08, 18), shieldMats[c], [0, 0, 0], [PI / 2, 0, 0]);
+      add(g, quarter, quarterMats[c % 2], [0, 0, 0.046], [0, 0, i * 0.7]);
+      add(g, torus(0.4, 0.045, 22, 6), rim, [0, 0, 0.0]);
+      add(g, sphere(), boss, [0, 0, 0.05], null, [0.11, 0.11, 0.08]);
+    });
+    for (const z of [-2.04, -1.2, 1.2, 2.04]) {
+      // (the blades end inside the boarding slot beside a ship it grapples)
+      const a = V3(sd * 0.72, D + 0.42, z);
+      const b = V3(sd * 2.02, 0.34, z + 0.3);
+      rod(S.group, oak, a, b, 0.045, 6);
+      const blade = add(S.group, sphere(), oak, b.toArray(), null, [0.07, 0.3, 0.13]);
+      blade.quaternion.setFromUnitVectors(UP, V3().subVectors(b, a).normalize());
+    }
+    const gx = hull.widthAt(0, 1.2) * sd;
+    rod(S.group, boss, V3(gx * 0.86, D + 0.1, 0), V3(gx * 0.86, D + 0.62, 0), 0.05, 6);
+    add(S.group, cannonGeo(0.55, 0.1), boss, [gx * 0.78, D + 0.68, 0], [PI / 2 - 0.1, (sd * PI) / 2, 0, 'YXZ']);
+  }
+  // sea chests (rowing benches) down both sides, a rope coil
+  for (const sd of [-1, 1]) {
+    zs.forEach((z, i) => add(S.group, rbox(0.42, 0.3, 0.46, 0.06), (i + (sd > 0 ? 1 : 0)) % 2 ? oak : oakDark, [sd * 0.62, D + 0.15, z]));
+  }
+  add(S.group, torus(0.24, 0.08, 16, 8), mat(ROPE), [0.0, D + 0.08, -2.75], [PI / 2, 0, 0]);
+
+  // one mast, one big striped square sail
+  const m = mast(S, 0.15, D, 7.4, 0.15, C.spar);
+  shrouds(S, hull, 0.15, 6.8, { n: 2, spread: 0.55 });
+  squareRig(S, m, [{ y: 6.65, h: 3.5, wt: 3.7, wb: 4.3, belly: 0.75, mat: mat(C.white), stripes: { n: 7, mat: blue } }], { spar: C.spar, yardR: 0.11 });
+  flagMesh(S, {
+    p: V3(0, 7.7, 0.15),
+    len: 1.7,
+    h: 0.95,
+    shape: 'swallow',
+    mat: mat(C.navy),
+    decal: { shapes: snowflakeShapes(), size: 0.62, cx: 0.38, cy: 0, mat: mat(C.white, { outline: false }) },
+    yaw: -0.2,
+    staff: C.spar,
+    finial: C.yellow,
+  });
+
+  S.deckSpots = [
+    { x: 0, y: D, z: 1.2, h: PI / 2 },
+    { x: 0, y: D, z: -1.2, h: -PI / 2 },
+    { x: 0, y: D, z: 2.05, h: -PI / 2 },
+    { x: 0, y: D, z: -2.05, h: PI / 2 },
+  ];
+  S.fireSpots = [[0, D, -0.55, 0.6]];
+}
+
+/** Per-ship ghostly cloth: pale, glowing, see-through; pulses slowly with the glows. */
+function ghostCloth(S, color, emissive) {
+  const m = toon(color, { emissive, emissiveIntensity: 0.6, transparent: true, opacity: 0.72, outline: { thickness: 0.0042, color: [0.02, 0.1, 0.08] } }).clone();
+  S.glows.push({ m, base: 0.6, amt: 0.35, f: 1.3, ph: Math.random() * 10 });
+  return m;
+}
+
+function buildPhantom(S, T) {
+  S.brace = -0.4;
+  const C = { hull: 0x2e3d44, hullDark: 0x1b252a, moss: 0x44705a, deck: 0x5a5446, plank: 0x403a30, rim: 0x1b2225, wall: 0x2c3a34, spar: 0x2b2a27, barnacle: 0xc2cbb6, weed: 0x3f7a4a, bone: 0xdcdcc8, ghost: 0xa6f7dc, ghostEm: 0x2fd0a0, glow: 0x6dffc4 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 2.6,
+    deck: 1.8,
+    keel: -1.0,
+    bw: 0.26,
+    yc: 1.05,
+    n: 3.0,
+    tumble: 0.15,
+    sternLen: 0.07,
+    sternP: 3,
+    bowStart: 0.6,
+    bowP: 2,
+    bowQ: 0.7,
+    bowRise: 0.75,
+    sternRise: 0.9,
+    sternRiseSpan: 0.32,
+    bowLift: 1.25,
+    sternLift: 0.95,
+    bowRake: 0.65,
+    sternRake: 0.32,
+    breaks: [{ rel: -0.13 }, { abs: 2.0 }, { abs: 1.88 }, { abs: 0.45 }],
+  });
+  const seam = glow(S, C.glow, 0.85, false, 0.35);
+  addHull(S, hull, { bands: [mat(C.moss), mat(C.hull), seam, mat(C.hull), mat(C.hullDark)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  const L2 = T.len / 2;
+  deckPlanks(S, hull, C.plank, -4.4, 6.0, 7);
+  cutwater(S, hull, C.rim, 0.14);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 1.0, sd, { style: 'hot', frame: C.rim, hole: C.glow });
+  // round glowing portholes in the upper band, between the guns
+  const ghostLight = glow(S, C.glow, 1);
+  const rim = mat(C.rim);
+  for (const sd of [-1, 1]) {
+    for (let i = 0; i < T.guns - 1; i++) {
+      const z = (gunOffset(T, i) + gunOffset(T, i + 1)) / 2;
+      const { p, n } = hull.surface(z, 2.24, sd);
+      const g = new THREE.Group();
+      g.position.copy(p);
+      aim(g, n);
+      S.group.add(g);
+      add(g, torus(0.17, 0.055, 16, 6), rim);
+      add(g, cyl(0.15, 0.15, 0.06, 12), ghostLight, [0, 0, -0.01], [PI / 2, 0, 0]);
+    }
+  }
+  // barnacles crusting the lower hull and weed trailing from it
+  const barn = mat(C.barnacle, { outline: THIN });
+  const rnd = mulberry(31);
+  for (const sd of [-1, 1]) {
+    for (let k = 0; k < 46; k++) {
+      const z = lerp(-L2 + 1.6, L2 - 2.2, rnd());
+      const y = 0.08 + Math.pow(rnd(), 1.6) * 0.85;
+      const { p, n } = hull.surface(z, y, sd);
+      const r = 0.06 + rnd() * 0.08;
+      rivet(S.group, barn, p.addScaledVector(n, r * 0.25), n, r);
+    }
+  }
+  const weed = mat(C.weed);
+  for (const sd of [-1, 1]) {
+    for (let k = 0; k < 7; k++) {
+      const z = lerp(-L2 + 2.2, L2 - 2.8, (k + rnd() * 0.6) / 7);
+      const y0 = 0.7 + rnd() * 0.5;
+      const pts = [];
+      for (let i = 0; i <= 5; i++) {
+        const y = lerp(y0, -0.05, i / 5);
+        const { p, n } = hull.surface(z + Math.sin(i * 1.7 + k) * 0.12, y, sd);
+        pts.push(p.addScaledVector(n, 0.05));
+      }
+      add(S.group, taperTube(pts, (t) => 0.06 * (1 - 0.5 * t), 14, 6), weed);
+    }
+  }
+
+  // stern castle with green-lit windows (one boarded up), ghost lanterns
+  const cab = sternCastle(S, hull, { z1: -4.7, y0: 1.8, y1: 3.95, color: C.hull, cap: C.rim, top: C.deck, r: 0.28, over: 0.12 });
+  const cab2 = sternCastle(S, hull, { z0: cab.z0 + 0.1, z1: -6.1, y0: 3.95, y1: 5.3, color: C.hull, cap: C.rim, top: C.deck, r: 0.25, w: cab.w - 0.6 });
+  windows(S, S.group, [-1.5, -0.5, 0.5, 1.5], 2.4, cab.z0, -1, { w: 0.44, h: 0.66, frame: C.rim, glow: C.glow });
+  windows(S, S.group, [-0.9, 0, 0.9], 4.25, cab2.z0, -1, { w: 0.4, h: 0.6, frame: C.rim, glow: C.glow });
+  for (const [dy, a] of [[0.18, 0.25], [0.46, -0.2]]) add(S.group, rbox(0.62, 0.11, 0.06, 0.03), mat(C.wall), [0.5, 2.4 + dy, cab.z0 - 0.1], [0, 0, a]);
+  aftDecal(S, jollyRogerShapes(), 0.62, 0, 3.45, cab.z0 - 0.02, mat(C.bone), 0.08);
+  for (const sd of [-1, 1]) {
+    for (const z of [-7.4, -6.3, -5.2]) {
+      const holder = new THREE.Group();
+      holder.position.set(sd * (cab.w / 2 + 0.01), 2.85, z);
+      holder.rotation.y = (sd * PI) / 2;
+      S.group.add(holder);
+      add(holder, rbox(0.42, 0.56, 0.1, 0.06), rim);
+      add(holder, rbox(0.3, 0.42, 0.1, 0.05), ghostLight, [0, 0, 0.03]);
+    }
+    rod(S.group, rim, V3(sd * (cab2.w / 2 - 0.1), cab2.y1 - 0.05, cab2.z0 + 0.15), V3(sd * (cab2.w / 2 - 0.1), cab2.y1 + 0.2, cab2.z0 + 0.15), 0.05, 6);
+    lantern(S, S.group, sd * (cab2.w / 2 - 0.1), cab2.y1 + 0.45, cab2.z0 + 0.15, { s: 1.15, color: C.glow, intensity: 1 });
+  }
+  // a broken taffrail round the poop deck: one side whole, the other half gone with its rail
+  // hanging to the planks, and the stern rail sagging where a post has rotted away
+  {
+    const yT = cab2.y1;
+    const xT = cab2.w / 2 - 0.1;
+    const xa = cab2.w / 2 - 0.55;
+    const zA = cab2.z0 + 0.15;
+    const hT = 0.32;
+    rail(S, V3(-xT, yT, cab2.z0 + 0.5), V3(-xT, yT, cab2.z1 - 0.12), hT, C.rim, 2);
+    rail(S, V3(xT, yT, cab2.z1 - 0.12), V3(xT, yT, cab2.z1 - 0.62), hT, C.rim, 1);
+    rod(S.group, rim, V3(xT, yT + hT, cab2.z1 - 0.62), V3(xT - 0.12, yT + 0.04, zA + 0.55), 0.055, 6);
+    rod(S.group, rim, V3(xT, yT - 0.02, zA + 0.42), V3(xT + 0.02, yT + 0.14, zA + 0.44), 0.05, 6);
+    rail(S, V3(-xa, yT, zA), V3(0, yT, zA), hT, C.rim, 1);
+    rod(S.group, rim, V3(0, yT + hT, zA), V3(xa, yT + 0.1, zA - 0.02), 0.055, 6);
+    rod(S.group, rim, V3(xa, yT - 0.02, zA), V3(xa - 0.02, yT + 0.12, zA), 0.05, 6);
+  }
+  // a ghost-fire cauldron on the quarterdeck breathing green mist
+  brazier(S, 0, cab.y1, -5.4, {
+    s: 0.8,
+    flame: [0x52f0b0, 0xd4ffee],
+    coal: 0x3dffa8,
+    smoke: true,
+    puffs: 5,
+    smokeMat: (k) => toon(k % 2 ? 0x9ff2d2 : 0x74dcb6, { transparent: true, opacity: 0.55, outline: false }),
+  });
+  // skull figurehead, a heap of bones by the main mast
+  const head = hull.stem(4).at(-1);
+  skullHead(S, V3(0, head.y - 0.6, head.z + 0.12), 0.85, C.bone, -0.3);
+  skullHead(S, V3(-1.15, D + 0.17, -1.2), 0.32, C.bone, 0.2);
+  const bone = mat(C.bone);
+  for (const [x, z, a] of [[-0.9, -0.85, 0.4], [-1.3, -0.75, -0.9], [-1.0, -1.55, 1.3]]) {
+    const d = V3(Math.cos(a), 0, Math.sin(a)).multiplyScalar(0.28);
+    rod(S.group, bone, V3(x, D + 0.05, z).sub(d), V3(x, D + 0.05, z).add(d), 0.045, 6);
+    for (const e of [-1, 1]) add(S.group, sphere(), bone, V3(x, D + 0.06, z).addScaledVector(d, e).toArray(), null, 0.065);
+  }
+
+  // masts: the mizzen snapped off; tattered, see-through ghost sails
+  const ghost = ghostCloth(S, C.ghost, C.ghostEm);
+  const skullGlow = glow(S, C.glow, 1.1, false, 0.25);
+  const main = mast(S, 0.4, D, 14.3, 0.26, C.spar);
+  const fore = mast(S, 4.9, D, 12.7, 0.23, C.spar);
+  // the snapped mizzen: a stump with splintered ends (no truck)
+  const sp = mat(C.spar);
+  const miz = new THREE.Group();
+  miz.position.set(0, 0, -3.9);
+  S.group.add(miz);
+  spar(miz, sp, V3(0, D, 0), V3(0, 8.0, 0), 0.21, 0.15, 12);
+  for (const [a, h] of [[0, 0.55], [2.1, 0.34], [4.2, 0.44]]) add(miz, cone(0.075, h, 5), sp, [Math.cos(a) * 0.07, 8.0 + h / 2 - 0.05, Math.sin(a) * 0.07], [Math.sin(a) * 0.25, 0, -Math.cos(a) * 0.25]);
+  shrouds(S, hull, 0.4, 13.4, { n: 4, spread: 0.5, color: 0x22302a });
+  shrouds(S, hull, 4.9, 11.9, { n: 3, spread: 0.45, color: 0x22302a });
+  shrouds(S, hull, -3.9, 7.4, { n: 2, spread: 0.45, color: 0x22302a });
+  squareRig(S, main, [
+    { y: 13.5, h: 2.4, wt: 3.4, wb: 4.3, belly: 0.5, mat: ghost, torn: 0.24, seed: 3 },
+    { y: 10.8, h: 2.8, wt: 4.6, wb: 5.4, belly: 0.65, mat: ghost, torn: 0.2, seed: 6 },
+    { y: 7.7, h: 3.8, wt: 5.8, wb: 6.5, belly: 0.9, mat: ghost, torn: 0.26, seed: 1, decals: [{ shapes: jollyRogerShapes(), size: 2.5, cy: -1.85, mat: mat(0x0e2622, { outline: false }) }] },
+  ], { spar: C.spar, yardR: 0.14 });
+  squareRig(S, fore, [
+    { y: 11.9, h: 2.3, wt: 3.1, wb: 3.9, belly: 0.5, mat: ghost, torn: 0.26, seed: 5 },
+    { y: 9.3, h: 3.4, wt: 4.6, wb: 5.4, belly: 0.75, mat: ghost, torn: 0.22, seed: 9 },
+  ], { spar: C.spar, yardR: 0.13 });
+  squareRig(S, miz, [{ y: 7.5, h: 2.5, wt: 3.4, wb: 4.0, belly: 0.5, mat: ghost, torn: 0.32, seed: 12 }], { spar: C.spar, yardR: 0.12 });
+  const tip = bowsprit(S, hull, 3.3, 0.3, C.spar, 0.16);
+  jibSail(S, [5.0, 11.3], tip, [5.4, 4.3], 0.4, (d) => [{ geo: pillowGeometry(d), material: ghost }], { color: 0x22302a, r: 0.04 });
+  flagMesh(S, {
+    p: V3(0, 15.1, 0.4),
+    len: 2.8,
+    h: 1.8,
+    shape: 'swallow',
+    mat: mat(0x101418),
+    decal: { shapes: jollyRogerShapes(), size: 0.95, cx: 0.44, cy: 0.0, mat: skullGlow },
+    yaw: -0.12,
+    staff: C.spar,
+  });
+
+  S.deckSpots = [
+    { x: 1.2, y: D, z: -1.4, h: PI / 2 },
+    { x: 1.2, y: D, z: 2.0, h: PI / 2 },
+    { x: -1.2, y: D, z: 2.0, h: -PI / 2 },
+    { x: 0.1, y: D, z: -2.5, h: -PI / 2 },
+    { x: -0.4, y: D, z: 3.1, h: -PI / 2 },
+  ];
+  S.fireSpots = [[0.9, D, 0.9, 1.0], [-0.6, D, -2.7, 0.9]];
+  S.fireColors = [0x52f0b0, 0xd4ffee];
 }
 
 /** Small deterministic RNG for per-type detail placement. */
@@ -2759,7 +3604,482 @@ const BUILDERS = {
   corsair: buildCorsair,
   manowar: buildManowar,
   inferno: buildInferno,
+  galleon: buildGalleon,
+  raider: buildRaider,
+  phantom: buildPhantom,
 };
+
+// ---------------------------------------------------------------------------
+// Battle data, visible damage, colours and projectiles (SPEC2 §2.2, §2.4, §9.1)
+// ---------------------------------------------------------------------------
+
+// Private per-ship data behind the damage, hole and flag API (keyed by the ship's group).
+const PRIV = new WeakMap();
+
+/** Outer half-width of a hull at ship-local (z, y), found for that exact z at that height; 0 off the hull. */
+function halfWidth(hull, z, y) {
+  const u = hullU(hull, z, y);
+  if (Math.abs(hull.zAt(u, y) - z) > 0.03) return 0;
+  return Math.max(0, hull.xAt(u, y));
+}
+
+/** userData.hullSide: half-width sampled along z at height y (for analytic hole placement). */
+function hullSideData(hull, y = 0.9) {
+  const dz = 0.5;
+  const z0 = -hull.L / 2;
+  const n = Math.round(hull.L / dz) + 1;
+  const half = [];
+  for (let i = 0; i < n; i++) half.push(r3(halfWidth(hull, z0 + i * dz, y)));
+  return { z0: r3(z0), dz, half };
+}
+
+/** Half-widths on a (z, y) grid over the hull sides where holes can go (y 0.4 .. deck). */
+function holeTable(hull) {
+  const dz = 0.25;
+  const dy = 0.15;
+  const y0 = 0.4;
+  const z0 = -hull.L / 2;
+  const nz = Math.round(hull.L / dz) + 1;
+  const ny = Math.max(2, Math.ceil((hull.D - y0) / dy) + 1);
+  const x = new Float32Array(nz * ny);
+  for (let i = 0; i < nz; i++) for (let j = 0; j < ny; j++) x[i * ny + j] = halfWidth(hull, z0 + i * dz, y0 + j * dy);
+  return { z0, dz, nz, y0, dy, ny, x };
+}
+function tableAt(t, z, y) {
+  const fi = clamp((z - t.z0) / t.dz, 0, t.nz - 1.001);
+  const fj = clamp((y - t.y0) / t.dy, 0, t.ny - 1.001);
+  const i = Math.floor(fi);
+  const j = Math.floor(fj);
+  const a = fi - i;
+  const b = fj - j;
+  const X = (ii, jj) => t.x[ii * t.ny + jj];
+  return lerp(lerp(X(i, j), X(i + 1, j), a), lerp(X(i, j + 1), X(i + 1, j + 1), a), b);
+}
+
+/** The sail that comes down on MAST DOWN / droops when wrecked, inside a merged square rig. */
+function rigTarget(rig, k) {
+  if (!rig) return null;
+  const s = rig.sails.at(k);
+  return { mesh: rig.mesh, ranges: rig.sails.length > 1 ? s.ranges : null, kind: 'square', y: s.y, wt: s.wt, h: s.h };
+}
+
+/** Rope anchors at both ends of a rig's lowest yard (ship-local; +x = port). */
+function rigYardTips(rig) {
+  if (!rig) return null;
+  const s = rig.sails.at(-1);
+  const m = rig.rig.matrixWorld; // the ship group is still at the origin here
+  const tip = (sx) => {
+    const p = V3(sx * s.yard.half, s.yard.y, s.yard.z).applyMatrix4(m);
+    return { x: r3(p.x), y: r3(p.y), z: r3(p.z) };
+  };
+  return { port: tip(1), star: tip(-1) };
+}
+
+// ---------------------------------------------------------------------------
+// Sails: slack when battered, one droops when wrecked, the top sail drops on MAST DOWN
+// ---------------------------------------------------------------------------
+
+const SLACK = [1, 0.84, 0.7]; // billow by damage level
+
+function poseFor(target, mode) {
+  if (target.kind === 'square') {
+    // dropped: the sail has come off its yard and hangs crumpled and askew below it
+    if (mode === 'drop') return { pivot: V3(0, target.y, 0), rot: new THREE.Euler(0, 0, 0.3), scale: [0.9, 0.5], off: V3(target.wt * 0.06, -0.42 * target.h, 0.18), limp: 0.25 };
+    // drooping: one sheet shot away, the sail hangs from the other yard arm
+    return { pivot: V3(target.wt / 2, target.y, 0), rot: new THREE.Euler(0, 0, 0.42), scale: [1, 0.96], off: V3(), limp: 0.45 };
+  }
+  // fore-and-aft sails (local x = aft, y = up, z = belly): folded down to the boom, or leaning over
+  if (mode === 'drop') return { pivot: V3(0, target.yb, 0), rot: new THREE.Euler(0.12, 0, 0), scale: [1, 0.42], off: V3(), limp: 0.3 };
+  return { pivot: V3(0, target.yb, 0), rot: new THREE.Euler(0.24, 0, 0), scale: [1, 0.9], off: V3(), limp: 0.5 };
+}
+
+/** Put a sail mesh in a pose (pivot, extra rotation, scale) relative to its build transform. */
+function applyPose(mesh, base, pose) {
+  if (!pose) {
+    mesh.position.copy(base.pos);
+    mesh.quaternion.copy(base.quat);
+    mesh.scale.x = 1;
+    mesh.scale.y = 1;
+    return;
+  }
+  const rq = new THREE.Quaternion().setFromEuler(pose.rot);
+  const sp = V3(pose.pivot.x * pose.scale[0], pose.pivot.y * pose.scale[1], 0).applyQuaternion(rq);
+  const local = pose.pivot.clone().add(pose.off).sub(sp);
+  mesh.position.copy(local.applyQuaternion(base.quat).add(base.pos));
+  mesh.quaternion.copy(base.quat).multiply(rq);
+  mesh.scale.x = pose.scale[0];
+  mesh.scale.y = pose.scale[1];
+}
+
+/** Cut a target's index ranges out of its merged sail mesh into a mesh of its own (shared buffers). */
+function splitTarget(group, P, target) {
+  if (target.part) return target.part;
+  const src = target.mesh;
+  const g = new THREE.BufferGeometry();
+  for (const [name, a] of Object.entries(src.geometry.attributes)) g.setAttribute(name, a);
+  g.setIndex(src.geometry.index);
+  for (const r of target.ranges) g.addGroup(r.start, r.count, r.materialIndex);
+  const part = new THREE.Mesh(g, P.sources.get(src).list);
+  part.name = 'sail-part';
+  part.userData.keep = true;
+  part.userData.sail = { ph: src.userData.sail.ph };
+  part.position.copy(src.position);
+  part.quaternion.copy(src.quaternion);
+  src.parent.add(part);
+  group.userData.sails.push(part);
+  target.part = part;
+  return part;
+}
+
+/** A merged sail mesh draws only what has not been split out (its own groups minus the cut ranges). */
+function refreshSource(P, mesh) {
+  const src = P.sources.get(mesh);
+  const cuts = [];
+  for (const t of [P.top, P.droop]) if (t && t.mesh === mesh && t.ranges && t.part && t.part.visible) cuts.push(...t.ranges);
+  if (!cuts.length) {
+    mesh.geometry.groups = src.groups.map((g) => ({ ...g }));
+    mesh.material = src.material;
+    return;
+  }
+  let groups = src.groups.map((g) => ({ ...g }));
+  for (const c of cuts) {
+    const next = [];
+    for (const g of groups) {
+      if (g.materialIndex !== c.materialIndex || c.start >= g.start + g.count || c.start + c.count <= g.start) {
+        next.push(g);
+        continue;
+      }
+      if (c.start > g.start) next.push({ start: g.start, count: c.start - g.start, materialIndex: g.materialIndex });
+      const end = g.start + g.count;
+      const cend = c.start + c.count;
+      if (cend < end) next.push({ start: cend, count: end - cend, materialIndex: g.materialIndex });
+    }
+    groups = next;
+  }
+  mesh.geometry.groups = groups;
+  mesh.material = src.list; // groups only count with a material array
+}
+
+function applySails(group, P) {
+  const u = group.userData;
+  const slack = SLACK[u.damageLevel];
+  for (const s of u.sails) {
+    if (slack === 1) delete s.userData.sail.limp;
+    else s.userData.sail.limp = slack;
+  }
+  const { top, droop } = P;
+  const shared = top && droop && (top === droop || (top.mesh === droop.mesh && !top.ranges && !droop.ranges));
+  const modes = [];
+  if (top) modes.push([top, u.mastDown ? 'drop' : shared && u.damageLevel >= 2 ? 'droop' : null]);
+  if (droop && !shared) modes.push([droop, u.damageLevel >= 2 ? 'droop' : null]);
+  for (const [t, mode] of modes) {
+    if (!t.base) t.base = { pos: t.mesh.position.clone(), quat: t.mesh.quaternion.clone() };
+    const pose = mode ? poseFor(t, mode) : null;
+    if (!t.ranges) {
+      applyPose(t.mesh, t.base, pose);
+      if (pose) t.mesh.userData.sail.limp = pose.limp;
+      continue;
+    }
+    if (!pose && !t.part) continue;
+    const part = splitTarget(group, P, t);
+    part.visible = !!pose;
+    if (pose) {
+      applyPose(part, t.base, pose);
+      part.userData.sail.limp = pose.limp;
+    }
+  }
+  for (const mesh of P.sources.keys()) refreshSource(P, mesh);
+  for (const info of u.sailInfo) info.dropped = !!(u.mastDown && top && info.mesh === top.mesh);
+}
+
+// ---------------------------------------------------------------------------
+// Deck fires (wrecked ships)
+// ---------------------------------------------------------------------------
+
+/** A per-ship glow material made after the build (flickers with the others, disposed with the ship). */
+function lateGlow(group, P, color, intensity, outline, flicker) {
+  const key = `${color}|${intensity}|${outline}`;
+  let m = P.glowCache.get(key);
+  if (!m) {
+    m = toon(color, { emissive: color, emissiveIntensity: intensity, outline: outline ? THIN : false }).clone();
+    P.glowCache.set(key, m);
+    group.userData.glows.push({ material: m, base: intensity, amt: flicker, f: 5 + Math.random() * 4, ph: Math.random() * 10 });
+  }
+  return m;
+}
+
+function deckFire(group, P, x, y, z, s) {
+  const [outerC, coreC] = P.fireColors || [0xff7a1a, 0xffd84a];
+  const outerM = lateGlow(group, P, outerC, 1.15, true, 0.14);
+  const coreM = lateGlow(group, P, coreC, 1.2, false, 0.12);
+  const fl = lathe('flame', [[0.0001, 0], [0.3, 0.1], [0.36, 0.3], [0.24, 0.62], [0.08, 0.95], [0.0001, 1.15]], 12);
+  const tongue = (m, p, r, sc) => {
+    const g = fl.clone();
+    g.applyMatrix4(new THREE.Matrix4().compose(V3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), V3(...sc)));
+    return { geo: g, material: m };
+  };
+  const char = toon(0x2a1d1a, { outline: false });
+  const scorch = new THREE.CircleGeometry(0.62, 18).rotateX(-PI / 2).translate(0, 0.02, 0);
+  const merged = mergeByMaterial([
+    tongue(outerM, [0, 0, 0], [0, 0, 0], [0.8, 1.25, 0.8]),
+    tongue(outerM, [0.3, 0, 0.08], [0.12, 0, -0.5], [0.52, 0.85, 0.52]),
+    tongue(outerM, [-0.28, 0, -0.1], [-0.15, 0, 0.45], [0.5, 0.8, 0.5]),
+    tongue(outerM, [0.05, 0, -0.3], [-0.45, 0, 0.05], [0.44, 0.7, 0.44]),
+    tongue(outerM, [-0.1, 0, 0.32], [0.45, 0, 0.1], [0.4, 0.62, 0.4]),
+    tongue(coreM, [0, 0.02, 0.1], [0.1, 0, 0], [0.5, 0.82, 0.5]),
+    tongue(coreM, [0.22, 0.02, -0.12], [0, 0, -0.3], [0.3, 0.5, 0.3]),
+    { geo: scorch, material: char },
+  ]);
+  const fire = new THREE.Group();
+  fire.name = 'deck-fire';
+  fire.position.set(x, y + 0.01, z);
+  fire.scale.setScalar(s);
+  fire.userData.keep = true;
+  const mesh = new THREE.Mesh(merged.geometry, merged.materials);
+  fire.add(mesh);
+  group.add(fire);
+  group.userData.fx.push({ kind: 'flame', obj: mesh, ph: Math.random() * TAU, s: 1 });
+  return fire;
+}
+
+// ---------------------------------------------------------------------------
+// Holes where balls hit
+// ---------------------------------------------------------------------------
+
+const MAX_HOLES = 8;
+
+/** A splintered hole: pale torn-wood tips round a scorched ring round a black hole (vertex colours). */
+const holeGeo = () =>
+  cached('hole', () => {
+    const layer = (shape, color, z) => {
+      const g = new THREE.ShapeGeometry(shape, 10);
+      g.translate(0, 0, z);
+      const c = new THREE.Color(color);
+      const col = new Float32Array(g.attributes.position.count * 3);
+      for (let i = 0; i < col.length; i += 3) col.set([c.r, c.g, c.b], i);
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      return g;
+    };
+    const star = [];
+    const N = 11;
+    for (let k = 0; k < N * 2; k++) {
+      const a = (k / (N * 2)) * TAU;
+      const r = k % 2 ? 0.25 : 0.38 + 0.16 * tri(k * 0.37 + 0.21);
+      star.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    const ragged = [];
+    for (let k = 0; k < 18; k++) {
+      const a = (k / 18) * TAU;
+      const r = 0.29 + 0.04 * tri(k * 0.61 + 0.1);
+      ragged.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    const hole = [];
+    for (let k = 0; k < 14; k++) {
+      const a = (k / 14) * TAU;
+      const r = 0.19 + 0.03 * tri(k * 0.43);
+      hole.push([Math.cos(a) * r, Math.sin(a) * r]);
+    }
+    return mergeGeometries([layer(polyShape(star), 0xe6c08a, 0), layer(polyShape(ragged), 0x3b2418, 0.006), layer(polyShape(hole), 0x0e0a0c, 0.012)], false);
+  });
+let holeMaterial = null;
+function holeMat() {
+  if (!holeMaterial) {
+    holeMaterial = noOutline(new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: gradientMap(3), polygonOffset: true, polygonOffsetFactor: -2, polygonOffsetUnits: -2 }));
+    holeMaterial.name = 'ship:hole';
+  }
+  return holeMaterial;
+}
+
+// ---------------------------------------------------------------------------
+// Projectiles (one mesh per ball; cached geometry, shared material)
+// ---------------------------------------------------------------------------
+
+const SHOT_COLOR = 0x2b2b38; // the round shot's colour in main.js
+const shotGeos = {};
+function shotGeo(id) {
+  if (shotGeos[id]) return shotGeos[id];
+  let g;
+  if (id === 'chain') {
+    // two half-balls (flat faces inward) on an iron bar
+    const half = (sx) => new THREE.SphereGeometry(0.26, 12, 8).scale(0.72, 1, 1).translate(sx * 0.48, 0, 0);
+    const bar = new THREE.CapsuleGeometry(0.07, 0.86, 2, 8).rotateZ(PI / 2);
+    g = mergeGeometries([half(-1), half(1), bar], false);
+  } else if (id === 'grape') {
+    // six small balls in a tight cluster
+    const parts = [];
+    for (let k = 0; k < 5; k++) {
+      const a = (k / 5) * TAU;
+      parts.push(new THREE.SphereGeometry(0.15, 10, 7).translate(Math.cos(a) * 0.17, (k % 2) * 0.06 - 0.05, Math.sin(a) * 0.17));
+    }
+    parts.push(new THREE.SphereGeometry(0.15, 10, 7).translate(0, 0.16, 0));
+    g = mergeGeometries(parts, false);
+  } else {
+    g = new THREE.SphereGeometry(0.34, 12, 8);
+  }
+  shotGeos[id] = g;
+  return g;
+}
+function spinShot() {
+  // chain shot whirls round as it flies (visual only)
+  this.rotation.y = this.userData.spin + performance.now() * 0.012;
+  this.updateMatrix();
+  if (this.parent) this.matrixWorld.multiplyMatrices(this.parent.matrixWorld, this.matrix);
+  else this.matrixWorld.copy(this.matrix);
+}
+
+/**
+ * A cannonball mesh for an ammo id ('round' | 'chain' | 'grape'; anything else = round). Geometry
+ * is cached and the material shared: the caller adds it to the scene and removes it again, never
+ * disposes it. Round shot is the same ball as before; chain shot spins by itself.
+ */
+export function projectileMesh(ammoId) {
+  const id = ammoId === 'chain' || ammoId === 'grape' ? ammoId : 'round';
+  const m = new THREE.Mesh(shotGeo(id), toon(SHOT_COLOR));
+  m.name = `shot:${id}`;
+  if (id === 'chain') {
+    m.userData.spin = Math.random() * TAU;
+    m.onBeforeRender = spinShot;
+  }
+  return m;
+}
+
+/**
+ * A hole where a ball hit the hull: a flat splintered decal on the hull side (no outline), one
+ * InstancedMesh of up to 8 per ship (the oldest is reused). z: ship-local along (bow +), y: impact
+ * height (clamped to 0.5 .. deckY - 0.2), side: +1 starboard, -1 port (gameplay sides).
+ */
+export function addHole(group, at = {}) {
+  const P = group ? PRIV.get(group) : null;
+  if (!P) return;
+  const { z = 0, y = 0.9, side = 1 } = at && typeof at === 'object' ? at : {};
+  const t = P.table;
+  const sx = side < 0 ? 1 : -1; // starboard is ship-local -x
+  let hy = clamp(Number.isFinite(y) ? y : 0.9, 0.5, Math.max(0.5, P.deckY - 0.2));
+  hy = clamp(hy, t.y0, t.y0 + (t.ny - 1) * t.dy);
+  let hz = clamp(Number.isFinite(z) ? z : 0, t.z0 + 0.4, t.z0 + (t.nz - 1) * t.dz - 0.4);
+  // keep the decal on a part of the side wide enough to hold it (the ends curve away)
+  let w = tableAt(t, hz, hy);
+  for (let k = 0; k < 60 && w < P.minHalf && Math.abs(hz) > 0.05; k++) {
+    hz -= Math.sign(hz) * 0.1;
+    w = tableAt(t, hz, hy);
+  }
+  if (w < 0.1) return;
+  const e = 0.1;
+  const dz = (tableAt(t, hz + e, hy) - tableAt(t, hz - e, hy)) / (2 * e);
+  const dy = (tableAt(t, hz, hy + e) - tableAt(t, hz, hy - e)) / (2 * e);
+  const n = V3(sx, -dy, -dz).normalize();
+  let H = P.holes;
+  if (!H) {
+    H = new THREE.InstancedMesh(holeGeo(), holeMat(), MAX_HOLES);
+    H.name = 'holes';
+    H.count = 0;
+    H.frustumCulled = false; // a child of the ship: its bounds would need refreshing per hole
+    H.userData.keep = true;
+    group.add(H);
+    P.holes = H;
+  }
+  const i = P.holeNext % MAX_HOLES;
+  const k = P.holeSeq++;
+  P.holeNext++;
+  const q = new THREE.Quaternion().setFromUnitVectors(FWD, n);
+  q.multiply(new THREE.Quaternion().setFromAxisAngle(FWD, k * 2.39996));
+  const sc = P.holeScale * (0.85 + 0.3 * tri(k * 0.618 + 0.3));
+  const pos = V3(sx * w, hy, hz).addScaledVector(n, 0.03);
+  H.setMatrixAt(i, new THREE.Matrix4().compose(pos, q, V3(sc, sc, sc)));
+  H.count = Math.min(MAX_HOLES, P.holeNext);
+  H.instanceMatrix.needsUpdate = true;
+  H.visible = true;
+}
+
+/** Remove every hole (e.g. the player's hull back to full). */
+export function clearHoles(group) {
+  const P = group ? PRIV.get(group) : null;
+  if (!P || !P.holes) return;
+  P.holes.count = 0;
+  P.holes.visible = false;
+  P.holeNext = 0;
+}
+
+/**
+ * Visible damage. level 0 (sound) | 1 (battered: slack sails) | 2 (wrecked: a deck fire and one
+ * sail drooping from a single yard arm); mast: true drops the top sail (MAST DOWN), false raises it.
+ * Leaving a field out keeps it. Cheap when nothing changes. State: userData.damageLevel,
+ * userData.mastDown, userData.sailInfo[i].dropped.
+ */
+export function setShipDamage(group, state = {}) {
+  const P = group ? PRIV.get(group) : null;
+  if (!P) return;
+  const { level, mast } = state && typeof state === 'object' ? state : {};
+  const u = group.userData;
+  const lv = level === undefined || level === null ? u.damageLevel : clamp(Math.round(Number(level)) || 0, 0, 2);
+  const md = mast === undefined || mast === null ? u.mastDown : !!mast;
+  if (lv === u.damageLevel && md === u.mastDown) return;
+  u.damageLevel = lv;
+  u.mastDown = md;
+  applySails(group, P);
+  if (lv >= 2 && !P.fires) P.fires = P.fireSpots.map(([x, y, z, s]) => deckFire(group, P, x, y, z, s));
+  for (const f of P.fires || []) f.visible = lv >= 2;
+}
+
+/**
+ * Change the colours flown: 'white' (struck: a white flag in place of her own), 'player' (a prize:
+ * your flag, flagLook = a LOOKS.flag entry, default the blue pennant) or 'own' (her own again).
+ * State: userData.flag.
+ */
+export function hoistFlag(group, kind, flagLook = null) {
+  const P = group ? PRIV.get(group) : null;
+  if (!P || !P.flagSpot) return;
+  const k = kind === 'white' || kind === 'player' ? kind : 'own';
+  if (k === 'player') {
+    const look = flagLook && typeof flagLook === 'object' ? flagLook : findLook('flag');
+    const key = `${look.kind}|${look.color}|${look.emblem}`;
+    if (P.prize && P.prizeKey !== key) {
+      const old = P.prize;
+      old.parent.remove(old);
+      old.geometry.dispose();
+      const list = group.userData.flags;
+      if (list.includes(old)) list.splice(list.indexOf(old), 1);
+      P.prize = null;
+    }
+    if (!P.prize) {
+      P.prize = raiseFlag(group, P, look);
+      P.prizeKey = key;
+    }
+  }
+  if (k === 'white' && !P.white) P.white = raiseFlag(group, P, { kind: 'white' });
+  for (const f of P.ownFlags) f.visible = k === 'own';
+  if (P.white) P.white.visible = k === 'white';
+  if (P.prize) P.prize.visible = k === 'player';
+  group.userData.flag = k;
+}
+
+/** Build a flag that flies from the ship's main flag spot (its staff is already there). */
+function raiseFlag(group, P, look) {
+  const spot = P.flagSpot;
+  const S = { group, flags: group.userData.flags, flagSpot: spot };
+  const h = Math.min(spot.h, 1.6);
+  let o;
+  if (look.kind === 'white') {
+    const wh = clamp(spot.h, 0.9, 1.4);
+    o = { len: wh * 1.45, h: wh, mat: mat(0xf8f6ee), nu: 14 };
+  } else if (look.kind === 'jolly') {
+    o = {
+      len: Math.max(1.5, spot.len * 0.92),
+      h,
+      shape: 'swallow',
+      mat: mat(look.color),
+      decal: { shapes: jollyRogerShapes(), size: 0.46 * h, cx: 0.37, cy: 0.02, mat: mat(look.emblem ?? 0xf6f1e4, { outline: false }) },
+      amp: h * 0.15,
+    };
+  } else {
+    o = { len: Math.max(1.6, spot.len * 1.1), h: Math.min(0.7, h * 0.62), shape: 'pennant', mat: mat(look.color) };
+  }
+  const p = spot.p.clone();
+  p.y += (h - o.h) / 2; // hang from the top of the staff
+  const f = flagMesh(S, { ...o, p, yaw: spot.yaw, staff: false });
+  f.name = `flag:${look.kind}`;
+  return f;
+}
 
 // ---------------------------------------------------------------------------
 // Public API
@@ -2771,11 +4091,21 @@ const BUILDERS = {
  *   type: the upgraded ship type (playerType() in upgrades.js); its gun count places the gun ports
  *   look: { hull, sails, flag } paint ids from LOOKS (unknown ids -> the default paint)
  *   upgrades: { guns, shot, crew, hull, sails, carpenter } tiers, each shown on the model
+ *   armory: { grapple } Long grapples tier (0..2): coiled grapnels on the rail (none at tier 0)
  * group.userData = { type, sails: Mesh[], flags: Mesh[], glows: [{material, base, amt, f, ph}],
- *                    fx: [{kind, obj, ...}], cloth: Material[] (player only), phase }
- * The player also gets deckSpots: [{x, y, z, h}] (free standing spots on deck, ship-local, h = facing
- * yaw, clear of every prop for all upgrades), hullSpots: [{x, y, z, side, h}] (on the hull sides just
- * above the waterline, h = yaw facing the hull) and blockers: [{x, z, r} | {x, z, hx, hz}] (deck props).
+ *                    fx: [{kind, obj, ...}], cloth: Material[] (player only), phase,
+ *   battle data (ship-local; +x = port, -x = starboard, bow = +z):
+ *     deckY, railY: main deck and cap-rail heights amidships
+ *     deckSpots: [{x, y, z, h}] free standing spots on deck (>= 4; h = facing yaw; the player's 6 are
+ *                clear of every prop for all upgrades; the prahu's narrow hull puts three on its outrigger booms)
+ *     yardTips: { port: {x, y, z}, star: {x, y, z} } ends of the main course yard (rope anchors for swings)
+ *     hullSide: { z0, dz, half: number[] } hull half-width sampled along z at y 0.9
+ *     sailInfo: [{ mesh, top, dropped }] every sail mesh; top marks the one holding the sail that
+ *                comes down on MAST DOWN, dropped is true while it is down
+ *     damageLevel: 0 | 1 | 2, mastDown: boolean, flag: 'own' | 'white' | 'player' (see setShipDamage, hoistFlag)
+ *   player only: helm: {x, y, z, h} (the captain's place behind the wheel, facing the bow), coils (grapnels
+ *     shown), hullSpots: [{x, y, z, side, h}] (on the hull sides just above the waterline, h = yaw facing
+ *     the hull) and blockers: [{x, z, r} | {x, z, hx, hz}] (deck props) }
  * Materials are shared toon() materials except userData.glows / userData.cloth
  * (per-ship clones), so don't mutate or dispose the others; see disposeShip().
  */
@@ -2790,9 +4120,34 @@ export function buildShip(typeKey, opts = {}) {
   }
   const group = new THREE.Group();
   group.name = `ship:${typeKey}`;
-  const S = { group, sails: [], flags: [], glows: [], glowCache: new Map(), fx: [], cloth: null, blockers: [], deckSpots: null, hullSpots: null };
+  const S = {
+    group,
+    sails: [],
+    flags: [],
+    glows: [],
+    glowCache: new Map(),
+    fx: [],
+    cloth: null,
+    blockers: [],
+    deckSpots: null,
+    hullSpots: null,
+    hull: null,
+    rigs: [],
+    helm: null,
+    coils: 0,
+    flagSpot: null,
+    fireSpots: null,
+    fireColors: null,
+    dropSail: null,
+    droopSail: null,
+    yardTips: null,
+  };
   build(S, T, o);
   mergeStatic(group);
+  const hull = S.hull;
+  const top = S.dropSail ? { ...S.dropSail, ranges: null } : rigTarget(S.rigs[0], 0);
+  const droop = S.droopSail ? (S.droopSail === S.dropSail ? top : { ...S.droopSail, ranges: null }) : rigTarget(S.rigs[1] || S.rigs[0], -1);
+  const spots = (S.deckSpots || []).map((p) => ({ x: r3(p.x), y: r3(p.y), z: r3(p.z), h: r3(p.h) }));
   group.userData = {
     type: typeKey,
     sails: S.sails,
@@ -2801,12 +4156,52 @@ export function buildShip(typeKey, opts = {}) {
     fx: S.fx,
     cloth: S.cloth || [],
     phase: Math.random() * TAU,
+    // battle data (SPEC2 §9.1), all ship-local: +x = port, bow = +z
+    deckY: r3(hull.D),
+    railY: r3(hull.railAt(0)),
+    deckSpots: S.hullSpots ? S.deckSpots : spots,
+    yardTips: S.yardTips || rigYardTips(S.rigs[0]),
+    hullSide: hullSideData(hull, 0.9),
+    sailInfo: S.sails.map((mesh) => ({ mesh, top: !!top && mesh === top.mesh, dropped: false })),
+    damageLevel: 0,
+    mastDown: false,
+    flag: 'own',
   };
-  if (S.deckSpots) {
-    group.userData.deckSpots = S.deckSpots;
+  if (S.hullSpots) {
     group.userData.hullSpots = S.hullSpots;
     group.userData.blockers = S.blockers;
   }
+  if (S.helm) {
+    group.userData.helm = S.helm;
+    group.userData.coils = S.coils;
+  }
+  const sources = new Map();
+  for (const t of [top, droop]) {
+    if (!t || !t.ranges || sources.has(t.mesh)) continue;
+    const m = t.mesh.material;
+    sources.set(t.mesh, { groups: t.mesh.geometry.groups.map((g) => ({ ...g })), material: m, list: Array.isArray(m) ? m : [m] });
+  }
+  PRIV.set(group, {
+    table: holeTable(hull),
+    deckY: hull.D,
+    minHalf: 0.42,
+    holeScale: clamp(T.len / 11, 0.75, 1.15),
+    holes: null,
+    holeNext: 0,
+    holeSeq: 0,
+    top,
+    droop,
+    sources,
+    fireSpots: S.fireSpots || [],
+    fireColors: S.fireColors,
+    fires: null,
+    glowCache: new Map(),
+    flagSpot: S.flagSpot,
+    ownFlags: [...S.flags],
+    white: null,
+    prize: null,
+    prizeKey: '',
+  });
   return group;
 }
 
@@ -2826,7 +4221,7 @@ export function animateShip(group, t, speedRatio = 0) {
     const base = 0.42 + 0.58 * sr;
     const luff = (1 - sr) * 0.09 * Math.sin(t * 7.1 + p + ph) * Math.sin(t * 2.3 + p);
     const breathe = 0.035 * Math.sin(t * 1.6 + p + ph);
-    s.scale.z = base + luff + breathe;
+    s.scale.z = (base + luff + breathe) * ((s.userData.sail && s.userData.sail.limp) ?? 1);
   }
   const w = 6.5 + 5 * sr;
   const amp = 0.6 + 0.5 * sr;
@@ -2872,6 +4267,7 @@ export function disposeShip(group) {
   const shared = new Set(geoCache.values());
   group.traverse((o) => {
     if (o.isMesh && o.geometry && !shared.has(o.geometry)) o.geometry.dispose();
+    if (o.isInstancedMesh) o.dispose(); // its instance buffers (the hole decal geometry is shared)
   });
   const u = group.userData || {};
   for (const g of u.glows || []) g.material.dispose();
