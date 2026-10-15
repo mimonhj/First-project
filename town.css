@@ -1,2 +1,509 @@
-/* The walkable town (SPEC2 §7.6–7.8): the town HUD, the wardrobe and tavern panels, the Harbour menu
-   and the All aboard? dialog. Empty until Stage 2 (2C) fills it. Loaded after style.css. */
+/* The walkable town (SPEC2 §7.6–7.8): the town HUD, the wardrobe and tavern panels, the Harbour menu,
+   the All aboard? dialog and the shipyard's Go ashore button. Loaded after style.css; reuses its
+   tokens (--ink, --paper, --gold, the --*-text colours) and the shipyard panel's .dock-panel look.
+   Like the shipyard, the town screens let pointer events through to the 3D view (drag to turn the
+   camera, tap to walk); only their controls and panels take them. */
+
+/* ---------- The shipyard's "Go ashore" / "Back to town" button (in .dock-head) ---------- */
+.dock-head .dock-ashore {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-height: 44px;
+  margin: 8px 0 0 6px;
+  padding: 7px 14px 5px 10px;
+  font-size: 17px;
+  line-height: 1.1;
+  border-width: 3px;
+  box-shadow: 0 4px 0 var(--ink);
+  vertical-align: middle;
+  white-space: nowrap;
+}
+.dock-head .dock-ashore:active { box-shadow: 0 1px 0 var(--ink); }
+.dock-ashore .boot { width: 22px; height: 22px; flex: none; fill: #8b5a2b; stroke: var(--ink); stroke-width: 2; stroke-linejoin: round; margin-top: -2px; }
+/* Compact headers (short portrait and short landscape) have no room to spare (the list is all that
+   is left for the upgrades): the button floats just outside the panel instead, above the bottom
+   sheet or under the sound button beside the side panel (it stays in the header in Tab order). */
+@media (orientation: portrait) and (max-height: 700px), (orientation: landscape) and (max-height: 500px) {
+  .dock-panel:has(.dock-ashore:not(.hidden)) { overflow: visible; }
+  .dock-panel:has(.dock-ashore:not(.hidden)) .dock-head { position: static; border-radius: 20px 20px 0 0; }
+  .dock-panel:has(.dock-ashore:not(.hidden)) .dock-exits { border-radius: 0 0 16px 16px; }
+  .dock-head .dock-ashore { position: absolute; margin: 0; font-size: 16px; padding: 6px 13px 4px 9px; box-shadow: 0 3px 0 var(--ink); }
+  .dock-ashore .boot { width: 20px; height: 20px; }
+}
+@media (orientation: portrait) and (max-height: 700px) {
+  .dock-head .dock-ashore { left: 0; bottom: calc(100% + 12px); }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .dock-panel:has(.dock-ashore:not(.hidden)) .dock-head { border-radius: 16px 16px 0 0; }
+  .dock-head .dock-ashore { top: 54px; right: calc(100% + 8px); font-size: 15px; }
+}
+
+/* ---------- Town overlays ---------- */
+.overlay.town { background: none; pointer-events: none; }
+#town-screen { display: block; padding: 0; }
+#town-screen:focus { outline: none; }
+#town-screen.hidden { display: none !important; }
+.overlay.town.wardrobe,
+.overlay.town.tavern { justify-content: flex-end; align-items: center; padding: 14px; }
+.town-panel { pointer-events: auto; }
+@media (orientation: portrait) {
+  .overlay.town.wardrobe, .overlay.town.tavern { align-items: flex-end; justify-content: center; padding: 0 8px 8px; }
+}
+@media (orientation: landscape) and (max-height: 500px) {
+  .overlay.town.wardrobe, .overlay.town.tavern { padding: 8px; }
+}
+
+/* Corner pieces share the parchment-and-ink look of the shipyard. */
+.town-chest {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  left: max(12px, env(safe-area-inset-left));
+  pointer-events: none;
+}
+.town-corner {
+  position: absolute;
+  top: max(12px, env(safe-area-inset-top));
+  right: max(12px, env(safe-area-inset-right));
+  display: flex;
+  gap: 10px;
+}
+.town-btn,
+.town-mute {
+  pointer-events: auto;
+  width: 48px;
+  height: 48px;
+  padding: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink);
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.town-btn { font-size: 24px; line-height: 1; font-weight: 700; }
+.town-btn:hover, .town-mute:hover { background: #fff3c4; }
+.town-btn:active, .town-mute:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.town-mute .ico { width: 24px; height: 24px; }
+.town-mute.muted { background: #e8dcc2; }
+
+/* Narrow screens: the chest icon stands for the words "Treasure chest" (still read out). */
+@media (max-width: 519px) {
+  .town-chest .chest-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* Keyboard help (desktop): a small legend under the chest. */
+.town-keys {
+  position: absolute;
+  top: calc(max(12px, env(safe-area-inset-top)) + 52px);
+  left: max(12px, env(safe-area-inset-left));
+  max-width: min(240px, calc(100% - 150px));
+  margin: 0;
+  padding: 6px 10px 7px;
+  font-size: 13px;
+  line-height: 1.75;
+  color: var(--ink);
+  background: rgba(255, 244, 214, 0.94);
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--ink);
+  pointer-events: none;
+}
+.town-keys kbd { font-size: 11px; min-width: 18px; padding: 0 4px; margin: 0 1px; box-shadow: 0 1px 0 var(--ink); text-align: center; }
+.town-keys { display: flex; flex-wrap: wrap; column-gap: 12px; row-gap: 0; }
+.town-keys .tk { white-space: nowrap; }
+
+/* ---------- The places bar (bottom centre) ---------- */
+.town-places {
+  position: absolute;
+  left: 50%;
+  bottom: max(10px, env(safe-area-inset-bottom));
+  transform: translateX(-50%);
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  pointer-events: auto;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 22px;
+  box-shadow: 0 4px 0 var(--ink);
+}
+.town-place {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  min-width: 52px;
+  min-height: 50px;
+  padding: 4px 12px 2px 8px;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 18px;
+  line-height: 1;
+  letter-spacing: 0.03em;
+  white-space: nowrap;
+  color: var(--ink);
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 16px;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.town-place svg { width: 30px; height: 30px; flex: none; margin-top: -2px; }
+.town-place:hover { background: #fff3c4; }
+.town-place:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.town-place.going { background: var(--gold); }
+.town-place[data-place="ship"] { background: #e6f6ff; }
+.town-place[data-place="ship"].going, .town-place[data-place="ship"]:hover { background: #c9ecff; }
+/* Phones: icons only (the buttons keep their names, "Walk to the tailor"). */
+@media (max-width: 479px) {
+  .town-place { width: 56px; padding: 4px; }
+  .town-place .tp-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* "Polly's Plumes & Trims — Enter ⏎": just above the places bar. */
+.town-prompt {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 76px);
+  width: fit-content;
+  max-width: calc(100% - 24px);
+  margin: 0 auto;
+  min-height: 46px;
+  padding: 8px 18px 6px;
+  pointer-events: auto;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 18px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  text-align: center;
+  color: var(--ink);
+  background: var(--gold);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 4px 0 var(--ink);
+  cursor: pointer;
+  animation: town-prompt-in 0.3s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+.town-prompt:active { box-shadow: 0 1px 0 var(--ink); transform: translateY(3px); }
+.town-prompt kbd { font-size: 13px; vertical-align: 2px; }
+.town-prompt .tp-key { white-space: nowrap; }
+@keyframes town-prompt-in {
+  from { opacity: 0; transform: translateY(10px) scale(0.9); }
+  to { opacity: 1; transform: none; }
+}
+
+/* ---------- Touch: the stick and the Go in button ---------- */
+.town-action,
+.town-joystick { display: none; }
+.town-joystick.on { display: block; }
+.town-joystick {
+  position: absolute;
+  left: 22px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 84px);
+  width: 128px;
+  height: 128px;
+  pointer-events: none;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(255, 255, 255, 0.35) 0 55%, rgba(255, 255, 255, 0.15) 56%);
+  border: 3px solid rgba(29, 19, 48, 0.55);
+  box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.45);
+  opacity: 0.6;
+}
+.town-joystick.on { bottom: auto; transform: translate(-50%, -50%); opacity: 1; }
+.town-knob {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 56px;
+  height: 56px;
+  margin: -28px 0 0 -28px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 38% 32%, #fff 0 30%, #ffe7b0 70%);
+  border: 3px solid var(--ink);
+  box-shadow: 0 3px 0 var(--ink);
+}
+.town-action {
+  position: absolute;
+  right: 18px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 110px);
+  width: 76px;
+  height: 76px;
+  padding: 6px 0 0;
+  pointer-events: auto;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 15px;
+  line-height: 1;
+  color: var(--ink);
+  background: var(--gold);
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  box-shadow: 0 4px 0 var(--ink);
+  cursor: pointer;
+}
+.town-action .ta-ico svg { width: 30px; height: 30px; display: block; }
+.town-action:active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+.town-action[aria-disabled="true"] { background: #ece0c4; color: #5c4632; box-shadow: 0 2px 0 var(--ink); }
+.town-action[aria-disabled="true"] .ta-ico { display: none; }
+@media (hover: none) and (pointer: coarse) {
+  .town-action { display: flex; }
+  .town-joystick { display: block; }
+  .town-keys { display: none; }
+  /* the stick and the button sit above the places bar on tall screens... */
+  .town-prompt { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 226px); }
+}
+/* ...and in the bottom corners beside it on short (landscape) ones. */
+@media (hover: none) and (pointer: coarse) and (max-height: 560px) and (orientation: landscape) {
+  .town-joystick { left: 16px; bottom: max(12px, env(safe-area-inset-bottom)); width: 116px; height: 116px; }
+  .town-action { right: 16px; bottom: max(12px, env(safe-area-inset-bottom)); }
+  .town-prompt { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 76px); left: 150px; right: 150px; max-width: calc(100% - 300px); }
+}
+@media (hover: none) and (pointer: coarse) and (max-width: 760px) and (orientation: landscape) {
+  .town-place { width: 56px; padding: 4px; }
+  .town-place .tp-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+
+/* ---------- Speech bubbles over the townsfolk ---------- */
+.town-bubble {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: max-content;
+  max-width: min(240px, 60vw);
+  padding: 6px 13px 4px;
+  pointer-events: none;
+  text-align: center;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 17px;
+  line-height: 1.15;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.town-bubble::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -11px;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  background: #fff;
+  border: solid var(--ink);
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg) skew(8deg, 8deg);
+}
+
+/* ---------- Polly's Plumes & Trims: the wardrobe ---------- */
+.ward-note { margin: 10px 2px 2px; font-size: 14px; line-height: 1.35; color: var(--teal-text); text-align: center; }
+.ward-group h3 { margin: 12px 0 6px; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 17px; letter-spacing: 0.03em; color: var(--ink); }
+.ward-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(92px, 1fr)); gap: 8px; padding-bottom: 4px; }
+.ward-item,
+.ward-paint {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 3px;
+  min-height: 44px;
+  padding: 7px 4px 6px;
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 12px;
+  line-height: 1.15;
+  text-align: center;
+  color: var(--ink);
+  background: #fffaf0;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.ward-item:hover, .ward-paint:hover { background: #fff3c4; }
+.ward-item:active, .ward-paint:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.ward-item .chip,
+.ward-paint .chip {
+  flex: none;
+  width: 34px;
+  height: 28px;
+  border: 3px solid var(--ink);
+  border-radius: 50%;
+  background: linear-gradient(135deg, var(--c1) 0 50%, var(--c2) 50% 100%);
+}
+.ward-item .chip.none { background: linear-gradient(135deg, #fff 0 46%, var(--ink) 46% 54%, #fff 54%); }
+.wi-name { overflow-wrap: anywhere; }
+.wi-state { font-size: 11.5px; font-weight: 700; color: var(--teal-text); overflow-wrap: anywhere; }
+.ward-item.priced .wi-state { color: var(--gold-text); }
+.ward-item.poor .wi-state { color: var(--red-text); }
+.ward-item.locked { background: #efe6d2; cursor: not-allowed; }
+.ward-item.locked .chip { filter: grayscale(0.85); opacity: 0.75; }
+.ward-item.locked .wi-state { color: #5c4632; }
+.wi-lock { width: 9px; height: 11px; margin: 0 3px -1px 0; vertical-align: baseline; }
+.ward-item[aria-pressed="true"],
+.ward-paint[aria-pressed="true"] { background: #fff1bf; box-shadow: 0 0 0 3px var(--gold), 0 3px 0 3px var(--ink); }
+.ward-item[aria-pressed="true"]::after,
+.ward-paint[aria-pressed="true"]::after {
+  content: "\2713";
+  content: "\2713" / "";
+  position: absolute;
+  top: -9px;
+  right: -9px;
+  width: 22px;
+  height: 22px;
+  display: grid;
+  place-items: center;
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--ink);
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+}
+.ward-item.trying { background: #fff1bf; border-style: dashed; box-shadow: 0 0 0 3px var(--orange), 0 3px 0 3px var(--ink); }
+.ward-item.trying .wi-state { color: var(--ink); }
+/* "Match the ship's paint": a wide button above the shirts, chip in the hull's colours */
+.ward-paint { width: 100%; flex-direction: row; justify-content: flex-start; gap: 10px; min-height: 52px; padding: 7px 12px; margin: 0 0 8px; font-size: 15px; text-align: left; }
+.ward-paint .chip { border-radius: 6px 6px 50% 50% / 6px 6px 70% 70%; background: linear-gradient(180deg, var(--c1) 0 42%, var(--ink) 42% 50%, var(--c2) 50%); }
+.ward-paint .wi-name { flex: 1 1 auto; font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.02em; }
+.ward-paint .wi-state { flex: none; font-size: 12px; }
+/* The Buy button for what is being tried on: at the top of its group. */
+.ward-buy { display: flex; flex-direction: column; align-items: stretch; gap: 4px; margin: 0 0 10px; }
+.ward-buy .ward-buy-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  width: 100%;
+  min-height: 48px;
+  margin: 0;
+  padding: 8px 12px 5px;
+  font-size: 17px;
+  line-height: 1.15;
+  border-width: 3px;
+  border-radius: 16px;
+  box-shadow: 0 4px 0 var(--ink);
+  overflow-wrap: anywhere;
+  animation: town-prompt-pop 0.3s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+.ward-buy .ward-buy-btn:active { box-shadow: 0 1px 0 var(--ink); }
+.ward-buy-btn .coin {
+  flex: none;
+  display: inline-block;
+  width: 16px;
+  height: 16px;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+  background: radial-gradient(circle at 40% 35%, #fff6c8 0 22%, #ffc93c 27%, #ffb20f 100%);
+}
+.ward-buy-btn[aria-disabled="true"] { background: #ece0c4; color: #5c4632; box-shadow: 0 2px 0 var(--ink); cursor: not-allowed; }
+.ward-buy-btn.done[aria-disabled="true"] { background: #c9f7d0; color: var(--ink); cursor: default; }
+.ward-buy-btn .tick { font-size: 18px; line-height: 1; }
+.ward-buy-btn[aria-disabled="true"] .coin { filter: grayscale(1); }
+@keyframes town-prompt-pop {
+  from { transform: scale(0.85); opacity: 0; }
+  to { transform: none; opacity: 1; }
+}
+.wardrobe .dock-exits .btn.alt { flex: 0 1 auto; }
+
+/* Short screens (phones): compact chips, the colour beside the name and state, two or three a row. */
+@media (max-height: 520px) {
+  .ward-items { grid-template-columns: repeat(auto-fill, minmax(124px, 1fr)); gap: 6px; }
+  .ward-item {
+    display: grid;
+    grid-template-columns: auto minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    column-gap: 7px;
+    row-gap: 1px;
+    align-items: center;
+    justify-items: start;
+    text-align: left;
+    padding: 5px 7px 5px 6px;
+  }
+  .ward-item .chip { grid-row: 1 / 3; width: 26px; height: 22px; border-width: 2px; }
+  .ward-item .wi-state { font-size: 11px; }
+  .ward-group h3 { margin: 8px 0 4px; font-size: 15px; }
+  .ward-buy .ward-buy-btn { font-size: 14px; min-height: 44px; padding: 6px 10px 4px; border-radius: 14px; }
+  .ward-paint { min-height: 46px; padding: 5px 10px; font-size: 14px; }
+  .ward-note { display: none; }
+  .town-panel .dock-kicker { white-space: nowrap; letter-spacing: 0.05em; }
+}
+
+/* ---------- The Salty Sparrow: the tavern ---------- */
+.up-extra { display: block; margin-top: 2px; color: var(--teal-text); font-weight: 700; }
+.tav-h { margin: 16px 0 6px; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 17px; letter-spacing: 0.03em; color: var(--ink); }
+.rumour-note {
+  position: relative;
+  padding: 10px 14px 8px;
+  background: #fffaf0;
+  border: 3px solid var(--ink);
+  border-radius: 6px 16px 10px 14px;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.rumour-note::before {
+  content: "";
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  width: 14px;
+  height: 14px;
+  margin-left: -7px;
+  border-radius: 50%;
+  background: var(--red);
+  border: 2px solid var(--ink);
+}
+.rumour-note p { margin: 4px 0; font-size: 14px; line-height: 1.35; }
+.rumour-title { font-size: 15px; }
+.rumour-title b { font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.02em; color: var(--red-text); }
+.rumour-line { font-weight: 500; color: #4a3826; font-style: italic; }
+.rumour-ammo b { color: var(--teal-text); }
+.log-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
+.log-stats div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 5px 10px; background: #fffaf0; border: 2px solid var(--ink); border-radius: 12px; }
+.log-stats dt { font-size: 13px; line-height: 1.25; color: #5a4632; }
+.log-stats dd { margin: 0; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 19px; color: var(--gold-text); }
+.log-extra { margin: 8px 0 0; padding-left: 18px; font-size: 14px; }
+.log-sub { margin: 12px 0 4px; font-size: 14px; color: var(--ink); }
+.log-trophies { list-style: none; margin: 0; padding: 0; }
+.log-trophies li { display: flex; gap: 8px; align-items: baseline; margin: 4px 0; font-size: 14px; line-height: 1.3; }
+.log-trophies .lt-mark { flex: none; width: 20px; text-align: center; color: var(--gold-text); }
+.log-trophies li.won .lt-mark, .log-trophies li.won b { color: var(--teal-text); }
+@media (max-height: 500px) {
+  .rumour-note p { font-size: 13px; }
+}
+
+/* ---------- The Harbour menu and All aboard? ---------- */
+#harbour-dialog .panel, #aboard-dialog .panel { max-width: 480px; }
+.more-actions .btn.harbour-place { display: inline-flex; align-items: center; gap: 6px; padding: 10px 14px 8px 12px; }
+.harbour-place svg { width: 26px; height: 26px; flex: none; margin-top: -3px; }
+#harbour-exits:empty { display: none; }
+#harbour-exits { margin-top: 4px; padding-top: 6px; border-top: 3px dashed rgba(29, 19, 48, 0.25); }
+#aboard-dialog .more-actions { margin-bottom: 4px; }
+
+/* Focus rings: the darker teal, like the rest of the game. */
+.town-btn:focus-visible, .town-mute:focus-visible, .town-place:focus-visible, .town-prompt:focus-visible,
+.town-action:focus-visible, .dock-ashore:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 3px; }
+.town-panel button:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .town-prompt, .ward-buy .ward-buy-btn { animation: none; }
+}
