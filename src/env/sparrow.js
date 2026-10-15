@@ -3,7 +3,7 @@ import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.j
 import { mergeGeometries, mergeVertices } from 'three/addons/utils/BufferGeometryUtils.js';
 import { toon, setOutline, gradientMap, ensureIndex, OUTLINE_THICKNESS } from '../style.js';
 import { waveHeight } from '../scenery.js';
-import { buildShip, animateShip, disposeShip } from '../ships.js';
+import { buildShip, animateShip, disposeShip, hoistFlag } from '../ships.js';
 import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIGHT, RAIL } from '../people.js';
 
 // Sparrow's Floating Island: the pirate town on the water where the player's ship docks
@@ -30,6 +30,13 @@ import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIG
 // Draw calls: every static part is baked into a few vertex-coloured meshes (one per
 // ink weight), all fluttering cloth (bunting, flags, laundry) is ONE morph-target mesh,
 // and the gulls, smoke and bubbles are instanced.
+//
+// The town can be walked (the town view, see walk.js): build() also returns env.walk, plain data
+// generated from the same platform / bridge / prop calls that draw the town, so it always matches
+// the art: the decks the captain may stand on (inset from the rails and the water's edge), the rope
+// bridges, the props in the way, the places (the ship, the shipyard, Polly's Plumes & Trims on
+// platform s1 and The Salty Sparrow) and the spawn at the gangplank. Walkable: the pier, the plaza,
+// the tavern raft, the tower raft, the shipyard, Polly's and the garden.
 
 export const meta = {
   name: "Sparrow's Floating Island",
@@ -65,7 +72,11 @@ const PI = Math.PI;
 const TAU = PI * 2;
 const DECK = 1.3; // top of the town's boardwalks
 const TOWER_H = 5.8; // the lookout tower's crow's nest (low enough that its weathervane stays in the shipyard view)
-const SIGN_LIFT = 1.4; // the welcome sign's board sits this much higher than on plain 4.6 posts
+// The welcome sign: where it stands on the plaza and how much higher than on plain 4.6 posts its board
+// sits (high and far enough left to read over the docked ship's rigging and sails, even the big tier-2
+// ones, over most of the showcase camera's sway).
+const SIGN = { x: -5.9, z: -6.9, ry: 0.22, lift: 2.1 };
+const SIGN_LIFT = SIGN.lift;
 const BERTH = { x: 0, z: 0, h: PI / 2 }; // bow to +x; the town lies to -z (behind the ship)
 const WORLD_R = 120;
 const V3 = (x = 0, y = 0, z = 0) => new THREE.Vector3(x, y, z);
@@ -147,6 +158,13 @@ const rbox = (w, h, d, r = 0.08, seg = 1) =>
     const g = new RoundedBoxGeometry(w, h, d, seg, Math.max(0.005, Math.min(r, w / 2 - 0.005, h / 2 - 0.005, d / 2 - 0.005)));
     g.deleteAttribute('uv');
     return mergeVertices(g, 1e-4);
+  });
+// a plain box (12 triangles), for thin trim where rounded edges would not show: battens, clapboards
+const box = (w, h, d) =>
+  cached(`bx${r3(w)},${r3(h)},${r3(d)}`, () => {
+    const g = new THREE.BoxGeometry(w, h, d);
+    g.deleteAttribute('uv');
+    return g;
   });
 const cyl = (rt, rb, h, seg = 12, open = false) => cached(`cy${r3(rt)},${r3(rb)},${r3(h)},${seg},${open}`, () => new THREE.CylinderGeometry(rt, rb, h, seg, 1, open));
 const sphere = (seg = 14) => cached(`sp${seg}`, () => new THREE.SphereGeometry(1, seg, Math.max(5, Math.round(seg * 0.7))));
@@ -464,10 +482,15 @@ class Flutter {
 // Sign texture (painted lettering for the welcome sign, the tavern and the shipyard)
 // ---------------------------------------------------------------------------
 const SIGN_FONT = '"Luckiest Guy", "Fredoka", "Arial Black", Impact, "DejaVu Sans", sans-serif';
+const SIGN_W = 1024;
+const SIGN_H = 1024;
 const SIGN_UV = {
   welcome: [0, 0, 1024, 340],
   tavern: [0, 340, 640, 172],
   yard: [640, 340, 384, 172],
+  polly: [0, 512, 1024, 300],
+  tailor: [0, 812, 500, 180],
+  tailorBack: [512, 812, 500, 180], // the same arrow seen from behind: pointing left
 };
 function paintSigns(c) {
   const g = c.getContext('2d');
@@ -584,12 +607,112 @@ function paintSigns(c) {
   const Y = SIGN_UV.yard;
   board(Y, '#d83a3a', '#5a3820', 'rgba(0, 0, 0, 0.12)');
   letters('SHIPYARD', Y[0] + Y[2] / 2, Y[1] + Y[3] / 2 + 4, 58, '#fff3d6', '#2a1a12', 0.05);
+  // Polly's Plumes & Trims: pink board, a curly plume on the left, open scissors on the right
+  const Pq = SIGN_UV.polly;
+  board(Pq, '#ffd3dc', '#1f8f84', 'rgba(200, 90, 120, 0.18)');
+  g.fillStyle = 'rgba(255, 255, 255, 0.55)';
+  for (let k = 0; k < 9; k++) {
+    g.beginPath();
+    g.arc(Pq[0] + 250 + k * 66, Pq[1] + 40, 9, 0, TAU); // a row of white dots along the top
+    g.fill();
+  }
+  letters("POLLY'S", Pq[0] + Pq[2] / 2, Pq[1] + 118, 112, '#e2387a', '#2a1a12', 0.06);
+  letters('PLUMES & TRIMS', Pq[0] + Pq[2] / 2, Pq[1] + 222, 64, '#1f8f84', '#2a1a12', 0.05);
+  // the plume: a curved quill with feathery barbs
+  g.save();
+  g.translate(Pq[0] + 120, Pq[1] + 160);
+  g.rotate(-0.5);
+  g.lineJoin = 'round';
+  g.lineCap = 'round';
+  const vane = new Path2D();
+  vane.moveTo(0, 100);
+  vane.bezierCurveTo(-70, 40, -60, -60, 10, -110);
+  vane.bezierCurveTo(60, -60, 60, 40, 0, 100);
+  g.lineWidth = 10;
+  g.strokeStyle = '#2a1a12';
+  g.stroke(vane);
+  g.fillStyle = '#9b6fd6';
+  g.fill(vane);
+  g.strokeStyle = 'rgba(255, 255, 255, 0.7)';
+  g.lineWidth = 5;
+  for (let k = 0; k < 6; k++) {
+    const yy = 70 - k * 30;
+    g.beginPath();
+    g.moveTo(0, yy);
+    g.lineTo(-34 + k * 3, yy - 26);
+    g.moveTo(0, yy);
+    g.lineTo(34 - k * 3, yy - 26);
+    g.stroke();
+  }
+  g.strokeStyle = '#2a1a12';
+  g.lineWidth = 8;
+  g.beginPath();
+  g.moveTo(4, 140);
+  g.quadraticCurveTo(0, 20, 8, -100);
+  g.stroke();
+  g.restore();
+  // the scissors, open
+  g.save();
+  g.translate(Pq[0] + Pq[2] - 125, Pq[1] + 150);
+  g.lineJoin = 'round';
+  for (const s of [-1, 1]) {
+    g.save();
+    g.rotate(s * 0.32);
+    g.fillStyle = '#d8dde8';
+    g.strokeStyle = '#2a1a12';
+    g.lineWidth = 8;
+    g.beginPath();
+    g.moveTo(-10, 0);
+    g.lineTo(0, -112);
+    g.lineTo(16, -6);
+    g.closePath();
+    g.fill();
+    g.stroke();
+    g.fillStyle = '#e2383d';
+    g.beginPath();
+    g.ellipse(s * 4, 52, 26, 34, 0, 0, TAU);
+    g.fill();
+    g.stroke();
+    g.fillStyle = '#ffd3dc';
+    g.beginPath();
+    g.ellipse(s * 4, 54, 12, 18, 0, 0, TAU);
+    g.fill();
+    g.restore();
+  }
+  g.fillStyle = '#ffc93c';
+  g.beginPath();
+  g.arc(0, 4, 11, 0, TAU);
+  g.fill();
+  g.stroke();
+  g.restore();
+  // the arrow board to the tailor: painted on a board shaped like an arrow pointing right (and on
+  // its back, where the same arrow points left)
+  const arrow = (x, y, w, h, inset, dir) => {
+    const tip = h * 0.5;
+    const X = (u) => (dir > 0 ? x + u : x + w - u);
+    g.beginPath();
+    g.moveTo(X(inset), y + inset);
+    g.lineTo(X(w - tip - inset * 0.3), y + inset);
+    g.lineTo(X(w - inset * 1.4), y + h / 2);
+    g.lineTo(X(w - tip - inset * 0.3), y + h - inset);
+    g.lineTo(X(inset), y + h - inset);
+    g.closePath();
+  };
+  for (const [Tq, dir] of [[SIGN_UV.tailor, 1], [SIGN_UV.tailorBack, -1]]) {
+    g.fillStyle = '#5a3820';
+    arrow(Tq[0], Tq[1], Tq[2], Tq[3], 4, dir);
+    g.fill();
+    g.fillStyle = '#fff3d6';
+    arrow(Tq[0], Tq[1], Tq[2], Tq[3], 16, dir);
+    g.fill();
+    letters('TAILOR', Tq[0] + Tq[2] * (dir > 0 ? 0.42 : 0.58), Tq[1] + Tq[3] / 2 + 4, 74, '#e2387a', '#2a1a12', 0.05);
+  }
 }
 function signTexture() {
   if (typeof document === 'undefined') return null;
   const c = document.createElement('canvas');
-  c.width = 1024;
-  c.height = 512;
+  c.width = SIGN_W;
+  c.height = SIGN_H;
   paintSigns(c);
   const tex = new THREE.CanvasTexture(c);
   tex.colorSpace = THREE.SRGBColorSpace;
@@ -611,8 +734,41 @@ function signPlane(tex, region, w, h) {
   for (let i = 0; i < uv.count; i++) {
     const u = uv.getX(i);
     const v = uv.getY(i);
-    uv.setXY(i, (x + u * rw) / 1024, 1 - (y + (1 - v) * rh) / 512);
+    uv.setXY(i, (x + u * rw) / SIGN_W, 1 - (y + (1 - v) * rh) / SIGN_H);
   }
+  return g;
+}
+/** The outline of an arrow board pointing +x (w long, h tall, centred), as painted on the 'tailor' sign. */
+function arrowShape(w, h, inset = 0) {
+  const tip = h * 0.5;
+  const x0 = -w / 2;
+  const y0 = -h / 2;
+  return new THREE.Shape([
+    new THREE.Vector2(x0 + inset, y0 + inset),
+    new THREE.Vector2(x0 + w - tip - inset * 0.3, y0 + inset),
+    new THREE.Vector2(x0 + w - inset * 1.4, 0),
+    new THREE.Vector2(x0 + w - tip - inset * 0.3, y0 + h - inset),
+    new THREE.Vector2(x0 + inset, y0 + h - inset),
+  ]);
+}
+/**
+ * The painted face of the arrow board (its UVs map the arrow onto the 'tailor' atlas region). back:
+ * the face on the other side (facing -z, the arrow seen pointing left), for the board's back.
+ */
+function arrowPlane(w, h, back = false) {
+  const shape = arrowShape(w, h, w * (4 / SIGN_UV.tailor[2]));
+  if (back) for (const v of shape.curves) for (const q of [v.v1, v.v2]) if (q) q.x = -q.x;
+  const g = new THREE.ShapeGeometry(shape); // (faces +z either way: ShapeGeometry fixes the winding)
+  const [x, y, rw, rh] = SIGN_UV[back ? 'tailorBack' : 'tailor'];
+  const p = g.attributes.position;
+  const uv = g.attributes.uv;
+  for (let i = 0; i < p.count; i++) {
+    const u = (p.getX(i) + w / 2) / w;
+    const v = (p.getY(i) + h / 2) / h;
+    uv.setXY(i, (x + u * rw) / SIGN_W, 1 - (y + (1 - v) * rh) / SIGN_H);
+  }
+  if (back) g.rotateY(PI);
+  g.computeVertexNormals();
   return g;
 }
 
@@ -717,6 +873,42 @@ function sparrowBird(parent, s = 1, o = {}) {
     add(g, sph, flat(COL.white), -0.1 * flatX, 1.24, 0.52, 0, 0, 0, [0.035, 0.035, 0.03]);
   }
   g.scale.setScalar(s);
+  return g;
+}
+
+// A hat for a display head (the head's top at y 0.7 * s): 'tricorn', 'plumed' (a tricorn with a
+// curled feather) or 'straw'.
+function hatModel(parent, kind, s = 1) {
+  const g = new THREE.Group();
+  g.position.y = 0.66;
+  g.scale.setScalar(s / 0.66);
+  parent.add(g);
+  if (kind === 'straw') {
+    add(g, cyl(0.36, 0.36, 0.03, 14), ink(0xf2d27a), 0, 0.02, 0);
+    add(g, cyl(0.15, 0.18, 0.17, 10), ink(0xf2d27a), 0, 0.11, 0);
+    add(g, cyl(0.181, 0.181, 0.05, 10), ink(COL.red), 0, 0.06, 0);
+    add(g, sphere(8), ink(0xeac564), 0, 0.19, 0, 0, 0, 0, [0.15, 0.05, 0.15]);
+    return g;
+  }
+  const dark = kind === 'plumed' ? 0x5a3a8a : 0x2a2230;
+  // the cocked brim: an upturned three-cornered dish round a rounded crown
+  add(g, lathe('tricornBrim', [[0, 0], [0.19, 0], [0.34, 0.2], [0.31, 0.22], [0.17, 0.05], [0, 0.04]], 3), ink(dark), 0, 0, 0, 0, PI / 6, 0);
+  add(g, sphere(8), ink(dark), 0, 0.1, 0, 0, 0, 0, [0.18, 0.17, 0.18]);
+  // gold trim along the three cocked edges (the brim's corners: lathe angle PI / 6 + i * 2PI / 3)
+  const corner = (i, r) => {
+    const a = PI / 6 + (i * TAU) / 3;
+    return [Math.sin(a) * r, Math.cos(a) * r];
+  };
+  for (let i = 0; i < 3; i++) {
+    const [ax, az] = corner(i, 0.33);
+    const [bx, bz] = corner(i + 1, 0.33);
+    add(g, box(Math.hypot(bx - ax, bz - az) * 0.92, 0.035, 0.035), thin(COL.gold), (ax + bx) / 2, 0.215, (az + bz) / 2, 0, Math.atan2(-(bz - az), bx - ax), 0);
+  }
+  if (kind === 'plumed') {
+    const f = add(g, sphere(8), ink(0xf58fb0), -0.1, 0.27, -0.04, 0, 0, 0.6, [0.07, 0.24, 0.11]);
+    f.rotation.x = -0.35;
+    add(g, sphere(6), ink(COL.white), -0.17, 0.42, -0.08, 0, 0, 0.9, [0.05, 0.12, 0.07]);
+  }
   return g;
 }
 
@@ -944,6 +1136,248 @@ function hullProbe(ship, side) {
   };
 }
 
+// Every visible triangle of a ship (not its crew: setShip takes them off first), ship-local, as a flat
+// array of 9 numbers per triangle.
+function shipTriangles(ship) {
+  ship.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(ship.matrixWorld).invert();
+  const m = new THREE.Matrix4();
+  const v = V3();
+  const out = [];
+  ship.traverseVisible((o) => {
+    if (!o.isMesh || o.isSkinnedMesh || o.isInstancedMesh || !o.geometry.attributes.position) return;
+    const P = o.geometry.attributes.position;
+    const I = o.geometry.index ? o.geometry.index.array : null;
+    const n = I ? I.length : P.count;
+    m.multiplyMatrices(inv, o.matrixWorld);
+    for (let i = 0; i < n; i++) {
+      v.fromBufferAttribute(P, I ? I[i] : i).applyMatrix4(m);
+      out.push(v.x, v.y, v.z);
+    }
+  });
+  return new Float32Array(out);
+}
+
+// Can a camera at C (looking toward T) see the point (x, y, z)? Every triangle is projected once into
+// the camera's picture and bucketed on a grid there, so a query tests the handful under the point
+// (with depth interpolated perspective-correctly) instead of raycasting the whole ship. region: points
+// whose picture bounds the queries (the rest of the picture is left out).
+function viewProbe(tris, C, T, region = null) {
+  const F = V3().subVectors(T, C).normalize();
+  const R = V3().crossVectors(F, _up).normalize();
+  const U = V3().crossVectors(R, F);
+  const CELL = 0.02;
+  const LIM = 1.4;
+  const N = Math.ceil((2 * LIM) / CELL);
+  let bx0 = -LIM;
+  let bx1 = LIM;
+  let by0 = -LIM;
+  let by1 = LIM;
+  if (region) {
+    bx0 = by0 = Infinity;
+    bx1 = by1 = -Infinity;
+    for (const p of region) {
+      const d = V3().subVectors(p, C);
+      const z = Math.max(0.3, d.dot(F));
+      const x = d.dot(R) / z;
+      const y = d.dot(U) / z;
+      bx0 = Math.min(bx0, x - 0.02);
+      bx1 = Math.max(bx1, x + 0.02);
+      by0 = Math.min(by0, y - 0.02);
+      by1 = Math.max(by1, y + 0.02);
+    }
+  }
+  const n = tris.length / 9;
+  const pr = new Float32Array(n * 9); // x, y, 1/z per corner
+  const cells = new Map();
+  let k = 0;
+  for (let t = 0; t < n; t++) {
+    let ok = true;
+    for (let c = 0; c < 3 && ok; c++) {
+      const i = t * 9 + c * 3;
+      const dx = tris[i] - C.x;
+      const dy = tris[i + 1] - C.y;
+      const dz = tris[i + 2] - C.z;
+      const z = dx * F.x + dy * F.y + dz * F.z;
+      if (z < 0.3) ok = false;
+      else {
+        pr[k * 9 + c * 3] = (dx * R.x + dy * R.y + dz * R.z) / z;
+        pr[k * 9 + c * 3 + 1] = (dx * U.x + dy * U.y + dz * U.z) / z;
+        pr[k * 9 + c * 3 + 2] = 1 / z;
+      }
+    }
+    if (!ok) continue;
+    const o = k * 9;
+    const mx0 = Math.max(bx0, Math.min(pr[o], pr[o + 3], pr[o + 6]));
+    const mx1 = Math.min(bx1, Math.max(pr[o], pr[o + 3], pr[o + 6]));
+    const my0 = Math.max(by0, Math.min(pr[o + 1], pr[o + 4], pr[o + 7]));
+    const my1 = Math.min(by1, Math.max(pr[o + 1], pr[o + 4], pr[o + 7]));
+    if (mx0 > mx1 || my0 > my1) continue; // (outside the region)
+    const x0 = Math.floor((mx0 + LIM) / CELL);
+    const x1 = Math.floor((mx1 + LIM) / CELL);
+    const y0 = Math.floor((my0 + LIM) / CELL);
+    const y1 = Math.floor((my1 + LIM) / CELL);
+    if (x1 < 0 || y1 < 0 || x0 >= N || y0 >= N) continue;
+    for (let iy = Math.max(0, y0); iy <= Math.min(N - 1, y1); iy++) {
+      for (let ix = Math.max(0, x0); ix <= Math.min(N - 1, x1); ix++) {
+        const key = iy * N + ix;
+        let list = cells.get(key);
+        if (!list) cells.set(key, (list = []));
+        list.push(k);
+      }
+    }
+    k++;
+  }
+  return (x, y, z) => {
+    const dx = x - C.x;
+    const dy = y - C.y;
+    const dz = z - C.z;
+    const d = dx * F.x + dy * F.y + dz * F.z;
+    if (d < 0.3) return false;
+    const px = (dx * R.x + dy * R.y + dz * R.z) / d;
+    const py = (dx * U.x + dy * U.y + dz * U.z) / d;
+    const ix = Math.floor((px + LIM) / CELL);
+    const iy = Math.floor((py + LIM) / CELL);
+    const list = ix >= 0 && iy >= 0 && ix < N && iy < N ? cells.get(iy * N + ix) : null;
+    if (!list) return true;
+    const near = 1 / Math.max(0.01, d - 0.05); // anything nearer than the point by 5 cm hides it
+    for (const t of list) {
+      const o = t * 9;
+      const ax = pr[o];
+      const ay = pr[o + 1];
+      const bx = pr[o + 3];
+      const by = pr[o + 4];
+      const cx = pr[o + 6];
+      const cy = pr[o + 7];
+      const den = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+      if (Math.abs(den) < 1e-12) continue;
+      const l1 = ((by - cy) * (px - cx) + (cx - bx) * (py - cy)) / den;
+      const l2 = ((cy - ay) * (px - cx) + (ax - cx) * (py - cy)) / den;
+      const l3 = 1 - l1 - l2;
+      if (l1 < 0 || l2 < 0 || l3 < 0) continue;
+      if (l1 * pr[o + 2] + l2 * pr[o + 5] + l3 * pr[o + 8] > near) return false;
+    }
+    return true;
+  };
+}
+
+// Where the deck is taken (ship-local x, z): every bit of the ship between 5 and 55 cm above the deck
+// (props, mast feet, coamings, kegs, the bulwarks' inside) rasterised on a 5 cm grid; at(x, z) is the
+// distance from (x, z) to the nearest taken cell.
+function deckOccupancy(tris, deckY, { X0 = -1.9, Z0 = -4.6, NX = 76, NZ = 206 } = {}) {
+  const CS = 0.05;
+  const taken = new Uint8Array(NX * NZ);
+  const lo = deckY + 0.05;
+  const hi = deckY + 0.55;
+  const mark = (x, z) => {
+    const ix = Math.floor((x - X0) / CS);
+    const iz = Math.floor((z - Z0) / CS);
+    if (ix >= 0 && iz >= 0 && ix < NX && iz < NZ) taken[iz * NX + ix] = 1;
+  };
+  const clipY = (poly, y, keepAbove) => {
+    const out = [];
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      const pin = keepAbove ? p[1] >= y : p[1] <= y;
+      const qin = keepAbove ? q[1] >= y : q[1] <= y;
+      if (pin) out.push(p);
+      if (pin !== qin) {
+        const t = (y - p[1]) / (q[1] - p[1]);
+        out.push([p[0] + (q[0] - p[0]) * t, y, p[2] + (q[2] - p[2]) * t]);
+      }
+    }
+    return out;
+  };
+  const n = tris.length / 9;
+  for (let t = 0; t < n; t++) {
+    const o = t * 9;
+    const ymin = Math.min(tris[o + 1], tris[o + 4], tris[o + 7]);
+    const ymax = Math.max(tris[o + 1], tris[o + 4], tris[o + 7]);
+    if (ymin > hi || ymax < lo) continue;
+    if (Math.max(Math.abs(tris[o]), Math.abs(tris[o + 3]), Math.abs(tris[o + 6])) > 2.2) continue;
+    let poly = [[tris[o], tris[o + 1], tris[o + 2]], [tris[o + 3], tris[o + 4], tris[o + 5]], [tris[o + 6], tris[o + 7], tris[o + 8]]];
+    poly = clipY(clipY(poly, lo, true), hi, false);
+    if (poly.length < 2) continue;
+    // the edges (a wall seen edge-on covers no area from above) ...
+    for (let i = 0; i < poly.length; i++) {
+      const p = poly[i];
+      const q = poly[(i + 1) % poly.length];
+      const L = Math.hypot(q[0] - p[0], q[2] - p[2]);
+      const m = Math.max(1, Math.ceil(L / (CS * 0.5)));
+      for (let j = 0; j <= m; j++) mark(p[0] + ((q[0] - p[0]) * j) / m, p[2] + ((q[2] - p[2]) * j) / m);
+    }
+    // ... and the inside, for the flat tops of props
+    if (poly.length >= 3) {
+      let x0 = Infinity;
+      let x1 = -Infinity;
+      let z0 = Infinity;
+      let z1 = -Infinity;
+      for (const p of poly) {
+        x0 = Math.min(x0, p[0]);
+        x1 = Math.max(x1, p[0]);
+        z0 = Math.min(z0, p[2]);
+        z1 = Math.max(z1, p[2]);
+      }
+      for (let x = Math.floor((x0 - X0) / CS) * CS + X0 + CS / 2; x <= x1; x += CS) {
+        for (let z = Math.floor((z0 - Z0) / CS) * CS + Z0 + CS / 2; z <= z1; z += CS) {
+          let pos = false;
+          let neg = false;
+          for (let i = 0; i < poly.length; i++) {
+            const p = poly[i];
+            const q = poly[(i + 1) % poly.length];
+            const cr = (q[0] - p[0]) * (z - p[2]) - (q[2] - p[2]) * (x - p[0]);
+            if (cr > 1e-9) pos = true;
+            else if (cr < -1e-9) neg = true;
+          }
+          if (!(pos && neg)) mark(x, z);
+        }
+      }
+    }
+  }
+  // distance to the nearest taken cell: two chamfer passes
+  const D = new Float32Array(NX * NZ);
+  for (let i = 0; i < D.length; i++) D[i] = taken[i] ? 0 : 1e9;
+  const d1 = CS;
+  const d2 = CS * Math.SQRT2;
+  for (let iz = 0; iz < NZ; iz++) {
+    for (let ix = 0; ix < NX; ix++) {
+      const i = iz * NX + ix;
+      let v = D[i];
+      if (ix > 0) v = Math.min(v, D[i - 1] + d1);
+      if (iz > 0) {
+        v = Math.min(v, D[i - NX] + d1);
+        if (ix > 0) v = Math.min(v, D[i - NX - 1] + d2);
+        if (ix < NX - 1) v = Math.min(v, D[i - NX + 1] + d2);
+      }
+      D[i] = v;
+    }
+  }
+  for (let iz = NZ - 1; iz >= 0; iz--) {
+    for (let ix = NX - 1; ix >= 0; ix--) {
+      const i = iz * NX + ix;
+      let v = D[i];
+      if (ix < NX - 1) v = Math.min(v, D[i + 1] + d1);
+      if (iz < NZ - 1) {
+        v = Math.min(v, D[i + NX] + d1);
+        if (ix < NX - 1) v = Math.min(v, D[i + NX + 1] + d2);
+        if (ix > 0) v = Math.min(v, D[i + NX - 1] + d2);
+      }
+      D[i] = v;
+    }
+  }
+  return {
+    taken,
+    grid: { X0, Z0, CS, NX, NZ },
+    at(x, z) {
+      const ix = Math.floor((x - X0) / CS);
+      const iz = Math.floor((z - Z0) / CS);
+      if (ix < 0 || iz < 0 || ix >= NX || iz >= NZ) return -1;
+      return D[iz * NX + ix] - CS * 0.5;
+    },
+  };
+}
+
 // ---------------------------------------------------------------------------
 // The town
 // ---------------------------------------------------------------------------
@@ -974,6 +1408,36 @@ export function build(scene, ctx = {}) {
     ownMaterials.push(signMat);
   }
 
+  // ----- the walk (plain data, see walk.js): filled in as the town is built -----
+  const WALK_INSET = 0.65; // the captain's centre keeps this far from rails and the water's edge
+  const BRIDGE_HW = 0.25; // and this close to a rope bridge's middle
+  const walkData = { radius: 0.3, areas: [], links: [], blockers: [], places: [], spawn: null };
+  const walkDecks = []; // the walkable decks, whole (for telling which townsfolk stand on them)
+  const r2 = (v) => Math.round(v * 100) / 100;
+  const yawOf = (obj) => {
+    obj.updateWorldMatrix(true, false);
+    const e = new THREE.Vector3(0, 0, 1).transformDirection(obj.matrixWorld);
+    return Math.atan2(e.x, e.z);
+  };
+  const worldAt = (obj, lx, ly, lz) => {
+    obj.updateWorldMatrix(true, false);
+    return obj.localToWorld(V3(lx, ly, lz));
+  };
+  /** A round obstacle at (lx, lz) of obj (r, h tall). */
+  function block(obj, lx, lz, r, h) {
+    const p = worldAt(obj, lx, 0, lz);
+    walkData.blockers.push({ x: r2(p.x), z: r2(p.z), r: r2(r), h: r2(h) });
+  }
+  /** A box obstacle centred at (lx, lz) of obj, w x d turned by ry in obj's frame (h tall). */
+  function blockBox(obj, lx, lz, w, d, ry, h) {
+    const p = worldAt(obj, lx, 0, lz);
+    walkData.blockers.push({ x: r2(p.x), z: r2(p.z), w: r2(w), d: r2(d), ry: r3(yawOf(obj) + ry), h: r2(h) });
+  }
+  /** A walkable rect (a portal joining two decks, or a deck): world centre, size, turn, height. */
+  function walkRect(id, x, z, w, d, ry, y) {
+    walkData.areas.push({ id, kind: 'rect', x: r2(x), z: r2(z), w: r2(w), d: r2(d), ry: r3(ry), y: r2(y) });
+  }
+
   // ----- platforms -----
   const plats = {};
   // Foam circles (the ocean draws a ~3 unit surf band round each rim): kept well inside
@@ -991,7 +1455,7 @@ export function build(scene, ctx = {}) {
       colliders.push({ x: x + ax[0] * o, z: z + ax[1] * o, r });
     }
   }
-  function deckSurface(g, w, d, y, o = {}) {
+  function deckSurface(g, w, d, y, o = {}, rand = o.rand) {
     // planks run across the long side, in staggered runs of 2.5-4.5
     const across = w >= d;
     const span = across ? w : d; // laid side by side along this
@@ -1114,10 +1578,18 @@ export function build(scene, ctx = {}) {
     g.rotation.y = P.ry || 0;
     statics.add(g);
     const y = P.y ?? DECK;
-    deckSurface(g, P.w, P.d, y, P);
+    // (each deck's planks from its own random stream, so resizing one platform leaves the rest as they were)
+    let seed = 7;
+    for (const ch of name) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    deckSurface(g, P.w, P.d, y, P, mulberry32(seed));
     floats(g, P.w, P.d, y, P.float || 'barrels');
     if (P.rails) rails(g, P.w, P.d, y, P.rails, P.gaps || []);
     if (P.foam !== false) addColliderRect(P.x, P.z, P.w, P.d, P.ry || 0, (P.float || 'barrels') === 'stilts' ? 2.3 : 1.7);
+    // a walkable deck: the captain's centre keeps WALK_INSET from every edge (rails or water)
+    if (P.walk) {
+      walkRect(name, P.x, P.z, P.w - 2 * WALK_INSET, P.d - 2 * WALK_INSET, P.ry || 0, y);
+      walkDecks.push({ x: P.x, z: P.z, hw: P.w / 2, hd: P.d / 2, c: Math.cos(P.ry || 0), s: Math.sin(P.ry || 0), y });
+    }
     const out = { ...P, y, g };
     out.at = (lx, lz, dy = 0) => {
       g.updateMatrixWorld(true);
@@ -1169,26 +1641,41 @@ export function build(scene, ctx = {}) {
         rod(g, thin(COL.rope), top, bot, 0.02, 4);
       }
     }
+    if (o.walk) {
+      // a walkable bridge: its walk curve, run on 0.9 into both decks so it overlaps their walk areas;
+      // the posts at the ends are thin obstacles (the hand ropes keep the walker on the planks)
+      const run = V3(dir.x, 0, dir.z).normalize().multiplyScalar(0.9);
+      const pts = [a.clone().sub(run), ...walk, b.clone().add(run)];
+      walkData.links.push({ id: o.walk, pts: pts.map((p) => [r2(p.x), r2(p.y), r2(p.z)]), hw: BRIDGE_HW });
+      for (const e of [a, b]) {
+        for (const s of [-1, 1]) {
+          const pp = e.clone().addScaledVector(side, s * hw);
+          walkData.blockers.push({ x: r2(pp.x), z: r2(pp.z), r: 0.05, h: 1.1 });
+        }
+      }
+    }
     return walk;
   }
 
   // The berth: a long pier on piles
-  const pier = platform('pier', { x: 0, z: -4.4, w: 22, d: 2.6, float: 'stilts', foam: false, rails: ['back'], gaps: [[-1.5, 2.5, 'back'], [-7.8, -5.4, 'back']] });
+  const pier = platform('pier', { x: 0, z: -4.4, w: 22, d: 2.6, float: 'stilts', foam: false, rails: ['back'], gaps: [[-1.5, 2.5, 'back'], [-7.8, -5.4, 'back']], walk: true });
   // The market plaza on barrels
-  const plaza = platform('plaza', { x: 0, z: -10.25, w: 17, d: 9.1, float: 'barrels', foam: false, rails: ['left'], gaps: [[0.7, 2.7, 'left']] });
+  const plaza = platform('plaza', { x: 0, z: -10.25, w: 17, d: 9.1, float: 'barrels', foam: false, rails: ['left'], gaps: [[0.7, 2.7, 'left']], walk: true });
   // The tavern raft
-  const tavernRaft = platform('tavern', { x: -6.2, z: -19.6, w: 10.5, d: 9, float: 'barrels', rails: ['right'] });
+  // (wide enough for a walkway past the tavern's west wall to the tower bridge at the back)
+  const tavernRaft = platform('tavern', { x: -6.85, z: -19.6, w: 11.8, d: 9, float: 'barrels', rails: ['right'], walk: true });
   // Lookout tower raft (logs)
-  const towerRaft = platform('tower', { x: -15.5, z: -27.2, w: 6, d: 6, float: 'logs', ry: 0.15 });
+  // (room to walk round the tower's legs)
+  const towerRaft = platform('tower', { x: -18.2, z: -25.4, w: 7, d: 7, float: 'logs', ry: 0.15, walk: true });
   // The shipyard
-  const yard = platform('yard', { x: 16.2, z: -11.5, w: 8.4, d: 9, float: 'stilts', rails: ['back'] });
+  const yard = platform('yard', { x: 16.2, z: -11.5, w: 8.4, d: 9, float: 'stilts', rails: ['back'], walk: true });
   // Stilt shack platforms (platform() registers each one in plats)
-  platform('s1', { x: 5.2, z: -20.8, w: 6, d: 5, float: 'stilts', ry: -0.06 });
-  platform('s2', { x: 12.6, z: -23, w: 5.4, d: 5, float: 'stilts', ry: 0.12 });
+  platform('s1', { x: 5.2, z: -21.1, w: 7, d: 5.8, float: 'stilts', ry: -0.06, walk: true }); // Polly's Plumes & Trims
+  platform('s2', { x: 13.4, z: -23.2, w: 5.4, d: 5, float: 'stilts', ry: 0.12 });
   platform('s3', { x: -0.5, z: -29.5, w: 6, d: 5.4, float: 'stilts', ry: 0.05, y: 1.6 });
   platform('s4', { x: -7.6, z: -33.6, w: 5.6, d: 5, float: 'stilts', ry: -0.1, y: 1.5 });
   platform('s5', { x: 9.2, z: -31.5, w: 6.4, d: 5.2, float: 'stilts', ry: -0.05, y: 1.8 });
-  platform('s6', { x: -22.5, z: -25, w: 5.6, d: 5.2, float: 'stilts', ry: 0.3 });
+  platform('s6', { x: -26.0, z: -26.0, w: 5.6, d: 5.2, float: 'stilts', ry: 0.3 });
   platform('s7', { x: 21.5, z: -22.5, w: 5.4, d: 5, float: 'stilts', ry: -0.25 });
   platform('s8', { x: -24, z: -9, w: 5.4, d: 5, float: 'logs', ry: 0.45 });
   platform('s9', { x: 25, z: -6, w: 5, d: 5, float: 'stilts', ry: -0.5 });
@@ -1199,10 +1686,18 @@ export function build(scene, ctx = {}) {
   platform('s13', { x: -21.5, z: 2.0, w: 5.4, d: 5, float: 'logs', ry: 0.55 });
   platform('s14', { x: -29, z: -4.5, w: 5.2, d: 5, float: 'stilts', ry: 0.25 });
   platform('s15', { x: -31, z: -16, w: 5.6, d: 5.2, float: 'stilts', ry: 0.1 });
-  platform('s16', { x: -16.6, z: -17.4, w: 5.4, d: 5, float: 'barrels', ry: -0.08 });
+  platform('s16', { x: -17.6, z: -17.4, w: 5.4, d: 5, float: 'barrels', ry: -0.08 });
   // the east arm, behind the shipyard
   platform('s17', { x: 29.5, z: -25, w: 6, d: 5.4, float: 'stilts', ry: -0.35, y: 1.6 });
   platform('s18', { x: 35, z: -12.5, w: 5.2, d: 5, float: 'logs', ry: -0.7 });
+  // the plaza and the tavern raft lie side by side: the walk crosses the seam between them
+  {
+    const x0 = Math.max(plaza.x - plaza.w / 2, tavernRaft.x - tavernRaft.w / 2) + WALK_INSET;
+    const x1 = Math.min(plaza.x + plaza.w / 2, tavernRaft.x + tavernRaft.w / 2) - WALK_INSET;
+    const zA = plaza.z - plaza.d / 2 + WALK_INSET + 0.1;
+    const zB = tavernRaft.z + tavernRaft.d / 2 - WALK_INSET - 0.1;
+    walkRect('plaza-tavern', (x0 + x1) / 2, (zA + zB) / 2, x1 - x0, zA - zB, 0, DECK);
+  }
 
   // ----- sandy floating garden -----
   const GARDEN = { x: -14.4, z: -7.6, r: 3.7, y: 1.45 };
@@ -1240,16 +1735,26 @@ export function build(scene, ctx = {}) {
     palm(g, -0.6, GARDEN.y, -0.5, 1.0, -0.5, -0.6, rand);
     palm(g, 1.0, GARDEN.y, -0.9, 0.82, 0.7, -0.3, rand);
     // a beach umbrella over a driftwood bench
-    rod(g, thin(COL.woodDark), V3(1.5, GARDEN.y - 0.1, 1.3), V3(1.45, GARDEN.y + 2.0, 1.35), 0.04);
+    // (the shade is up high enough for a captain in a tall hat to walk under its rim)
+    const UMB = 0.4;
+    rod(g, thin(COL.woodDark), V3(1.5, GARDEN.y - 0.1, 1.3), V3(1.45, GARDEN.y + 2.0 + UMB, 1.35), 0.04);
     // a driftwood bench under the umbrella (seat at SEAT_HEIGHT above the sand)
     add(g, cyl(0.17, 0.17, 1.5, 10), ink(COL.trunk), 1.5, GARDEN.y + 0.06, 2.1, 0, 0, PI / 2);
     for (const sx of [-0.55, 0.55]) add(g, rbox(0.2, 0.3, 0.3, 0.05), ink(COL.woodDark), 1.5 + sx, GARDEN.y - 0.15, 2.1);
     for (let i = 0; i < 8; i++) {
       const geo = cached(`umbrella${i}`, () => new THREE.ConeGeometry(1.25, 0.5, 4, 1, false, (i / 8) * TAU, TAU / 8));
-      add(g, geo, ink(i % 2 ? COL.red : COL.white), 1.45, GARDEN.y + 2.1, 1.35, 0.05, 0, -0.1);
+      add(g, geo, ink(i % 2 ? COL.red : COL.white), 1.45, GARDEN.y + 2.1 + UMB, 1.35, 0.05, 0, -0.1);
     }
-    add(g, sphere(8), ink(COL.red), 1.42, GARDEN.y + 2.38, 1.36, 0, 0, 0, 0.08);
+    add(g, sphere(8), ink(COL.red), 1.42, GARDEN.y + 2.38 + UMB, 1.36, 0, 0, 0, 0.08);
     colliders.push({ x: GARDEN.x - 0.8, z: GARDEN.z - 0.6, r: 1.0 });
+    // the walk: the sand mound (its height follows the sand's profile), round the palms, the rock,
+    // the bench and the shade's pole
+    walkData.areas.push({ id: 'garden', kind: 'circle', x: GARDEN.x, z: GARDEN.z, r: 2.9, y: GARDEN.y, profile: [[0, r2(GARDEN.y + 0.15)], [r2(R * 0.55), r2(GARDEN.y + 0.08)], [r2(R * 0.85), r2(GARDEN.y - 0.1)]] });
+    block(g, -0.6, -0.5, 0.42, 5);
+    block(g, 1.0, -0.9, 0.36, 4);
+    block(g, 2.1, 1.2, 0.5, 0.4);
+    blockBox(g, 1.5, 2.1, 1.6, 0.42, 0, 0.4);
+    block(g, 1.5, 1.3, 0.08, 2.4);
   }
 
   // ----- the pier: bollards, fenders, lamp posts -----
@@ -1292,6 +1797,23 @@ export function build(scene, ctx = {}) {
     barrel(g, -10.2, DECK, -0.2, 0.85);
     barrel(g, -9.4, DECK, -0.75, 0.8, COL.barrel2);
     // perched gull on a pile
+    // the walk: bollards, lamp posts, coils, pots, crates and barrels; the gangplank's foot
+    for (const x of [-9.2, -4.2, 4.2, 9.2]) block(g, x, 0.95, 0.22, 0.6);
+    for (const x of [-10.4, -5.0, 5.8, 10.4]) block(g, x, -0.95, 0.17, 2.6);
+    block(g, -7.8, -0.6, 0.4, 0.3);
+    block(g, 7.6, 0.5, 0.4, 0.3);
+    blockBox(g, -10.3, 0.67, 1.3, 0.7, 0, 1.0);
+    block(g, 10.15, -0.4, 0.55, 1.4);
+    block(g, 8.6, -0.7, 0.42, 0.9);
+    block(g, -10.2, -0.2, 0.42, 0.9);
+    block(g, -9.4, -0.75, 0.4, 0.9);
+    blockBox(g, 0.6, 1.15, 0.95, 0.5, 0, 0.7);
+    // the ways from the pier onto the plaza: the two gaps in its back rail (posts 0.15 thick)
+    for (const [g0, g1] of pier.gaps) {
+      const x0 = g0 + 0.075 + walkData.radius;
+      const x1 = g1 - 0.075 - walkData.radius;
+      walkRect(`pier-plaza-${g0 < 0 && g1 > 0 ? 1 : 2}`, (x0 + x1) / 2, pier.z - pier.d / 2, x1 - x0, 2 * WALK_INSET + 0.2, 0, DECK);
+    }
   }
 
   // ----- the plaza: market stalls, the welcome sign, the well -----
@@ -1363,13 +1885,51 @@ export function build(scene, ctx = {}) {
       sack(g, 1.6, 0, 1.0, 1.1);
       sack(g, 1.9, 0, 0.7, 0.9, 0xd8bf88);
     }
+    // the walk: the counter, its posts and awning; the goods stacked in front
+    blockBox(g, 0, 0.15, 2.65, 1.42, 0, 2.6);
+    if (st.goods === 'fruit') block(g, 1.6, 1.1, 0.42, 0.9);
+    else if (st.goods === 'fish') block(g, 1.65, 1.0, 0.36, 0.7);
+    else {
+      block(g, 1.6, 1.0, 0.4, 0.6);
+      block(g, 1.9, 0.7, 0.33, 0.5);
+    }
+  }
+  let welcomePost = null;
+  {
+    // a signpost to the tailor behind the pots stall: an arrow board pointing along the bridge to
+    // Polly's shop, a display head in a plumed hat on top and a straw hat on a peg
+    const g = new THREE.Group();
+    g.position.set(4.2, DECK, -13.7);
+    g.rotation.y = -0.05;
+    statics.add(g);
+    // (the board stands above the stall's awning, so the shipyard camera can read it)
+    add(g, cyl(0.08, 0.1, 3.5, 8), ink(COL.woodDark), 0, 1.75, 0);
+    add(g, rbox(0.36, 0.12, 0.36, 0.04), ink(COL.woodDark), 0, 0.06, 0);
+    add(g, slabShape(arrowShape(2.1, 0.66), 0.1, 0.02), ink(COL.woodDeep), 0.86, 3.02, 0);
+    if (signMat) {
+      add(g, arrowPlane(2.1, 0.66), signMat, 0.86, 3.02, 0.075);
+      add(g, arrowPlane(2.1, 0.66, true), signMat, 0.86, 3.02, -0.075);
+    }
+    const hd = new THREE.Group();
+    hd.position.set(0, 3.29, 0);
+    g.add(hd);
+    add(hd, cyl(0.04, 0.05, 0.3, 6), ink(COL.wood2), 0, 0.2, 0);
+    add(hd, sphere(8), ink(COL.wood3), 0, 0.5, 0, 0, 0, 0, [0.17, 0.2, 0.17]);
+    hatModel(hd, 'plumed', 0.66);
+    rod(g, ink(COL.woodDark), V3(0, 2.05, 0), V3(-0.42, 2.12, 0.04), 0.035, 6);
+    const st = new THREE.Group();
+    st.position.set(-0.5, 1.72, 0.06);
+    st.rotation.set(0.15, 0, 0.5);
+    g.add(st);
+    hatModel(st, 'straw', 0.66);
+    block(g, 0, 0, 0.16, 3.6);
   }
   {
     // the welcome sign: a big painted board on two tall posts, the pirate sparrow on top (high
     // enough to show over the docked ship's rigging and sails from most of the showcase camera's sway)
     const g = new THREE.Group();
-    g.position.set(-5.9, DECK, -6.9);
-    g.rotation.y = 0.22;
+    g.position.set(SIGN.x, DECK, SIGN.z);
+    g.rotation.y = SIGN.ry;
     statics.add(g);
     const up = SIGN_LIFT;
     for (const sx of [-1, 1]) {
@@ -1385,11 +1945,25 @@ export function build(scene, ctx = {}) {
       beam(g, ink(COL.woodDark), V3(sx * 2.85, 4.25 + up, 0), V3(sx * 3.4, 4.25 + up, 0.1), 0.1, 0.1, 0.03);
       lantern(g, sx * 3.38, 3.85 + up, 0.1, lanternGlow, 0.9);
     }
+    welcomePost = worldAt(g, 2.85, 4.5 - 1.4 + up, 0.05); // (the bunting over the plaza hangs from here)
+    root.userData.welcomeFace = [];
+    for (let j = 0; j < 5; j++) for (let i = 0; i < 11; i++) root.userData.welcomeFace.push(worldAt(g, -2.75 + i * 0.55, 3.1 + up + 0.8 - j * 0.4, 0.14).toArray());
     const bird = sparrowBird(g, 1.15);
     bird.position.set(0.4, 4.12 + up, 0.02);
     bird.rotation.y = 0.15;
     // the bird stands on a little perch block
     add(g, rbox(1.0, 0.14, 0.42, 0.05), ink(COL.woodDark), 0.4, 4.12 + up, 0);
+    // its back (seen from the town): plank seams, two battens and a Z brace, nailed on
+    {
+      const bz = -0.12;
+      const back = thin(shade(COL.woodDark, -0.18));
+      for (const yy of [-0.5, 0, 0.5]) add(g, box(5.9, 0.04, 0.03), back, 0, 3.1 + up + yy, bz);
+      for (const sx of [-1, 1]) add(g, rbox(0.24, 1.9, 0.08, 0.03), ink(COL.wood2), sx * 1.9, 3.1 + up, bz - 0.03);
+      const zb = add(g, rbox(3.9, 0.22, 0.08, 0.03), ink(COL.wood2), 0, 3.1 + up, bz - 0.03);
+      zb.rotation.z = -0.42;
+      for (const sx of [-1, 1]) for (const yy of [-0.75, 0.75]) add(g, sphere(6), flat(COL.iron), sx * 1.9, 3.1 + up + yy, bz - 0.08, 0, 0, 0, 0.035);
+    }
+    for (const sx of [-1, 1]) block(g, sx * 2.85, 0, 0.32, 6 + up);
   }
   {
     // a water barrel tower and a pile of crates on the plaza
@@ -1402,15 +1976,25 @@ export function build(scene, ctx = {}) {
     crate(g, -7.4, DECK, 0.4, 0.8, -0.1);
     sack(g, -6.7, DECK, 0.9, 1.0);
     // benches for listeners (seat height = SEAT_HEIGHT)
-    for (const [bx, bz, br] of [[-7.6, 2.4, PI / 2], [6.8, -1.6, -PI / 2]]) {
+    // (the west one stands clear of the way onto the garden bridge)
+    for (const [bx, bz, br] of [[-7.5, 3.2, PI / 2], [6.8, -1.6, -PI / 2]]) {
       const b = new THREE.Group();
       b.position.set(bx, DECK, bz);
       b.rotation.y = br;
+      b.userData.bench = true;
       g.add(b);
       add(b, rbox(1.6, 0.08, 0.4, 0.03), ink(COL.wood3), 0, 0.27, 0);
       for (const sx of [-1, 1]) add(b, rbox(0.1, 0.26, 0.34, 0.03), ink(COL.woodDark), sx * 0.65, 0.13, 0);
     }
     for (const [x, z] of [[-8.0, 4.2], [8.0, 4.2], [-8.0, -4.2], [8.0, -4.2]]) lampPost(g, x, DECK, z, x > 0 ? -PI / 2 : PI / 2, lanternGlow);
+    // the walk
+    block(g, 5.9, 2.5, 0.5, 2.0);
+    block(g, 5.2, 2.85, 0.42, 1.0);
+    block(g, -7.5, -0.6, 0.57, 1.4);
+    block(g, -7.4, 0.4, 0.46, 0.65);
+    block(g, -6.7, 0.9, 0.35, 0.6);
+    for (const b of g.children.filter((c) => c.userData.bench)) blockBox(b, 0, 0, 1.6, 0.42, 0, 0.35);
+    for (const [x, z] of [[-8.0, 4.2], [8.0, 4.2], [-8.0, -4.2], [8.0, -4.2]]) block(g, x, z, 0.17, 2.6);
   }
 
   // ----- The Salty Sparrow tavern -----
@@ -1426,8 +2010,40 @@ export function build(scene, ctx = {}) {
     const H2 = 2.5; // upper floor
     const woodWall = 0xd79a5a;
     add(g, rbox(W, H1, D, 0.12, 2), ink(woodWall), 0, H1 / 2, 0);
-    for (let x = -W / 2 + 0.5; x < W / 2 - 0.3; x += 0.62) add(g, rbox(0.08, H1 - 0.15, 0.06, 0.02), thin(shade(woodWall, -0.22)), x, H1 / 2, D / 2 + 0.02);
+    for (let x = -W / 2 + 0.5; x < W / 2 - 0.3; x += 0.62) add(g, box(0.08, H1 - 0.15, 0.06), thin(shade(woodWall, -0.22)), x, H1 / 2, D / 2 + 0.02);
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(g, rbox(0.32, H1 + H2 + 0.3, 0.32, 0.06), ink(COL.woodDeep), sx * W / 2, (H1 + H2) / 2, sz * D / 2);
+    // the sides and the back are finished too (the town is walked round): battens, lit windows with
+    // shutters, a back door with a step and a lantern
+    {
+      const bat = thin(shade(woodWall, -0.22));
+      for (let x = -W / 2 + 0.5; x < W / 2 - 0.3; x += 0.62) add(g, box(0.08, H1 - 0.15, 0.06), bat, x, H1 / 2, -D / 2 - 0.02);
+      for (const sx of [-1, 1]) for (let z = -D / 2 + 0.45; z < D / 2 - 0.3; z += 0.62) add(g, box(0.06, H1 - 0.15, 0.08), bat, sx * (W / 2 + 0.02), H1 / 2, z);
+      const win = (x, z, ry) => {
+        const w = new THREE.Group();
+        w.position.set(x, 1.6, z);
+        w.rotation.y = ry;
+        g.add(w);
+        add(w, rbox(1.1, 1.05, 0.1, 0.04), ink(COL.woodDeep), 0, 0, 0.02);
+        add(w, rbox(0.88, 0.84, 0.1, 0.03), winGlow, 0, 0, 0.05);
+        add(w, rbox(0.06, 0.86, 0.12, 0.02), thin(COL.woodDeep), 0, 0, 0.08);
+        add(w, rbox(0.88, 0.06, 0.12, 0.02), thin(COL.woodDeep), 0, 0, 0.08);
+        for (const s2 of [-1, 1]) {
+          const sh = add(w, rbox(0.42, 0.95, 0.06, 0.03), ink(COL.teal), s2 * 0.76, 0, 0.16);
+          sh.rotation.y = s2 * 0.35;
+        }
+        add(w, rbox(1.0, 0.18, 0.24, 0.04), ink(COL.wood2), 0, -0.6, 0.14);
+      };
+      for (const sx of [-1, 1]) win(sx * (W / 2 + 0.04), 0.2, sx * PI / 2);
+      win(-2.4, -D / 2 - 0.04, PI);
+      win(2.6, -D / 2 - 0.04, PI);
+      // the back door
+      add(g, rbox(1.2, 2.2, 0.1, 0.05), ink(COL.woodDeep), 0.1, 1.1, -D / 2 - 0.04);
+      add(g, rbox(0.95, 2.0, 0.12, 0.05), ink(COL.door), 0.1, 1.0, -D / 2 - 0.08);
+      add(g, sphere(8), ink(COL.brass), 0.42, 1.0, -D / 2 - 0.16, 0, 0, 0, 0.06);
+      add(g, rbox(1.3, 0.12, 0.3, 0.04), ink(COL.wood3), 0.1, 0.06, -D / 2 - 0.17);
+      lantern(g, 0.95, 2.2, -D / 2 - 0.36, lanternGlow, 0.8);
+      beam(g, thin(COL.iron), V3(0.95, 2.5, -D / 2), V3(0.95, 2.5, -D / 2 - 0.4), 0.05, 0.05, 0.015);
+    }
     // upper floor overhangs the front, cream plaster with dark timbers
     const up = new THREE.Group();
     up.position.set(0, H1, 0.35);
@@ -1440,6 +2056,22 @@ export function build(scene, ctx = {}) {
     add(up, rbox(W + 0.3, 0.2, 0.1, 0.03), timber, 0, H2 + 0.15, fz);
     for (const [x0, x1] of [[-W / 2, -2.2], [2.2, W / 2]]) {
       beam(up, timber, V3(x0 + 0.1, 0.3, fz), V3(x1 - 0.1, H2 - 0.05, fz), 0.16, 0.08, 0.03);
+    }
+    // the same half-timbering on the sides and the back, a little window in each side
+    {
+      const bz = -(D + 0.5) / 2 - 0.03;
+      for (const x of [-W / 2 - 0.05, -1.4, 1.4, W / 2 + 0.05]) add(up, rbox(0.2, H2, 0.1, 0.03), timber, x, H2 / 2 + 0.2, bz);
+      add(up, rbox(W + 0.3, 0.2, 0.1, 0.03), timber, 0, H2 + 0.15, bz);
+      beam(up, timber, V3(-1.3, 0.3, bz), V3(1.3, H2 - 0.05, bz), 0.16, 0.08, 0.03);
+      const sxz = (W + 0.2) / 2 + 0.03;
+      for (const sx of [-1, 1]) {
+        for (const z of [-(D + 0.5) / 2, 0, (D + 0.5) / 2]) add(up, rbox(0.1, H2, 0.2, 0.03), timber, sx * sxz, H2 / 2 + 0.2, z);
+        add(up, rbox(0.1, 0.2, D + 0.6, 0.03), timber, sx * sxz, H2 + 0.15, 0);
+        beam(up, timber, V3(sx * sxz, 0.3, -(D + 0.5) / 2 + 0.1), V3(sx * sxz, H2 - 0.05, -0.2), 0.08, 0.16, 0.03);
+        add(up, rbox(0.1, 0.8, 0.8, 0.04), ink(COL.woodDeep), sx * (sxz + 0.01), 1.3, 1.35);
+        add(up, rbox(0.1, 0.6, 0.6, 0.03), winGlow, sx * (sxz + 0.04), 1.3, 1.35);
+        add(up, rbox(0.12, 0.62, 0.05, 0.02), thin(COL.woodDeep), sx * (sxz + 0.06), 1.3, 1.35);
+      }
     }
     // upper windows (lit) with shutters
     for (const x of [-3.3, 0, 3.3]) {
@@ -1499,13 +2131,15 @@ export function build(scene, ctx = {}) {
     tb.position.set(1.35, 0.7, 0);
     tb.rotation.y = -0.25;
     // a frothy mug of grog hangs over the door
-    beam(g, ink(COL.iron), V3(0, H1 - 0.35, D / 2), V3(0, H1 - 0.35, D / 2 + 0.75), 0.06, 0.06, 0.02);
-    add(g, cyl(0.2, 0.2, 0.42, 12), ink(COL.wood3), 0, H1 - 0.82, D / 2 + 0.7);
-    add(g, torus(0.2, 0.03, 12, 4), thin(COL.hoop), 0, H1 - 0.72, D / 2 + 0.7, PI / 2);
-    add(g, torus(0.2, 0.03, 12, 4), thin(COL.hoop), 0, H1 - 0.94, D / 2 + 0.7, PI / 2);
-    add(g, torus(0.12, 0.045, 10, 5), ink(COL.wood3), 0.24, H1 - 0.82, D / 2 + 0.7, 0, 0, 0);
-    add(g, sphere(10), ink(COL.white), 0, H1 - 0.57, D / 2 + 0.7, 0, 0, 0, [0.24, 0.13, 0.24]);
-    for (const sx of [-1, 1]) rod(g, thin(COL.iron), V3(sx * 0.12, H1 - 0.35, D / 2 + 0.7), V3(sx * 0.12, H1 - 0.6, D / 2 + 0.7), 0.012, 4);
+    // (high enough for a captain in a tall hat to walk in under it)
+    const mugY = H1 - 0.67;
+    beam(g, ink(COL.iron), V3(0, H1 - 0.3, D / 2), V3(0, H1 - 0.3, D / 2 + 0.75), 0.06, 0.06, 0.02);
+    add(g, cyl(0.2, 0.2, 0.42, 12), ink(COL.wood3), 0, mugY, D / 2 + 0.7);
+    add(g, torus(0.2, 0.03, 12, 4), thin(COL.hoop), 0, mugY + 0.1, D / 2 + 0.7, PI / 2);
+    add(g, torus(0.2, 0.03, 12, 4), thin(COL.hoop), 0, mugY - 0.12, D / 2 + 0.7, PI / 2);
+    add(g, torus(0.12, 0.045, 10, 5), ink(COL.wood3), 0.24, mugY, D / 2 + 0.7, 0, 0, 0);
+    add(g, sphere(10), ink(COL.white), 0, mugY + 0.25, D / 2 + 0.7, 0, 0, 0, [0.24, 0.13, 0.24]);
+    for (const sx of [-1, 1]) rod(g, thin(COL.iron), V3(sx * 0.12, H1 - 0.3, D / 2 + 0.7), V3(sx * 0.12, mugY + 0.22, D / 2 + 0.7), 0.012, 4);
     // the porch: barrels, a table with mugs and two benches
     const porch = new THREE.Group();
     porch.position.set(0, 0, D / 2);
@@ -1531,6 +2165,18 @@ export function build(scene, ctx = {}) {
     // a flag on the roof ridge
     flagOnPole(g, V3(3.7, H1 + H2 + 2.75, 0.35), 1.6, 1.3, 0.85, COL.teal, 0.3);
     tavernG = g;
+    // the walk: the house (and its corner posts), the porch barrels, the table and its benches
+    blockBox(g, 0, 0, W + 0.7, D + 0.4, 0, H1 + H2 + 2.8); // (with the side windows' shutters and sills)
+    block(porch, -3.7, 0.6, 0.48, 1.6);
+    block(porch, -3.05, 0.4, 0.4, 0.8);
+    block(porch, 2.9, 1.5, 0.58, 0.7);
+    for (const sx of [-1, 1]) blockBox(porch, 2.9 + sx * 0.95, 1.5, 0.4, 1.25, 0, 0.35);
+    // The Salty Sparrow (a place): the captain stops on the porch in front of the door; the
+    // tavern panel's camera looks at the door and the table from the plaza side
+    const door = worldAt(g, 0, 0, D / 2 + 1.15);
+    const camT = worldAt(g, 1.3, 1.25, D / 2 + 1.0);
+    const camP = worldAt(g, 0.3, 3.0, D / 2 + 5.8);
+    walkData.places.push({ id: 'tavern', name: 'The Salty Sparrow', x: r2(door.x), z: r2(door.z), r: 1.6, face: r3(g.rotation.y + PI), cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] } });
   }
 
   // ----- the lookout tower with the sparrow weathervane -----
@@ -1613,9 +2259,15 @@ export function build(scene, ctx = {}) {
     barrel(nest, -0.6, 0.15, -0.5, 0.55, COL.barrel2);
     // the tower raft's corner: crates and a net drying rack
     const rg = towerRaft.g;
-    crate(rg, 2.0, DECK, 2.0, 0.85, 0.4);
-    crate(rg, -2.1, DECK, 1.9, 0.75, -0.2, COL.wood);
-    netRack(rg, -2.2, DECK, -1.2, PI / 2);
+    crate(rg, 2.55, DECK, -2.5, 0.85, 0.4);
+    crate(rg, 2.6, DECK + 0.68, -2.45, 0.6, -0.3, COL.wood);
+    crate(rg, -2.6, DECK, -2.55, 0.75, -0.2, COL.wood);
+    netRack(rg, -2.75, DECK, 0.7, PI / 2);
+    // the walk: round the tower's legs and braces (and the foot of its ladder), past the crates
+    blockBox(g, 0, 0.14, 3.62, 3.9, 0, H + 4.5);
+    block(rg, 2.55, -2.5, 0.6, 1.3);
+    block(rg, -2.6, -2.55, 0.53, 0.75);
+    blockBox(rg, -2.75, 0.7, 0.36, 2.75, 0, 2.2);
   }
 
   // ----- the shipyard: crane hoisting a cannon from a barge, a boat on the slipway -----
@@ -1753,6 +2405,22 @@ export function build(scene, ctx = {}) {
     // workers' things
     barrel(g, 3.4, DECK, 3.4, 0.9);
     crate(g, 3.3, DECK, 2.3, 0.8, 0.5);
+    // the walk: the boat on the slipway, the plank stack, the cannons for sale and the shot, the
+    // sign's posts, the crane's tower and its winch wheel, the barrel and crate, the flag pole
+    blockBox(sl, 0, 0.22, 2.7, 6.0, 0, 2.6);
+    blockBox(g, -2.4, -3.57, 3.1, 0.5, 0, 0.75);
+    blockBox(g, 2.55, -2.2, 1.3, 3.25, 0, 1.0);
+    block(g, 1.3, 3.3, 0.55, 0.7);
+    for (const sx of [-1, 1]) block(sg, sx * 1.25, 0, 0.16, 3.5);
+    blockBox(cr, 0, 0, 1.75, 1.75, 0, CH + 2.5);
+    blockBox(cr, 1.0, 0.2, 0.45, 2.0, 0, 2.1);
+    block(g, 3.4, 3.4, 0.42, 0.9);
+    block(g, 3.3, 2.3, 0.46, 0.8);
+    block(g, 3.6, -4.0, 0.1, 5);
+    // The Shipyard (a place): in front of the shipwright at his slipway
+    const at = Y.at(-0.6, 1.6);
+    const sw = Y.at(0.2, 0.3);
+    walkData.places.push({ id: 'shipyard', name: 'The Shipyard', x: r2(at.x), z: r2(at.z), r: 1.8, face: r3(Math.atan2(sw.x - at.x, sw.z - at.z)) });
   }
   function deckSurfaceSmall(g, w, d, y) {
     const n = Math.round(w / 0.42);
@@ -1874,7 +2542,14 @@ export function build(scene, ctx = {}) {
     add(g, rbox(w + 0.3, 0.2, d + 0.3, 0.05), ink(COL.woodDark), 0, 0.04, 0);
     add(g, rbox(w, h, d, 0.1, 2), ink(wall), 0, h / 2 + 0.1, 0);
     const bat = thin(shade(wall, -0.2));
-    for (let bx = -w / 2 + 0.5; bx < w / 2 - 0.35; bx += 0.55) add(g, rbox(0.08, h - 0.25, 0.05, 0.02), bat, bx, h / 2 + 0.1, d / 2 + 0.02);
+    // board-and-batten all round (a walker sees the backs and sides too)
+    for (let bx = -w / 2 + 0.5; bx < w / 2 - 0.35; bx += 0.55) {
+      add(g, box(0.08, h - 0.25, 0.05), bat, bx, h / 2 + 0.1, d / 2 + 0.02);
+      add(g, box(0.08, h - 0.25, 0.05), bat, bx, h / 2 + 0.1, -d / 2 - 0.02);
+    }
+    for (const sx of [-1, 1]) for (let bz = -d / 2 + 0.45; bz < d / 2 - 0.3; bz += 0.55) {
+      if (Math.abs(bz) > 0.4) add(g, box(0.05, h - 0.25, 0.08), bat, sx * (w / 2 + 0.02), h / 2 + 0.1, bz);
+    }
     for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(g, rbox(0.24, h + 0.2, 0.24, 0.05), ink(COL.woodDark), sx * w / 2, h / 2 + 0.1, sz * d / 2);
     add(g, rbox(w + 0.3, 0.2, d + 0.3, 0.05), ink(COL.woodDark), 0, h + 0.15, 0);
     // door
@@ -1902,9 +2577,11 @@ export function build(scene, ctx = {}) {
       add(g, rbox(0.86, 0.18, 0.24, 0.04), ink(COL.wood2), wx, wy - 0.55, d / 2 + 0.14);
       for (let i = 0; i < 4; i++) add(g, sphere(8), ink([COL.red, COL.pink, COL.yellow, COL.white][(i + (o.seed || 0)) & 3]), wx - 0.3 + i * 0.2, wy - 0.4, d / 2 + 0.17, 0, 0, 0, 0.1);
     }
-    // a round window on a side wall
-    add(g, torus(0.24, 0.06, 16, 5), ink(COL.woodDeep), w / 2 + 0.04, h * 0.62, 0, 0, PI / 2, 0);
-    add(g, cyl(0.22, 0.22, 0.05, 14), ink(COL.glass), w / 2 + 0.03, h * 0.62, 0, 0, 0, PI / 2);
+    // a round window in each side wall
+    for (const sx of [-1, 1]) {
+      add(g, torus(0.24, 0.06, 16, 5), ink(COL.woodDeep), sx * (w / 2 + 0.04), h * 0.62, 0, 0, PI / 2, 0);
+      add(g, cyl(0.22, 0.22, 0.05, 14), ink(COL.glass), sx * (w / 2 + 0.03), h * 0.62, 0, 0, 0, PI / 2);
+    }
     // roof
     if (o.shed) {
       add(g, rbox(w + 0.8, 0.22, d + 0.9, 0.06), ink(o.roof), 0, h + 0.55, 0, 0.28);
@@ -1931,7 +2608,6 @@ export function build(scene, ctx = {}) {
   }
   const SHACKS = [
     // platform, local x, z, ry, look
-    ['s1', 0.6, -0.6, 0.0, { w: 3.6, d: 3.0, h: 2.6, wall: WALLS[0], roof: ROOFS[1], patches: 2, chimney: 'pipe', lit: true }],
     ['s2', 0, -0.4, 0.0, { w: 3.4, d: 3.0, h: 2.4, wall: WALLS[2], roof: ROOFS[0], patches: 2, round: true }],
     ['s3', 0, -0.6, 0.0, { w: 4.2, d: 3.4, h: 2.8, wall: WALLS[3], roof: ROOFS[4], patches: 3, chimney: 'brick', stack: { w: 3.0, d: 2.6, h: 2.2, wall: WALLS[1], roof: ROOFS[2], round: true } }],
     ['s4', 0, -0.4, 0.0, { w: 3.8, d: 3.2, h: 2.6, wall: WALLS[4], roof: ROOFS[3], patches: 2, lit: true }],
@@ -1970,18 +2646,299 @@ export function build(scene, ctx = {}) {
     barrel(P.g, -P.w / 2 + 0.6, P.y, P.d / 2 - 0.7, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
     if (seed % 3 === 0) crate(P.g, P.w / 2 - 0.7, P.y, P.d / 2 - 0.6, 0.7, rand());
     if (seed % 3 === 1) netRack(P.g, P.w / 2 - 0.9, P.y, 0.9, -PI / 2);
+    // (the camera in the town view keeps out of the houses)
+    blockBox(s, 0, 0, look.w + 0.35, look.d + 0.35, 0, look.h + 1.8 + (look.stack ? look.stack.h + 2 : 0));
+  }
+
+  // ----- Polly's Plumes & Trims, the tailor and barber, on platform s1 -----
+  const polly = { pole: null, podium: null, lineup: [], spots: {} };
+  {
+    const P = plats.s1;
+    const g = P.g;
+    const y0 = P.y;
+    const prand = mulberry32(90210); // its own stream (the rest of the town keeps its looks)
+    // a narrow two-storey shop at the back left: teal below, pink above, a teal shingle roof
+    const SH = { x: -1.45, z: -1.35, w: 3.3, d: 2.7, h1: 2.5, h2: 2.0 };
+    const shop = new THREE.Group();
+    shop.position.set(SH.x, y0, SH.z);
+    g.add(shop);
+    const { w, d, h1, h2 } = SH;
+    const TEAL = 0x7fd6c6;
+    const PINK = 0xf9a8bd;
+    const PINK2 = 0xe2387a;
+    add(shop, rbox(w + 0.3, 0.2, d + 0.3, 0.05), ink(COL.woodDark), 0, 0.04, 0);
+    add(shop, rbox(w, h1, d, 0.1, 2), ink(TEAL), 0, h1 / 2 + 0.1, 0);
+    const bat = thin(shade(TEAL, -0.18));
+    // board-and-batten on all four walls (no bare backs)
+    for (let bx = -w / 2 + 0.45; bx < w / 2 - 0.3; bx += 0.5) {
+      add(shop, box(0.07, h1 - 0.3, 0.05), bat, bx, h1 / 2 + 0.1, -d / 2 - 0.02);
+    }
+    for (const sx of [-1, 1]) for (let bz = -d / 2 + 0.45; bz < d / 2 - 0.3; bz += 0.5) add(shop, box(0.05, h1 - 0.3, 0.07), bat, sx * (w / 2 + 0.02), h1 / 2 + 0.1, bz);
+    // white corner posts and the band between the floors
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(shop, rbox(0.22, h1 + h2 + 0.25, 0.22, 0.05), ink(COL.white), sx * w / 2, (h1 + h2 + 0.25) / 2 + 0.05, sz * d / 2);
+    add(shop, rbox(w + 0.3, 0.2, d + 0.3, 0.05), ink(COL.white), 0, h1 + 0.15, 0);
+    // upper floor: pink clapboard
+    const up = h1 + 0.25;
+    add(shop, rbox(w - 0.04, h2, d - 0.04, 0.08, 2), ink(PINK), 0, up + h2 / 2, 0);
+    const clap = thin(shade(PINK, -0.14));
+    for (let yy = up + 0.3; yy < up + h2 - 0.15; yy += 0.32) {
+      add(shop, box(w - 0.1, 0.05, 0.05), clap, 0, yy, -d / 2 + 0.0);
+      for (const sx of [-1, 1]) add(shop, box(0.05, 0.05, d - 0.1), clap, sx * (w / 2 - 0.0), yy, 0);
+    }
+    add(shop, rbox(w + 0.36, 0.16, d + 0.36, 0.05), ink(COL.white), 0, up + h2 + 0.05, 0);
+    roof(shop, w + 0.7, d + 0.8, up + h2 + 0.1, 1.35, COL.teal, { patches: 0, gable: PINK });
+    // a weather-cock finial: a brass ball and a little pink pennant on the ridge
+    add(shop, sphere(10), ink(COL.brass), w / 2 - 0.2, up + h2 + 0.1 + 1.35 + 0.45, 0, 0, 0, 0, 0.13);
+    flagOnPole(shop, V3(-w / 2 + 0.35, up + h2 + 1.5, 0), 1.1, 0.9, 0.55, PINK2, -0.3, 'pennant');
+    // the big painted sign across the upper front
+    const fz = d / 2;
+    add(shop, rbox(3.2, 1.08, 0.14, 0.08, 2), ink(COL.teal), 0, up + h2 * 0.47, fz + 0.06);
+    if (signMat) add(shop, signPlane(tex, 'polly', 3.04, 0.92), signMat, 0, up + h2 * 0.47, fz + 0.135);
+    // round windows on the upper side walls, a shuttered one at the back
+    for (const sx of [-1, 1]) {
+      add(shop, torus(0.26, 0.06, 16, 5), ink(COL.white), sx * (w / 2 + 0.02), up + h2 * 0.55, 0, 0, PI / 2, 0);
+      add(shop, cyl(0.23, 0.23, 0.05, 14), winGlow, sx * (w / 2 + 0.01), up + h2 * 0.55, 0, 0, 0, PI / 2);
+    }
+    add(shop, rbox(0.8, 0.8, 0.1, 0.04), ink(COL.white), 0.3, up + h2 * 0.55, -fz - 0.03);
+    add(shop, rbox(0.62, 0.62, 0.1, 0.03), winGlow, 0.3, up + h2 * 0.55, -fz - 0.06);
+    for (const sx of [-1, 1]) {
+      const sh = add(shop, rbox(0.34, 0.78, 0.06, 0.03), ink(COL.teal), 0.3 + sx * 0.6, up + h2 * 0.55, -fz - 0.14);
+      sh.rotation.y = -sx * 0.4;
+    }
+    // ground floor front: the shop window (left) with three hats on wooden heads, the door (right)
+    const winX = -0.62;
+    const winY = 1.3;
+    const WW = 1.55;
+    const WH = 1.25;
+    add(shop, rbox(WW, WH, 0.06, 0.02), ink(0x34406e), winX, winY, fz + 0.01); // the dim shop inside
+    for (const [ox, oy, bw, bh] of [[0, WH / 2, WW + 0.2, 0.14], [0, -WH / 2, WW + 0.26, 0.16], [-WW / 2, 0, 0.12, WH + 0.1], [WW / 2, 0, 0.12, WH + 0.1]]) {
+      add(shop, box(bw, bh, 0.16), ink(COL.white), winX + ox, winY + oy, fz + 0.07);
+    }
+    add(shop, rbox(WW + 0.3, 0.1, 0.34, 0.03), ink(PINK2), winX, winY - WH / 2 - 0.12, fz + 0.14); // the sill
+    const heads = [[-0.48, 'tricorn'], [0, 'plumed'], [0.48, 'straw']];
+    for (const [hx, kind] of heads) {
+      const hg = new THREE.Group();
+      hg.position.set(winX + hx, winY - WH / 2 + 0.06, fz + 0.12);
+      shop.add(hg);
+      add(hg, cyl(0.12, 0.15, 0.06, 10), ink(COL.woodDark), 0, 0.03, 0);
+      add(hg, cyl(0.04, 0.05, 0.3, 6), ink(COL.wood2), 0, 0.2, 0);
+      add(hg, sphere(8), ink(COL.wood3), 0, 0.5, 0, 0, 0, 0, [0.17, 0.2, 0.17]);
+      hatModel(hg, kind, 0.66);
+    }
+    // the door: pink, with a round window, a brass knob and a step
+    const doorX = 0.95;
+    add(shop, rbox(1.0, 1.95, 0.1, 0.05), ink(COL.white), doorX, 1.05, fz + 0.03);
+    add(shop, rbox(0.8, 1.8, 0.12, 0.05), ink(PINK2), doorX, 1.0, fz + 0.06);
+    add(shop, torus(0.16, 0.04, 14, 5), ink(COL.brass), doorX, 1.45, fz + 0.13);
+    add(shop, cyl(0.14, 0.14, 0.04, 12), winGlow, doorX, 1.45, fz + 0.11, PI / 2);
+    add(shop, sphere(8), ink(COL.brass), doorX + 0.27, 0.95, fz + 0.15, 0, 0, 0, 0.06);
+    add(shop, rbox(1.1, 0.1, 0.4, 0.03), ink(COL.wood3), doorX, 0.06, fz + 0.2);
+    // the scalloped striped awning over the window and the door
+    {
+      const nS = 8;
+      const aw = (w + 0.3) / nS;
+      for (let i = 0; i < nS; i++) {
+        const x = -(w + 0.3) / 2 + aw * (i + 0.5);
+        add(shop, rbox(aw + 0.01, 0.06, 1.12, 0.02), ink(i % 2 ? COL.white : PINK2), x, h1 + 0.02, fz + 0.5, 0.36);
+        const sc = add(shop, cached('scallop', () => {
+          const sh = new THREE.Shape();
+          const a2 = 2.7 / 6;
+          sh.moveTo(-a2 / 2, 0);
+          sh.absarc(0, 0, a2 / 2, PI, TAU, false);
+          sh.lineTo(-a2 / 2, 0);
+          return slabShape(sh, 0.05, 0.01);
+        }), ink(i % 2 ? COL.white : PINK2), x, h1 - 0.19, fz + 1.03);
+        sc.scale.set(aw / (2.7 / 6), 1, 1);
+      }
+      for (const sx of [-1, 1]) rod(shop, thin(COL.iron), V3(sx * (w / 2 + 0.1), h1 + 0.25, fz + 0.03), V3(sx * (w / 2 + 0.1), h1 - 0.17, fz + 1.02), 0.02, 4);
+      polly.buntingEnd = worldAt(shop, w / 2 + 0.1, h1 + 0.3, fz + 0.05);
+    }
+    // the barber pole on a bracket at the front right corner (the striped part spins)
+    {
+      const px = w / 2 + 0.3;
+      const pz = fz + 0.12;
+      beam(shop, ink(COL.iron), V3(w / 2 + 0.08, 2.02, pz), V3(px, 2.02, pz), 0.06, 0.06, 0.02);
+      beam(shop, ink(COL.iron), V3(w / 2 + 0.08, 1.12, pz), V3(px, 1.12, pz), 0.06, 0.06, 0.02);
+      add(shop, sphere(10), ink(COL.brass), px, 2.13, pz, 0, 0, 0, 0.12);
+      add(shop, cyl(0.12, 0.1, 0.08, 12), ink(COL.brass), px, 2.03, pz);
+      add(shop, cyl(0.1, 0.12, 0.08, 12), ink(COL.brass), px, 1.11, pz);
+      const pole = new THREE.Group();
+      pole.name = 'barber-pole';
+      pole.position.copy(worldAt(shop, px, 1.57, pz));
+      pole.userData.keep = true;
+      root.add(pole);
+      const pg = new THREE.Group();
+      pole.add(pg);
+      add(pg, cyl(0.085, 0.085, 0.84, 16), ink(COL.white), 0, 0, 0);
+      for (let k = 0; k < 2; k++) {
+        const pts = [];
+        for (let i = 0; i <= 28; i++) {
+          const u = i / 28;
+          const a = k * PI + u * TAU * 1.5;
+          pts.push(V3(Math.cos(a) * 0.084, -0.41 + 0.82 * u, Math.sin(a) * 0.084));
+        }
+        rope(pg, ink(COL.red), pts, 0.026, 6);
+      }
+      bake(pole, { force: 'ink' });
+      polly.pole = pole;
+    }
+    // walk: the shop (with its step and the pole's bracket)
+    blockBox(shop, 0.12, 0.1, w + 0.6, d + 0.5, 0, up + h2 + 1.5);
+
+    // out front: the podium with its rug, the tall mirror, the mannequin; the barber's chair at the side
+    const pod = { x: -1.25, z: 1.55 };
+    {
+      const rg = new THREE.Group();
+      rg.position.set(pod.x, y0, pod.z + 0.25);
+      g.add(rg);
+      const rug = add(rg, cyl(1, 1, 0.025, 24), ink(0x1f8f84), 0, 0.013, 0);
+      rug.scale.set(1.05, 1, 0.8);
+      const ring = add(rg, torus(1, 0.025, 28, 3), flat(COL.gold), 0, 0.03, 0, PI / 2);
+      ring.scale.set(0.9, 0.7, 1);
+      for (let i = 0; i < 10; i++) {
+        const a = (i / 10) * TAU;
+        add(rg, rbox(0.04, 0.012, 0.16, 0.005), flat(COL.cream), Math.cos(a) * 1.1, 0.012, Math.sin(a) * 0.85, 0, -a + PI / 2, 0);
+      }
+      const pd = new THREE.Group();
+      pd.position.set(pod.x, y0, pod.z);
+      g.add(pd);
+      // a round wooden step with a red velvet top in a brass ring
+      add(pd, cyl(0.6, 0.64, 0.12, 22), ink(COL.woodDark), 0, 0.06, 0);
+      add(pd, cyl(0.54, 0.56, 0.07, 22), ink(COL.wood3), 0, 0.155, 0);
+      add(pd, cyl(0.5, 0.52, 0.06, 22), ink(0xc8324a), 0, 0.215, 0);
+      add(pd, torus(0.51, 0.025, 26, 4), thin(COL.brass), 0, 0.245, 0, PI / 2);
+      for (let i = 0; i < 8; i++) add(pd, sphere(6), ink(COL.brass), Math.cos((i / 8) * TAU) * 0.6, 0.06, Math.sin((i / 8) * TAU) * 0.6, 0, 0, 0, 0.035);
+      polly.podium = worldAt(g, pod.x, y0 + 0.24, pod.z);
+      block(g, pod.x, pod.z, 0.62, 0.25);
+    }
+    {
+      // the tall mirror on a stand, turned to the podium
+      const mg = new THREE.Group();
+      mg.position.set(-2.75, y0, 1.75);
+      mg.rotation.y = Math.atan2(pod.x + 2.75, pod.z - 1.75) - 0.15;
+      g.add(mg);
+      for (const sx of [-1, 1]) {
+        add(mg, rbox(0.1, 1.95, 0.1, 0.03), ink(COL.woodDark), sx * 0.45, 0.98, -0.02);
+        add(mg, rbox(0.12, 0.08, 0.6, 0.03), ink(COL.woodDark), sx * 0.45, 0.04, 0);
+        add(mg, sphere(8), ink(COL.brass), sx * 0.45, 1.98, -0.02, 0, 0, 0, 0.07);
+      }
+      const fr = new THREE.Group();
+      fr.position.set(0, 1.08, 0.0);
+      fr.rotation.x = -0.08;
+      mg.add(fr);
+      const oval = add(fr, torus(1, 0.055, 24, 4), ink(COL.gold), 0, 0, 0.0);
+      oval.scale.set(0.36, 0.78, 1);
+      const back = add(fr, cyl(1, 1, 0.05, 20), ink(COL.woodDark), 0, 0, -0.035, PI / 2);
+      back.scale.set(0.36, 1, 0.78);
+      const glass = add(fr, cyl(1, 1, 0.02, 20), flat(0xbfe9ff), 0, 0, 0.0, PI / 2);
+      glass.scale.set(0.34, 1, 0.76);
+      for (const [gx, gy, gl] of [[-0.12, 0.28, 0.42], [0.02, 0.36, 0.22], [0.1, -0.3, 0.18]]) {
+        add(fr, rbox(0.045, gl, 0.01, 0.005), flat(COL.white), gx, gy, 0.016, 0, 0, -0.55);
+      }
+      blockBox(mg, 0, 0, 1.1, 0.7, 0, 2.0);
+    }
+    {
+      // the mannequin in a long coat, by the window
+      const mq = new THREE.Group();
+      mq.position.set(-3.0, y0, 0.55);
+      mq.rotation.y = 0.5;
+      g.add(mq);
+      for (let i = 0; i < 3; i++) {
+        const a = (i / 3) * TAU;
+        rod(mq, thin(COL.woodDark), V3(0, 0.35, 0), V3(Math.cos(a) * 0.32, 0.02, Math.sin(a) * 0.32), 0.03, 5);
+      }
+      rod(mq, ink(COL.woodDark), V3(0, 0.0, 0), V3(0, 1.1, 0), 0.035, 6);
+      add(mq, lathe('dressForm', [[0, 1.08], [0.16, 1.12], [0.21, 1.3], [0.18, 1.48], [0.22, 1.62], [0.13, 1.72], [0.05, 1.76], [0, 1.76]], 10), ink(COL.canvas), 0, 0, 0);
+      add(mq, sphere(8), ink(COL.wood3), 0, 1.86, 0, 0, 0, 0, [0.09, 0.1, 0.09]);
+      // the coat: a long red coat flaring to the knees, gold buttons, cream cuffs and lapels
+      add(mq, lathe('longCoat', [[0.17, 1.73], [0.25, 1.66], [0.25, 1.4], [0.22, 1.3], [0.26, 1.0], [0.33, 0.62], [0.31, 0.58], [0.0, 0.58]], 12), ink(0xb3202a), 0, 0, 0);
+      for (const sx of [-1, 1]) {
+        const lap = add(mq, rbox(0.1, 0.36, 0.04, 0.02), ink(COL.cream), sx * 0.09, 1.52, 0.22, 0.12, 0, sx * 0.35);
+        lap.rotation.order = 'ZXY';
+        const arm = new THREE.Group();
+        arm.position.set(sx * 0.27, 1.6, 0);
+        arm.rotation.z = sx * 0.12;
+        mq.add(arm);
+        add(arm, capsule(0.075, 0.42, 6), ink(0xb3202a), 0, -0.26, 0);
+        add(arm, cyl(0.085, 0.085, 0.08, 8), ink(COL.cream), 0, -0.52, 0);
+      }
+      for (let i = 0; i < 4; i++) add(mq, sphere(6), ink(COL.brass), 0.03, 1.38 - i * 0.16, 0.235 + i * 0.01, 0, 0, 0, 0.03);
+      block(g, -3.0, 0.55, 0.38, 1.9);
+    }
+    {
+      // the barber's chair: red leather on a brass pedestal, turned to the plaza
+      const bc = new THREE.Group();
+      bc.position.set(1.55, y0, -1.15);
+      bc.rotation.y = -0.25;
+      g.add(bc);
+      add(bc, cyl(0.3, 0.36, 0.06, 14), ink(COL.brass), 0, 0.03, 0);
+      add(bc, cyl(0.08, 0.1, 0.42, 10), ink(COL.brass), 0, 0.26, 0);
+      add(bc, rbox(0.66, 0.18, 0.62, 0.07), ink(0xc8324a), 0, 0.53, 0.02);
+      add(bc, rbox(0.62, 0.78, 0.16, 0.07), ink(0xc8324a), 0, 0.98, -0.27, -0.12, 0, 0);
+      add(bc, rbox(0.3, 0.14, 0.12, 0.05), ink(COL.cream), 0, 1.43, -0.31, -0.12, 0, 0);
+      for (const sx of [-1, 1]) {
+        add(bc, rbox(0.1, 0.08, 0.56, 0.03), ink(COL.woodDark), sx * 0.36, 0.78, 0.0);
+        rod(bc, thin(COL.brass), V3(sx * 0.36, 0.5, 0.2), V3(sx * 0.36, 0.74, 0.2), 0.025, 5);
+      }
+      add(bc, rbox(0.42, 0.05, 0.22, 0.02), ink(COL.brass), 0, 0.2, 0.42, 0.3, 0, 0);
+      blockBox(bc, 0, 0.05, 0.85, 1.0, 0, 1.5);
+      // a little side table with a towel, a comb and a jar of combs
+      add(g, cyl(0.24, 0.24, 0.05, 12), ink(COL.wood3), 2.45, y0 + 0.72, -1.7);
+      add(g, cyl(0.04, 0.06, 0.7, 8), ink(COL.woodDark), 2.45, y0 + 0.36, -1.7);
+      add(g, rbox(0.3, 0.06, 0.2, 0.03), ink(COL.white), 2.4, y0 + 0.78, -1.62);
+      add(g, cyl(0.07, 0.06, 0.2, 10), ink(0x8fd6f0), 2.55, y0 + 0.85, -1.78);
+      block(g, 2.45, -1.7, 0.28, 0.8);
+    }
+    // a pot of flowers either side of the door step and a hat box stack by the wall
+    for (const [fx, fzz] of [[-0.2, 0.25], [2.85, -2.35]]) {
+      add(g, cyl(0.2, 0.15, 0.32, 12), ink(COL.cork), fx, y0 + 0.16, fzz);
+      for (let i = 0; i < 4; i++) add(g, sphere(8), ink([COL.pink, COL.yellow, COL.white, COL.red][i]), fx + Math.cos(i * 1.7) * 0.12, y0 + 0.42 + (i % 2) * 0.06, fzz + Math.sin(i * 1.7) * 0.12, 0, 0, 0, 0.1);
+      block(g, fx, fzz, 0.22, 0.5);
+    }
+    for (let i = 0; i < 3; i++) {
+      add(g, cyl(0.26 - i * 0.04, 0.26 - i * 0.04, 0.22, 12), ink([0x9b6fd6, 0xf9a8bd, 0x7fd6c6][i]), 0.6 + prand() * 0.04, y0 + 0.11 + i * 0.22, -2.35);
+      add(g, torus(0.26 - i * 0.04, 0.02, 12, 3), thin(COL.white), 0.6, y0 + 0.2 + i * 0.22, -2.35, PI / 2);
+    }
+    block(g, 0.6, -2.35, 0.3, 0.7);
+    // The tailor (a place): in front of the podium. The podium, the line-up spots for three sailors
+    // (in a row to the right of the door, facing the plaza) and the fitting camera go with it.
+    const spot = worldAt(g, -0.25, y0, 2.25);
+    const yaw = yawOf(g);
+    const podW = polly.podium;
+    for (let i = 0; i < 3; i++) {
+      const q = worldAt(g, 0.85 + i * 0.85, y0, 0.7);
+      polly.lineup.push({ x: r2(q.x), y: r2(q.y), z: r2(q.z), h: r3(yaw) });
+    }
+    const camT = worldAt(g, pod.x + 0.15, y0 + 1.25, pod.z);
+    const camP = worldAt(g, pod.x + 1.6, y0 + 2.5, pod.z + 4.4);
+    walkData.places.push({
+      id: 'tailor', name: "Polly's Plumes & Trims", x: r2(spot.x), z: r2(spot.z), r: 1.6, face: r3(Math.atan2(podW.x - spot.x, podW.z - spot.z)),
+      podium: { x: r2(podW.x), y: r2(podW.y), z: r2(podW.z) }, lineup: polly.lineup,
+      cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] },
+    });
+    polly.spots = { polly: worldAt(g, -0.35, y0, 1.5), snips: worldAt(g, 2.2, y0, -1.15), yaw };
   }
 
   // ----- rope bridges (and their walk paths) -----
+  // (the tower bridge runs straight west from the end of the walkway past the tavern's west wall)
+  const towerFoot = tavernRaft.at(-tavernRaft.w / 2, -3.8);
+  const towerLand = towerFoot.clone();
+  {
+    // where a line straight west (-x) from there meets the tower raft, 0.1 in from its east edge
+    towerRaft.g.updateMatrixWorld(true);
+    const q = towerRaft.g.worldToLocal(V3(towerFoot.x, 0, towerFoot.z));
+    const dirL = towerRaft.g.worldToLocal(V3(towerFoot.x - 1, 0, towerFoot.z)).sub(q);
+    towerLand.x -= (towerRaft.w / 2 - 0.1 - q.x) / dirL.x;
+  }
   const bridges = {
-    plazaS1: bridge(plaza.at(5.6, -4.55), plats.s1.at(0.6, 2.5)),
-    s1S2: bridge(plats.s1.at(3.0, 0.8), plats.s2.at(-2.7, 1.0)),
-    tavernTower: bridge(tavernRaft.at(-4.3, -4.5), towerRaft.at(2.4, 2.4)),
-    tavernS16: bridge(tavernRaft.at(-5.25, 1.5), plats.s16.at(2.7, 0.4)),
+    plazaS1: bridge(plaza.at(5.6, -4.55), plats.s1.at(0.6, plats.s1.d / 2), { walk: 'plazaS1' }),
+    s1S2: bridge(plats.s1.at(3.5, 0.8), plats.s2.at(-2.7, 1.0)),
+    tavernTower: bridge(towerFoot, towerLand, { walk: 'tavernTower' }),
+    tavernS16: bridge(tavernRaft.at(-tavernRaft.w / 2, 1.5), plats.s16.at(2.7, 0.4)),
     yardS7: bridge(yard.at(2.5, -4.5), plats.s7.at(-1.2, 2.5)),
-    plazaGarden: bridge(plaza.at(-8.45, 1.7), V3(GARDEN.x + 3.35, GARDEN.y - 0.05, GARDEN.z - 0.9)),
-    plazaYard: bridge(plaza.at(8.5, -2.4), yard.at(-4.2, -1.0)),
-    tavernS3: bridge(tavernRaft.at(1.5, -4.5), plats.s3.at(-1.0, 2.7)),
+    plazaGarden: bridge(plaza.at(-8.45, 1.7), V3(GARDEN.x + 3.35, GARDEN.y - 0.05, GARDEN.z - 0.9), { walk: 'plazaGarden' }),
+    plazaYard: bridge(plaza.at(8.5, -2.4), yard.at(-4.2, -1.0), { walk: 'plazaYard' }),
+    tavernS3: bridge(tavernRaft.at(2.15, -4.5), plats.s3.at(-1.0, 2.7)),
     gardenS13: bridge(V3(GARDEN.x - 2.05, GARDEN.y - 0.1, GARDEN.z + 2.75), plats.s13.at(2.7, -1.1)),
     s13S14: bridge(plats.s13.at(-2.7, -0.8), plats.s14.at(2.6, 1.2)),
     s7S17: bridge(plats.s7.at(2.7, 0.4), plats.s17.at(-3.0, 0.9)),
@@ -2063,20 +3020,21 @@ export function build(scene, ctx = {}) {
   }
   // bunting over the plaza and along the pier
   bunting(V3(-8.0, DECK + 2.55, -6.1), V3(-3.0, DECK + 2.5, -11.6), 0.5);
-  bunting(V3(-2.9, DECK + 4.5, -6.85), V3(8.0, DECK + 2.55, -6.1), 0.7);
+  bunting(welcomePost, V3(8.0, DECK + 2.55, -6.1), 0.7);
   tavernG.updateMatrixWorld(true);
   bunting(V3(-8.0, DECK + 2.55, -14.4), tavernG.localToWorld(V3(-4.2, 2.9, 2.75)), 0.3);
-  bunting(V3(8.0, DECK + 2.55, -14.4), plats.s1.at(-2.75, 2.15, 2.4), 0.5);
-  bunting(V3(-10.4, DECK + 2.55, -5.35), V3(-5.8, DECK + 2.55, -5.35), 0.45);
-  bunting(V3(5.8, DECK + 2.55, -5.35), V3(10.4, DECK + 2.55, -5.35), 0.45);
+  bunting(V3(8.0, DECK + 2.55, -14.4), polly.buntingEnd, 0.5);
+  // (along the pier's back rail: tight enough to clear a captain's hat in its gaps)
+  bunting(V3(-10.4, DECK + 2.55, -5.35), V3(-5.8, DECK + 2.55, -5.35), 0.22);
+  bunting(V3(5.8, DECK + 2.55, -5.35), V3(10.4, DECK + 2.55, -5.35), 0.22);
   tavernG.updateMatrixWorld(true);
   bunting(towerRaft.at(1.15, 1.15, TOWER_H + 1.0), tavernG.localToWorld(V3(-4.6, 3.1 + 2.8, -1.4)), 1.0, { step: 0.6 });
   // laundry between the shacks
-  laundry(plats.s1.at(-2.6, 2.2, 2.0), plats.s1.at(2.6, 2.3, 1.9), 0.25, [['shirt', COL.white, COL.red], ['pants', COL.blue], ['sock', COL.red], ['sock', COL.yellow], ['shirt', COL.yellow]]);
+  laundry(plats.s2.at(-2.4, 2.2, 2.0), plats.s2.at(2.4, 2.3, 1.9), 0.25, [['shirt', COL.white, COL.red], ['pants', COL.blue], ['sock', COL.red], ['sock', COL.yellow], ['shirt', COL.yellow]]);
   laundry(plats.s4.at(-2.4, 2.2, 1.9), plats.s4.at(2.4, 2.2, 2.1), 0.2, [['sheet', COL.white], ['shirt', COL.pink], ['pants', COL.woodDark], ['sock', COL.teal]]);
   laundry(plats.s7.at(-2.3, 2.3, 2.0), plats.s7.at(2.3, 2.1, 2.0), 0.2, [['shirt', COL.white, COL.blue], ['shirt', COL.green], ['sock', COL.orange], ['pants', COL.navy]]);
   laundry(plats.s8.at(-2.2, 2.4, 1.8), plats.s8.at(2.2, 2.2, 1.9), 0.18, [['sheet', COL.cream], ['sock', COL.red], ['shirt', COL.purple]]);
-  for (const pn of ['s1', 's4', 's7', 's8']) {
+  for (const pn of ['s2', 's4', 's7', 's8']) {
     const P = plats[pn];
     for (const sx of [-1, 1]) {
       const a = P.at(sx * (P.w / 2 - 0.25), P.d / 2 - 0.35);
@@ -2188,7 +3146,7 @@ export function build(scene, ctx = {}) {
     p.position.copy(pos);
     p.rotation.y = h;
     root.add(p);
-    const f = { p, action, aopts };
+    const f = { p, action, aopts, h0: h };
     folk.push(f);
     return f;
   }
@@ -2210,8 +3168,8 @@ export function build(scene, ctx = {}) {
   person({ kind: 'woman', seed: 304, hat: 'straw' }, 'idle', at(-2.7, STALL_Z + 1.6), PI + 0.3); // a customer
   person({ kind: 'pirate', seed: 305, tool: 'fiddle', hat: 'tricorn' }, 'fiddle', at(-4.2, -8.8), 0.5); // fiddler by the sign
   person({ kind: 'kid', seed: 306 }, 'cheer', at(-3.0, -8.3), -0.6); // a kid dancing to the fiddle
-  // on the plaza benches (plaza-local (-7.6, 2.4) and (6.8, -1.6); seat top ~ SEAT_HEIGHT)
-  person({ kind: 'old', seed: 307 }, 'sit', at(-7.45, -10.25 + 2.4), PI / 2); // grandpa
+  // on the plaza benches (plaza-local (-7.5, 3.2) and (6.8, -1.6); seat top ~ SEAT_HEIGHT)
+  person({ kind: 'old', seed: 307 }, 'sit', at(-7.35, -10.25 + 3.2), PI / 2); // grandpa
   person({ kind: 'woman', seed: 308 }, 'sit', at(6.65, -10.25 - 1.6), -PI / 2);
   // kids running round the water barrels
   const ring = (cx, cz, r, y = DECK, n = 16, a0 = 0) => {
@@ -2252,7 +3210,7 @@ export function build(scene, ctx = {}) {
   person({ kind: 'man', seed: 341, tool: 'hammer', hat: 'cap' }, 'hammer', yard.at(0.2, 0.3), PI - 0.2);
   person({ kind: 'pirate', seed: 342, hat: 'bandana' }, (t) => (t % 10 < 5 ? 'idle' : 'wave'), yard.at(-1.0, 3.6), 0.4);
   // folk on the shack porches and the garden
-  person({ kind: 'woman', seed: 351, hat: 'straw' }, (t) => (t % 8 < 2.5 ? 'wave' : 'idle'), plats.s1.at(-1.6, 1.8), 0.1);
+  person({ kind: 'woman', seed: 351, hat: 'straw' }, (t) => (t % 8 < 2.5 ? 'wave' : 'idle'), plats.s2.at(-1.0, 1.9), 0.1);
   person({ kind: 'old', seed: 352 }, 'idle', plats.s2.at(1.2, 1.8), -0.3);
   person({ kind: 'woman', seed: 357, hat: 'kerchief' }, (t) => (t % 10 < 3 ? 'wave' : 'idle'), plats.s17.at(1.3, 2.0), -0.5);
   person({ kind: 'man', seed: 355, hat: 'straw' }, (t) => (t % 9 < 3 ? 'wave' : 'idle'), plats.s13.at(1.0, 1.7), 0.9);
@@ -2286,41 +3244,85 @@ export function build(scene, ctx = {}) {
     f.p.position.set(0.05, 0.42 - 0.1 - SEAT_HEIGHT * f.p.scale.x, 3.0 * -0.22 + 0.05);
     f.p.rotation.y = PI / 2;
   }
-  // a walker crossing the bridge from the plaza to the first shack
-  walker({ kind: 'woman', seed: 361, tool: 'bucket' }, [plaza.at(6.4, -3.3), ...bridges.plazaS1, plats.s1.at(0.4, 1.7)], { pause: 2.5 });
+  // Polly measuring by the podium, Old Snips snipping by his barber's chair
+  {
+    const S = polly.spots;
+    person({ kind: 'woman', seed: 383, tool: 'tape', hat: 'none', shirt: 0xf58fb0 }, 'measure', S.polly, S.yaw - PI / 2 + 0.25);
+    person({ kind: 'old', seed: 390, tool: 'scissors', hat: 'none', shirt: 0xfaf3e3 }, 'snip', S.snips, S.yaw - PI / 2 - 0.35);
+  }
+  // a walker crossing the bridge from the plaza to Polly's
+  walker({ kind: 'woman', seed: 361, tool: 'bucket' }, [plaza.at(6.4, -3.3), ...bridges.plazaS1, plats.s1.at(0.6, 2.2)], { pause: 2.5 });
   walker({ kind: 'man', seed: 362, hat: 'straw' }, [...bridges.plazaYard, yard.at(-2.6, -1.4)], { pause: 2, off: 3 });
 
   // The showcase camera (main.js sways it across yaw ± yawRange): high enough to look over the near
   // bulwark at the crew mopping the deck, with the town and its people rising behind the ship.
   const VIEW = { target: [0.4, 3.3, -1.2], yaw: 0.15, yawRange: 0.42, dist: 17, height: 5.5 };
-  // Where that camera is in the docked ship's frame (ship-local), in the middle and near both ends of the sway.
-  const cameraSpots = () =>
-    [0, -0.7, 0.7].map((u) => {
+  // A world point in the docked ship's frame (ship-local; the ship lies at the berth).
+  const toShip = (wx, wy, wz) => {
+    const c = Math.cos(BERTH.h);
+    const sn = Math.sin(BERTH.h);
+    const x = wx - BERTH.x;
+    const z = wz - BERTH.z;
+    return V3(x * c - z * sn, wy, x * sn + z * c);
+  };
+  // Where that camera is in the ship's frame, across its sway (u -1..1).
+  const cameraSpots = (us = [0, -0.7, 0.7]) =>
+    us.map((u) => {
       const a = VIEW.yaw + VIEW.yawRange * u;
-      const wx = VIEW.target[0] + Math.sin(a) * VIEW.dist - BERTH.x;
-      const wz = VIEW.target[2] + Math.cos(a) * VIEW.dist - BERTH.z;
-      const c = Math.cos(BERTH.h);
-      const sn = Math.sin(BERTH.h);
-      return { x: wx * c - wz * sn, y: VIEW.target[1] + VIEW.height, z: wx * sn + wz * c };
+      return toShip(VIEW.target[0] + Math.sin(a) * VIEW.dist, VIEW.target[1] + VIEW.height, VIEW.target[2] + Math.cos(a) * VIEW.dist);
     });
 
   // ----- the cleaning crew (rides on the docked ship) -----
   const crewRig = new THREE.Group();
   crewRig.name = 'sparrow-crew';
   const crew = [];
-  const addCrew = (opts, action, aopts = {}) => {
+  const addCrew = (role, opts, action, aopts = {}) => {
     const p = buildPerson(opts);
     crewRig.add(p);
-    const c = { p, action, aopts };
+    const c = { role, base: opts, opts, p, action, aopts };
     crew.push(c);
     return c;
   };
-  const cMopA = addCrew({ kind: 'pirate', tool: 'mop', hat: 'bandana', seed: 11 }, 'mop');
-  const cMopB = addCrew({ kind: 'pirate', tool: 'mop', hat: 'tricorn', seed: 23, beard: true }, 'mop', { phase: 1.3 });
-  const cPolish = addCrew({ kind: 'pirate', tool: 'brush', seed: 41, hat: 'none', shirt: 0x3f8fd8 }, 'scrub', { wall: true });
-  const cBosun = addCrew({ kind: 'pirate', tool: 'bucket', seed: 13, hat: 'tricorn' }, 'walk');
-  const cPlank = addCrew({ kind: 'pirate', tool: 'brush', seed: 5, hat: 'bandana' }, 'scrub', { wall: true });
-  const cBoat = addCrew({ kind: 'kid', tool: 'brush', seed: 2 }, 'scrub', { wall: true });
+  const cMopA = addCrew('mopA', { kind: 'pirate', tool: 'mop', hat: 'bandana', seed: 11 }, 'mop');
+  const cMopB = addCrew('mopB', { kind: 'pirate', tool: 'mop', hat: 'tricorn', seed: 23, beard: true }, 'mop', { phase: 1.3 });
+  const cPolish = addCrew('polish', { kind: 'pirate', tool: 'brush', seed: 41, hat: 'none', shirt: 0x3f8fd8 }, 'scrub', { wall: true });
+  const cBosun = addCrew('bosun', { kind: 'pirate', tool: 'bucket', seed: 13, hat: 'tricorn' }, 'walk');
+  const cPlank = addCrew('plank', { kind: 'pirate', tool: 'brush', seed: 5, hat: 'bandana' }, 'scrub', { wall: true });
+  const cBoat = addCrew('boat', { kind: 'kid', tool: 'brush', seed: 2 }, 'scrub', { wall: true });
+  // Dress the crew (the uniform chosen at Polly's): fn(role, seed, baseOpts) -> buildPerson opts. Each
+  // sailor keeps his body, his tool, his job and his place; only the ones whose look changes are
+  // rebuilt (the old one disposed). The default uniform hands back the base opts: today's crew exactly.
+  const sameOpts = (a, b) => {
+    const ka = Object.keys(a).filter((k) => a[k] !== undefined).sort();
+    const kb = Object.keys(b).filter((k) => b[k] !== undefined).sort();
+    return ka.length === kb.length && ka.every((k, i) => k === kb[i] && JSON.stringify(a[k]) === JSON.stringify(b[k]));
+  };
+  function setCrewStyle(fn) {
+    let moved = false;
+    for (const c of crew) {
+      let o = c.base;
+      if (typeof fn === 'function') {
+        try {
+          const r = fn(c.role, c.base.seed, { ...c.base });
+          if (r && typeof r === 'object') o = { ...r, kind: c.base.kind, tool: c.base.tool, seed: c.base.seed };
+        } catch (e) {
+          o = c.base;
+        }
+      }
+      if (sameOpts(o, c.opts)) continue;
+      const old = c.p;
+      const p = buildPerson(o);
+      p.position.copy(old.position);
+      p.rotation.copy(old.rotation);
+      if (Math.abs(p.scale.x - old.scale.x) > 1e-6) moved = true;
+      crewRig.add(p);
+      disposePerson(old);
+      c.p = p;
+      c.opts = o;
+    }
+    // (a different build would need the crew placed afresh on the ship)
+    if (moved && crewState.ship) setShip(crewState.ship);
+  }
   const crewProps = new THREE.Group(); // plank, ropes, rowboat, suds (baked per ship)
   crewRig.add(crewProps);
   const bubbleMat = toon(COL.bubble, { outline: { thickness: 0.0028 }, transparent: true, opacity: 0.82 });
@@ -2405,10 +3407,6 @@ export function build(scene, ctx = {}) {
       for (const k of blockers) d = Math.min(d, k.r !== undefined ? Math.hypot(x - k.x, z - k.z) - k.r : Math.max(Math.abs(x - k.x) - k.hx, Math.abs(z - k.z) - k.hz));
       return d;
     };
-    const deckClear = (x, z) => {
-      const hx = hullX(z, 1.5);
-      return Math.min(propClear(x, z), hx === null ? -1 : hx * S - 0.14 - Math.abs(x));
-    };
     const clearOf = (x, z, r) => propClear(x, z) > r;
     // The moppers. A mop sweeps a wide arc (about 1.4 across) ahead of its mopper, so each mopper is
     // stood and turned where the whole sweep stays on open deck (clear of the props, which change with
@@ -2423,60 +3421,43 @@ export function build(scene, ctx = {}) {
       }
       return pts;
     };
-    const seenFrom = cameraSpots();
-    // top of the near bulwark along the ship: where its (near vertical) outside ends going up
-    const railTop = [];
-    for (let z = -4; z <= 5.001; z += 0.25) {
-      const x0 = hullX(z, 1.3);
-      let top = null;
-      for (let y = 1.3; y <= 2.8 && x0 !== null; y += 0.05) {
-        const x = hullX(z, y);
-        if (x === null || Math.abs(x - x0) > 0.25) break;
-        top = y;
-      }
-      railTop.push(top);
+    // What the showcase camera really sees of the deck, and where the deck is really clear: both from
+    // the ship's own triangles, which change with every upgrade (guns, props, rigging, sails).
+    const tris = shipTriangles(mesh);
+    const SWAY = [-0.9, -0.55, -0.2, 0.2, 0.55, 0.9];
+    const spots = cameraSpots(SWAY);
+    const deckY = Number.isFinite(u.deckY) ? u.deckY : a.y;
+    // (only the part of the picture where the decks are matters)
+    const region = [];
+    for (const x of [-2, 2]) for (const y of [deckY, q0.y + 0.4]) for (const z of [-5.6, 5.2]) region.push(V3(x, y, z));
+    // (only what can come between the camera and the decks: nothing wholly below the main deck, nor
+    // past the far bulwark)
+    const near = [];
+    for (let i = 0; i < tris.length; i += 9) {
+      if (Math.max(tris[i + 1], tris[i + 4], tris[i + 7]) < deckY + 0.05) continue;
+      if (Math.min(tris[i], tris[i + 3], tris[i + 6]) * -S > 2.2) continue;
+      for (let j = 0; j < 9; j++) near.push(tris[i + j]);
     }
-    // Can the camera see a mop head here (q: ship-local, on the deck) over the near bulwark (and its
-    // cap rail, a little inboard) and past the deck props (taken as 0.8 tall: barrels, coils, the
-    // hatch coaming, the foot of a mast)?
-    const visible = (q, cam) => {
-      const top = railTop[clamp(Math.round((q.z + 4) / 0.25), 0, railTop.length - 1)];
-      const xb = top === null ? null : hullX(q.z, top - 0.05);
-      if (xb === null) return false;
-      const y = q.y + 0.08;
-      const xi = xb - S * 0.3;
-      if (cam.y + ((xi - cam.x) / (q.x - cam.x)) * (y - cam.y) < top + 0.05) return false;
-      // the stretch of the sight line low over the deck, from t0 to the mop head (t = 1)
-      const t0 = 1 - 0.8 / (cam.y - y);
-      const ax = cam.x + (q.x - cam.x) * t0;
-      const az = cam.z + (q.z - cam.z) * t0;
-      const dx = q.x - ax;
-      const dz = q.z - az;
-      const dd = dx * dx + dz * dz || 1;
-      for (const k of blockers) {
-        if (k.r !== undefined) {
-          const t = clamp(((k.x - ax) * dx + (k.z - az) * dz) / dd, 0, 1);
-          if (Math.hypot(ax + dx * t - k.x, az + dz * t - k.z) < k.r) return false;
-        } else {
-          // segment against the box (slabs)
-          let lo = 0;
-          let hi = 1;
-          if (Math.abs(dx) > 1e-9) {
-            const t1 = (k.x - k.hx - ax) / dx;
-            const t2 = (k.x + k.hx - ax) / dx;
-            lo = Math.max(lo, Math.min(t1, t2));
-            hi = Math.min(hi, Math.max(t1, t2));
-          } else if (Math.abs(ax - k.x) > k.hx) continue;
-          if (Math.abs(dz) > 1e-9) {
-            const t1 = (k.z - k.hz - az) / dz;
-            const t2 = (k.z + k.hz - az) / dz;
-            lo = Math.max(lo, Math.min(t1, t2));
-            hi = Math.min(hi, Math.max(t1, t2));
-          } else if (Math.abs(az - k.z) > k.hz) continue;
-          if (lo <= hi) return false;
-        }
+    const nearTris = new Float32Array(near);
+    const views = spots.map((c) => viewProbe(nearTris, c, toShip(...VIEW.target), region));
+    // which of the camera's sway spots see a mop head at (x, y, z) (ship-local): a bit each
+    const seenBy = (x, y, z) => {
+      let bits = 0;
+      for (let k = 0; k < views.length; k++) if (views[k](x, y + 0.1, z)) bits |= 1 << k;
+      return bits;
+    };
+    // ... unless a crewman stands in the way (a body ~1.8 tall, 0.38 round)
+    const bodyHides = (C, hx, hy, hz, others) => {
+      const dx = hx - C.x;
+      const dz = hz - C.z;
+      const L2 = dx * dx + dz * dz;
+      for (const o of others) {
+        const t = ((o.x - C.x) * dx + (o.z - C.z) * dz) / L2;
+        if (t <= 0 || t >= 1) continue;
+        const y = C.y + (hy + 0.1 - C.y) * t;
+        if (y < o.y + 1.8 && Math.hypot(C.x + dx * t - o.x, C.z + dz * t - o.z) < 0.38) return true;
       }
-      return true;
+      return false;
     };
     // the polisher kneels at the waist, scrubbing the inside of the bulwark: as close to it as
     // the deck props allow
@@ -2493,111 +3474,173 @@ export function build(scene, ctx = {}) {
       }
     }
     place(cPolish, { x: px, y: w.y, z: w.z }, -PI / 2);
-    const q = V3();
     const bodies = [V3(px, w.y, w.z)]; // the crew on deck so far
     const mops = []; // and where their mop heads go
-    // Deck maps on a 0.1 grid (ship-local x, z): room around each point, and how much the camera sees
-    // of a mop head there (2 from the middle of its sway, 1 from near each end).
-    const G0X = -1.6;
-    const G0Z = -3.6;
-    const GNX = 33;
-    const GNZ = 92;
-    const roomMap = new Float32Array(GNX * GNZ);
-    const seenMap = new Uint8Array(GNX * GNZ);
-    for (let iz = 0; iz < GNZ; iz++) {
-      for (let ix = 0; ix < GNX; ix++) {
-        q.set(G0X + ix * 0.1, a.y, G0Z + iz * 0.1);
-        const room = deckClear(q.x, q.z);
-        roomMap[iz * GNX + ix] = room;
-        if (room > 0.2) seenMap[iz * GNX + ix] = (visible(q, seenFrom[0]) ? 2 : 0) + (visible(q, seenFrom[1]) ? 1 : 0) + (visible(q, seenFrom[2]) ? 1 : 0);
+    // A deck level the moppers may work on: maps on a 0.1 grid (ship-local x, z) of the room round
+    // each point (to the props really there at mop height, and to the level's edges) and of which
+    // camera spots see a mop head there.
+    const level = (name, y, x0, z0, nx, nz, edge) => {
+      const occ = deckOccupancy(tris, y, { X0: x0 - 0.3, Z0: z0 - 0.3, NX: Math.ceil((nx * 0.1 + 0.6) / 0.05), NZ: Math.ceil((nz * 0.1 + 0.6) / 0.05) });
+      const room = new Float32Array(nx * nz);
+      const seen = new Uint8Array(nx * nz);
+      for (let iz = 0; iz < nz; iz++) {
+        for (let ix = 0; ix < nx; ix++) {
+          const x = x0 + ix * 0.1;
+          const z = z0 + iz * 0.1;
+          const r = Math.min(occ.at(x, z), edge(x, z));
+          room[iz * nx + ix] = r;
+          if (r > 0.1) seen[iz * nx + ix] = seenBy(x, y, z);
+        }
       }
-    }
-    const cell = (x, z) => {
-      const ix = Math.round((x - G0X) / 0.1);
-      const iz = Math.round((z - G0Z) / 0.1);
-      return ix >= 0 && ix < GNX && iz >= 0 && iz < GNZ ? iz * GNX + ix : -1;
+      const cell = (x, z) => {
+        const ix = Math.round((x - x0) / 0.1);
+        const iz = Math.round((z - z0) / 0.1);
+        return ix >= 0 && ix < nx && iz >= 0 && iz < nz ? iz * nx + ix : -1;
+      };
+      return {
+        name, y, occ, x0, z0, nx, nz, room, seen,
+        roomAt: (x, z) => {
+          const i = cell(x, z);
+          return i < 0 ? -1 : room[i] - 0.05; // (less half a cell)
+        },
+        seenAt: (x, z) => {
+          const i = cell(x, z);
+          return i < 0 ? 0 : seen[i];
+        },
+      };
     };
-    const roomAt = (x, z) => {
-      const i = cell(x, z);
-      return i < 0 ? -1 : roomMap[i] - 0.05; // (less half a cell)
+    // the main deck: inside the bulwarks, clear of the props (u.blockers too)
+    const main = level('main', deckY, -1.6, -3.6, 33, 92, (x, z) => {
+      const hx = hullX(z, 1.5);
+      return Math.min(propClear(x, z), hx === null ? -1 : hx * S - 0.14 - Math.abs(x));
+    });
+    crewRig.userData.occupancy = { taken: main.occ.taken, ...main.occ.grid };
+    crewRig.userData.maps = { G0X: main.x0, G0Z: main.z0, GNX: main.nx, GNZ: main.nz, cell: 0.1, room: main.room, seen: main.seen, views: SWAY.length };
+    // the quarterdeck (the stern castle's roof), a last resort on a deck crowded by the upgrades: inside
+    // its rails, where the bosun leaves it room (he paces only the near half of his beat then)
+    const castle = (u.blockers || []).find((k) => k.hx !== undefined && k.hx > 1 && k.z < -2);
+    let quarter = null;
+    // (with a mopper up there the bosun paces along the taffrail instead, behind them from the camera)
+    const sternZ = castle ? castle.z - castle.hz + 0.38 : q0.z;
+    const sternBeat = [];
+    for (let k = 0; k <= 6; k++) sternBeat.push({ x: q0.x + (q1.x - q0.x) * (k / 6), y: q0.y, z: sternZ });
+    const bosunBeat = { stern: false };
+    const quarterLevel = () => {
+      if (quarter !== null || !castle) return quarter;
+      quarter = level('quarter', q0.y, castle.x - castle.hx, castle.z - castle.hz, Math.round((2 * castle.hx) / 0.1) + 1, Math.round((2 * castle.hz) / 0.1) + 1, (x, z) =>
+        Math.min(castle.hx - 0.15 - Math.abs(x - castle.x), castle.hz - 0.15 - Math.abs(z - castle.z)));
+      return quarter;
     };
-    const mopSpot = (arc, home, penalty, minClear) => {
+    // (the bosun pacing the quarterdeck can stand between the camera and a mop too)
+    const fullBeat = [];
+    for (let k = 0; k <= 6; k++) fullBeat.push({ x: q0.x + (q1.x - q0.x) * (k / 6), y: q0.y, z: q0.z + (q1.z - q0.z) * (k / 6) });
+    // tiers: [[minClear, extra cost], ...] (the stroke's clearance decides which it qualifies for)
+    const mopSpot = (L, arc, home, penalty, tiers, extra = []) => {
       let best = null;
-      for (let x = -0.8; x <= 1.21; x += 0.2) {
-        for (let z = -2.5; z <= 3.76; z += 0.25) {
-          const fx = -S * x;
-          if (roomAt(fx, z) < 0.3 || bodies.some((o) => Math.hypot(o.x - fx, o.z - z) < 0.9) || mops.some((o) => Math.hypot(o.x - fx, o.z - z) < 0.55)) continue;
+      const minClear = Math.min(...tiers.map((t) => t[0]));
+      const xs = L.name === 'main' ? [-0.8, 1.2] : [L.x0 + 0.3, L.x0 + L.nx * 0.1 - 0.3];
+      const zs = L.name === 'main' ? [-2.5, 3.75] : [L.z0 + 0.3, L.z0 + L.nz * 0.1 - 0.3];
+      for (let x = xs[0]; x <= xs[1] + 1e-6; x += 0.2) {
+        for (let z = zs[0]; z <= zs[1] + 1e-6; z += 0.125) {
+          const fx = L.name === 'main' ? -S * x : x;
+          const near = [...bodies, ...extra];
+          if (L.roomAt(fx, z) < 0.3 || near.some((o) => Math.abs(o.y - L.y) < 1 && Math.hypot(o.x - fx, o.z - z) < 0.9) || mops.some((o) => Math.abs(o.y - L.y) < 1 && Math.hypot(o.x - fx, o.z - z) < 0.55)) continue;
           for (let k = 0; k < 16; k++) {
             const h = -PI + (k / 16) * TAU;
             const ch = Math.cos(h);
             const sh = Math.sin(h);
-            // the whole stroke clear of the props, the bulwarks and the others: the mop head
-            // (radius ~0.15), and its handle on the way back to the hands
+            // the whole stroke clear of the props, the bulwarks and the others: the mop head (its
+            // strands splay about 0.2 round it), and its handle on the way back to the hands
             let clear = Infinity;
             let seen = 0;
+            const others = [{ x: fx, y: L.y, z }, ...bodies, ...(bosunBeat.stern || L.name !== 'main' ? sternBeat : fullBeat)];
             for (const l of arc) {
               const hx = fx + l.x * ch + l.z * sh;
               const hz = z - l.x * sh + l.z * ch;
-              clear = Math.min(clear, roomAt(hx, hz) - 0.15, roomAt(fx + (hx - fx) * 0.6, z + (hz - z) * 0.6) - 0.05);
-              for (const o of bodies) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.55);
-              for (const o of mops) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.35);
+              clear = Math.min(clear, L.roomAt(hx, hz) - 0.2, L.roomAt(fx + (hx - fx) * 0.6, z + (hz - z) * 0.6) - 0.05);
+              for (const o of near) if (Math.abs(o.y - L.y) < 1) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.55);
+              for (const o of mops) if (Math.abs(o.y - L.y) < 1) clear = Math.min(clear, Math.hypot(hx - o.x, hz - o.z) - 0.35);
               if (clear < minClear) break;
-              seen += seenMap[cell(hx, hz)];
+              const bits = L.seenAt(hx, hz);
+              for (let s2 = 0; s2 < spots.length; s2++) if (bits & (1 << s2) && !bodyHides(spots[s2], hx, L.y, hz, others)) seen++;
             }
             if (clear < minClear) continue;
-            // (as a last resort, simply the most room)
-            const score = minClear === -Infinity ? clear + seen / 64 : seen / 32 + sh * S * 0.6 - Math.hypot(fx - home.x, z - home.z) * 0.15 - penalty;
-            if (!best || score > best.score) best = { p: { x: fx, y: home.y, z }, h, score };
+            // (and he mustn't hide the strokes of the ones placed before him)
+            for (const m of mops) for (let s2 = 0; s2 < spots.length; s2++) if (m.bits & (1 << s2) && bodyHides(spots[s2], m.x, m.y - 0.1, m.z, [{ x: fx, y: L.y, z }])) seen--;
+            // seen: the share of the stroke the camera sees over its sway (that matters most), then
+            // facing the camera, near his usual spot, long strokes; (as a last resort, the most room)
+            const seenFrac = seen / (arc.length * views.length);
+            const tier = tiers.find((t) => clear >= t[0]);
+            const score = minClear === -Infinity ? clear + seenFrac : 3 * seenFrac + sh * S * 0.3 - Math.hypot(fx - home.x, z - home.z) * 0.1 - penalty - tier[1];
+            if (!best || score > best.score) best = { p: { x: fx, y: L.y, z }, h, score, clear, seenFrac, level: L.name };
           }
         }
       }
       return best;
     };
-    const pickMop = (c, home, h0) => {
-      // full strokes where there is room, shorter ones on a deck crowded by the upgrades
+    const pickMop = (c, home, h0, mayGoUp) => {
+      // where the camera sees the stroke best: full strokes where there is room, shorter ones on a
+      // deck crowded by the upgrades, a hand's breadth from the props when it can (never into them)
       let best = null;
-      for (const minClear of [0.1, 0, -Infinity]) {
-        for (const sweep of minClear === -Infinity ? [0.15] : [1, 0.6, 0.35, 0.15]) {
+      const strokes = new Map();
+      const strokeFor = (sweep) => {
+        if (!strokes.has(sweep)) {
           c.aopts.sweep = sweep;
-          const arc = mopLocal(c);
-          const found = mopSpot(arc, home, (1 - sweep) * 0.8, minClear); // long strokes look best
-          if (found && (!best || found.score > best.score)) best = { ...found, arc, sweep };
+          strokes.set(sweep, mopLocal(c));
         }
-        if (best) break;
+        return strokes.get(sweep);
+      };
+      // (sweep 0: working one spot hard, pushing and pulling, when that is all the room there is)
+      const SWEEPS = [1, 0.6, 0.35, 0.15, 0];
+      for (const sweep of SWEEPS) {
+        const found = mopSpot(main, strokeFor(sweep), home, (1 - sweep) * 0.5, [[0.08, 0], [0, 0.15]]); // long strokes look best
+        if (found && (!best || found.score > best.score)) best = { ...found, arc: strokeFor(sweep), sweep };
+      }
+      if (mayGoUp && (!best || best.clear < 0 || best.seenFrac < 0.45) && quarterLevel()) {
+        // up on the quarterdeck (the bosun pacing the taffrail behind)
+        for (const sweep of SWEEPS) {
+          const found = mopSpot(quarter, strokeFor(sweep), { x: -S * 0.6, y: q0.y, z: (sternZ + q0.z) / 2 + 0.3 }, (1 - sweep) * 0.5 + 0.2, [[0.04, 0]], sternBeat);
+          if (found && (!best || best.clear < 0 || found.score > best.score)) best = { ...found, arc: strokeFor(sweep), sweep };
+        }
+        if (best && best.level === 'quarter') bosunBeat.stern = true;
       }
       if (!best) {
-        // (only if the whole deck were full: his usual spot, short strokes)
-        c.aopts.sweep = 0.15;
-        best = { p: home, h: h0, arc: mopLocal(c), sweep: 0.15 };
+        // (a deck so full there is no clear stroke anywhere: the most room)
+        const found = mopSpot(main, strokeFor(0), home, 0, [[-Infinity, 0]]);
+        if (found) best = { ...found, arc: strokeFor(0), sweep: 0 };
       }
+      if (!best) best = { p: home, h: h0, arc: strokeFor(0), sweep: 0, clear: -1, seenFrac: 0 };
       c.aopts.sweep = best.sweep;
       place(c, best.p, best.h);
       const ch = Math.cos(best.h);
       const sh = Math.sin(best.h);
       const heads = best.arc.map((l) => V3(best.p.x + l.x * ch + l.z * sh, best.p.y + l.y, best.p.z - l.x * sh + l.z * ch));
       bodies.push(V3(best.p.x, best.p.y, best.p.z));
-      mops.push(...heads);
+      const Lb = best.level === 'quarter' ? quarter : main;
+      for (const v of heads) mops.push(Object.assign(v.clone(), { bits: Lb.seenAt(v.x, v.z) }));
       return { ...best, heads };
     };
-    const mA = pickMop(cMopA, a, -PI / 2 + 0.35);
-    const mB = pickMop(cMopB, b, -PI / 2 + 0.25);
-    // the bosun walks the quarterdeck with a bucket
-    crewState.bosunPath = [V3(q0.x, q0.y, q0.z), V3(q1.x, q1.y, q1.z)];
-    place(cBosun, q1, -PI / 2);
+    const mA = pickMop(cMopA, a, -PI / 2 + 0.35, true);
+    const mB = pickMop(cMopB, b, -PI / 2 + 0.25, true);
+    crewRig.userData.mops = [mA, mB].map((m) => ({ at: [m.p.x, m.p.y, m.p.z], h: m.h, sweep: m.sweep, clear: m.clear, seen: m.seenFrac, level: m.level, heads: m.heads.map((v) => [v.x, v.y, v.z]) }));
+    // the bosun walks the quarterdeck with a bucket (along the taffrail with a mopper up there)
+    crewState.bosunPath = bosunBeat.stern ? [V3(q0.x, q0.y, sternZ), V3(q1.x, q1.y, sternZ)] : [V3(q0.x, q0.y, q0.z), V3(q1.x, q1.y, q1.z)];
+    place(cBosun, crewState.bosunPath[1], -PI / 2);
     // suds on the deck where the mops sweep (and by the polisher), with soap bubbles rising from them
     const suds = flat(COL.foam);
     const mid = (heads) => heads.reduce((m, h) => m.add(h), V3()).multiplyScalar(1 / heads.length);
-    for (const [p, n, r0, mop] of [[mid(mA.heads), 9, 0.25, true], [mid(mB.heads), 9, 0.25, true], [w, 4, 0.45, false]]) {
+    for (const [p, n, r0, mop, m] of [[mid(mA.heads), 9, 0.25, true, mA], [mid(mB.heads), 9, 0.25, true, mB], [w, 4, 0.45, false, null]]) {
+      const L = m && m.level === 'quarter' ? quarter : main;
       for (let i = 0; i < n; i++) {
         const ang = (i / n) * TAU + 0.4;
         const r = r0 + ((i * 37) % 7) * 0.06;
         const x = p.x + Math.cos(ang) * r * 0.8;
         const z = p.z + Math.sin(ang) * r;
-        if (mop && deckClear(x, z) < 0.12) continue; // not into the props or the bulwark
-        add(props, sphere(8), suds, x, (mop ? a.y : p.y) + 0.02, z, 0, 0, 0, [0.16 + (i % 3) * 0.04, 0.06, 0.14 + (i % 2) * 0.05]);
+        if (mop && L.roomAt(x, z) < 0.12) continue; // not into the props or the bulwark
+        add(props, sphere(8), suds, x, (mop ? m.p.y : p.y) + 0.02, z, 0, 0, 0, [0.16 + (i % 3) * 0.04, 0.06, 0.14 + (i % 2) * 0.05]);
       }
       // the moppers' bubbles rise from the mop, not in front of their faces
-      if (mop) emitters.push({ p: V3(p.x, a.y + 0.1, p.z), spread: 0.4, rise: 0.9, n: 0 });
+      if (mop) emitters.push({ p: V3(p.x, m.p.y + 0.1, p.z), spread: 0.4, rise: 0.9, n: 0 });
       else emitters.push({ p: V3(p.x - 0.4, p.y + 0.15, p.z), spread: 0.6, rise: 1.6, n: 0 });
     }
     // the hull scrubber on a plank hung over the side, between two gun barrels: the plank, its
@@ -2665,8 +3708,40 @@ export function build(scene, ctx = {}) {
     add(bk, cyl(0.16, 0.13, 0.3, 10), ink(COL.wood2), 0, 0.15, 0);
     add(bk, cyl(0.14, 0.14, 0.02, 10), flat(0x8fd6f0), 0, 0.29, 0);
     emitters.push({ p: V3(hxK + S * 0.1, kFeet + 0.6 * kS, bp.z), spread: 0.3, rise: 1.2, n: 0 });
-    // a painter's line from the rowboat to the rail
-    rod(props, thin(COL.rope), V3(bx - S * 0.2, 0.42, bp.z + 1.05), V3((hullX(bp.z + 1.5, 1.7) ?? -1.7) + S * 0.03, 1.86, bp.z + 1.5), 0.02, 4);
+    // a painter's line from the rowboat's bow to the rail, run clear of the gun barrels (more and bigger
+    // with the upgrades) and of the plank's ropes: tied on at the rail point nearest 1.5 ahead of the
+    // boy where the whole line stays outboard of the hull and the barrels by more than its thickness
+    // (from the bow forward, or from the stern aft where the barrels leave no room ahead)
+    const lineTop = (from, z1) => {
+      if (z1 > pz0 - 0.3 && z1 < pz1 + 0.3) return null;
+      const hx1 = hullX(z1, 1.7);
+      if (hx1 === null) return null;
+      const top = V3(hx1 + S * 0.03, 1.86, z1);
+      const p = V3();
+      for (let i = 1; i <= 50; i++) {
+        const t = i / 50;
+        if (t > 0.92) break; // (from there it is tied on at the rail)
+        p.lerpVectors(from, top, t);
+        for (const dz of [0, -0.04, 0.04, -0.08, 0.08]) {
+          const hx = hullX(p.z + dz, p.y);
+          if (hx !== null && (p.x - hx) * S < (dz ? 0.06 : 0.09)) return null;
+        }
+      }
+      return top;
+    };
+    let line = null;
+    for (let k = 0; k <= 36 && !line; k++) {
+      for (const [from, dir] of [[V3(bx - S * 0.2, 0.42, bp.z + 1.05), 1], [V3(bx - S * 0.2, 0.36, bp.z - 1.05), -1]]) {
+        for (const sg of k ? [1, -1] : [1]) {
+          const top = line ? null : lineTop(from, from.z + dir * 0.45 + sg * k * 0.05);
+          if (top) line = [from, top];
+        }
+      }
+    }
+    if (line) {
+      rod(props, thin(COL.rope), line[0], line[1], 0.02, 4);
+      crewRig.userData.painter = { a: line[0].toArray(), b: line[1].toArray() };
+    } else crewRig.userData.painter = null;
     // bubbles from the bosun's bucket (where it really is: see updateBubbles), kept below his face
     emitters.push({ p: V3(0, q0.y + 0.4, q0.z), spread: 0.2, rise: 0.55, n: 0, bosun: true });
     bake(props, { force: 'thin' });
@@ -2725,6 +3800,13 @@ export function build(scene, ctx = {}) {
     bake(gang, { force: 'thin' });
   }
   const gangFoot = pier.at(0.6, 1.1, 0.02);
+  // The Sea Biscuit (a place) at the foot of the gangplank; the captain comes ashore there, facing the town
+  walkData.places.push({ id: 'ship', name: 'The Sea Biscuit', x: r2(gangFoot.x), z: r2(pier.z + 0.25), r: 1.4, face: 0 });
+  walkData.spawn = { x: r2(gangFoot.x), z: r2(pier.z + 0.15), h: r3(PI) };
+  // the docked ship at the berth (beyond the pier's edge, so only the town camera ever meets it)
+  walkData.blockers.push({ x: BERTH.x, z: BERTH.z, w: 15, d: 3.4, ry: 0, h: 10 });
+  const PLACE_ORDER = ['ship', 'shipyard', 'tailor', 'tavern'];
+  walkData.places.sort((p, q) => PLACE_ORDER.indexOf(p.id) - PLACE_ORDER.indexOf(q.id));
   const gangTop = V3(1.62, 1.86, 0.6); // ship-local, on the rail
   gang.visible = false;
   lines.visible = false;
@@ -2858,7 +3940,124 @@ export function build(scene, ctx = {}) {
     bubbles.instanceMatrix.needsUpdate = true;
     shine.instanceMatrix.needsUpdate = true;
   }
-  function update(t) {
+  // ----- the town view: townsfolk in the captain's way, greetings, culling, prize ships -----
+  let lastT = 0;
+  let townView = false;
+  const tmpW = V3();
+  const turnTo = (a, b, step) => {
+    let d = (((b - a) % TAU) + TAU + PI) % TAU - PI;
+    if (Math.abs(d) <= step) return b;
+    return a + Math.sign(d) * step;
+  };
+  // on a walkable deck, the garden or a walkable bridge (and at its height)?
+  const onWalk = (x, y, z) => {
+    for (const k of walkDecks) {
+      const dx = x - k.x;
+      const dz = z - k.z;
+      if (Math.abs(dx * k.c - dz * k.s) <= k.hw && Math.abs(dx * k.s + dz * k.c) <= k.hd && Math.abs(y - k.y) < 0.45) return true;
+    }
+    if (Math.hypot(x - GARDEN.x, z - GARDEN.z) <= GARDEN.r - 0.4 && Math.abs(y - GARDEN.y) < 0.45) return true;
+    for (const l of walkData.links) {
+      for (let i = 0; i + 1 < l.pts.length; i++) {
+        const [ax, ay, az] = l.pts[i];
+        const [bx, by, bz] = l.pts[i + 1];
+        const L2 = (bx - ax) ** 2 + (bz - az) ** 2 || 1;
+        const u = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L2, 0, 1);
+        if (Math.hypot(x - ax - (bx - ax) * u, z - az - (bz - az) * u) <= l.hw + 0.3 && Math.abs(y - (ay + (by - ay) * u)) < 0.45) return true;
+      }
+    }
+    return false;
+  };
+  // who can stop and wave (not the ones sitting or fishing, nor anyone off the walk)
+  for (const f of folk) {
+    const a = typeof f.action === 'function' ? 'idle' : f.action;
+    f.greets = f.p.parent === root && a !== 'sit' && a !== 'fish' && (f.path ? f.path.some((q) => onWalk(q.x, q.y, q.z)) : onWalk(f.p.position.x, f.p.position.y, f.p.position.z));
+  }
+  /** Townsfolk standing or walking on the walk, as soft obstacles for the captain: [{ x, z, r, index, greets }]. */
+  function folkOnWalk() {
+    const out = [];
+    for (let i = 0; i < folk.length; i++) {
+      const f = folk[i];
+      if (f.p.parent !== root) continue;
+      const p = f.p.position;
+      if (onWalk(p.x, p.y, p.z)) out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets });
+    }
+    return out;
+  }
+  /**
+   * Townsperson `index` turns to the captain and waves for `seconds` (a walker stops meanwhile).
+   * toward: { x, z } where the captain is (default: where the camera was at the last update).
+   * Returns false for someone who can't (sitting, fishing, off the walk).
+   */
+  function greet(index, seconds = 2, toward = null) {
+    const f = folk[index];
+    if (!f || !f.greets) return false;
+    const at = toward && Number.isFinite(toward.x) && Number.isFinite(toward.z) ? { x: toward.x, z: toward.z } : lastCam ? { ...lastCam } : null;
+    const s0 = f.greet ? f.greet.s0 : lastT + (f.off || 0);
+    f.greet = { until: lastT + Math.max(0, Number.isFinite(seconds) ? seconds : 2), at, s0 };
+    return true;
+  }
+  /**
+   * The town view: hide the townsfolk farther than `radius` from (x, z) (the camera) or nearer than
+   * `near` (right at the lens), and show the prize ships. cull() with no arguments goes back to the
+   * shipyard view: everyone shown, the prize ships hidden.
+   */
+  function cull(x, z, radius = 40, near = 0) {
+    townView = Number.isFinite(x) && Number.isFinite(z);
+    for (const f of folk) {
+      if (!townView) {
+        f.p.visible = true;
+        continue;
+      }
+      const w = f.p.parent === root ? f.p.position : f.p.getWorldPosition(tmpW);
+      const d = Math.hypot(w.x - x, w.z - z);
+      f.p.visible = d <= radius && d >= near;
+    }
+    for (const zz of prizes) zz.ship.visible = townView;
+  }
+  // Prize ships moored off the east arm (built from the two most valuable captures; the town view only)
+  const PRIZE_BERTHS = [
+    { x: 29.5, z: 3.0, h: PI / 2 - 0.35, ph: 0.4 },
+    { x: 41.0, z: -3.5, h: PI / 2 + 0.25, ph: 2.1 },
+  ];
+  const prizes = [];
+  /** list: [{ type, flag? }] (at most 2; flag: a LOOKS.flag entry for the pennant, default the player's). */
+  function setPrizes(list) {
+    const want = (Array.isArray(list) ? list : []).filter((q) => q && typeof q.type === 'string' && q.type !== 'player').slice(0, PRIZE_BERTHS.length);
+    const keep = [];
+    for (let i = 0; i < PRIZE_BERTHS.length; i++) {
+      const cur = prizes.find((q) => q.slot === i);
+      const w = want[i];
+      if (cur && w && cur.type === w.type) {
+        hoistFlag(cur.ship, 'player', w.flag || null);
+        keep.push(cur);
+        continue;
+      }
+      if (cur) {
+        root.remove(cur.ship);
+        disposeShip(cur.ship);
+      }
+      if (!w) continue;
+      let ship = null;
+      try {
+        ship = buildShip(w.type);
+      } catch (e) {
+        ship = null;
+      }
+      if (!ship) continue;
+      hoistFlag(ship, 'player', w.flag || null);
+      ship.visible = townView;
+      root.add(ship);
+      keep.push({ slot: i, type: w.type, ship, berth: PRIZE_BERTHS[i] });
+    }
+    prizes.length = 0;
+    prizes.push(...keep);
+    return prizes.length;
+  }
+  let lastCam = null;
+
+  function update(t, dt0, ctx) {
+    if (ctx && ctx.camera && ctx.camera.position) lastCam = { x: ctx.camera.position.x, z: ctx.camera.position.z };
     const amp = palette.waveAmp;
     // cloth
     for (const m of flutterMeshes) {
@@ -2940,14 +4139,37 @@ export function build(scene, ctx = {}) {
       }
       S.puff.instanceMatrix.needsUpdate = true;
     }
-    // townsfolk
+    // townsfolk (a greeting turns one to the captain and waves; walkers stop for it and then go on)
+    const dt = clamp(t - lastT, 0, 0.1);
+    lastT = t;
     for (const f of folk) {
+      const G = f.greet;
+      if (G && t >= G.until) {
+        if (f.path) f.off = G.s0 - t;
+        f.greet = null;
+      }
+      if (!f.p.visible) continue; // culled in the town view
+      if (f.greet) {
+        if (G.at) f.p.rotation.y = turnTo(f.p.rotation.y, Math.atan2(G.at.x - f.p.position.x, G.at.z - f.p.position.z), 9 * dt);
+        animatePerson(f.p, t, 'wave', f.aopts);
+        continue;
+      }
       let act = typeof f.action === 'function' ? f.action(t) : f.action;
       if (f.path) {
         const moving = walkerPose(f, t);
         if (!moving) act = 'idle'; // a breather at each end of the path
+      } else if (f.p.rotation.y !== f.h0) {
+        f.p.rotation.y = turnTo(f.p.rotation.y, f.h0, 4 * dt);
       }
       animatePerson(f.p, t, act, f.aopts);
+    }
+    if (polly.pole) polly.pole.rotation.y = t * 2.4;
+    for (const z of prizes) {
+      if (!z.ship.visible) continue;
+      const b = z.berth;
+      z.ship.position.set(b.x, waveHeight(b.x, b.z, t, amp), b.z);
+      z.ship.rotation.set(Math.sin(t * 0.7 + b.ph) * 0.012, b.h + Math.sin(t * 0.15 + b.ph) * 0.05, Math.sin(t * 1.0 + b.ph) * 0.03);
+      animateShip(z.ship, t, 0);
     }
     // the crew
     if (crewState.ship) {
@@ -2990,6 +4212,11 @@ export function build(scene, ctx = {}) {
   function dispose() {
     if (crewRig.parent) crewRig.parent.remove(crewRig);
     if (anim.visitor) disposeShip(anim.visitor); // its own clean-up (keeps the shared materials)
+    for (const z of prizes) {
+      root.remove(z.ship);
+      disposeShip(z.ship);
+    }
+    prizes.length = 0;
     for (const f of folk) disposePerson(f.p);
     for (const c of crew) disposePerson(c.p);
     scene.remove(root);
@@ -3018,9 +4245,89 @@ export function build(scene, ctx = {}) {
     berth: { ...BERTH },
     view: { ...VIEW, target: [...VIEW.target] }, // the showcase camera
     setShip,
+    setCrewStyle,
     peopleCount: folk.length + crew.length,
+    walk: walkData,
+    folk: folkOnWalk,
+    greet,
+    cull,
+    setPrizes,
     update,
     dispose,
     group: root,
   };
+}
+
+/**
+ * Author aid (?walkdebug=1): the walk data drawn as lines just above the decks. Areas teal (portals,
+ * the ids with a '-', green), bridges yellow (their middle and their edges), blockers red, places
+ * magenta (their reach and which way the captain faces), the spawn white. Add it to the scene;
+ * dispose its geometry and material when done.
+ */
+export function walkDebugLines(walk) {
+  const cols = { area: 0x19c3c9, portal: 0x3fe05a, link: 0xffd23c, block: 0xff3b3b, place: 0xff4fe0, spawn: 0xffffff };
+  const pos = [];
+  const col = [];
+  const c = new THREE.Color();
+  const seg = (a, b, hex) => {
+    pos.push(a[0], a[1], a[2], b[0], b[1], b[2]);
+    c.setHex(hex);
+    col.push(c.r, c.g, c.b, c.r, c.g, c.b);
+  };
+  const loop = (pts, hex) => {
+    for (let i = 0; i < pts.length; i++) seg(pts[i], pts[(i + 1) % pts.length], hex);
+  };
+  const circle = (x, y, z, r, hex, n = 24) => loop(Array.from({ length: n }, (_, i) => [x + Math.cos((i / n) * TAU) * r, y, z + Math.sin((i / n) * TAU) * r]), hex);
+  const box = (x, y, z, w, d, ry, hex) => {
+    const cs = Math.cos(ry);
+    const sn = Math.sin(ry);
+    loop([[-1, -1], [1, -1], [1, 1], [-1, 1]].map(([u, v]) => {
+      const lx = (u * w) / 2;
+      const lz = (v * d) / 2;
+      return [x + lx * cs + lz * sn, y, z - lx * sn + lz * cs];
+    }), hex);
+  };
+  const lift = 0.06;
+  for (const a of walk.areas || []) {
+    const hex = String(a.id).includes('-') ? cols.portal : cols.area;
+    if (a.kind === 'circle') circle(a.x, a.y + lift + 0.12, a.z, a.r, hex, 40);
+    else box(a.x, a.y + lift, a.z, a.w, a.d, a.ry || 0, hex);
+  }
+  for (const l of walk.links || []) {
+    for (let i = 0; i + 1 < l.pts.length; i++) {
+      const [ax, ay, az] = l.pts[i];
+      const [bx, by, bz] = l.pts[i + 1];
+      seg([ax, ay + lift, az], [bx, by + lift, bz], cols.link);
+      const L = Math.hypot(bx - ax, bz - az) || 1;
+      const nx = (-(bz - az) / L) * l.hw;
+      const nz = ((bx - ax) / L) * l.hw;
+      for (const s of [-1, 1]) seg([ax + nx * s, ay + lift, az + nz * s], [bx + nx * s, by + lift, bz + nz * s], cols.link);
+    }
+  }
+  const yAt = 1.36;
+  for (const b of walk.blockers || []) {
+    if (b.r !== undefined) circle(b.x, yAt, b.z, b.r, cols.block, 14);
+    else box(b.x, yAt, b.z, b.w, b.d, b.ry || 0, cols.block);
+  }
+  for (const p of walk.places || []) {
+    circle(p.x, yAt + 0.04, p.z, p.r, cols.place, 32);
+    seg([p.x, yAt + 0.04, p.z], [p.x + Math.sin(p.face || 0) * p.r, yAt + 0.04, p.z + Math.cos(p.face || 0) * p.r], cols.place);
+    if (p.podium) circle(p.podium.x, p.podium.y + 0.05, p.podium.z, 0.3, cols.place, 16);
+    for (const q of p.lineup || []) circle(q.x, q.y + 0.05, q.z, 0.25, cols.place, 12);
+  }
+  if (walk.spawn) {
+    const s = walk.spawn;
+    circle(s.x, yAt + 0.08, s.z, 0.3, cols.spawn, 16);
+    seg([s.x, yAt + 0.08, s.z], [s.x + Math.sin(s.h) * 0.8, yAt + 0.08, s.z + Math.cos(s.h) * 0.8], cols.spawn);
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  const m = new THREE.LineBasicMaterial({ vertexColors: true, depthTest: false, transparent: true });
+  setOutline(m, false);
+  const lines = new THREE.LineSegments(g, m);
+  lines.name = 'walk-debug';
+  lines.renderOrder = 999;
+  lines.frustumCulled = false;
+  return lines;
 }
