@@ -2721,13 +2721,14 @@ function buildDockPanel() {
     // can hold up a slow device for longer than a double-click lasts, so the second click is often
     // handled well after it happened: it is the second click of a multi-click (detail 2), and its
     // input time (timeStamp) falls before the first purchase finished. Keyboard clicks have detail 0.
-    if (e.detail > 1) return;
+    // Only a click that bought something holds off the next one: after a refused click (too little
+    // gold) the next click buys as soon as the chest can pay.
     const id = b.dataset.buy;
     const now = performance.now();
     const at = e.timeStamp > 0 && e.timeStamp <= now ? e.timeStamp : now;
-    if (dock.lastBuy.id === id && at - dock.lastBuy.at < 400) return;
-    buyUpgrade(id);
-    dock.lastBuy = { id, at: performance.now() }; // from when this purchase finished
+    if (dock.lastBuy.id === id && (e.detail > 1 || at - dock.lastBuy.at < 400)) return;
+    // from when this purchase finished
+    dock.lastBuy = buyUpgrade(id) ? { id, at: performance.now() } : { id: '', at: -Infinity };
   });
   // A held Enter clicks again on every auto-repeat: one press is one purchase (or one paint).
   ui.dockPanel.addEventListener('keydown', (e) => {

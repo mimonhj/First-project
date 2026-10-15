@@ -910,6 +910,8 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     check(bought.purse === 700 && bought.savedPurse === '700' && bought.tier === 1 && bought.saved && bought.saved.up.guns === 1, `shipyard: buying Extra cannons takes 300 gold (1000 -> ${bought.purse}) and saves the chest ("${bought.savedPurse}") and the ship (guns tier ${bought.saved && bought.saved.up.guns})`);
     check(bought.rebuilt && bought.oldGone && bought.crew === d.crew && bought.ports === 4, `shipyard: the ship is rebuilt with ${bought.ports} cannons a side, the old model is gone and the ${bought.crew} crew are aboard the new one`);
     check(bought.focus === 'guns' && /^Bought Extra cannons/.test(bought.live) && bought.row.pips === 'Upgraded 1 of 2' && /^4 guns → .*5 guns$/.test(bought.row.stat), `shipyard: focus stays on the Buy button, the purchase is announced ("${bought.live}") and the row shows ${bought.row.pips}, ${bought.row.stat}`);
+    // The next tier is a separate, later click: one within 400 ms of a purchase counts as its double-click.
+    await new Promise((r) => setTimeout(r, 500));
     await page.click('.up-row[data-id="guns"] .buy-btn');
     const maxed = await page.evaluate(async () => {
       const G = window.__game;
