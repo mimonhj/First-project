@@ -1141,8 +1141,8 @@ This recipe is validated: the same edits applied to HEAD main.js pass the whole 
 13. Helpers, defined after updateDockCamera and reducedMotion (they must exist before createTownMode runs; ctx callbacks run later):
 - setLook(L) → `look = sanitizeLook(parseLook(L), feats); saveRecord(LOOK_KEY, …)`.
 - wardrobeWear(id): runs `wear()`; if ok, saves the look; returns `{ ok, reason }`.
-- wardrobeBuy(id): `syncSaved()`, then `buy()`. On ok: `state.purse -= r.cost`, `look = r.look`, then `if (saveRecord(LOOK_KEY, …)) saveChest();`. Returns `{ ok, reason }`.
-- buyArmory(id): `syncSaved()`. Refuse when the cost is null or the chest is short. Otherwise set `armory` to a NEW parsed config with the tier +1, take the cost from the chest, then `if (saveRecord(ARMORY_KEY, …)) saveChest()`. For 'grapple', rebuildDockShip(). Returns a bool.
+- wardrobeBuy(id): `syncSaved()`, then `r = buy(...)`. If `!saveRecord(LOOK_KEY, serializeLook, r.look)` return `{ ok: false, reason: 'storage' }` and change nothing. Only after that save succeeds: `look = r.look`, `state.purse -= r.cost`, `saveChest()`. Returns `{ ok, reason }`. (Corrected after the Stage 2 review, FLOW-2: the original order, which took the gold even when the record could not be saved, breaks the ECO-2 rule: after the next banking the gold is gone and the item missing. Add a storage-full wardrobe case to the ECO-2 controls check.)
+- buyArmory(id): keep main.js's committed buyArmory (it saves the record first, then the chest) and do not replace it with this recipe's version (Stage 2 review, FLOW-2). For 'grapple', rebuildDockShip(). Returns a bool.
 - Persistence only in these three: townMode plays the coin sounds and the sparkle, announces, and re-renders itself.
 - nextRumour():
   - n = state.level + 1 after 'levelDone' or 'won', state.level after 'over', else state.unlocked.
