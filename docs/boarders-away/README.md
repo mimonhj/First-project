@@ -11,6 +11,7 @@ a town you walk as the captain, with a wardrobe for you and your crew.
 | `stage0.js`, `stage1.js`, `stage2.js` | The multi-agent build scripts for each stage. They name files by the paths of the session that wrote them. |
 | `stage1-reports.md` | What Stage 0 and Stage 1 delivered: deviations from SPEC2, open issues, and the hook requests (changes asked of files owned by later stages). |
 | `stage2-reports.md` | The same for Stage 2, including the exact main.js wiring the town needs in Stage 3. |
+| `stage2-fix-reports.md` | The fixes for the 23 problems the Stage 2 review confirmed, and their regression checks. |
 
 ## Progress
 

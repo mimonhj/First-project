@@ -4,7 +4,7 @@ import * as THREE from 'three';
 // "CAPTURED! +145". Each pop is a recycled DOM span in the #pops layer, anchored to a world point and
 // projected every frame, so it costs 0 draw calls. ≥ 24 px light text with a 3 px ink outline (fx.css).
 //
-// createPops(layerEl, camera, { reducedMotion }) → {
+// createPops(layerEl, camera, { reducedMotion, avoid, insetTop }) → {
 //   pop(text, x, y, z, style) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'capture'
 //                                           //        | 'gold' | 'bad'; a '\n' (or "CRIT! <effect>") splits
 //                                           //        the text into a big line and a smaller second line
@@ -13,6 +13,17 @@ import * as THREE from 'three';
 // }
 // reducedMotion: a boolean or a function returning one (read at each pop): the pop only fades in and
 // out, no rise, no bounce, no wobble.
+// avoid: optional () => DOMRect[] (or {left, top, right, bottom}): screen boxes the pops keep off, e.g. the
+// hitmark. Each box counts 10% bigger on every side (its own pop-in). Read when a pop is placed and again
+// every frame while pops are up, so a box that shows up (or grows) after a pop makes that pop hop aside
+// (not while paused: update(0) moves nothing).
+// insetTop: optional () => number: px from the top of the viewport the pops stay below (the top HUD row).
+// Placement: a pop goes right at its impact unless that spot would meet another pop or an avoided box at
+// any moment of its life (pops rise, each at its own pace, and grow and tilt as they pop in); then it
+// takes the nearest clear spot straight above (or below) it, inside the screen if there is one, and only
+// when there is none (a crowded short screen) the nearest clear spot beside what is in its way.
+// An impact off the side of the screen (a broadside's target on a portrait phone) shows its pops at that
+// edge; only an impact behind the camera, or far above or below the view, hides them.
 // Throttle: ≤ 12 alive (the oldest makes room), ≤ 8 new per second; a pop over the rate waits up to
 // 0.4 s in a short queue (CAPTURED!, CRIT!, gold and bad news jump it) and is dropped if it is still waiting then.
 
@@ -22,8 +33,7 @@ const QUEUE_MAX = 8;
 const QUEUE_AGE = 0.4;
 const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold']);
 
-// Per style: life (s), rise (px over the life; the same for the styles that stack on one impact, so a
-// stack keeps its spacing), overshoot of the pop-in and entry wobble (deg).
+// Per style: life (s), rise (px over the life), overshoot of the pop-in and entry wobble (deg).
 const STYLES = {
   dmg: { life: 1.0, rise: 50, pop: 1.3, wobble: 0 },
   rake: { life: 1.25, rise: 50, pop: 1.25, wobble: -6 },
@@ -35,7 +45,16 @@ const STYLES = {
   bad: { life: 1.5, rise: 50, pop: 1.2, wobble: 0 },
 };
 const EDGE = 6; // px kept clear at the screen edges (a pop near the edge slides in instead of being cut off)
-const INK_PAD = 6; // the outline and drop shadow reach this far outside a pop's line box
+const GAP = 6; // px kept between a pop's line box and another pop or an avoided box (its outline and shadow)
+const AVOID_PAD = 0.1; // an avoided box counts this share of its size bigger on each side
+const BELOW = 1.25; // a spot below the impact counts this much farther than one as far above it
+const SIDE = 2; // a px of sideways shift counts this much (pops move sideways only on a crowded screen)
+const CLAMPED = 30; // px a spot counts farther when the word would be held back at the top inset or the bottom
+// The moments (s from now) at which a spot is checked: dense through the pop-in and wobble, then every 0.07 s
+// to the longest life.
+const SAMPLES = [];
+for (let t = 0; t < 0.3; t += 0.03) SAMPLES.push(t);
+for (let t = 0.3; t < 2.05; t += 0.07) SAMPLES.push(t);
 
 const _v = new THREE.Vector3();
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -48,7 +67,20 @@ function popScale(age, d, over) {
   return over + (1 - over) * easeOut((x - 0.55) / 0.45);
 }
 
-export function createPops(layerEl, camera, { reducedMotion = false } = {}) {
+// a caller's box as { l, t, r, b } grown by AVOID_PAD, or null when it is empty or not a box
+function avoidBox(r) {
+  if (!r) return null;
+  const l = Number(r.left ?? r.x);
+  const t = Number(r.top ?? r.y);
+  const rr = Number(r.right ?? l + Number(r.width));
+  const b = Number(r.bottom ?? t + Number(r.height));
+  if (![l, t, rr, b].every(Number.isFinite) || rr - l < 1 || b - t < 1) return null;
+  const px = (rr - l) * AVOID_PAD;
+  const py = (b - t) * AVOID_PAD;
+  return { l: l - px, t: t - py, r: rr + px, b: b + py };
+}
+
+export function createPops(layerEl, camera, { reducedMotion = false, avoid = null, insetTop = null } = {}) {
   const rm = typeof reducedMotion === 'function' ? () => !!reducedMotion() : () => !!reducedMotion;
   const hasDom = !!layerEl && typeof document !== 'undefined';
   if (hasDom) layerEl.classList.remove('hidden');
@@ -65,36 +97,218 @@ export function createPops(layerEl, camera, { reducedMotion = false } = {}) {
     sub.className = 'pop-sub';
     el.append(main, sub);
     layerEl.appendChild(el);
-    pool.push({ el, main, sub, alive: false, x: 0, y: 0, z: 0, style: 'dmg', S: STYLES.dmg, age: 0, life: 1, still: false, stack: 0, cx: 0, cy: 0, w: 0, h: 0 });
+    pool.push({ el, main, sub, alive: false, x: 0, y: 0, z: 0, style: 'dmg', S: STYLES.dmg, age: 0, life: 1, still: false, stack: 0, dx: 0, wayAt: -1, wayCost: 0, ax: 0, ay: 0, ok: false, w: 0, h: 0 });
   }
   const alive = []; // oldest first
   const queue = [];
   let tokens = RATE;
   let clock = 0;
+  // the caller's limits, read when a pop is placed and once a frame while pops are up
+  let top = EDGE;
+  let boxes = [];
+  function readLimits() {
+    let t = EDGE;
+    if (typeof insetTop === 'function') {
+      try {
+        const v = Number(insetTop());
+        if (Number.isFinite(v)) t = Math.max(EDGE, v);
+      } catch {
+        /* no inset */
+      }
+    }
+    top = t;
+    boxes = [];
+    if (typeof avoid === 'function') {
+      try {
+        const list = avoid();
+        for (const r of list && typeof list[Symbol.iterator] === 'function' ? list : [list]) {
+          const b = avoidBox(r);
+          if (b) boxes.push(b);
+        }
+      } catch {
+        boxes = [];
+      }
+    }
+  }
 
   function project(p) {
     _v.set(p.x, p.y, p.z).project(camera);
     const w = window.innerWidth;
     const h = window.innerHeight;
-    return { x: (_v.x * 0.5 + 0.5) * w, y: (-_v.y * 0.5 + 0.5) * h, ok: _v.z < 1 && _v.z > -1 && Math.abs(_v.x) < 1.15 && Math.abs(_v.y) < 1.15 };
+    // off the side is fine (place() keeps the word inside the screen edge); behind the camera is not
+    return { x: (_v.x * 0.5 + 0.5) * w, y: (-_v.y * 0.5 + 0.5) * h, ok: _v.z < 1 && _v.z > -1 && Math.abs(_v.y) < 1.15 };
   }
 
-  function split(text, style) {
-    const s = String(text ?? '').slice(0, 60);
-    let a = s;
-    let b = '';
-    const nl = s.indexOf('\n');
-    if (nl >= 0) {
-      a = s.slice(0, nl).trim();
-      b = s.slice(nl + 1).trim();
-    } else if (style === 'crit') {
-      const m = /^(CRIT!)\s+(.+)$/i.exec(s);
-      if (m) {
-        a = m[1];
-        b = m[2];
+  // scale, rise, wobble and opacity at a given age
+  const _pose = { s: 1, rise: 0, rot: 0, o: 1 };
+  function pose(p, age) {
+    const k = age / p.life;
+    if (p.still) {
+      // reduced motion: fade in, hold, fade out; nothing moves
+      _pose.s = 1;
+      _pose.rise = 0;
+      _pose.rot = 0;
+      _pose.o = age < 0.12 ? age / 0.12 : k > 0.7 ? 1 - (k - 0.7) / 0.3 : 1;
+    } else {
+      _pose.s = popScale(age, 0.22, p.S.pop);
+      _pose.rise = p.S.rise * easeOut(k);
+      _pose.rot = p.S.wobble * Math.max(0, 1 - age / 0.3) * Math.cos(age * 30);
+      _pose.o = age < 0.05 ? age / 0.05 : k > 0.72 ? 1 - (k - 0.72) / 0.28 : 1;
+    }
+    return _pose;
+  }
+  // the word's bottom centre on screen: its anchor (ax, ay) minus rise and stack, kept inside the screen
+  // edges and its top (`up` above that centre) below the top inset
+  const spotX = (ax, hw) => {
+    const W = window.innerWidth;
+    return W > 2 * (hw + EDGE) ? clamp(ax, hw + EDGE, W - hw - EDGE) : W / 2;
+  };
+  const spotY = (base, st, up) => Math.min(Math.max(base - st, up + top), window.innerHeight - EDGE);
+  // how far a word of half-width hw and height sh, tilted by `rot` degrees about its bottom centre,
+  // reaches above, below and to either side of that centre
+  function reach(hw, sh, rot) {
+    const a = (rot * Math.PI) / 180;
+    const c = Math.cos(a);
+    const sn = Math.sin(a);
+    return { up: sh * c + hw * Math.abs(sn), down: hw * Math.abs(sn), l: hw * c - Math.min(0, sh * sn), r: hw * c + Math.max(0, sh * sn) };
+  }
+
+  // Pop p `dt` s from now, its anchor taken as fixed on screen (pops of one impact move together) and
+  // shifted dx px sideways: its box around its bottom centre (l, r absolute; up, down from the centre,
+  // with the wobble's corners) and `base`, that centre's height before its stack and the screen clamp.
+  // null while it is gone or (all but) invisible.
+  function track(p, dt, dx = p.dx) {
+    const age = p.age + dt;
+    if (age >= p.life) return null;
+    const q = pose(p, age);
+    if (q.o <= 0.05) return null;
+    const hw = (p.w * q.s) / 2;
+    const k = reach(hw, p.h * q.s, q.rot);
+    const x = spotX(p.ax + dx, hw);
+    return { base: p.ay - q.rise, up: k.up, down: k.down, l: x - k.l, r: x + k.r };
+  }
+
+  // What pop p must keep clear of at each sample of the rest of its life: the other pops where they will
+  // be (withPops) and the avoided boxes. Worked out once for all the spots tried for p.
+  function obstacles(p, withPops = true) {
+    const per = [];
+    for (const dt of SAMPLES) {
+      if (p.age + dt >= p.life) break;
+      const list = [];
+      if (withPops) {
+        for (const o of alive) {
+          if (o === p || !o.ok) continue;
+          const ot = track(o, dt);
+          if (!ot) continue;
+          const y = spotY(ot.base, o.stack, ot.up);
+          list.push({ t: y - ot.up, b: y + ot.down, l: ot.l, r: ot.r });
+        }
+      }
+      for (const b of boxes) list.push(b);
+      per.push(list);
+    }
+    return per;
+  }
+
+  // Pop p shifted dx px sideways against those obstacles → { cost(st), best() → { st, cost, fits }, me, empty }
+  function plan(p, per, dx = p.dx) {
+    const all = []; // p's track at each sample while it shows
+    const me = []; // the samples with something in its way: { tr, obs }
+    for (let i = 0; i < per.length; i++) {
+      const tr = track(p, SAMPLES[i], dx);
+      if (!tr) continue;
+      all.push(tr);
+      const obs = per[i].filter((o) => o.l - GAP < tr.r && o.r + GAP > tr.l);
+      if (obs.length) me.push({ tr, obs });
+    }
+    const H = window.innerHeight;
+    // px of overlap summed over the samples (0 = clear all its life); stops counting past `over`
+    function cost(st, over = Infinity) {
+      let c = 0;
+      for (const { tr, obs } of me) {
+        const y = spotY(tr.base, st, tr.up);
+        const t0 = y - tr.up - GAP;
+        const b0 = y + tr.down + GAP;
+        for (const o of obs) {
+          const ov = Math.min(b0, o.b) - Math.max(t0, o.t);
+          if (ov > 0.5) c += ov;
+        }
+        if (c > over) return c;
+      }
+      return c;
+    }
+    // never held back by the top inset or the bottom edge
+    const fits = (st) => all.every((tr) => tr.base - st - tr.up >= top && tr.base - st <= H - EDGE);
+    // the nearest clear spot straight above or below (above on a tie, since pops rise; one held back by
+    // the top inset or the bottom edge counts CLAMPED px farther), else the least covered one
+    function best() {
+      // the stacks at which p would meet an obstacle at some sample (the screen clamp aside): open spans
+      // (lo, hi); a stack at lo or below passes under it, at hi or above over it
+      const spans = [];
+      for (const { tr, obs } of me) {
+        for (const o of obs) spans.push([tr.base - tr.up - o.b - GAP, tr.base - o.t + GAP + tr.down]);
+      }
+      spans.sort((a, b) => a[0] - b[0]);
+      // candidates: at the impact, where it is, and the edges of the merged spans (2 px grid, outward)
+      const cands = new Set([0, p.stack]);
+      let lo = -Infinity;
+      let hi = -Infinity;
+      for (const [a, b] of [...spans, [Infinity, Infinity]]) {
+        if (a < hi) {
+          hi = Math.max(hi, b);
+          continue;
+        }
+        if (hi > -Infinity) cands.add(2 * Math.floor(lo / 2)).add(2 * Math.ceil(hi / 2));
+        lo = a;
+        hi = b;
+      }
+      const pick = pickOf(cands);
+      if (pick.cost === 0 && pick.fits) return pick;
+      // nothing clear that stays inside the screen: the clamp at the top inset or the bottom moves a word
+      // that would cross it, so try the edges of every span too
+      const more = new Set();
+      for (const [a, b] of spans) more.add(2 * Math.floor(a / 2)).add(2 * Math.ceil(b / 2));
+      return pickOf(more, pick);
+    }
+    function pickOf(cands, pick = { st: 0, cost: Infinity, fits: false }) {
+      const list = [...cands].sort((u, v) => rank(u) - rank(v) || v - u);
+      for (const st of list) {
+        if (pick.cost === 0 && rank(st) >= score(pick)) break; // nothing farther can win
+        // (the list is nearest first, so a spot more covered than the pick cannot win)
+        const c = cost(st, pick.cost);
+        const r = { st, cost: c, fits: c === 0 && fits(st) };
+        if (score(r) < score(pick)) pick = r;
+      }
+      return pick;
+    }
+    return { cost, best, me, empty: me.length === 0 };
+  }
+  const rank = (st) => (st >= 0 ? st : -st * BELOW);
+  // a spot's badness: px from the impact (sideways shift + stack), plus CLAMPED when it is held back at the
+  // top inset or the bottom edge, plus a lot for any overlap
+  const score = (r) => (r.cost > 0 ? 1e6 + r.cost : r.fits ? 0 : CLAMPED) + SIDE * Math.abs(r.dx || 0) + rank(r.st);
+
+  // Pop p's spot { dx, st, cost }: straight above or below its impact when there is a clear one, else
+  // the nearest clear one beside whatever is in the way (a crowded short screen), else the least covered.
+  function search(p, per = obstacles(p)) {
+    const P = plan(p, per, 0);
+    if (P.empty) return { dx: 0, st: 0, cost: 0 };
+    let pick = { dx: 0, ...P.best() };
+    if (pick.cost === 0 && pick.fits) return pick;
+    // sideways: just left or right of each obstacle (its widest reach against p's), nearest first
+    const side = new Set();
+    for (const { tr, obs } of P.me) {
+      for (const o of obs) {
+        side.add(4 * Math.floor((o.l - GAP - tr.r) / 4));
+        side.add(4 * Math.ceil((o.r + GAP - tr.l) / 4));
       }
     }
-    return [a, b];
+    for (const dx of [...side].sort((u, v) => Math.abs(u) - Math.abs(v)).slice(0, 10)) {
+      if (SIDE * Math.abs(dx) >= score(pick)) break; // nothing farther can win
+      const r = { dx, ...plan(p, per, dx).best() };
+      if (score(r) < score(pick)) pick = r;
+    }
+    return pick;
   }
 
   function spawn(q) {
@@ -113,6 +327,10 @@ export function createPops(layerEl, camera, { reducedMotion = false } = {}) {
     p.age = 0;
     p.life = S.life;
     p.still = rm();
+    p.stack = 0;
+    p.dx = 0;
+    p.wayAt = -1;
+    p.wayCost = 0;
     const [a, b] = split(q.text, p.style);
     p.main.textContent = a;
     p.sub.textContent = b;
@@ -120,60 +338,78 @@ export function createPops(layerEl, camera, { reducedMotion = false } = {}) {
     p.el.className = `pop pop-${p.style}${p.still ? ' still' : ''}`;
     p.el.style.display = '';
     p.el.style.opacity = '0';
-    // measure once (one layout per new pop), then find it a free spot: right at its impact if nothing
-    // young is in the way, else the nearest place just above (or, when that would run off the top of a
-    // short screen, just below) the pops already there
+    // measure once (one layout per new pop), then find it a spot that stays clear all its life
     p.w = p.el.offsetWidth;
     p.h = p.el.offsetHeight;
+    readLimits();
     const at = project(p);
-    const busy = [];
-    for (const o of alive) {
-      if (o.age > 0.6 || Math.abs(o.cx - at.x) > (o.w + p.w) / 2 + 4) continue;
-      busy.push([o.cy - o.h - INK_PAD, o.cy + INK_PAD]); // its box as it is on screen now
+    p.ax = at.x;
+    p.ay = at.y;
+    p.ok = at.ok;
+    if (at.ok) {
+      const r = search(p);
+      p.dx = r.dx;
+      p.stack = r.st;
     }
-    const free = (st) => busy.every(([t, b]) => at.y - st <= t || at.y - st - p.h >= b);
-    const fits = (st) => at.y - st - p.h - p.S.rise >= EDGE && at.y - st <= window.innerHeight - EDGE;
-    const cands = [0];
-    for (const [t, b] of busy) cands.push(at.y - t, at.y - p.h - b);
-    const ok = cands.filter(free).sort((u, v) => Math.abs(u) - Math.abs(v) || v - u);
-    p.stack = ok.find(fits) ?? ok[0] ?? 0;
     alive.push(p);
     place(p);
     return true;
   }
 
+  // An avoided box that showed up (or grew) after pop p was placed: if it is in p's way now or later,
+  // p hops to its best spot when that spot is clearly better (a hop, not a glide: a glide would cross the
+  // pops around it).
+  function makeWay(p) {
+    if (!p.ok || !boxes.length) return;
+    const bc = plan(p, obstacles(p, false)).cost(p.stack);
+    // nothing in the way; or stuck where it is, and the box no worse than at the last look 0.15 s ago
+    if (bc === 0 || (bc <= p.wayCost && clock - p.wayAt < 0.15)) return;
+    p.wayAt = clock;
+    p.wayCost = bc;
+    const per = obstacles(p);
+    const was = plan(p, per).cost(p.stack);
+    const r = search(p, per);
+    if ((r.dx !== p.dx || r.st !== p.stack) && r.cost <= was * 0.7) {
+      p.dx = r.dx;
+      p.stack = r.st;
+      p.wayAt = -1; // moved: look again as soon as a box is in the way there
+    }
+  }
+
   function place(p) {
     const at = project(p);
+    p.ax = at.x;
+    p.ay = at.y;
+    p.ok = at.ok;
     if (!at.ok) {
-      p.el.style.visibility = 'hidden';
-      p.cx = -1e9; // off screen: in nobody's way
+      p.el.style.visibility = 'hidden'; // (and in nobody's way: plan() skips it)
       return;
     }
     p.el.style.visibility = '';
-    const k = p.age / p.life;
-    let s = 1;
-    let rise = 0;
-    let rot = 0;
-    let o;
-    if (p.still) {
-      // reduced motion: fade in, hold, fade out; nothing moves
-      o = p.age < 0.12 ? p.age / 0.12 : k > 0.7 ? 1 - (k - 0.7) / 0.3 : 1;
-    } else {
-      s = popScale(p.age, 0.22, p.S.pop);
-      rise = p.S.rise * easeOut(k);
-      rot = p.S.wobble * Math.max(0, 1 - p.age / 0.3) * Math.cos(p.age * 30);
-      o = p.age < 0.05 ? p.age / 0.05 : k > 0.72 ? 1 - (k - 0.72) / 0.28 : 1;
-    }
-    // keep the whole word on screen when its impact is near an edge
-    const W = window.innerWidth;
-    const H = window.innerHeight;
-    const hw = (p.w * s) / 2;
-    const x = W > 2 * (hw + EDGE) ? clamp(at.x, hw + EDGE, W - hw - EDGE) : W / 2;
-    const y = Math.min(Math.max(at.y - rise - p.stack, p.h * s + EDGE), H - EDGE);
-    p.cx = x;
-    p.cy = y;
+    const { s, rise, rot, o } = pose(p, p.age);
+    // keep the whole word on screen (and below the top inset) when its impact is near an edge
+    const x = spotX(at.x + p.dx, (p.w * s) / 2);
+    const y = spotY(at.y - rise, p.stack, reach((p.w * s) / 2, p.h * s, rot).up);
     p.el.style.opacity = String(clamp(o, 0, 1).toFixed(3));
     p.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%) scale(${s.toFixed(3)}) rotate(${rot.toFixed(2)}deg)`;
+  }
+
+  function split(text, style) {
+    const s = String(text ?? '').slice(0, 60);
+    let a = s;
+    let b = '';
+    const nl = s.indexOf('\n');
+    if (nl >= 0) {
+      a = s.slice(0, nl).trim();
+      b = s.slice(nl + 1).trim();
+    } else if (style === 'crit') {
+      const m = /^(CRIT!)\s+(.+)$/i.exec(s);
+      if (m) {
+        a = m[1];
+        b = m[2];
+      }
+    }
+    return [a, b];
   }
 
   function retire(p) {
@@ -220,6 +456,9 @@ export function createPops(layerEl, camera, { reducedMotion = false } = {}) {
         p.age += step;
         if (p.age >= p.life) retire(p);
       }
+      if (!alive.length) return;
+      readLimits();
+      if (step > 0) for (const p of alive) makeWay(p); // (paused: nothing moves)
       for (const p of alive) place(p);
     },
 

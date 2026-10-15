@@ -158,8 +158,171 @@ function installHelpers() {
       const d = c.getContext('2d').getImageData(Math.round(S / 2 + r.lat * scale), Math.round(S / 2 - r.along * scale), 1, 1).data;
       return [d[0], d[1], d[2]];
     },
+    // A seeded stand-in for Math.random (mulberry32): a volley's aim spread is then the same on every run.
+    seeded(seed) {
+      let s = seed | 0;
+      return () => {
+        s = (s + 0x6d2b79f5) | 0;
+        let t = Math.imul(s ^ (s >>> 15), 1 | s);
+        t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+        return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+      };
+    },
+    // Real frames (calling `hold` every frame) until the chase camera stops turning: it eases toward the
+    // nearest pirate in range. Frozen again afterwards; returns the number of frames.
+    async settle(hold, max = 400) {
+      const d = G.camera.getWorldDirection(G.camera.position.clone());
+      const was = d.clone();
+      let still = 0;
+      let n = 0;
+      G.state.mode = 'playing';
+      while (n < max && still < 3) {
+        await new Promise((r) => requestAnimationFrame(r));
+        hold();
+        n++;
+        G.camera.getWorldDirection(d);
+        still = d.angleTo(was) < 2e-4 ? still + 1 : 0;
+        was.copy(d);
+      }
+      G.state.mode = 'paused';
+      return n;
+    },
+    // What a real frame shows of the pops ('#pops .pop': text, shown, opacity, the box of the big line and of
+    // the whole word) and the bottom of the top HUD row (boxes as { l, t, r, b } in CSS px).
+    popFrame() {
+      const R = (r) => ({ l: r.left, t: r.top, r: r.right, b: r.bottom });
+      const top = document.querySelector('#hud .hud-top');
+      return {
+        pops: [...document.querySelectorAll('#pops .pop')]
+          .filter((s) => s.style.display !== 'none')
+          .map((s) => ({ text: s.textContent, shown: s.style.visibility !== 'hidden', o: Number(s.style.opacity), main: R(s.querySelector('.pop-main').getBoundingClientRect()), whole: R(s.getBoundingClientRect()) })),
+        top: top.getBoundingClientRect().bottom,
+        cards: [...top.children].map((c) => R(c.getBoundingClientRect())).filter((c) => c.r > c.l),
+      };
+    },
+    // One broadside at `e` from `side` (aim seeded, crit forced), with `hold` keeping the ships where they are:
+    // frozen while the balls fly, until the volley is done (its HIT mark pops and the volley's pops appear),
+    // then real frames until `seconds` of play have passed. The mark's animation is driven by the battle's clock
+    // as the pops are (a slow renderer's frame can take longer than the play it shows). Each frame: T.popFrame()
+    // and the mark (opacity, text and the box of its text). Frozen again afterwards.
+    async salvo(e, { side = 1, crit = 'none', seed = 1, seconds = 1.8, hold = () => {} } = {}) {
+      const p = G.player;
+      const hm = document.getElementById('hitmark');
+      G.state.mode = 'playing'; // (one synchronous stretch: no frame runs while the balls fly)
+      hold();
+      hm.classList.remove('popped');
+      G.combat.forceCrit(crit);
+      p.reload.port = p.reload.star = 0;
+      const random = Math.random;
+      Math.random = T.seeded(seed);
+      let fired = false;
+      let steps = 0;
+      try {
+        fired = G.playerFire(side);
+        while (steps < 600 && !hm.classList.contains('popped')) {
+          G.step(1 / 120);
+          hold();
+          steps++;
+        }
+      } finally {
+        Math.random = random;
+        G.combat.forceCrit(null);
+      }
+      const t0 = G.state.time;
+      const anims = document.getAnimations().filter((a) => a.effect && a.effect.target === hm);
+      anims.forEach((a) => {
+        a.pause();
+        a.currentTime = 0;
+      });
+      const mark = () => {
+        const tn = [...hm.childNodes].find((c) => c.nodeType === 3);
+        let box = null;
+        if (tn) {
+          const rg = document.createRange();
+          rg.selectNodeContents(tn);
+          const r = rg.getBoundingClientRect();
+          box = { l: r.left, t: r.top, r: r.right, b: r.bottom };
+        }
+        return { o: Number(getComputedStyle(hm).opacity), text: hm.textContent, box };
+      };
+      const frames = [];
+      while (G.state.time - t0 < seconds && frames.length < 400) {
+        await new Promise((r) => requestAnimationFrame(r));
+        hold();
+        anims.forEach((a) => (a.currentTime = Math.min(a.effect.getComputedTiming().endTime, (G.state.time - t0) * 1000)));
+        frames.push({ t: Math.round((G.state.time - t0) * 1000) / 1000, ...T.popFrame(), hm: mark() });
+      }
+      G.state.mode = 'paused';
+      anims.forEach((a) => a.finish());
+      return { fired, steps, mark: hm.textContent, frames, W: innerWidth, H: innerHeight };
+    },
+    // Everything written to #game-live from now on (text and performance.now()), read with T.liveLog().
+    watchLive() {
+      const el = document.getElementById('game-live');
+      if (!window.__liveLog) {
+        window.__liveLog = { list: [], at: -Infinity };
+        new MutationObserver(() => {
+          window.__liveLog.list.push(el.textContent);
+          window.__liveLog.at = performance.now();
+        }).observe(el, { childList: true, characterData: true, subtree: true });
+      }
+      window.__liveLog.list.length = 0;
+      window.__liveLog.at = performance.now(); // (something may have been said just before)
+    },
+    liveLog: () => window.__liveLog.list.slice(),
+    // #game-live speaks at most once per 1.5 s (a newer line waits, and is written by a later frame): wait until
+    // it has been quiet that long, so the next line is written at once.
+    // (Frozen meanwhile: nothing moves on.)
+    async liveQuiet() {
+      const mode = G.state.mode;
+      G.state.mode = 'paused';
+      const quiet = async () => {
+        while (performance.now() - window.__liveLog.at < 1600) await new Promise((r) => setTimeout(r, 100));
+      };
+      await quiet();
+      await T.redraw(); // (a line still waiting is written now)
+      await quiet();
+      G.state.mode = mode;
+    },
   };
   window.T = T;
+}
+
+// What the frames of a T.salvo() (or of T.popFrame()s with a `hm`) show: the pops seen (opacity over `o`),
+// pairs of pops whose big lines overlap, pops over the HIT mark's text (while the mark shows), pops reaching
+// into the top HUD row's cards, and pops sticking out of the screen.
+function popReport(r, o = 0.3) {
+  const ov = (a, b) => {
+    const w = Math.min(a.r, b.r) - Math.max(a.l, b.l);
+    const h = Math.min(a.b, b.b) - Math.max(a.t, b.t);
+    return w > 2 && h > 2 ? Math.round(w * h) : 0;
+  };
+  const out = { frames: r.frames.length, seen: [], popPop: [], onMark: [], onTop: [], offScreen: [] };
+  const seen = new Set();
+  for (const f of r.frames) {
+    const ps = f.pops.filter((p) => p.shown && p.o > o);
+    ps.forEach((p) => seen.add(p.text));
+    for (let i = 0; i < ps.length; i++) {
+      for (let j = i + 1; j < ps.length; j++) {
+        const a = ov(ps[i].main, ps[j].main);
+        if (a) out.popPop.push(`${f.t}s ${ps[i].text}/${ps[j].text} ${a}px²`);
+      }
+    }
+    if (f.hm && f.hm.o > o && f.hm.box) {
+      for (const p of ps) {
+        const a = ov(p.whole, f.hm.box);
+        if (a) out.onMark.push(`${f.t}s "${p.text}" on "${f.hm.text}" ${a}px²`);
+      }
+    }
+    for (const p of ps) {
+      const card = f.cards.find((c) => ov(p.whole, c));
+      if (card) out.onTop.push(`${f.t}s "${p.text}" top ${Math.round(p.whole.t)} over a card down to ${Math.round(card.b)}`);
+      if (p.whole.l < -1 || p.whole.r > r.W + 1 || p.whole.t < -1 || p.whole.b > r.H + 1) out.offScreen.push(`${f.t}s "${p.text}"`);
+    }
+  }
+  out.seen = [...seen];
+  for (const k of ['popPop', 'onMark', 'onTop', 'offScreen']) if (out[k].length > 6) out[k] = [...out[k].slice(0, 6), `(+${out[k].length - 6} more)`];
+  return out;
 }
 
 // Run `fn` (a function of no free variables, source-serialised) in the page with the game playing for that
@@ -1476,7 +1639,25 @@ function ev(page, fn, arg = null) {
       const g = G.grapple();
       return { ok: g.ok, wave: G.state.wave, ships: alive.map((e) => e.typeName).join() };
     });
-    // Play it in real time; screenshots at the swing and in the brawl (two frames after it starts).
+    // Play it in real time; screenshots at the swing and in the brawl (two frames after it starts). Every frame
+    // drawn while the boarding lasts is counted, from the hooks (the chase view, the busiest) to the result.
+    await page.evaluate(() => {
+      const G = window.__game;
+      const rec = (window.__draws = { max: 0, at: null, frames: 0, by: {} });
+      const f = () => {
+        if (!G.boarding.active) return;
+        const c = G.renderInfo.calls;
+        const ph = G.boarding.phase;
+        rec.frames++;
+        rec.by[ph] = Math.max(rec.by[ph] || 0, c);
+        if (c > rec.max) {
+          rec.max = c;
+          rec.at = ph;
+        }
+        requestAnimationFrame(f);
+      };
+      requestAnimationFrame(f);
+    });
     await page.evaluate(() => { window.__game.state.mode = 'playing'; });
     await page.waitForFunction(() => (window.__game.boarding.phase === 'swing' && window.__game.boarding.module.phaseTime >= 0.3) || window.__game.boarding.phase === 'brawl' || !window.__game.boarding.active, null, { timeout: 120000, polling: 10 });
     await page.evaluate(() => { window.__game.state.mode = 'paused'; });
@@ -1496,6 +1677,13 @@ function ev(page, fn, arg = null) {
     await snap(page, 'boarding-brawl.png');
     check(setup.ok && setup.wave === 1 && brawl.phase === 'brawl' && brawl.figures > 0 && brawl.calls > 0 && brawl.calls <= 450,
       `draw calls: a boarding on level 1 with wave 2 alive stays within 450 two frames into the brawl (${brawl.calls}; ${J({ ...setup, ...brawl })})`);
+    // ... and on every frame of the whole set-piece, hooks to result (the chase view of the hook is the peak).
+    await page.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await page.waitForFunction(() => !window.__game.boarding.active, null, { timeout: 120000, polling: 10 });
+    await page.evaluate(() => { window.__game.state.mode = 'paused'; });
+    const draws = await page.evaluate(() => window.__draws);
+    check(draws.frames >= 10 && ['hook', 'reel', 'swing', 'brawl', 'result'].every((ph) => draws.by[ph] > 0) && draws.max > 0 && draws.max <= 450,
+      `draw calls: the most in any frame of that boarding, hooks to result, is ${draws.max} (in its ${draws.at}), within 450 (${draws.frames} frames; most by phase ${J(draws.by)})`);
     check(starts.every((c) => c > 0 && c <= 320), `draw calls: each Act I level starts within 320 with the chase camera (${starts.join(', ')})`);
     // Damage states: battered and wrecked hulls with holes, smoke and a deck fire.
     const states = await ev(page, () => {
@@ -1660,6 +1848,341 @@ function ev(page, fn, arg = null) {
       `leave the battle: with the counter-board window open, Main menu -> Leave ends it; the next voyage has no counter-board waiting (${J({ win, menu, next })})`);
   });
 
+  // ------------------------------------------- prizes, surrender and crew after a boarding (Stage 2 review)
+  await section('rules2', async () => {
+    // A powder keg still burning when she is taken goes out (BAT-1): the usual soften-then-board play, a close
+    // broadside and G at once; a ball crits her keg while the hooks fly, and the brawl is skipped.
+    const keg = await ev(page, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 12, 0, 0);
+      e.hp = 70;
+      e.hpLow = 70;
+      G.combat.forceCrit('keg'); // (the volley's first ball only)
+      p.reload.port = p.reload.star = 0;
+      const fired = G.playerFire(1);
+      const g = G.boardPress();
+      const gold0 = G.state.gold;
+      const sunk0 = G.state.sunk;
+      let kegIn = null;
+      let burning = 0;
+      let at = null;
+      T.steps(8, () => {
+        if (G.combat.log.length) {
+          if (kegIn === null) kegIn = G.combat.log.some((l) => l.effect === 'keg') ? G.boarding.phase : 'none';
+          G.combat.forceCrit('none');
+        }
+        if (G.boarding.phase === 'brawl') G.boarding.skip();
+        if (!at && e.captured) at = { hp: e.hp, burnTicks: G.combat.effects(e).burnTicks, burningBefore: burning, gold: G.state.gold - gold0 };
+        if (!e.captured) burning = G.combat.effects(e).burnTicks;
+      });
+      G.combat.forceCrit(null);
+      const L = G.boarding.last;
+      return { fired, g, kegIn, at, last: L && { reason: L.reason, captured: L.captured }, after: { hp: e.hp, sinking: !!e.sinking, sunk: G.state.sunk - sunk0, gold: G.state.gold - gold0, coins: G.coins.filter((c) => c.from === e.id).length } };
+    });
+    check(keg.fired && keg.g && keg.kegIn === 'hook' && keg.at && keg.at.burningBefore > 0 && keg.at.burnTicks === 0 && keg.last && keg.last.reason === 'done' && keg.last.captured &&
+      keg.after.hp === keg.at.hp && !keg.after.sinking && keg.after.sunk === 0 && keg.after.gold === 145 && keg.after.coins === 0,
+      `prizes: a powder keg still burning when she is boarded and taken goes out: the prize never sinks under your flag, nor pays sinking coins on top of the 145 (${J(keg)})`);
+    // ... and a struck ship still burning, taken at the level's end (G.capture.take: the 'auto' capture).
+    const auto = await ev(page, () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('cutter', 20, 0, 0);
+      e.hp = 5;
+      e.hpLow = 5;
+      e.effects.burn = 4;
+      e.burnTicks = 8; // what a keg crit leaves: 1 hp every 0.5 s for 4 s
+      e.burnAcc = 0;
+      G.capture.strike(e);
+      const sunk0 = G.state.sunk;
+      const gold = G.capture.take(e);
+      T.steps(4.5);
+      return { gold, captured: e.captured, hp: e.hp, sinking: !!e.sinking, burnTicks: G.combat.effects(e).burnTicks, sunk: G.state.sunk - sunk0 };
+    });
+    check(auto.gold === 85 && auto.captured && auto.hp === 5 && !auto.sinking && auto.burnTicks === 0 && auto.sunk === 0,
+      `prizes: a struck cutter taken while her keg burns keeps her 5 hp and doesn't sink (${J(auto)})`);
+
+    // She strikes as soon as her crew is at the notch, whatever thinned it (BAT-2): grape has left a privateer 4
+    // hands at full hull (notch 2), then one round-shot broadside thins her crew with her hull.
+    const thin = await ev(page, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.forceCrit('none');
+      const e = T.spawn('privateer', 18, 0, 0);
+      G.combat.setCrew(e, 4);
+      const before = { crew: G.combat.crewOf(e), notch: e.strikeAt, surrendered: e.surrendered };
+      const v = T.volley(e, { seconds: 2 });
+      const after = { hp: e.hp, killed: v.dkilled, crew: G.combat.crewOf(e), surrendered: e.surrendered, fighting: G.fighting(e), flag: e.mesh.userData.flag };
+      // and she shoots no more: loaded, nothing holding her
+      e.reload.port = e.reload.star = 0;
+      G.combat.clearLog();
+      const hp0 = p.hp;
+      T.steps(3);
+      after.hitsOnYou = G.combat.log.filter((l) => l.owner === 'enemy').length;
+      after.hurt = hp0 - p.hp;
+      G.combat.forceCrit(null);
+      G.capture.escape(e);
+      return { before, hits: v.hits.length, after };
+    });
+    check(thin.before.crew === 4 && !thin.before.surrendered && thin.hits >= 2 && thin.after.killed === 0 && thin.after.crew <= thin.before.notch && thin.after.surrendered && !thin.after.fighting &&
+      thin.after.flag === 'white' && thin.after.hitsOnYou === 0 && thin.after.hurt === 0,
+      `surrender: round shot that thins her crew to the notch through her hull makes her strike at once, and she fires no more (${J(thin)})`);
+    // A raider thinned to her notch while her hooks bite (the boarding decides then): when the ropes are cut
+    // she is checked again, and strikes.
+    const cut = await ev(page, () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('raider', 7.5, 0, 0);
+      const raid = G.boarding.raid(e);
+      T.steps(0.3);
+      const crew = G.combat.setCrew(e, e.strikeAt);
+      const during = { phase: G.boarding.phase, surrendered: e.surrendered };
+      G.boarding.cut('hit');
+      T.steps(0.1);
+      const out = { raid, crew, notch: e.strikeAt, during, reason: G.boarding.last && G.boarding.last.reason, surrendered: e.surrendered, fighting: G.fighting(e), counter: G.boarding.counterTarget !== null };
+      G.capture.escape(e);
+      return out;
+    });
+    check(cut.raid && cut.during.phase === 'threat' && !cut.during.surrendered && cut.reason === 'cut' && cut.surrendered && !cut.fighting && !cut.counter,
+      `surrender: a raider thinned to her notch during her threat strikes once her ropes are cut (${J(cut)})`);
+
+    // Reinforcements that come aboard while your party is across are kept (BAT-3 / BRD-4): Bali Islands, 8
+    // hands; the rest of the wave goes down in the brawl, so the next wave's +3 hands arrive mid-fight. The
+    // result takes the fight's losses off the crew you have then. An attack (captured) and a defence.
+    const refill = await ev(page, () => {
+      const G = window.__game;
+      const out = {};
+      for (const kind of ['attack', 'defend']) {
+        T.level(2);
+        G.combat.setCrew('player', 8);
+        const e = kind === 'attack' ? T.spawn('cutter', 8.5, 0, 0) : T.spawn('raider', 7.5, 0, 0);
+        if (kind === 'attack') {
+          G.damage(e, e.maxHp - 14); // CAPTURE!
+          G.grapple();
+        } else G.boarding.raid(e);
+        const others = G.enemies.filter((x) => x !== e);
+        let res = null;
+        const off = G.boarding.module.onResult((r) => (res = { lost: r.playerCrewLost, captured: !!r.captured }));
+        T.steps(8, () => G.boarding.phase !== 'brawl');
+        const before = { crew: G.crew.crew, wave: G.state.wave, phase: G.boarding.phase };
+        others.forEach((x) => {
+          x.rise = 0;
+          G.damage(x, 9999);
+        });
+        T.steps(0.1);
+        const mid = { crew: G.crew.crew, wave: G.state.wave, phase: G.boarding.phase };
+        T.steps(4, () => G.boarding.active);
+        off();
+        const max = G.crew.max;
+        const want = res && Math.min(max, Math.max(1, mid.crew - res.lost) + (res.captured ? 2 : 0));
+        out[kind] = { before, mid, res, crew: G.crew.crew, want, max };
+        G.capture.escape(e);
+      }
+      return out;
+    });
+    for (const kind of ['attack', 'defend']) {
+      const r = refill[kind];
+      check(r.before.phase === 'brawl' && r.before.crew === 8 && r.mid.phase === 'brawl' && r.mid.wave === 1 && r.mid.crew === 11 && r.res && r.crew === r.want,
+        `crew: the 3 hands of reinforcements that arrive mid-brawl are kept when the ${kind === 'attack' ? 'boarding' : 'defence'} is decided (8 -> 11 mid-fight, -${r.res && r.res.lost}${r.res && r.res.captured ? ' +2' : ''} -> ${r.crew}) (${J(r)})`);
+    }
+  });
+
+  // --------------------------------------------------- boarding: the counter-board window, leaving, smoke
+  await section('boarding2', async () => {
+    // The counter-board window (BRD-1) with the raider's AI running (nothing holds her; she boarded you by
+    // herself): it lasts its full 3 s whatever your speed, she stays within reach, and when it closes its banner goes too.
+    const win = await ev(page, () => {
+      const G = window.__game;
+      const out = {};
+      const raid = (sail) => {
+        const p = T.level(1);
+        G.state.sail = sail;
+        p.speed = [0, 4, 7][sail];
+        const e = T.spawn('raider', 7.5, 0, 0);
+        e.speed = p.speed;
+        T.steps(10, () => !G.boarding.active); // she throws her own hooks
+        const kind = G.boarding.kind;
+        T.steps(8, () => G.boarding.active); // no cut: the defence holds
+        const L = G.boarding.last;
+        return { p, e, start: { kind, held: !!(L && L.held), open: G.boarding.counterTarget === e, banner: T.text('banner'), timer: G.state.bannerTimer } };
+      };
+      for (const sail of [0, 2]) {
+        const { p, e, start } = raid(sail);
+        const t0 = G.state.time;
+        let closed = null;
+        let far = 0;
+        T.steps(3.5, () => {
+          far = Math.max(far, Math.hypot(e.x - p.x, e.z - p.z));
+          if (!G.boarding.counterTarget) {
+            closed = Math.round((G.state.time - t0) * 1000) / 1000;
+            return false;
+          }
+        });
+        out[`sail${sail}`] = { ...start, closed, far: Math.round(far * 10) / 10, timerAfter: G.state.bannerTimer };
+        G.capture.escape(e);
+      }
+      // G 2.2 s into the window: the counter-board starts, and the window's banner goes
+      {
+        const { e, start } = raid(0);
+        T.steps(2.2);
+        const open = G.boarding.counterTarget === e;
+        T.g();
+        T.steps(1 / 120);
+        out.late = { ...start, open, active: G.boarding.active, kind: G.boarding.kind, hint: T.shown('hint') ? T.text('hint') : '', banner: T.text('banner'), timerAfter: G.state.bannerTimer };
+        G.boarding.cancel('test');
+        G.capture.escape(e);
+      }
+      return out;
+    });
+    for (const sail of [0, 2]) {
+      const r = win[`sail${sail}`];
+      check(r.kind === 'defend' && r.held && r.open && /^Counter-board!/.test(r.banner) && r.closed !== null && near(r.closed, 3, 0.02) && r.far < 12 && r.timerAfter <= 0.3 + 1e-9,
+        `counter-board: at sail ${sail}, with her AI running, the window stays open its full 3 s (closed after ${r.closed} s; she stayed within ${r.far} u) and its banner goes when it closes (${J(r)})`);
+    }
+    check(win.late.held && win.late.open && win.late.active && win.late.kind === 'counter' && (!/^Counter-board!/.test(win.late.banner) || win.late.timerAfter <= 0.3 + 1e-9),
+      `counter-board: G 2.2 s into the window still boards her back, and the "Counter-board!" banner goes (${J(win.late)})`);
+
+    // Leaving mid-boarding through the pause dialog leaves no rope behind (BRD-3): in the swing (to the main
+    // menu) and in the brawl (to the shipyard); P, the button, Enter, Tab to Leave, Enter.
+    for (const [to, after] of [['menu', 0.62], ['dock', 1.0]]) {
+      const before = await ev(page, async (after) => {
+        const G = window.__game;
+        T.level(1);
+        const e = T.spawn('privateer', 8.5, 0, 0);
+        G.damage(e, 48);
+        G.grapple();
+        let swingAt = null;
+        T.steps(6, () => {
+          if (G.boarding.phase === 'swing' && swingAt === null) swingAt = G.state.time;
+          if (swingAt !== null && G.state.time - swingAt >= after - 1e-9) return false;
+        });
+        G.state.mode = 'paused';
+        await T.redraw();
+        return { phase: G.boarding.phase, rig: G.scene.getObjectByName('boarding-rig').visible };
+      }, after);
+      await page.evaluate(() => { window.__game.state.mode = 'playing'; });
+      await page.keyboard.press('p');
+      await page.focus(to === 'menu' ? '#quit-menu-btn' : '#quit-dock-btn');
+      await page.keyboard.press('Enter');
+      await page.keyboard.press('Tab');
+      await page.keyboard.press('Enter');
+      await page.waitForFunction((to) => window.__game.state.mode === to, to, { timeout: 60000 }).catch(() => {});
+      await frames(page, 3);
+      const left = await page.evaluate(() => {
+        const G = window.__game;
+        const rig = G.scene.getObjectByName('boarding-rig');
+        return { mode: G.state.mode, active: G.boarding.active, figures: G.boarding.figures, rig: rig.visible };
+      });
+      if (left.mode === 'dock') await page.evaluate(() => window.__game.dock.leave('menu'));
+      check(before.rig && left.mode === to && !left.active && left.figures === 0 && left.rig === false,
+        `leave the battle mid-boarding (${before.phase}, ${after} s after the swing began) for the ${to === 'menu' ? 'main menu' : 'shipyard'}: no rope is left hanging there (${J({ before, left })})`);
+    }
+
+    // No smoke from the ship being boarded, from the hooks on (it would drift over the swing and the brawl): a
+    // wrecked privateer smokes until the hooks fly (the emitter of her hull smoke, e.fxAcc, stays idle after).
+    const smoke = await ev(page, () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('privateer', 8.5, 0, 0);
+      G.damage(e, 60); // 25 %: wrecked, dark smoke
+      const hold = T.pinner(G.player, e);
+      let before = 0;
+      T.steps(0.5, () => {
+        hold();
+        if (e.fxAcc > 0) before++;
+      });
+      const g = G.grapple().ok;
+      const phases = [];
+      const smoky = {};
+      T.steps(6, () => {
+        const ph = G.boarding.phase;
+        if (!G.boarding.active) return false;
+        if (phases[phases.length - 1] !== ph) phases.push(ph);
+        if (e.fxAcc > 0) smoky[ph] = (smoky[ph] || 0) + 1;
+      });
+      return { hull: e.hp / e.maxHp, before, burning: e.burnTicks, g, phases: phases.join(), smoky };
+    });
+    check(smoke.before > 30 && smoke.burning === 0 && smoke.g && /^hook,reel,swing,brawl/.test(smoke.phases) && Object.keys(smoke.smoky).length === 0,
+      `boarding: a wrecked ship smokes until the hooks fly, then not at all while she is boarded (steps with her smoke emitter running, by phase: ${J(smoke.smoky)}; ${J(smoke)})`);
+  });
+
+  // ---------------------------------------------------------- pops and the HIT mark, the Board cell (desktop)
+  await section('hud2', async () => {
+    // The volley's damage pop keeps clear of the HIT ×N mark (UX-1): a cutter at 20 u, beam-on (the range the AI
+    // holds), the chase camera settled on her; then a privateer at 22 u. Every frame while both show.
+    const desk = await ev(page, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const out = {};
+      let settle = 0;
+      for (const [type, lat, seed] of [['cutter', 20, 1], ['privateer', 22, 2]]) {
+        const e = T.spawn(type, lat, 0, 0);
+        e.reload.port = e.reload.star = 99;
+        const hold = T.pinner(p, e);
+        hold();
+        if (!settle) settle = await T.settle(hold);
+        out[`${type}${lat}`] = await T.salvo(e, { side: 1, crit: 'none', seed, hold });
+        G.capture.escape(e);
+        G.state.mode = 'playing';
+        T.steps(0.1);
+      }
+      out.settle = settle;
+      return out;
+    });
+    for (const k of ['cutter20', 'privateer22']) {
+      const r = popReport(desk[k]);
+      check(desk[k].fired && /^HIT ×3/.test(desk[k].mark) && r.seen.some((t) => /^\d+$/.test(t)) && r.onMark.length === 0 && r.popPop.length === 0 && r.offScreen.length === 0,
+        `pops 1280x720: the damage pop of a broadside at a ${k.replace(/\d+/, ' at $& u')} keeps clear of the "${desk[k].mark}" mark all the time both show (${r.frames} frames; seen ${J(r.seen)}${r.onMark.length ? '; over the mark: ' + r.onMark.join(', ') : ''}${r.popPop.length ? '; pop over pop: ' + r.popPop.join(', ') : ''})`);
+    }
+    console.log(`      (camera settled in ${desk.settle} frames)`);
+
+    // The Board cell in the counter-board window shows the odds (UX-4), as for any boarding: SPEC2 §3.3 example 3
+    // leaves the counter-board risky, about 2 hands lost.
+    const cell = await ev(page, async () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('raider', 7.5, 0, 0);
+      G.boarding.raid(e);
+      T.steps(6, () => G.boarding.active);
+      const odds = G.boarding.odds(e, 'counter');
+      G.state.mode = 'paused';
+      await T.redraw();
+      const gb = document.getElementById('gun-board');
+      const out = { open: G.boarding.counterTarget === e, odds: { label: odds.label, attLoss: odds.attLoss }, state: gb.dataset.state, tag: T.text('board-tag') };
+      G.boarding.cancel('test');
+      G.capture.escape(e);
+      return out;
+    });
+    check(cell.open && cell.odds.label === 'risky' && cell.state === 'risky' && cell.tag === `AGAIN! −${cell.odds.attLoss}`,
+      `HUD: in the counter-board window the Board cell shows its odds: "${cell.tag}" in the red risky state, not a gold "again" (${J(cell)})`);
+
+    // Reduced motion: switching ammo doesn't bump the Ammo cell's value (UX-7).
+    await page.emulateMedia({ reducedMotion: 'reduce' });
+    const bump = await ev(page, async () => {
+      const G = window.__game;
+      G.state.unlocked = 3;
+      T.level(1);
+      G.state.mode = 'paused';
+      await T.redraw();
+      G.state.mode = 'playing';
+      const set = G.combat.setAmmo('chain');
+      G.state.mode = 'paused';
+      await T.redraw();
+      const val = document.querySelector('#gun-ammo .ammo-val');
+      return { set, bumped: document.getElementById('gun-ammo').classList.contains('bump'), running: val.getAnimations().filter((a) => a.playState === 'running').map((a) => a.animationName) };
+    });
+    await page.emulateMedia({ reducedMotion: 'no-preference' });
+    const bumpOn = await ev(page, async () => {
+      const G = window.__game;
+      G.combat.setAmmo('round');
+      G.state.mode = 'paused';
+      await T.redraw();
+      return document.querySelector('#gun-ammo .ammo-val').getAnimations().map((a) => a.animationName);
+    });
+    check(bump.set && bump.bumped && bump.running.length === 0 && bumpOn.includes('chip-bump'),
+      `reduced motion: switching ammo doesn't bump the Ammo cell (running: ${J(bump.running)}; without reduced motion: ${J(bumpOn)})`);
+  });
+
   await page.close();
   await main.ctx.close();
 
@@ -1761,6 +2284,211 @@ function ev(page, fn, arg = null) {
       return { after: getComputedStyle(btn, '::after').content, shadow: getComputedStyle(btn).boxShadow };
     });
     check(glow.after === '"RAKE!"' && /255, 201, 60/.test(glow.shadow), `touch: the Fire button glows gold with RAKE! when her stern is open (${J(glow)})`);
+
+    // Pops on a portrait phone, the chase camera settled: a privateer beam-on at 18 u (the AI holds 18-26 u) lies
+    // off the right edge of the view, and the volley's damage pop still shows, at that edge (UX-8); a point-blank
+    // stern rake with a crit: its pops (STERN RAKE ×2!, CRIT! MAST DOWN!, POINT BLANK!, the damage) keep clear of
+    // each other and of the SUNK! mark and its stickers (UX-1) all their lives.
+    const phone = await ev(tp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const out = {};
+      let settle = 0;
+      for (const [name, type, lat, turn, crit] of [['abeam', 'privateer', 18, 0, 'none'], ['rake', 'cutter', 9, -Math.PI / 2, 'mast']]) {
+        const e = T.spawn(type, lat, 0, turn);
+        e.reload.port = e.reload.star = 99;
+        const hold = T.pinner(p, e);
+        hold();
+        if (!settle) settle = await T.settle(hold);
+        const ndc = new G.camera.position.constructor(e.x, 1, e.z).project(G.camera);
+        out[name] = await T.salvo(e, { side: 1, crit, seed: 1, hold });
+        out[name].ndcX = Math.round(ndc.x * 100) / 100;
+        G.capture.escape(e);
+        G.state.mode = 'playing';
+        T.steps(0.1);
+      }
+      out.settle = settle;
+      return out;
+    });
+    {
+      const r = popReport(phone.abeam);
+      check(phone.abeam.fired && /^HIT ×3/.test(phone.abeam.mark) && phone.abeam.ndcX > 1 && r.seen.some((t) => /^\d+$/.test(t)) && r.offScreen.length === 0,
+        `pops 390x844: a privateer abeam at 18 u is off the right edge of the view (ndc x ${phone.abeam.ndcX}), and the volley's damage pop shows at that edge (seen ${J(r.seen)}${r.offScreen.length ? '; off screen: ' + r.offScreen.join(', ') : ''})`);
+      const k = popReport(phone.rake);
+      check(phone.rake.fired && /^SUNK!/.test(phone.rake.mark) && k.seen.length >= 3 && k.popPop.length === 0 && k.onMark.length === 0 && k.offScreen.length === 0,
+        `pops 390x844: a point-blank stern rake with a crit: its ${k.seen.length} pops (${k.seen.join(' / ')}) never cover each other or the "${phone.rake.mark}" mark (${k.frames} frames${k.popPop.length ? '; pop over pop: ' + k.popPop.join(', ') : ''}${k.onMark.length ? '; over the mark: ' + k.onMark.join(', ') : ''})`);
+      console.log(`      (camera settled in ${phone.settle} frames)`);
+    }
+
+    // The raiders' threat is read out with the touch words (UX-5); in the counter-board window the Board pill shows
+    // the odds (UX-4: SPEC2 §3.3 example 3 leaves it risky).
+    const raidT = await ev(tp, async () => {
+      const G = window.__game;
+      T.watchLive();
+      await T.liveQuiet();
+      T.level(1);
+      const e = T.spawn('raider', 7.5, 0, 0);
+      G.boarding.raid(e);
+      T.steps(0.1);
+      G.state.mode = 'paused';
+      await T.redraw();
+      const threat = { phase: G.boarding.phase, banner: T.text('banner') };
+      await T.liveQuiet();
+      threat.live = T.liveLog();
+      G.state.mode = 'playing';
+      T.steps(6, () => G.boarding.active);
+      const odds = G.boarding.odds(e, 'counter');
+      G.state.mode = 'paused';
+      await T.redraw();
+      const tb = document.getElementById('touch-board');
+      const pill = { open: G.boarding.counterTarget === e, label: odds.label, attLoss: odds.attLoss, state: tb.dataset.state, word: T.text('touch-board'), aria: tb.getAttribute('aria-label') };
+      G.state.mode = 'playing';
+      G.boarding.cancel('test');
+      G.capture.escape(e);
+      return { threat, pill };
+    });
+    check(raidT.threat.phase === 'threat' && /Tap CUT!/.test(raidT.threat.banner) && raidT.threat.live.some((t) => /^Boarders! .*tap Cut three times or hold it/.test(t)) && !raidT.threat.live.some((t) => /press G/i.test(t)),
+      `touch: the raiders' threat is read out with the touch words ("tap Cut", never "press G") (${J(raidT.threat)})`);
+    check(raidT.pill.open && raidT.pill.label === 'risky' && raidT.pill.state === 'risky' && raidT.pill.word === 'Again!' && /risky, about 2 hands lost$/.test(raidT.pill.aria),
+      `touch: in the counter-board window the "Again!" pill shows the odds (red risky state, not a gold "again") (${J(raidT.pill)})`);
+
+    // Reduced motion: switching ammo doesn't bump the Ammo pill's icon (UX-7).
+    await tp.emulateMedia({ reducedMotion: 'reduce' });
+    const bumpT = await ev(tp, async () => {
+      const G = window.__game;
+      T.level(1);
+      G.state.mode = 'paused';
+      await T.redraw();
+      G.state.mode = 'playing';
+      const set = G.combat.setAmmo('chain');
+      G.state.mode = 'paused';
+      await T.redraw();
+      const ico = document.querySelector('#touch-ammo .ammo-ico');
+      return { set, bumped: document.getElementById('touch-ammo').classList.contains('bump'), running: ico.getAnimations().filter((a) => a.playState === 'running').map((a) => a.animationName) };
+    });
+    await tp.emulateMedia({ reducedMotion: 'no-preference' });
+    const bumpTOn = await ev(tp, async () => {
+      const G = window.__game;
+      G.combat.setAmmo('round');
+      G.state.mode = 'paused';
+      await T.redraw();
+      return document.querySelector('#touch-ammo .ammo-ico').getAnimations().map((a) => a.animationName);
+    });
+    check(bumpT.set && bumpT.bumped && bumpT.running.length === 0 && bumpTOn.includes('chip-bump'),
+      `touch, reduced motion: switching ammo doesn't bump the Ammo pill (running: ${J(bumpT.running)}; without reduced motion: ${J(bumpTOn)})`);
+    await ctx.close();
+  });
+
+  // ---------------------------------------------------- first-time tips on touch, and what is read out
+  // A fresh profile's tips (new ammo, board, raiders, counter-board, surrender) on a phone: each tip names the button
+  // as it reads then (UX-6), and an event whose tip shows is not read out a second time in other words on #game-live
+  // (UX-9: the hint bubble is a live region too).
+  await section('tips', async () => {
+    const { ctx, page: fp } = await open({ width: 390, height: 844, touch: true, label: 'tips', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '52' } });
+    const r = await ev(fp, async () => {
+      const G = window.__game;
+      const out = {};
+      const hint = () => (T.shown('hint') ? T.text('hint') : '');
+      let mark = 0;
+      const said = () => {
+        const list = T.liveLog().slice(mark);
+        mark += list.length;
+        return list;
+      };
+      T.watchLive();
+      await T.liveQuiet();
+      // new ammo: chain shot, once the level's banner has gone (T.level: gone)
+      T.level(1);
+      T.steps(1 / 120);
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.ammo = { banner: T.text('banner'), hint: hint() };
+      await T.liveQuiet();
+      out.ammo.live = said();
+      // the first ship in reach
+      G.state.mode = 'playing';
+      T.level(1);
+      const e = T.spawn('privateer', 9, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      G.damage(e, e.maxHp * 0.6);
+      await T.live(4);
+      out.board = { hint: hint(), word: T.text('touch-board'), state: document.getElementById('touch-board').dataset.state };
+      G.state.mode = 'playing';
+      G.capture.escape(e);
+      await T.liveQuiet();
+      said();
+      // raiders hook you
+      G.state.mode = 'playing';
+      T.level(1);
+      const r = T.spawn('raider', 7.5, 0, 0);
+      G.boarding.raid(r);
+      T.steps(0.1);
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.threat = { phase: G.boarding.phase, hint: hint() };
+      await T.liveQuiet();
+      out.threat.live = said();
+      // ... and are driven back: the counter-board window
+      G.state.mode = 'playing';
+      T.steps(6, () => G.boarding.active);
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.counter = { open: G.boarding.counterTarget === r, hint: hint() };
+      await T.liveQuiet();
+      out.counter.live = said();
+      G.state.mode = 'playing';
+      G.boarding.cancel('test');
+      G.capture.escape(r);
+      // a cutter in reach strikes her colours
+      T.level(1);
+      const c = T.spawn('cutter', 9, 0, 0);
+      c.reload.port = c.reload.star = 99;
+      G.capture.strike(c);
+      await T.live(3);
+      out.surrender = { struck: c.surrendered, hint: hint(), word: T.text('touch-board') };
+      await T.liveQuiet();
+      out.surrender.live = said();
+      return out;
+    });
+    check(/^New ammo: Chain shot!/.test(r.ammo.banner) && /^New: chain shot!/.test(r.ammo.hint) && !r.ammo.live.some((t) => /new ammo/i.test(t)),
+      `tips (touch): new ammo shows a banner and a tip, and is not read out again on #game-live (${J(r.ammo)})`);
+    check(['Take!', 'Fight', 'Risky'].includes(r.board.word) && r.board.hint === `Close enough to board! Tap ${r.board.word}`,
+      `tips (touch): the first ship in reach: the tip names the Board pill as it reads ("${r.board.hint}", pill "${r.board.word}")`);
+    check(r.threat.phase === 'threat' && /CUT!/.test(r.threat.hint) && !r.threat.live.some((t) => /grappling you/.test(t)),
+      `tips (touch): raiders' threat: the tip says it, #game-live doesn't say it again (${J(r.threat)})`);
+    check(r.counter.open && /Again!/.test(r.counter.hint) && !r.counter.live.some((t) => /Counter-board/.test(t)),
+      `tips (touch): counter-board: the tip says it, #game-live doesn't say it again (${J(r.counter)})`);
+    check(r.surrender.struck && r.surrender.word === 'Take!' && r.surrender.hint === 'She struck her colours! Tap Take! to take her' && !r.surrender.live.some((t) => /strikes her colours/.test(t)),
+      `tips (touch): a struck ship in reach: the tip names the "Take!" pill, and #game-live doesn't say it again (${J(r.surrender)})`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------ pops below the top HUD row on a short phone
+  await section('short', async () => {
+    // At 568x320 a capture's pops (CHARGE! in the swing, CAPTURED! +145 gold) stay below the top HUD row, so the
+    // new gold total can be read (UX-10). Every real frame from the swing to the end.
+    const { ctx, page: sp } = await open({ width: 568, height: 320, touch: true, label: 'short', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+    const r = await ev(sp, async () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('privateer', 8.5, 0, 0);
+      G.damage(e, 48);
+      e.reload.port = e.reload.star = 99;
+      G.grapple();
+      T.steps(2, () => G.boarding.phase !== 'swing');
+      const frames = [];
+      const t0 = G.state.time;
+      G.state.mode = 'playing';
+      while (G.boarding.active && frames.length < 400) {
+        await new Promise((res) => requestAnimationFrame(res));
+        frames.push({ t: Math.round((G.state.time - t0) * 1000) / 1000, ...T.popFrame() });
+      }
+      G.state.mode = 'paused';
+      return { captured: e.captured, frames, W: innerWidth, H: innerHeight };
+    });
+    const rep = popReport(r);
+    check(r.captured && rep.seen.includes('CHARGE!') && rep.seen.some((t) => /^CAPTURED!/.test(t)) && rep.onTop.length === 0 && rep.offScreen.length === 0,
+      `pops 568x320: a capture's pops (${rep.seen.join(' / ')}) stay below the top HUD row all the way (${rep.frames} frames${rep.onTop.length ? '; over it: ' + rep.onTop.join(', ') : ''}${rep.offScreen.length ? '; off screen: ' + rep.offScreen.join(', ') : ''})`);
     await ctx.close();
   });
 
@@ -1915,6 +2643,46 @@ function ev(page, fn, arg = null) {
     for (const l of levels) {
       check(l.name === want[l.n][0] && l.level === l.n && l.wave0 === l.want && l.ids === want[l.n][1] && l.mode === 'playing' && l.time === 4 && l.calls > 0 && (l.n !== 4 || /^Galleons:/.test(l.objective)),
         `Act II: level ${l.n} (${l.name}) starts with ?act2=1 and plays (${J(l)})`);
+    }
+    // A treasure galleon grappled a few units short of her escape gate (BRD-2): you beside her, both heading for the
+    // gate, so the glued pair drifts into it during the brawl. She is held by the boarding: no escape from under you.
+    const galleon = await ev(ap, () => {
+      const G = window.__game;
+      const out = [];
+      for (const [gap, speed, sail, hers] of [[3, 3, 0, 3], [5, 3, 0, 3], [6, 7, 2, 4.5]]) {
+        const p = T.level(4);
+        // her gate: the one farthest from you when she comes
+        const gate = G.mechanics.minimap().filter((m) => m.kind === 'gate').sort((a, b) => Math.hypot(b.x - p.x, b.z - p.z) - Math.hypot(a.x - p.x, a.z - p.z))[0];
+        const e = G.spawn('galleon', p.x + 30, p.z, 0);
+        const h = Math.atan2(gate.x - p.x, gate.z - p.z);
+        const dist = gate.r + gap;
+        const px = gate.x - Math.sin(h) * dist;
+        const pz = gate.z - Math.cos(h) * dist;
+        G.place(p, px + Math.cos(h) * 4.25, pz - Math.sin(h) * 4.25, h);
+        p.speed = speed;
+        G.state.sail = sail;
+        G.place(e, px - Math.cos(h) * 4.25, pz + Math.sin(h) * 4.25, h);
+        e.rise = 0;
+        e.speed = hers;
+        G.damage(e, e.hp * 0.6);
+        G.combat.setCrew(e, 6);
+        const ends = [];
+        const off = G.boarding.module.onEnd((ev) => ends.push(`${ev.reason}@${ev.phase}`));
+        const label = G.boarding.pick().label;
+        const g = G.grapple().ok;
+        let near = Infinity;
+        T.steps(7, () => {
+          near = Math.min(near, Math.hypot(e.x - gate.x, e.z - gate.z));
+          return G.boarding.active;
+        });
+        off();
+        out.push({ gap, speed, label, g, ends: ends.join(), escaped: !!e.escaped, captured: !!e.captured, near: Math.round(near * 10) / 10, gateR: gate.r });
+      }
+      return out;
+    });
+    for (const r of galleon) {
+      check(r.g && r.label === 'capture' && r.ends === 'done@result' && r.captured && !r.escaped && r.near < r.gateR,
+        `Act II: a galleon grappled ${r.gap} u outside her gate (you at ${r.speed} u/s) is carried into it (${r.near} u from its centre, radius ${r.gateR}) without escaping: the boarding ends with her captured (${J(r)})`);
     }
     check(errors.length === before, `Act II: no page errors on levels 4-6${errors.length > before ? ': ' + errors.slice(before).join(' | ') : ''}`);
     await ctx.close();

@@ -14,7 +14,9 @@ const path = require('path');
 const { chromium } = require('playwright');
 const { serve } = require('./server.cjs');
 
-const ROOT = path.join(__dirname, '..');
+// CONTROLS_ROOT serves another copy of the game; CONTROLS_ONLY=review2 runs only the Stage 2 review's checks.
+const ROOT = process.env.CONTROLS_ROOT || path.join(__dirname, '..');
+const ONLY = process.env.CONTROLS_ONLY || '';
 let failures = 0;
 function check(cond, msg) {
   console.log(`${cond === true ? 'PASS' : 'FAIL'}  ${msg}`);
@@ -47,6 +49,10 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       // Park the pirates far away so they don't interfere with control checks.
       G.enemies.forEach((e, k) => { e.x = 400 + k * 30; e.z = 400; e.speed = 0; });
     }, level);
+  if (ONLY === 'review2') {
+    await review2();
+    return finish();
+  }
 
   // ------------------------------------------------------------------ F01 layout
   const layoutProbe = () => {
@@ -1865,11 +1871,377 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     await ctx.close();
   }
 
-  check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''}`);
-  await browser.close();
-  server.close();
-  console.log(failures ? `\n${failures} check(s) failed` : '\nAll control checks passed');
-  process.exit(failures ? 1 : 0);
+  await review2();
+  return finish();
+
+  async function finish() {
+    check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''}`);
+    await browser.close();
+    server.close();
+    console.log(failures ? `\n${failures} check(s) failed` : '\nAll control checks passed');
+    process.exit(failures ? 1 : 0);
+  }
+
+  // ------------------------------------------------------------------ Stage 2 review (flow, saved records, layout)
+  // Leaving a battle for the title and what a double-click does there, graphics lost on the way to the shipyard,
+  // leaving while "Level cleared!" counts down, two tabs buying at the tavern and counting feats, the Act II goal
+  // pill and the HIT mark on small touch screens.
+  async function review2() {
+    const J = (v) => JSON.stringify(v);
+    // A page whose localStorage holds `store` when the game loads (a context of its own unless one is given).
+    const openWith = async ({ store = null, query = '?quality=low', ctx = null, ...opts } = {}) => {
+      const c = ctx || (await browser.newContext({ viewport: { width: 1280, height: 720 }, ...opts }));
+      if (store && !ctx) await c.addInitScript((s) => { try { for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v); } catch {} }, store);
+      const page = await c.newPage();
+      page.on('pageerror', (e) => errors.push(e.message));
+      await page.goto(base + query, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await page.waitForFunction(() => window.__gameReady === true, null, { timeout: 120000 });
+      return { ctx: c, page };
+    };
+    // A level in play, frozen (the real loop draws but nothing moves on), the pirates parked far away, nothing in
+    // the way of a broadside.
+    const level = (page, n) => page.evaluate((n) => {
+      const G = window.__game;
+      G.state.tutorialDone = true;
+      G.newGame(n);
+      G.state.intro = 0;
+      G.state.bannerTimer = 0;
+      G.state.combatTime = 30;
+      const p = G.player;
+      p.speed = 0;
+      G.state.sail = 0;
+      G.colliders.forEach((c) => (c.x += 5000));
+      G.reefs.forEach((r) => (r.x += 5000));
+      G.enemies.forEach((e, k) => { e.x = p.x + 300 + k * 30; e.z = p.z + 300; e.speed = 0; });
+      G.state.mode = 'paused';
+    }, n);
+    // Draw a frame of the frozen scene (the HUD updates; no time passes).
+    const redraw = (page) => page.evaluate(() => {
+      window.dispatchEvent(new Event('resize'));
+      return new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+    });
+    const shownEl = (page, id) => page.evaluate((id) => { const e = document.getElementById(id); return !!e && !e.closest('.hidden') && e.getClientRects().length > 0; }, id);
+    const finishAnims = (page) => page.evaluate(() => document.getAnimations().forEach((a) => { if (a.effect.getComputedTiming().iterations !== Infinity) a.finish(); }));
+
+    // FLOW-1: a double-click (or double tap) on Leave, for the main menu, ends at the title: its second click,
+    // landing on Set sail! or a level card there, starts nothing. A keyboard click on Set sail! still sails at
+    // once, and so does a real click a moment later.
+    for (const [w, h, touch] of [[1280, 720, false], [844, 390, true]]) {
+      const { ctx, page } = await openWith({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch, store: { 'pirates-ahoy-purse': '500', 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1' } });
+      await level(page, 2);
+      await page.evaluate(() => { window.__game.state.mode = 'playing'; window.__game.togglePause(); });
+      if (touch) await page.tap('#quit-menu-btn');
+      else await page.click('#quit-menu-btn');
+      await page.waitForTimeout(400); // (a click on the question straight away is taken as part of a double-click)
+      const at = await page.evaluate(() => {
+        window.__clicks = [];
+        document.addEventListener('click', (e) => window.__clicks.push({ on: e.target.id || e.target.className, detail: e.detail, mode: window.__game.state.mode }), true);
+        const r = document.getElementById('leave-yes-btn').getBoundingClientRect();
+        return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+      });
+      if (touch) {
+        await page.touchscreen.tap(at.x, at.y);
+        await page.waitForTimeout(150);
+        await page.touchscreen.tap(at.x, at.y);
+      } else await page.mouse.dblclick(at.x, at.y);
+      await frames(page, 3);
+      const dbl = await page.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level, clicks: window.__clicks, title: !document.getElementById('menu-screen').classList.contains('hidden') }));
+      const second = dbl.clicks[1] || {};
+      check(dbl.clicks.length === 2 && dbl.clicks[0].on === 'leave-yes-btn' && (second.on === 'start-btn' || /level-card/.test(second.on)) && dbl.mode === 'menu' && dbl.title,
+        `leave the battle ${w}x${h}${touch ? ' touch (two taps)' : ' (double-click)'}: a double-click on Leave for the main menu stays at the title; its second click, on ${second.on || 'nothing'} there, starts no voyage (${J(dbl)})`);
+      const kb = await page.evaluate(() => {
+        document.getElementById('start-btn').click(); // (a keyboard or assistive-technology click: detail 0)
+        return { mode: window.__game.state.mode, level: window.__game.state.level };
+      });
+      await page.evaluate(() => { const G = window.__game; G.state.mode = 'playing'; G.togglePause(); });
+      await page.evaluate(() => document.getElementById('quit-menu-btn').click());
+      await page.evaluate(() => document.getElementById('leave-yes-btn').click());
+      await page.waitForTimeout(600);
+      if (touch) await page.tap('#start-btn');
+      else await page.click('#start-btn');
+      const later = await page.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level }));
+      check(kb.mode === 'playing' && kb.level === 1 && later.mode === 'playing' && later.level === 1,
+        `leave the battle ${w}x${h}: at the title a keyboard click on Set sail! sails at once, and a ${touch ? 'tap' : 'click'} 0.6 s after the title came up does too (${J({ kb, later })})`);
+      await ctx.close();
+    }
+
+    // FLOW-3: the graphics are lost straight after Leave for the shipyard (the shipyard opens two frames later,
+    // while they are gone). When they come back the shipyard is usable: no Paused dialog over it.
+    {
+      const { ctx, page } = await openWith({ store: { 'pirates-ahoy-purse': '500', 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1' } });
+      const ext = await page.evaluate(() => !!document.getElementById('game').getContext('webgl2')?.getExtension('WEBGL_lose_context'));
+      if (!ext) console.log('SKIP  WEBGL_lose_context is not available: the leave-then-lose check was not run');
+      else {
+        await level(page, 1);
+        await page.evaluate(() => { window.__game.state.mode = 'playing'; window.__game.togglePause(); });
+        await page.evaluate(() => document.getElementById('quit-dock-btn').click());
+        await page.evaluate(() => {
+          window.__loseExt = document.getElementById('game').getContext('webgl2').getExtension('WEBGL_lose_context');
+          document.getElementById('leave-yes-btn').click();
+          window.__loseExt.loseContext(); // (the same moment: the shipyard is not open yet)
+        });
+        await page.waitForFunction(() => window.__game.state.contextLost === true, null, { timeout: 30000 }).catch(() => {});
+        await page.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 30000 }).catch(() => {});
+        const lost = await page.evaluate(() => ({ mode: window.__game.state.mode, recover: !document.getElementById('recover-screen').classList.contains('hidden') }));
+        await page.evaluate(() => window.__loseExt.restoreContext());
+        await page.waitForFunction(() => window.__game.state.contextLost === false, null, { timeout: 30000 }).catch(() => {});
+        await frames(page, 3);
+        const back = await page.evaluate(() => {
+          const vis = (id) => { const e = document.getElementById(id); return !!e && !e.closest('.hidden') && e.getClientRects().length > 0; };
+          return { mode: window.__game.state.mode, pause: vis('pause-screen'), recover: vis('recover-screen'), dockInert: document.getElementById('dock-screen').inert, focus: document.activeElement && document.activeElement.id };
+        });
+        await page.keyboard.press('Escape');
+        const esc = await page.evaluate(() => ({ mode: window.__game.state.mode, pause: !document.getElementById('pause-screen').classList.contains('hidden') }));
+        check(lost.mode === 'dock' && lost.recover && back.mode === 'dock' && !back.pause && !back.recover && back.dockInert === false && /^dock-/.test(back.focus || '') && esc.mode === 'dock' && !esc.pause,
+          `graphics lost straight after Leave for the shipyard: once they are back the shipyard is usable, with no Paused dialog over it (${J({ lost, back, esc })})`);
+      }
+      await ctx.close();
+    }
+
+    // FLOW-4: leaving while "Level cleared!" counts down: the level is won, so it is finished as when the countdown
+    // ends (plunder, loot afloat and bonuses banked, the next level opened); the question says so, with "Stay".
+    {
+      const { ctx, page } = await openWith({ store: { 'pirates-ahoy-purse': '0', 'pirates-ahoy-unlocked': '1', 'pirates-ahoy-tutorial-done': '1' } });
+      // Level 1's last wave sunk with 140 gold plundered; 0.3 s into the countdown.
+      const cleared = () => page.evaluate(() => {
+        const G = window.__game;
+        G.newGame(1);
+        G.state.intro = 0;
+        G.state.mode = 'playing';
+        G.enemies.forEach((e, k) => { e.x = 400 + k * 30; e.z = 400; e.speed = 0; });
+        G.state.gold = 140;
+        G.state.goldAtLevelStart = 0;
+        G.state.wave = G.LEVELS[0].waves.length - 1;
+        for (const e of G.enemies) G.damage(e, 9999);
+        for (let k = 0; k < 120 * 3 && !(G.state.clearTimer > 0); k++) G.step(1 / 120);
+        for (let k = 0; k < 36; k++) G.step(1 / 120);
+        const out = { clearTimer: G.state.clearTimer, mode: G.state.mode, purse: G.state.purse, unlocked: G.state.unlocked, banner: document.getElementById('banner').textContent };
+        G.togglePause();
+        return out;
+      });
+      const prompt = () => page.evaluate(() => ({ q: document.getElementById('leave-q').textContent.trim(), why: document.getElementById('leave-why').textContent.trim(), no: document.getElementById('leave-no-btn').textContent.trim() }));
+      const before = await cleared();
+      await page.click('#quit-dock-btn');
+      const asked = await prompt();
+      await page.click('#leave-no-btn'); // Stay
+      const stay = await page.evaluate(() => ({ step: window.__game.pauseStep.step, mode: window.__game.state.mode }));
+      await page.click('#quit-dock-btn');
+      await page.waitForTimeout(400);
+      await page.click('#leave-yes-btn');
+      await page.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 60000 }).catch(() => {});
+      await frames(page, 2);
+      const dock = await page.evaluate(() => ({
+        mode: window.__game.state.mode,
+        from: window.__game.dock.from,
+        purse: window.__game.state.purse,
+        savedPurse: localStorage.getItem('pirates-ahoy-purse'),
+        unlocked: window.__game.state.unlocked,
+        savedUnlocked: localStorage.getItem('pirates-ahoy-unlocked'),
+        exits: [...document.querySelectorAll('#dock-exits button')].map((b) => b.textContent.trim()),
+        levelScreen: !document.getElementById('level-screen').classList.contains('hidden'),
+      }));
+      const won = Number((asked.why.match(/its (\d+) gold/) || [])[1]);
+      // The same level left to run out its countdown banks the same.
+      await page.evaluate(() => { localStorage.setItem('pirates-ahoy-purse', '0'); localStorage.setItem('pirates-ahoy-unlocked', '1'); window.__game.dock.leave('menu'); });
+      await page.evaluate(() => { const G = window.__game; G.state.purse = 0; G.state.unlocked = 1; });
+      const ref0 = await cleared();
+      const ref = await page.evaluate(() => {
+        const G = window.__game;
+        G.togglePause();
+        for (let k = 0; k < 120 * 4 && G.state.mode === 'playing'; k++) G.step(1 / 120);
+        return { mode: G.state.mode, purse: G.state.purse, unlocked: G.state.unlocked };
+      });
+      check(before.clearTimer > 0 && before.mode === 'playing' && /^Level cleared!/.test(before.banner) && asked.q === 'Level cleared! On to the shipyard?' && won > 140 &&
+        /goes into your treasure chest and the next level opens/.test(asked.why) && asked.no === 'Stay' && stay.step === 'choose' && stay.mode === 'paused',
+        `leave during "Level cleared!": the question says the level is won and banked ("${asked.q} ${asked.why}"), and "${asked.no}" goes back to the choices (${J({ before, stay })})`);
+      check(dock.mode === 'dock' && dock.purse === won && dock.savedPurse === String(won) && dock.unlocked === 2 && dock.savedUnlocked === '2' && /^Set sail for /.test(dock.exits[0] || '') && !dock.levelScreen &&
+        ref0.clearTimer > 0 && ref.mode === 'levelDone' && ref.purse === won && ref.unlocked === 2,
+        `leave during "Level cleared!" for the shipyard: the level is finished as when the countdown ends: ${won} gold banked (the countdown banks ${ref.purse}), level 2 opened and saved, and the shipyard sails on (${J({ dock, ref })})`);
+      // ... and for the main menu
+      await page.evaluate(() => { localStorage.setItem('pirates-ahoy-purse', '0'); localStorage.setItem('pirates-ahoy-unlocked', '1'); });
+      await page.evaluate(() => { const G = window.__game; G.showMenu(); G.state.purse = 0; G.state.unlocked = 1; });
+      await cleared();
+      await page.click('#quit-menu-btn');
+      const askedMenu = await prompt();
+      await page.waitForTimeout(400);
+      await page.click('#leave-yes-btn');
+      await frames(page, 2);
+      const title = await page.evaluate(() => ({ mode: window.__game.state.mode, purse: window.__game.state.purse, savedPurse: localStorage.getItem('pirates-ahoy-purse'), unlocked: window.__game.state.unlocked, chest: document.getElementById('menu-chest').textContent.trim(), cards: [...document.querySelectorAll('.level-card')].filter((b) => !b.disabled).length }));
+      check(askedMenu.q === 'Level cleared! Back to the main menu?' && askedMenu.no === 'Stay' && title.mode === 'menu' && title.purse === won && title.savedPurse === String(won) && title.chest === String(won) && title.unlocked === 2 && title.cards === 2,
+        `leave during "Level cleared!" for the main menu: the title shows the ${won} gold banked and level 2 open (${J({ askedMenu, title })})`);
+      await ctx.close();
+    }
+
+    // FLOW-5: two tabs of the game. Tab A buys Boarding party at the tavern, then tab B buys Cutlass drills: both
+    // upgrades are kept, each paid once; then each tab captures a ship: both captures are counted in the feats.
+    {
+      const tabs = await browser.newContext({ viewport: { width: 1024, height: 600 } });
+      await tabs.addInitScript(() => { try { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); if (!localStorage.getItem('pirates-ahoy-purse')) { localStorage.setItem('pirates-ahoy-purse', '1000'); localStorage.setItem('pirates-ahoy-unlocked', '3'); localStorage.setItem('pirates-ahoy-tutorial-done', '1'); } } } catch {} });
+      const A = (await openWith({ ctx: tabs })).page;
+      const B = (await openWith({ ctx: tabs })).page;
+      const savedOf = (p) => p.evaluate(() => ({ purse: localStorage.getItem('pirates-ahoy-purse'), armory: JSON.parse(localStorage.getItem('pirates-ahoy-armory') || 'null'), feats: JSON.parse(localStorage.getItem('pirates-ahoy-feats') || 'null') }));
+      const start = { A: await A.evaluate(() => window.__game.state.purse), B: await B.evaluate(() => window.__game.state.purse) };
+      await A.evaluate(() => window.__game.dock.open('menu'));
+      await B.evaluate(() => window.__game.dock.open('menu'));
+      const a = await A.evaluate(() => ({ ok: window.__game.armory.buy('boarders'), purse: window.__game.state.purse }));
+      // (another tab's writes reach this one a moment later, sometimes seconds under load)
+      await B.waitForFunction(() => /"boarders":1/.test(localStorage.getItem('pirates-ahoy-armory') || ''), null, { timeout: 30000 }).catch(() => {});
+      const b = await B.evaluate(() => ({ ok: window.__game.armory.buy('cutlass'), purse: window.__game.state.purse, up: window.__game.armory.config.up }));
+      const saved = await savedOf(B);
+      const aSees = await A.waitForFunction(() => window.__game.armory.config.up.cutlass === 1, null, { timeout: 30000 }).then(() => true, () => false);
+      check(start.A === 1000 && start.B === 1000 && a.ok && a.purse === 800 && b.ok && b.purse === 650 && b.up.boarders === 1 && b.up.cutlass === 1 && saved.purse === '650' && saved.armory && saved.armory.up.boarders === 1 && saved.armory.up.cutlass === 1 && aSees,
+        `two tabs at the tavern: A buys Boarding party (200), then B buys Cutlass drills (150): both are kept and 350 is paid in all, and A's tavern shows B's purchase (${J({ start, a, b, saved: { purse: saved.purse, armory: saved.armory }, aSees })})`);
+      await A.evaluate(() => window.__game.dock.leave('title'));
+      await B.evaluate(() => window.__game.dock.leave('title'));
+      const capture = (p) => p.evaluate(() => {
+        const G = window.__game;
+        G.newGame(1);
+        G.state.intro = 0;
+        const pl = G.player;
+        const e = G.spawn('privateer', pl.x + 30, pl.z, pl.h);
+        e.rise = 0;
+        G.capture.take(e); // (a capture saves the feats at once)
+        G.showMenu(); // (back at the title: no battle to draw meanwhile)
+        return { captures: G.feats.captures, prizes: G.feats.prizes };
+      });
+      const fa = await capture(A);
+      await B.waitForFunction(() => /"captures":1/.test(localStorage.getItem('pirates-ahoy-feats') || ''), null, { timeout: 30000 }).catch(() => {});
+      const fb = await capture(B);
+      const feats = (await savedOf(B)).feats;
+      const aFeats = await A.waitForFunction(() => window.__game.feats.captures === 2, null, { timeout: 30000 }).then(() => true, () => false);
+      check(fa.captures === 1 && feats && feats.captures === 2 && feats.prizes && feats.prizes.privateer === 2 && fb.captures === 2 && aFeats,
+        `two tabs, one capture each: the saved feats count both (captures ${feats && feats.captures}, privateers ${feats && feats.prizes && feats.prizes.privateer}), and each tab shows both (${J({ fa, fb, saved: feats, aFeats })})`);
+      await tabs.close();
+    }
+
+    // UX-2: the Act II goal pill (level 4, ?act2=1) on touch screens: a whole pill (its text inside it, not an 11 px
+    // strip or a 96 px column), on screen, clear of a two-line tip, the top HUD row and the minimap; hidden while
+    // the boarding strip has the top of the view.
+    for (const [w, h] of [[568, 320], [640, 360], [320, 480], [360, 480], [360, 640], [390, 844]]) {
+      const { ctx, page } = await openWith({ viewport: { width: w, height: h }, hasTouch: true, isMobile: true, query: '?quality=low&act2=1', store: { 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+      await level(page, 4);
+      // a two-line tip in the hint bubble (the rake tip's words)
+      await page.evaluate(() => {
+        const G = window.__game;
+        G.state.tip = { text: 'Her stern is open! A shot down her length hits twice as hard', until: G.state.time + 30, bit: 32 };
+        G.state.mode = 'playing';
+        G.step(1 / 120);
+        G.state.mode = 'paused';
+      });
+      await redraw(page);
+      await finishAnims(page);
+      const r = await page.evaluate(() => {
+        const R = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height }; };
+        const ov = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+        const o = document.getElementById('objective');
+        const box = R(o);
+        const hint = document.getElementById('hint');
+        const hb = !hint.classList.contains('hidden') ? R(hint) : null;
+        const cards = [...document.querySelectorAll('.hud-top > *')].map(R).filter((b) => b.w > 0);
+        const mm = R(document.getElementById('minimap'));
+        return {
+          text: o.textContent.trim(),
+          shown: !o.classList.contains('hidden') && getComputedStyle(o).display !== 'none',
+          box: { x: Math.round(box.l), y: Math.round(box.t), w: Math.round(box.w), h: Math.round(box.h) },
+          fits: o.scrollHeight <= o.clientHeight + 1 && o.scrollWidth <= o.clientWidth + 1,
+          scroll: [o.scrollWidth, o.scrollHeight, o.clientWidth, o.clientHeight],
+          inView: box.l >= -0.5 && box.t >= -0.5 && box.r <= innerWidth + 0.5 && box.b <= innerHeight + 0.5,
+          hintLines: hb ? Math.round(hb.h) : 0,
+          onHint: hb ? Math.round(ov(box, hb)) : 0,
+          onTop: Math.round(cards.reduce((n, c) => n + ov(box, c), 0)),
+          onMap: Math.round(ov(box, mm)),
+        };
+      });
+      const ok = r.shown && /^Galleons:/.test(r.text) && r.fits && r.box.h >= 20 && r.box.w >= 140 && r.inView && r.hintLines > 0 && r.onHint === 0 && r.onTop === 0 && r.onMap === 0;
+      let strip = null;
+      if (w === 568) {
+        // a boarding: the strip shows where the pill was; the pill steps aside
+        strip = await page.evaluate(async () => {
+          const G = window.__game;
+          const p = G.player;
+          const e = G.spawn('privateer', p.x - Math.cos(p.h) * 8.5, p.z + Math.sin(p.h) * 8.5, p.h);
+          e.speed = 0;
+          e.rise = 0;
+          G.damage(e, 48);
+          G.state.mode = 'playing';
+          const g = G.grapple().ok;
+          for (let k = 0; k < 120 && G.boarding.phase !== 'reel'; k++) G.step(1 / 120);
+          G.state.mode = 'paused';
+          window.dispatchEvent(new Event('resize'));
+          await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+          const s = document.getElementById('boarding-strip');
+          const o = document.getElementById('objective');
+          const a = s.getBoundingClientRect();
+          const b = o.getBoundingClientRect();
+          const shownObj = !o.classList.contains('hidden') && getComputedStyle(o).display !== 'none' && b.width > 0;
+          const over = shownObj ? Math.max(0, Math.min(a.right, b.right) - Math.max(a.left, b.left)) * Math.max(0, Math.min(a.bottom, b.bottom) - Math.max(a.top, b.top)) : 0;
+          return { g, phase: G.boarding.phase, strip: !s.classList.contains('hidden'), objective: shownObj, over: Math.round(over) };
+        });
+      }
+      check(ok && (!strip || (strip.g && strip.strip && strip.over === 0)),
+        `Act II goal pill ${w}x${h} touch: "${r.text}" is a whole pill (${r.box.w}x${r.box.h} at ${r.box.x},${r.box.y}; text inside: ${r.fits}), on screen and clear of a ${r.hintLines}px two-line tip, the top HUD and the minimap${strip ? ', and out of the boarding strip\'s way' : ''} (${J({ ...r, strip })})`);
+      await ctx.close();
+    }
+
+    // UX-3: on short touch screens the HIT mark with its sticker row clears the Ammo / Board pills (a point-blank
+    // starboard broadside) and the Sail pills (a stern rake with a crit to port).
+    for (const [w, h] of [[568, 320], [640, 360]]) {
+      const { ctx, page } = await openWith({ viewport: { width: w, height: h }, hasTouch: true, isMobile: true, store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+      const out = [];
+      for (const [side, lat, turn, crit] of [[1, 11, 0, 'none'], [-1, -9, Math.PI / 2, 'mast']]) {
+        await level(page, 1);
+        const r = await page.evaluate(([side, lat, turn, crit]) => {
+          const G = window.__game;
+          const p = G.player;
+          const e = G.spawn('privateer', p.x - Math.cos(p.h) * lat, p.z + Math.sin(p.h) * lat, p.h + turn);
+          e.speed = 0;
+          e.rise = 0;
+          e.reload.port = e.reload.star = 99;
+          const hm = document.getElementById('hitmark');
+          hm.classList.remove('popped');
+          G.state.mode = 'playing';
+          G.combat.forceCrit(crit);
+          p.reload.port = p.reload.star = 0;
+          // (the aim spread seeded: the same volley every run)
+          const random = Math.random;
+          let seed = 7;
+          Math.random = () => {
+            seed = (seed + 0x6d2b79f5) | 0;
+            let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+            t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+            return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+          };
+          let fired = false;
+          try {
+            fired = G.playerFire(side);
+            for (let k = 0; k < 600 && !hm.classList.contains('popped'); k++) G.step(1 / 120);
+          } finally {
+            Math.random = random;
+          }
+          G.combat.forceCrit(null);
+          G.state.mode = 'paused';
+          // the mark 0.3 s into its animation (fully shown)
+          document.getAnimations().filter((a) => a.effect && a.effect.target === hm).forEach((a) => { a.pause(); a.currentTime = 300; });
+          const R = (el) => { const b = el.getBoundingClientRect(); return { l: b.left, t: b.top, r: b.right, b: b.bottom }; };
+          const ov = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+          const box = R(hm);
+          const tags = [...hm.querySelectorAll('.hm-tag')].map((t) => t.textContent.trim());
+          const covered = [...document.querySelectorAll('#touch .pad, #touch button, #minimap')]
+            .filter((el) => el.getClientRects().length && getComputedStyle(el).visibility !== 'hidden')
+            .map((el) => ({ el: el.id || el.className, a: Math.round(ov(box, R(el))) }))
+            .filter((x) => x.a > 0);
+          const inView = box.l >= -0.5 && box.t >= -0.5 && box.r <= innerWidth + 0.5 && box.b <= innerHeight + 0.5;
+          document.getAnimations().filter((a) => a.effect && a.effect.target === hm).forEach((a) => a.finish());
+          G.capture.escape(e);
+          return { side: side > 0 ? 'right' : 'left', fired, text: hm.textContent, tags, box: Object.values(box).map(Math.round), inView, covered };
+        }, [side, lat, turn, crit]);
+        out.push(r);
+      }
+      check(out.every((r) => r.fired && r.tags.length >= 1 && r.inView && r.covered.length === 0) && out[0].tags.includes('POINT BLANK') && out[1].tags.includes('CRIT!'),
+        `HIT mark ${w}x${h} touch: with its stickers (${out.map((r) => `${r.side}: ${r.tags.join(', ')}`).join('; ')}) it clears the Ammo / Board and Sail pills and the minimap (${J(out)})`);
+      await ctx.close();
+    }
+  }
 })().catch((e) => {
   console.error(e);
   process.exit(1);

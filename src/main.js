@@ -29,7 +29,7 @@ import {
   plunderGold,
 } from './combat.js';
 import { parseArmoryConfig, serializeArmoryConfig, armoryStats, armoryNextCost } from './armory.js';
-import { parseLook, serializeLook, sanitizeLook, parseFeats, serializeFeats, captainOpts, crewOpts, enemyCrewOpts } from './cosmetics.js';
+import { parseLook, serializeLook, sanitizeLook, parseFeats, serializeFeats, FEAT_IDS, captainOpts, crewOpts, enemyCrewOpts } from './cosmetics.js';
 import { createTags } from './tags.js';
 import { createPops } from './pops.js';
 import { createOverboard } from './overboard.js';
@@ -168,6 +168,7 @@ const ui = {
   leavePrompt: $('leave-prompt'),
   leaveQ: $('leave-q'),
   leaveWhy: $('leave-why'),
+  leaveNo: $('leave-no-btn'),
   levelDone: $('level-screen'),
   levelTitle: $('level-title'),
   levelSummary: $('level-summary'),
@@ -346,9 +347,45 @@ function saveRecord(key, serialize, value) {
   }
 }
 // Feats counted in battle (rakes, crits, captures...) are saved at the end of a level, on pause, when the
-// page is hidden and when leaving to the menu or the dock (not on every shot).
+// page is hidden and when leaving to the menu or the dock (not on every shot). Another tab may have saved
+// its own counts since: this tab's new counts go on top of those (syncFeats), never over them.
 function saveFeats() {
-  if (featsDirty && saveRecord(FEATS_KEY, serializeFeats, feats)) featsDirty = false;
+  if (!featsDirty) return;
+  syncFeats();
+  if (saveRecord(FEATS_KEY, serializeFeats, feats)) {
+    featsSaved = parseFeats(feats);
+    featsDirty = false;
+  }
+}
+// The saved feats changed in another tab since this one last read or wrote them: take them, plus what this
+// tab has counted and not saved yet (its feats minus what was saved when it last read or wrote them).
+function syncFeats() {
+  const raw = readRaw(FEATS_KEY);
+  if (raw === null) return false;
+  const saved = parseFeats(raw);
+  if (serializeFeats(saved) === serializeFeats(featsSaved)) return false;
+  const next = parseFeats(saved);
+  const more = (a, b) => Math.max(0, (Number(a) || 0) - (Number(b) || 0));
+  for (const id of FEAT_IDS) next[id] = (next[id] || 0) + more(feats[id], featsSaved[id]);
+  const mine = feats.prizes || {};
+  const base = featsSaved.prizes || {};
+  next.prizes = { ...(next.prizes || {}) };
+  for (const type of Object.keys(mine)) {
+    const n = more(mine[type], base[type]);
+    if (n) next.prizes[type] = (next.prizes[type] || 0) + n;
+  }
+  feats = parseFeats(next); // (validated: legend stays 0 or 1, every counter in range)
+  featsSaved = saved;
+  return true;
+}
+// The tavern's record changed in another tab: take it (a purchase there must not be undone here).
+function syncArmory() {
+  const raw = readRaw(ARMORY_KEY);
+  if (raw === null || raw === serializeArmoryConfig(armoryCfg)) return false;
+  const next = parseArmoryConfig(raw);
+  if (serializeArmoryConfig(next) === serializeArmoryConfig(armoryCfg)) return false;
+  armoryCfg = next;
+  return true;
 }
 
 // Another tab of the game may have banked gold or changed the ship since this one last read or
@@ -483,6 +520,7 @@ function resize() {
   pausedDrawn = false;
   menuLayout = null;
   dockLayout = null;
+  topInset = 0; // the HUD's top row is measured again (hudTopInset)
 }
 
 // The game's normal lens for the window (the shipyard view sets its own, see dockFraming()).
@@ -556,6 +594,7 @@ let shipConfig = loadShipConfig(); // upgrades bought and paint chosen at the sh
 // Feats first: a trophy worn in the look must have been earned.
 let feats = loadRecord(FEATS_KEY, parseFeats, serializeFeats);
 let featsDirty = false; // counted this voyage, not saved yet (see saveFeats())
+let featsSaved = parseFeats(feats); // the feats as this tab last read or wrote them (see syncFeats())
 let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
 {
   const clean = sanitizeLook(look, feats);
@@ -621,6 +660,7 @@ const state = {
   lastCaptureAt: -Infinity,
   lastBossCaptured: '',
   waveHorn: null, // { at, pitch }: the reinforcements' horn, waiting for a capture fanfare to end
+  counterBanner: false, // the "Counter-board!" banner is up (it goes when the window closes)
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
 seen[SHIP_KEY] = readRaw(SHIP_KEY);
@@ -738,8 +778,13 @@ function clearParticles() {
 // sailors who go overboard: see tags.js, pops.js and overboard.js.
 // ---------------------------------------------------------------------------
 const tags = createTags(scene);
-// (reducedMotion is declared further down: the lambda reads it when a pop appears.)
-const pops = createPops(ui.pops, camera, { reducedMotion: () => reducedMotion() });
+// (reducedMotion is declared further down: the lambda reads it when a pop appears.) Pops keep clear of the
+// HIT ×N / SUNK! mark (hitmarkRects) and stay below the top HUD row (hudTopInset).
+const pops = createPops(ui.pops, camera, {
+  reducedMotion: () => reducedMotion(),
+  avoid: () => hitmarkRects(),
+  insetTop: () => hudTopInset(),
+});
 const overboardCtx = {
   foam,
   sfx: (name, x, z) => audio.play(name, sfxAt(x, z)),
@@ -1142,6 +1187,8 @@ function startLevel(n, { retry = false } = {}) {
   state.lastCaptureAt = -Infinity;
   state.lastBossCaptured = '';
   state.waveHorn = null;
+  state.counterBanner = false;
+  topInset = 0; // (the HUD's top row is measured again once it shows)
   state.hitStop.left = 0;
   state.flash = { text: '', until: 0 };
   state.tip = { text: '', until: 0 };
@@ -1161,7 +1208,8 @@ function startLevel(n, { retry = false } = {}) {
     env: () => env,
     player: () => player,
     enemies,
-    fighting,
+    // (a ship the boarding holds, reel to result, is not running anywhere: a galleon can't escape mid-brawl)
+    fighting: (e) => fighting(e) && !boarding.suspends(e),
     relative,
     damage,
     escape: escapeShip,
@@ -1512,13 +1560,14 @@ boarding.onResult((r) => {
       state.hurtBy[e.typeName] = (state.hurtBy[e.typeName] || 0) + r.playerHullDmg;
       retrigger(ui.hullCard, 'hurt');
     }
-    state.crew = clamp(r.playerCrewLeft, 1, state.crewMax);
+    // (the loss, not the crew left: hands that came aboard with reinforcements during the fight stay)
+    state.crew = clamp(state.crew - r.playerCrewLost, 1, state.crewMax);
     e.killed += r.result.attLoss;
   } else {
     e.hp = Math.max(1, e.hp - r.enemyHullDmg);
     e.hpLow = Math.min(e.hpLow, e.hp);
     e.killed = Math.max(0, crewOf({ ...e, killed: 0 }) - r.enemyCrewLeft);
-    state.crew = clamp(r.playerCrewLeft, 1, state.crewMax);
+    state.crew = clamp(state.crew - r.playerCrewLost, 1, state.crewMax);
   }
   if (r.captured) {
     // boarding.js shows the CAPTURED! pop and the shower of gold
@@ -1555,8 +1604,10 @@ boarding.onPhase((ev) => {
   } else if (ev.phase === 'threat') {
     const touch = isTouch();
     showBanner(`Boarders!<small>${touch ? 'Tap <b>CUT!</b> 3 times or hold it' : 'Cut the ropes: <kbd>G</kbd> 3 times or hold it'}</small>`, RAIDERS.threat);
-    showTip(TIP.raiders, 'Boarders! Press <kbd>G</kbd> 3 times (or hold it) to cut the ropes', 'Tap <b>CUT!</b> 3 times or hold it', RAIDERS.threat + 1);
-    gameAnnounce(`Boarders! ${theName(e.type.name)} is grappling you. Cut the ropes: press G three times or hold it.`);
+    // (The first time, the tip in the hint bubble, a live region too, says it: not read twice.)
+    if (!showTip(TIP.raiders, 'Boarders! Press <kbd>G</kbd> 3 times (or hold it) to cut the ropes', 'Tap <b>CUT!</b> 3 times or hold it', RAIDERS.threat + 1)) {
+      gameAnnounce(`Boarders! ${theName(e.type.name)} is grappling you. Cut the ropes: ${touch ? 'tap Cut three times or hold it' : 'press G three times or hold it'}.`);
+    }
   } else if (ev.phase === 'brawl') {
     feats.boardings++;
     featsDirty = true;
@@ -1570,13 +1621,19 @@ boarding.onCut(() => {
 boarding.onEnd((ev) => {
   state.boardCooldown = BOARD.cooldown;
   if (state.tip.bit === TIP.raiders) state.tip.until = 0;
+  // Shots that thinned her crew while she was being boarded were not checked then (the boarding decided):
+  // a boarding that ends in play without taking her checks now whether she strikes. (Not when it is called
+  // off because the level ends or your ship goes down.)
+  if (ev.enemy && (ev.reason === 'done' || ev.reason === 'broke' || ev.reason === 'cut')) checkSurrender(ev.enemy);
   if (ev.reason === 'broke' && ev.kind !== 'defend') gameAnnounce('She broke free!');
-  // A held defence: her lines are still on for a moment. Board her back!
-  if (ev.reason === 'done' && ev.counterTarget && state.clearTimer <= 0) {
+  // A held defence: her lines are still on for a moment. Board her back! (Not if she has just struck.)
+  if (ev.reason === 'done' && ev.counterTarget && boarding.counterTarget === ev.counterTarget && state.clearTimer <= 0) {
     const touch = isTouch();
     showBanner(`Counter-board!<small>${touch ? 'Tap <b>Again!</b> to board them back' : 'Press <kbd>G</kbd> to board them back'}</small>`, RAIDERS.counterWindow);
-    showTip(TIP.counter, 'Counter-board! Press <kbd>G</kbd>', 'Tap <b>Again!</b> to board them back', RAIDERS.counterWindow);
-    gameAnnounce(`Counter-board! ${touch ? 'Tap Again' : 'Press G'} to board them back.`);
+    state.counterBanner = true;
+    if (!showTip(TIP.counter, 'Counter-board! Press <kbd>G</kbd>', 'Tap <b>Again!</b> to board them back', RAIDERS.counterWindow)) {
+      gameAnnounce(`Counter-board! ${touch ? 'Tap Again' : 'Press G'} to board them back.`);
+    }
   }
 });
 
@@ -1595,20 +1652,21 @@ function checkSurrender(ship) {
   }
   overboard.showSurrender(ship, [enemyCrewOpts(ship.typeName, 1), enemyCrewOpts(ship.typeName, 2)]);
   const name = theName(ship.type.name);
-  const touch = isTouch();
+  // (A struck ship in reach is the one the Board button takes: it reads "Take!" then.)
+  const tipped = showTip(
+    TIP.surrender,
+    'She struck her colours! Grapple her to take her: <kbd>G</kbd>',
+    canGrapple(ship) === null ? 'She struck her colours! Tap <b>Take!</b> to take her' : 'She struck her colours! Sail close, then tap <b>Take!</b>'
+  );
   if (ship.type.ghost) {
     audio.play('ghost', sfxAt(ship.x, ship.z));
     showBanner(`The ghost crew is banished!<small>Take ${name.replace(/^The /, 'the ')} for ${captureGold(ship.type.gold)} gold</small>`, 2.8);
     gameAnnounce('The ghost crew is banished! Grapple the Phantom Galleon to take her.');
   } else {
     showBanner(`${name} strikes her colours!<small>Take her for ${captureGold(ship.type.gold)} gold</small>`, 2.2);
-    gameAnnounce(`${name} strikes her colours. Grapple her to take her.`);
+    // (The first time, the tip in the hint bubble, a live region too, says it: not read twice.)
+    if (!tipped) gameAnnounce(`${name} strikes her colours. Grapple her to take her.`);
   }
-  showTip(
-    TIP.surrender,
-    'She struck her colours! Grapple her to take her: <kbd>G</kbd>',
-    touch ? 'She struck her colours! Tap <b>Board</b> to take her' : undefined
-  );
   return true;
 }
 
@@ -1619,6 +1677,10 @@ function captureShip(e, how = 'boarded', gold = captureGold(e.type.gold)) {
   e.captured = true;
   e.surrendered = false;
   e.spectral = false;
+  // The prize crew puts out a burning powder keg: nothing hurts a ship under your flag (she can't sink).
+  e.burnTicks = 0;
+  e.burnAcc = 0;
+  e.effects.burn = 0;
   overboard.clearSurrender(e);
   try {
     hoistFlag(e.mesh, 'player', LOOKS.flag.find((l) => l.id === shipConfig.look.flag) || null);
@@ -1865,16 +1927,10 @@ const STICKERS = [
   [/^POINT BLANK/, 'blank'],
   [/^CAPTURED/, 'captured'],
 ];
-// A player volley finished: the summed damage (and crew lost) pops over each ship it hit, and HIT!/SUNK!
-// flashes on the side it was fired from with what the volley did ("RAKE ×2", "CRIT!", "POINT BLANK").
-function volleyDone(v) {
-  for (const T of (v.targets || new Map()).values()) {
-    if (T.dmg > 0) pops.pop(String(Math.round(T.dmg)), T.x, T.y, T.z, 'dmg');
-    if (T.crew > 0) pops.pop(`−${T.crew} CREW`, T.x, T.y, T.z, 'crew');
-  }
-  if (!v.hits) return;
-  ui.hitmark.textContent = v.sunk ? 'SUNK!' : v.hits > 1 ? `HIT ×${v.hits}` : 'HIT!';
-  const labels = [...(v.tags || [])].sort(
+// The HIT ×N / SUNK! mark: its text and stickers, on the side the volley was fired from.
+function fillHitmark(text, tags, side, sunk) {
+  ui.hitmark.textContent = text;
+  const labels = [...(tags || [])].sort(
     (a, b) => STICKERS.findIndex(([re]) => re.test(a)) - STICKERS.findIndex(([re]) => re.test(b))
   );
   if (labels.length) {
@@ -1889,8 +1945,56 @@ function volleyDone(v) {
     }
     ui.hitmark.appendChild(box);
   }
-  ui.hitmark.className = `hitmark ${v.side > 0 ? 'right' : 'left'}${v.sunk ? ' sunk' : ''}`;
-  retrigger(ui.hitmark, 'popped');
+  ui.hitmark.className = `hitmark ${side > 0 ? 'right' : 'left'}${sunk ? ' sunk' : ''}`;
+}
+// Where the mark is (or is about to be), for the pops to keep clear of: until (performance.now() ms).
+const hitmarkState = { until: -Infinity };
+// A volley's first ball hits: its pops (RAKE, CRIT!, POINT BLANK...) come now, the mark only when the volley
+// is done. Unless a mark is still showing, set it up now, unseen, where it will pop ("HIT ×n" for the balls
+// still flying, the stickers this ball earns), so those pops are placed clear of it too.
+function primeHitmark(v, tags) {
+  const now = performance.now();
+  if (now < hitmarkState.until) return;
+  fillHitmark(`HIT ×${Math.max(1, v.left)}`, tags, v.side, false); // (no 'popped': it stays invisible)
+  hitmarkState.until = now + 1500; // the volley pops it well before (or a level change drops it)
+}
+// The mark's box on screen, in CSS pixels, while it shows (or is primed): its layout box (offsetLeft/Top:
+// a fixed element's place in the viewport, which its pop-in transform doesn't move; pops.js counts the box
+// 10% bigger for that pop-in), taller by the rise it makes while it is still clearly visible (the
+// `hitmark` keyframes). pops.js keeps pops off it (`avoid`).
+function hitmarkRects() {
+  if (performance.now() >= hitmarkState.until || typeof DOMRect !== 'function') return [];
+  const el = ui.hitmark;
+  const w = el.offsetWidth;
+  const h = el.offsetHeight;
+  if (!w || !h) return [];
+  const rise = 12;
+  return [new DOMRect(el.offsetLeft, el.offsetTop - rise, w, h + rise)];
+}
+// The bottom of the top HUD row (hull, pirates, gold, buttons) in CSS pixels: pops stay below it
+// (pops.js `insetTop`). Measured once per layout (resize() forgets it), only while the HUD shows.
+let topInset = 0;
+function hudTopInset() {
+  if (!topInset) {
+    const row = ui.hud.querySelector?.('.hud-top');
+    const r = row ? row.getBoundingClientRect() : null;
+    if (r && r.height > 0) topInset = Math.ceil(r.bottom) + 4; // (+ the cards' drop shadow)
+  }
+  return topInset;
+}
+// A player volley finished: HIT!/SUNK! flashes on the side it was fired from with what the volley did
+// ("RAKE ×2", "CRIT!", "POINT BLANK"), then the summed damage (and crew lost) pops over each ship it hit,
+// placed clear of that mark.
+function volleyDone(v) {
+  if (v.hits) {
+    fillHitmark(v.sunk ? 'SUNK!' : v.hits > 1 ? `HIT ×${v.hits}` : 'HIT!', v.tags, v.side, v.sunk);
+    retrigger(ui.hitmark, 'popped');
+    hitmarkState.until = performance.now() + 700; // (the hitmark animation's length, style.css)
+  }
+  for (const T of (v.targets || new Map()).values()) {
+    if (T.dmg > 0) pops.pop(String(Math.round(T.dmg)), T.x, T.y, T.z, 'dmg');
+    if (T.crew > 0) pops.pop(`−${T.crew} CREW`, T.x, T.y, T.z, 'crew');
+  }
 }
 
 // The volley's running total on one target (pops and stickers are summed per volley, SPEC2 §2.5).
@@ -2156,6 +2260,9 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
     audio.play('hit', sfxAt(hx, hz));
   }
   if (info) hullHit(ship, hx, hz, amt, info, effect);
+  // Hull damage thins her crew too (SPEC2 §3.1): at the notch she strikes at once, whatever hurt her
+  // (a keg burning, a floe, lava; checkSurrender skips a ship being boarded and one going down).
+  if (ship.kind === 'enemy') checkSurrender(ship);
   if (ship.kind === 'player') {
     state.hurtBy[source] = (state.hurtBy[source] || 0) + amt;
     state.lastHit = state.time;
@@ -2423,8 +2530,9 @@ function updateEnemy(e, dt, attacking) {
     } else if (r.dist > t.engage + 8) {
       desired = toPlayer;
       targetSpeed = t.maxSpeed;
-    } else if (t.boarder && e.boardCooldown > RAID_SHEER) {
+    } else if (t.boarder && e.boardCooldown > RAID_SHEER && boarding.counterTarget !== e) {
       // A raider whose ropes were just cut (or who was beaten off) sheers away and circles wide for a while.
+      // (Not while her lines are still on you in the counter-board window: she holds alongside for it.)
       const a1 = wrapAngle(toPlayer + Math.PI / 2);
       const a2 = wrapAngle(toPlayer - Math.PI / 2);
       desired = Math.abs(wrapAngle(a1 - e.h)) < Math.abs(wrapAngle(a2 - e.h)) ? a1 : a2;
@@ -2661,6 +2769,9 @@ function updateBalls(dt) {
     for (const s of targets) {
       if (hitsShip(b, s)) {
         const info = ballHit(b, s);
+        // the volley's first hit: the HIT mark is set up first, so this ball's pops keep clear of it
+        const vol = b.volley ? volleys.get(b.volley) : null;
+        if (vol && !vol.hits) primeHitmark(vol, info.tags);
         damage(s, info.dmg, b.x, b.z, b.src, info);
         logShot(b, s, info);
         // A cannonball into the raider whose hooks are biting cuts her lines (SPEC2 §3.6).
@@ -2740,8 +2851,8 @@ function emitShipFx(s, dt) {
   }
   // Battered (grey wisps from her first hole), wrecked (dark smoke) and a burning powder keg (fire at the bow).
   const frac = s.hp / s.maxHp;
-  // (No smoke from a ship the boarding party is fighting on: it would hide the brawl.)
-  const brawlDeck = boarding.locked && boarding.target === s;
+  // (No smoke from the ship being boarded, from the hooks on: it would drift over the swing and the brawl.)
+  const brawlDeck = boarding.active && boarding.target === s;
   const smoke = brawlDeck ? 0 : frac < STATES.wrecked ? 5 : frac < STATES.battered ? 3 : 0;
   const burning = s.burnTicks > 0;
   if (smoke || burning) {
@@ -2886,7 +2997,7 @@ function newAmmoTip() {
   if (!ok) return;
   const touch = isTouch();
   showBanner(`New ammo: ${AMMO_NAMES[id]} shot!<small>${touch ? 'Tap Ammo' : `Press <kbd>${key}</kbd>`}</small>`, 2.6);
-  gameAnnounce(`New ammo: ${AMMO_NAMES[id].toLowerCase()} shot. ${touch ? 'Tap Ammo to load it.' : `Press ${key} to load it.`}`);
+  // (Screen readers hear the tip: the hint bubble is a live region. Not read twice in other words.)
 }
 
 // A short message in the hint bubble (why that key did nothing), for `seconds` of play.
@@ -2928,6 +3039,13 @@ function step(dt) {
   for (const e of enemies) updateEnemy(e, dt, attackers.has(e));
   // The boarding set-piece (simulated time): phases, the reel, the glued pair (it moves those two ships).
   boarding.step(dt);
+  // The counter-board window has closed (or a counter-board started, or she sank or struck): its banner and
+  // tip go with it, so "Press G" never shows when G can't board her back.
+  if (state.counterBanner && !boarding.counterTarget) {
+    state.counterBanner = false;
+    if (state.bannerTimer > 0.3 && /^Counter-board!/.test(ui.banner.textContent)) state.bannerTimer = 0.3;
+    if (state.tip.bit === TIP.counter) state.tip.until = 0;
+  }
   if (player) moveShip(player, dt);
   for (const e of enemies) moveShip(e, dt);
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
@@ -3184,10 +3302,23 @@ function askLeave(to) {
   pauseUi.step = 'confirm';
   pauseUi.to = to;
   pauseUi.askedAt = performance.now();
+  ui.leaveWhy.textContent = '';
+  // "Level cleared!" is counting down: the level is won, and leaving banks it (see leaveBattle).
+  const won = state.clearTimer > 0;
+  ui.leaveNo.textContent = won ? 'Stay' : 'Keep fighting';
+  if (won) {
+    ui.leaveQ.textContent = to === 'dock' ? 'Level cleared! On to the shipyard?' : 'Level cleared! Back to the main menu?';
+    const b = document.createElement('b');
+    b.textContent = `${levelWinnings()} gold`;
+    ui.leaveWhy.append('This level is won: its ', b, ' of plunder and bonuses goes into your treasure chest', state.level < LEVELS.length ? ' and the next level opens.' : '.');
+    show(ui.pauseConfirm, true);
+    show(ui.pauseChoices, false);
+    ui.leavePrompt.focus({ preventScroll: true });
+    return;
+  }
   ui.leaveQ.textContent = to === 'dock' ? 'Leave the battle for the shipyard?' : 'Leave the battle for the main menu?';
   // "The 120 gold plundered in this level won't be banked." (it goes as it does in a shipwreck)
   const lost = Math.max(0, Math.round(state.gold - state.goldAtLevelStart));
-  ui.leaveWhy.textContent = '';
   if (lost > 0) {
     const b = document.createElement('b');
     b.textContent = `${lost} gold`;
@@ -3219,15 +3350,40 @@ function cancelLeave() {
 // (openDockSoon); `now` opens it at once.
 function leaveBattle(to, now = false) {
   if (state.mode !== 'paused' && state.mode !== 'playing') return false;
+  if (to !== 'dock' && to !== 'menu') return false;
+  // "Level cleared!" is counting down: the level is won. It is finished first, as when the countdown ends
+  // (plunder, loot afloat and bonuses banked, the next level opened), and left as from the level-cleared
+  // screen: the shipyard with its ways on (sail on, or the title), or the title.
+  if (state.clearTimer > 0) {
+    state.clearTimer = 0;
+    finishLevel(); // mode 'levelDone' ('won' after a finale), that screen up behind the pause dialog
+    if (to === 'menu') {
+      exitVoyage();
+      titleShown();
+      return true;
+    }
+    show(ui.levelDone, false); // the shipyard takes its place
+    show(ui.won, false);
+    if (now) return openDock('levelDone');
+    openDockSoon('levelDone');
+    return true;
+  }
   if (to === 'dock') {
     if (now) return openDock('quit');
     openDockSoon('quit');
     return true;
   }
-  if (to !== 'menu') return false;
   abandonLevel();
   showMenu();
+  titleShown();
   return true;
+}
+// What finishing this level banks (finishLevel): the plunder so far, the loot still afloat and the bonuses.
+function levelWinnings() {
+  const def = LEVELS[state.level - 1];
+  const mech = Math.max(0, Math.round(Number(mechanics.bonus()) || 0));
+  const loot = state.gold - state.goldAtLevelStart + coins.length * COIN_VALUE;
+  return Math.max(0, Math.round(loot + def.bonus + state.captures * CAPTURE.prizeBonus + mech));
 }
 // This level's unbanked plunder is dropped exactly as in a shipwreck: the voyage's gold goes back to what it
 // was when the level started (a retry starts from there), the treasure chest is untouched (nothing of this
@@ -3291,7 +3447,9 @@ function onContextRestored() {
     focusInto(ui.recover);
   } else {
     closeModal(ui.recover);
-    if (recovery.pauseWasOpen) openPause(); // it was paused before: stay paused (back at the choices)
+    // It was paused before: stay paused (back at the choices). Not if Leave has taken the game to the shipyard
+    // or the title meanwhile: there is no battle to pause any more.
+    if (recovery.pauseWasOpen && state.mode === 'paused') openPause();
     else if (state.mode === 'dock') {
       // back to the shipyard panel, where the player was if that control is still there
       const f = recovery.focus;
@@ -3578,7 +3736,9 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   btn.addEventListener('lostpointercapture', release);
 }
 
-$('start-btn').addEventListener('click', () => newGame(1));
+$('start-btn').addEventListener('click', (e) => {
+  if (!titleClickTooSoon(e)) newGame(1);
+});
 $('resume-btn').addEventListener('click', togglePause);
 // Leave this battle (pause dialog): ask first, then go.
 ui.quitDock.addEventListener('click', () => askLeave('dock'));
@@ -3587,9 +3747,18 @@ $('leave-yes-btn').addEventListener('click', confirmLeave);
 $('leave-no-btn').addEventListener('click', cancelLeave);
 $('next-btn').addEventListener('click', nextLevel);
 $('retry-btn').addEventListener('click', retryLevel);
-$('menu-btn').addEventListener('click', showMenu);
-$('again-btn').addEventListener('click', showMenu);
-$('exit-btn').addEventListener('click', exitVoyage);
+$('menu-btn').addEventListener('click', () => {
+  showMenu();
+  titleShown();
+});
+$('again-btn').addEventListener('click', () => {
+  showMenu();
+  titleShown();
+});
+$('exit-btn').addEventListener('click', () => {
+  exitVoyage();
+  titleShown();
+});
 $('dock-btn').addEventListener('click', () => openDockSoon('levelDone'));
 $('over-dock-btn').addEventListener('click', () => openDockSoon('over'));
 $('won-dock-btn').addEventListener('click', () => openDockSoon('won'));
@@ -3605,10 +3774,13 @@ for (const btn of [$('pause-btn'), ui.muteBtn, ui.menuMute]) {
 // The shipyard's sound button keeps focus (the dock leaves Space and Enter to the focused button).
 ui.dockMute.addEventListener('click', toggleMute);
 
-// The chest or the ship changed in another tab of the game: show it here too.
+// The chest, the ship, the tavern record or the feats changed in another tab of the game: show it here too.
 window.addEventListener('storage', (e) => {
-  if (e.key !== null && e.key !== PURSE_KEY && e.key !== SHIP_KEY) return;
-  if (!syncSaved()) return;
+  const any = e.key === null; // (storage cleared)
+  if (any || e.key === FEATS_KEY) syncFeats(); // counted there: added to what this tab counted
+  const armory = (any || e.key === ARMORY_KEY) && syncArmory(); // bought at the tavern there
+  const chest = (any || e.key === PURSE_KEY || e.key === SHIP_KEY) && syncSaved();
+  if (!armory && !chest) return;
   if (state.mode === 'dock') {
     rebuildDockShip();
     renderDock();
@@ -3617,6 +3789,24 @@ window.addEventListener('storage', (e) => {
     menuShip();
   }
 });
+
+// A button that leads to the title (Leave, Main menu) may be double-clicked or double-tapped: its second
+// click lands on whatever the title has there (Set sail! or a level card) and must not start a voyage.
+// A pointer click on those counts only when it was made (its timeStamp: when the press happened, however
+// long a slow device took to build the title and handle it) at least half a second after a button brought
+// the title up; a double-click's second click never counts. Keyboard and assistive-technology clicks
+// (detail 0) always act.
+let titleShownAt = -Infinity;
+function titleShown() {
+  if (state.mode === 'menu') titleShownAt = performance.now();
+}
+function titleClickTooSoon(e) {
+  if (!e || !(e.detail > 0)) return false;
+  if (e.detail > 1) return true;
+  const now = performance.now();
+  const at = Number.isFinite(e.timeStamp) && e.timeStamp > 0 && e.timeStamp <= now + 1000 ? e.timeStamp : now;
+  return at - titleShownAt < 500;
+}
 
 // Level select cards on the title screen.
 function renderLevelCards() {
@@ -3635,7 +3825,9 @@ function renderLevelCards() {
       `<span class="lvl-name">${def.env.meta.name}</span>` +
       `<span class="lvl-diff" title="Difficulty" aria-label="Difficulty: ${def.difficulty}">${def.difficulty}</span>` +
       `<span class="lvl-lock">${locked ? 'Locked' : 'Play'}</span>`;
-    btn.addEventListener('click', () => newGame(n));
+    btn.addEventListener('click', (e) => {
+      if (!titleClickTooSoon(e)) newGame(n);
+    });
     ui.levelCards.appendChild(btn);
   });
 }
@@ -3993,9 +4185,15 @@ function buyUpgrade(id) {
 // upgrade's record is saved first and the chest only after it: if storage refuses the record, nothing is
 // bought (no gold is ever spent on an upgrade that would be lost). (The tavern panel comes with the town.)
 function buyArmory(id) {
+  // Another tab may have banked gold or bought at the tavern: start from what is saved (see syncArmory).
+  const synced = syncSaved();
+  const armoryChanged = syncArmory();
+  if ((synced || armoryChanged) && state.mode === 'dock') {
+    rebuildDockShip();
+    renderDock();
+  }
   const cost = armoryNextCost(armoryCfg, id);
   if (cost === null) return false;
-  syncSaved();
   if (state.purse < cost) return false;
   const next = parseArmoryConfig(armoryCfg);
   next.up[id] += 1;
@@ -4143,7 +4341,9 @@ function buildDockPanel() {
   }
   ui.dockExits.addEventListener('click', (e) => {
     const b = e.target instanceof Element && e.target.closest('[data-exit]');
-    if (b) leaveDock(b.dataset.exit);
+    if (!b) return;
+    leaveDock(b.dataset.exit);
+    titleShown(); // (back at the title: see titleClickTooSoon)
   });
 }
 
@@ -4584,7 +4784,9 @@ function boardButtonState() {
   const ct = boarding.counterTarget;
   if (ct) {
     const o = boardOdds(ct, 'counter');
-    return { key: `again${o.label}${o.attLoss}`, state: 'again', tag: 'AGAIN!', word: 'Again!', aria: `Counter-board ${theNameLower(ct.type.name)}: ${oddsWords(o)}`, disabled: false };
+    // (the icon and colour of the odds, as for any boarding: a green tick, gold cutlasses or a red "!")
+    const odds = BOARD_ICONS[o.label] && o.label !== 'take' ? o.label : 'fight';
+    return { key: `again${o.label}${o.attLoss}`, state: odds, tag: `AGAIN! −${o.attLoss}`, word: 'Again!', aria: `Counter-board ${theNameLower(ct.type.name)}: ${oddsWords(o)}`, disabled: false };
   }
   const pick = boardView || boardPick();
   if (pick.target) {
@@ -4656,7 +4858,7 @@ function updateBoardHud(force, dt) {
   }
   // First boardable ship in reach: a one-time tip.
   if (boardView && boardView.target && state.intro <= 0 && !(tips & TIP.board)) {
-    showTip(TIP.board, 'Close enough to board! Press <kbd>G</kbd>', 'Tap <b>&#9875; Board</b> to board her!');
+    showTip(TIP.board, 'Close enough to board! Press <kbd>G</kbd>', `Close enough to board! Tap <b>${BOARD_WORD[boardView.label] || 'Board'}</b>`);
   }
 
   // The boarding strip (not in 'result': the outcome pops over the decks then).
@@ -5408,8 +5610,9 @@ window.__game = {
   // Validated and saved; a worn trophy the new feats have not earned goes back to its default.
   setFeats(f) {
     feats = parseFeats(f);
-    featsDirty = true;
-    saveFeats();
+    // (these feats replace the saved ones, whatever another tab saved: no merging here)
+    featsDirty = !saveRecord(FEATS_KEY, serializeFeats, feats);
+    if (!featsDirty) featsSaved = parseFeats(feats);
     const clean = sanitizeLook(look, feats);
     if (serializeLook(clean) !== serializeLook(look)) {
       look = clean;

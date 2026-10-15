@@ -1845,6 +1845,10 @@ export function createBoarding(ctx = {}) {
       brawl = null;
       pairs = [];
       lazy.length = 0;
+      // let-go ropes expire on boarding's own clock, which only step() advances; outside a battle it
+      // stands still, so they would hang in the shipyard or by the title ship until the next battle
+      letGo.length = 0;
+      swingRopes.length = 0;
       rig.visible = false;
       if (helmHidden) hideHelm(false);
     },

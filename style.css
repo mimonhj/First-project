@@ -846,6 +846,9 @@ kbd {
   .boss { left: 50%; right: auto; transform: translateX(-50%); width: min(340px, calc(100vw - 2 * (var(--mm) + 30px))); }
   .hint-bubble { bottom: 74px; }
   .hitmark { top: max(47%, 180px); } /* below the top-right minimap */
+  /* ...and in from the screen's edges, so its sticker row clears the Ammo / Board and Sail pills below it */
+  .hitmark.right { right: calc(var(--edge) + 136px); }
+  .hitmark.left { left: calc(var(--edge) + 136px); }
 }
 
 /* ---------- Small portrait screens that are both narrow and short (e.g. 320x480, 360x480) ----------
@@ -1545,7 +1548,7 @@ body.docked.dragging #game { cursor: grabbing; }
   .hull.hurt { animation-name: hurt-flash; } /* keep the red flash, drop the shake */
   .hitmark.popped { animation-name: hitmark-fade; }
   .banner.popped { animation: none; }
-  .crew-chip.bump, .gun.ammo.bump, #touch-ammo.bump { animation: none; }
+  .crew-chip.bump, .gun.ammo.bump .ammo-val, #touch-ammo.bump .ammo-ico { animation: none; } /* (the bump runs on the icon / value) */
   .gun.target.ready.rake .fire-tag { animation: none; }
   .dock-panel, .dock-chest.bump { animation: none; }
 }
@@ -1672,6 +1675,7 @@ body.docked.dragging #game { cursor: grabbing; }
   border: 2px solid var(--ink);
   border-radius: 12px;
   box-shadow: 0 3px 0 var(--ink);
+  text-wrap: balance; /* two even lines when it wraps */
   pointer-events: none;
 }
 
@@ -1683,7 +1687,8 @@ body.docked.dragging #game { cursor: grabbing; }
 @media (max-width: 640px) and (hover: none) and (pointer: coarse) {
   /* Left of the top-right minimap, like the boss bar. */
   .boarding-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
-  .objective { top: auto; bottom: calc(222px + 52px); max-width: calc(100vw - 2 * var(--edge)); }
+  /* The goal stays under the hull card, left of the minimap (the hint bubble grows up from the pads). */
+  .objective { max-width: calc(100vw - 2 * var(--edge) - var(--mm) - 20px); }
 }
 @media (max-height: 500px) {
   .boarding-strip { top: calc(var(--edge) + var(--top-h) + 6px); width: min(300px, 46vw); gap: 3px; }
@@ -1692,14 +1697,17 @@ body.docked.dragging #game { cursor: grabbing; }
   .bs-side { font-size: 13px; padding: 1px 6px 0; }
   .bs-tug { height: 12px; }
   .bs-pips i { width: 10px; height: 10px; }
-  .objective { top: calc(var(--edge) + var(--top-h) + 6px); font-size: 12px; max-width: 30vw; }
+  .objective { top: calc(var(--edge) + var(--top-h) + 6px); bottom: auto; font-size: 12px; max-width: 30vw; }
 }
 @media (max-height: 500px) and (hover: none) and (pointer: coarse) {
   .boarding-strip { width: min(300px, calc(100vw - 2 * (var(--mm) + 30px))); }
 }
 @media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
   .boarding-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+  .objective { max-width: calc(100vw - 2 * var(--edge) - var(--mm) - 20px); }
 }
+/* During a boarding the strip has the top of the view (on small screens it sits where the goal does). */
+#hud:has(#boarding-strip:not(.hidden)) .objective { display: none; }
 @media (prefers-reduced-motion: reduce) {
   .gun.board.bump, #touch-board.bump, .gun.board.bump .board-tag, #touch-board.bump .board-ico { animation: none; }
   #touch-board[data-state="cut"] { animation: none; box-shadow: 0 0 0 5px var(--red), 0 4px 0 5px var(--ink); }
