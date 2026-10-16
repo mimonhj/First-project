@@ -8,10 +8,11 @@ a town you walk as the captain, with a wardrobe for you and your crew.
 |---|---|
 | `SPEC2.md` | The final build spec: combat, crew and boarding, tavern upgrades, battle UI, levels, the walkable town, persistence, module APIs, the staged plan (section 10), tests, budgets, accessibility, cut list. Where it and anything else disagree, it wins. |
 | `SHIPYARD-SPEC.md` | The earlier shipyard contract that SPEC2 builds on (still holds unless SPEC2 changes it). |
-| `stage0.js`, `stage1.js`, `stage2.js` | The multi-agent build scripts for each stage. They name files by the paths of the session that wrote them. |
+| `stage0.js` … `stage3.js` | The multi-agent build scripts for each stage. They name files by the paths of the session that wrote them. |
 | `stage1-reports.md` | What Stage 0 and Stage 1 delivered: deviations from SPEC2, open issues, and the hook requests (changes asked of files owned by later stages). |
 | `stage2-reports.md` | The same for Stage 2, including the exact main.js wiring the town needs in Stage 3. |
 | `stage2-fix-reports.md` | The fixes for the 23 problems the Stage 2 review confirmed, and their regression checks. |
+| `stage3-reports.md` | What Stage 3 delivered: Act II balance (bot results), the town wiring and polish, art fixes, the level and town suites, and what is left for Stage 4. |
 
 ## Progress
 
@@ -20,6 +21,5 @@ a town you walk as the captain, with a wardrobe for you and your crew.
   sounds, characters, new ships, the three new seas, the town's walk data): done.
 - Stage 2 (battle wiring, the boarding set-piece, the town controller and panels, battle tests, and the
   player's request to leave a battle from the pause menu): done.
-- Stage 3 (Act II live, the town wired into the game) and Stage 4 (verification, README): to do.
-
-Until Stage 3, Act II is opt-in with `?act2=1` in the address.
+- Stage 3 (Act II live for everyone, the town wired into the shipyard, polish, the level and town suites): done.
+- Stage 4 (review, verification, README): to do.

@@ -4144,6 +4144,8 @@ export function buildShip(typeKey, opts = {}) {
   };
   build(S, T, o);
   mergeStatic(group);
+  // (the player's ship keeps a material per colour: the shipyard repaints it and its tests read them)
+  if (typeKey !== 'player') bakeColours(group);
   const hull = S.hull;
   const top = S.dropSail ? { ...S.dropSail, ranges: null } : rigTarget(S.rigs[0], 0);
   const droop = S.droopSail ? (S.droopSail === S.dropSail ? top : { ...S.droopSail, ranges: null }) : rigTarget(S.rigs[1] || S.rigs[0], -1);
@@ -4203,6 +4205,75 @@ export function buildShip(typeKey, opts = {}) {
     prizeKey: '',
   });
   return group;
+}
+
+// ---------------------------------------------------------------------------
+// Draw calls: an enemy's static parts (after mergeStatic, one mesh per colour) become ONE vertex-coloured
+// mesh per kind of plain toon look (same shading, outline and sides), so a cutter costs about 14 draw calls
+// instead of 40. Only plain opaque toon materials are baked: glowing, see-through, textured or ink-less
+// ones keep their own mesh, and so does everything kept apart for animation (sails, flags, fires).
+// ---------------------------------------------------------------------------
+const bakedMats = new Map(); // look key -> the shared vertex-colour toon material
+function bakeKey(m) {
+  const o = (m.userData && m.userData.outlineParameters) || {};
+  return JSON.stringify([m.gradientMap ? m.gradientMap.uuid : 0, m.side, !!m.flatShading, m.fog, o.visible !== false, o.thickness ?? null, o.color ?? null, o.alpha ?? 1]);
+}
+function bakeable(mesh) {
+  if (!mesh.isMesh || mesh.isInstancedMesh || mesh.isSkinnedMesh || (mesh.userData && mesh.userData.keep)) return false;
+  const m = mesh.material;
+  if (!m || Array.isArray(m) || !m.isMeshToonMaterial || m.vertexColors || m.map || m.transparent || m.alphaTest > 0) return false;
+  if (m.emissive && m.emissive.getHex() !== 0 && m.emissiveIntensity > 0) return false;
+  const g = mesh.geometry;
+  return !!(g && g.index && g.attributes.position && g.attributes.normal && g.attributes.uv && !g.attributes.color && !g.morphAttributes.position);
+}
+function bakeColours(group) {
+  const byKey = new Map();
+  for (const mesh of group.children) {
+    if (!bakeable(mesh)) continue;
+    const k = bakeKey(mesh.material);
+    if (!byKey.has(k)) byKey.set(k, []);
+    byKey.get(k).push(mesh);
+  }
+  for (const [k, list] of byKey) {
+    if (list.length < 2) continue;
+    const geos = [];
+    for (const mesh of list) {
+      mesh.updateMatrix();
+      const src = mesh.geometry;
+      const g = new THREE.BufferGeometry();
+      for (const name of ['position', 'normal', 'uv']) g.setAttribute(name, src.attributes[name].clone());
+      g.setIndex(src.index.clone());
+      const n = g.attributes.position.count;
+      const c = mesh.material.color; // (linear, as vertex colours are)
+      const col = new Float32Array(n * 3);
+      for (let i = 0; i < n; i++) {
+        col[i * 3] = c.r;
+        col[i * 3 + 1] = c.g;
+        col[i * 3 + 2] = c.b;
+      }
+      g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+      g.applyMatrix4(mesh.matrix);
+      geos.push(g);
+    }
+    const merged = mergeGeometries(geos, false);
+    for (const g of geos) g.dispose();
+    if (!merged) continue;
+    let mat = bakedMats.get(k);
+    if (!mat) {
+      const m0 = list[0].material;
+      mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: m0.gradientMap, side: m0.side, flatShading: !!m0.flatShading, fog: m0.fog });
+      mat.userData.outlineParameters = { ...(m0.userData.outlineParameters || {}) };
+      mat.name = 'ship-baked';
+      bakedMats.set(k, mat);
+    }
+    const baked = new THREE.Mesh(merged, mat);
+    baked.name = 'ship-baked';
+    for (const mesh of list) {
+      group.remove(mesh);
+      mesh.geometry.dispose();
+    }
+    group.add(baked);
+  }
 }
 
 /**

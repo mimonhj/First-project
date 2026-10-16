@@ -15,8 +15,10 @@
 //   init(),                       after the env, player and wave 0 exist (startLevel); also registers any
 //                                 enemy already afloat that onSpawn has not seen, as wave 0
 //   onSpawn(e, waveIndex),        after each enemy is created. Only a wave spawn (waveIndex an integer ≥ 0)
-//                                 is moved (galleons to a convoy start, the Phantom beside the eye); a test
-//                                 spawn (G.spawn: waveIndex −1 or missing) keeps its position. Idempotent.
+//                                 is moved (galleons to a convoy start, the Phantom beside the eye, and on
+//                                 every level a later wave's ship that main put in water cut off from yours
+//                                 to a spawn point in your water, see REACH); a test spawn (G.spawn: waveIndex
+//                                 −1 or missing) keeps its position. Idempotent.
 //   onCapture(e), onSink(e), onRemove(e),
 //   step(dt),                     every simulation step, after moveShip, before separateShips
 //   steer(e, dt) → { h, speed } | null,   desired heading and speed (replaces updateEnemy's attack/wait logic;
@@ -29,7 +31,8 @@
 //   minimap() → [{ kind: 'gate' | 'galleon' | 'floe' | 'vortex' | 'eye', x, z, r }],
 //   summary() → string[],         lines for the level-cleared summary
 //   bonus() → number,             gold added at the level end
-//   get state,                    a fresh plain (JSON-able) snapshot for tests: { ids, time, convoy?, floes?, current? }
+//   get state,                    a fresh plain (JSON-able) snapshot for tests: { ids, time, relocated, convoy?,
+//                                 floes?, current? } (relocated: wave ships moved out of cut-off water)
 //   dispose()
 // }
 // ctx (from main): { env: () => env, player: () => player, enemies, fighting(e), relative(ship, x, z),
@@ -80,6 +83,18 @@ const CURRENT = { x: 0, z: 0, r: 75, pull: 3.2, swirl: 2.8, eye: 12, eyeDps: 5, 
  * ships), facing the player; e.rise = `rise` seconds (main lowers her mesh while it counts down).
  */
 const GHOST = { dist: 18, rise: 3, clear: 4, playerClear: 25, spacing: 12, tries: 12 };
+
+/**
+ * Open water you can reach (every level). main places a later wave on rings round you, checked only against
+ * the colliders; but a coast ringed by colliders can hide water behind it (Frostbite Straits' fjord walls,
+ * the land behind Doubloon Bay's southern shore), and a ship put there could never reach you nor you her.
+ * So a wave ship (wave 1 on) that lands in water cut off from your start is moved to an env spawn point in
+ * your water (§6.3: onSpawn may move a ship to an open-water spot). The water is flood-filled once per env
+ * on a grid of `cell` u, keeping `pad` u off every collider and `edge` u inside the world edge. The new spot:
+ * at least `playerClear` u from you (`minPlayer` if nothing else fits), `spacing` u from the other ships,
+ * as close to `prefer` u from you as possible; she faces you.
+ */
+const REACH = { cell: 3, pad: 1.5, edge: 2, playerClear: 40, minPlayer: 35, prefer: 80, spacing: 18, maxCells: 250000 };
 
 const EPS = 1e-9;
 
@@ -636,6 +651,142 @@ function createCurrent(c) {
 
 const FACTORIES = { convoy: createConvoy, floes: createFloes, current: createCurrent };
 
+// ---------------------------------------------------------------------------------- reachable water
+
+function createReach(c) {
+  let cachedEnv;
+  let cachedCount = -1;
+  let water = null; // { R, N, cell, seen: Uint8Array } or null (no env / no colliders: everything counts)
+  let relocated = 0;
+
+  function build(env) {
+    const R = num(env.worldRadius, 0);
+    const cols = (Array.isArray(env.colliders) ? env.colliders : []).filter((k) => isObj(k) && finite(k.x) && finite(k.z) && finite(k.r));
+    if (!(R > 0) || !cols.length) return null;
+    const cell = REACH.cell;
+    const N = Math.ceil((2 * R) / cell);
+    if (N * N > REACH.maxCells) return null;
+    // Open water: inside the world edge, then every collider rubs out the cells it covers (only the cells
+    // in its own bounding box are visited, so a coast of a hundred rocks costs a few milliseconds).
+    const open = new Uint8Array(N * N);
+    for (let i = 0; i < N; i++) {
+      const x = -R + (i + 0.5) * cell;
+      for (let j = 0; j < N; j++) {
+        const z = -R + (j + 0.5) * cell;
+        if (Math.hypot(x, z) <= R - REACH.edge) open[i * N + j] = 1;
+      }
+    }
+    const idx = (v) => Math.floor((v + R) / cell);
+    for (const k of cols) {
+      const rr = Math.max(0, k.r) + REACH.pad;
+      const i0 = Math.max(0, idx(k.x - rr));
+      const i1 = Math.min(N - 1, idx(k.x + rr));
+      const j0 = Math.max(0, idx(k.z - rr));
+      const j1 = Math.min(N - 1, idx(k.z + rr));
+      for (let i = i0; i <= i1; i++) {
+        const x = -R + (i + 0.5) * cell;
+        for (let j = j0; j <= j1; j++) {
+          if (Math.hypot(k.x - x, k.z - (-R + (j + 0.5) * cell)) < rr) open[i * N + j] = 0;
+        }
+      }
+    }
+    // Seed: the player start (or the open cell nearest to it).
+    const ps = isObj(env.playerStart) && finite(env.playerStart.x) && finite(env.playerStart.z) ? env.playerStart : { x: 0, z: 0 };
+    let seed = -1;
+    let seedD = Infinity;
+    for (let k = 0; k < N * N; k++) {
+      if (!open[k]) continue;
+      const d = Math.hypot(-R + (Math.floor(k / N) + 0.5) * cell - ps.x, -R + ((k % N) + 0.5) * cell - ps.z);
+      if (d < seedD) {
+        seedD = d;
+        seed = k;
+      }
+    }
+    if (seed < 0) return null;
+    const seen = new Uint8Array(N * N);
+    const stack = [seed];
+    seen[seed] = 1;
+    while (stack.length) {
+      const k = stack.pop();
+      const i = Math.floor(k / N);
+      const j = k % N;
+      if (i > 0 && open[k - N] && !seen[k - N]) (seen[k - N] = 1), stack.push(k - N);
+      if (i < N - 1 && open[k + N] && !seen[k + N]) (seen[k + N] = 1), stack.push(k + N);
+      if (j > 0 && open[k - 1] && !seen[k - 1]) (seen[k - 1] = 1), stack.push(k - 1);
+      if (j < N - 1 && open[k + 1] && !seen[k + 1]) (seen[k + 1] = 1), stack.push(k + 1);
+    }
+    return { R, N, cell, seen };
+  }
+  function map() {
+    const env = c.env();
+    if (!env) return null;
+    const count = Array.isArray(env.colliders) ? env.colliders.length : 0;
+    if (env !== cachedEnv || count !== cachedCount) {
+      cachedEnv = env;
+      cachedCount = count;
+      water = build(env);
+    }
+    return water;
+  }
+  // In your water: the point's cell or one next to it (a ship hard by a coast sits in a padded-out cell).
+  function reachable(x, z) {
+    const w = map();
+    if (!w) return true;
+    const i0 = Math.floor((x + w.R) / w.cell);
+    const j0 = Math.floor((z + w.R) / w.cell);
+    for (let i = i0 - 1; i <= i0 + 1; i++) {
+      for (let j = j0 - 1; j <= j0 + 1; j++) {
+        if (i >= 0 && j >= 0 && i < w.N && j < w.N && w.seen[i * w.N + j]) return true;
+      }
+    }
+    return false;
+  }
+  function relocate(e) {
+    const env = c.env();
+    const spots = (Array.isArray(env?.enemySpawns) ? env.enemySpawns : []).filter((s) => isObj(s) && finite(s.x) && finite(s.z) && reachable(s.x, s.z));
+    if (!spots.length) return false;
+    const p = c.player();
+    const ps = isObj(env.playerStart) && finite(env.playerStart.x) && finite(env.playerStart.z) ? env.playerStart : { x: 0, z: 0 };
+    const px = p ? p.x : ps.x;
+    const pz = p ? p.z : ps.z;
+    const others = c.ships().filter((s) => s !== e && s !== p && afloat(s) && !s.captured && !s.escaped);
+    const dP = (s) => Math.hypot(s.x - px, s.z - pz);
+    const spaced = (s) => others.every((o) => Math.hypot(o.x - s.x, o.z - s.z) >= REACH.spacing);
+    const pools = [
+      spots.filter((s) => dP(s) >= REACH.playerClear && spaced(s)),
+      spots.filter((s) => dP(s) >= REACH.minPlayer && spaced(s)),
+      spots.filter((s) => dP(s) >= REACH.minPlayer),
+    ];
+    const pool = pools.find((q) => q.length);
+    let best = null;
+    if (pool) {
+      for (const s of pool) if (!best || Math.abs(dP(s) - REACH.prefer) < Math.abs(dP(best) - REACH.prefer)) best = s;
+    } else {
+      for (const s of spots) if (!best || dP(s) > dP(best)) best = s;
+    }
+    e.x = best.x;
+    e.z = best.z;
+    e.h = Math.atan2(px - best.x, pz - best.z);
+    relocated++;
+    return true;
+  }
+  return {
+    reachable,
+    // Level start (init): map the water now, while the level flies in, not when the next wave arrives.
+    prepare() {
+      map();
+    },
+    // A wave ship (wave 1 on) in water cut off from yours goes to a spawn point in your water.
+    onSpawn(e, waveIndex) {
+      if (!(Number.isInteger(waveIndex) && waveIndex >= 1) || reachable(e.x, e.z)) return;
+      relocate(e);
+    },
+    get relocated() {
+      return relocated;
+    },
+  };
+}
+
 // ------------------------------------------------------------------------------------ the hooks
 
 export function createMechanics(ids, ctx) {
@@ -645,6 +796,7 @@ export function createMechanics(ids, ctx) {
     for (const id of ids) if (typeof id === 'string' && MECHANIC_IDS.includes(id) && !list.includes(id)) list.push(id);
   }
   const parts = list.map((id) => ({ id, m: FACTORIES[id](c) }));
+  const reach = createReach(c);
   const seen = new WeakSet(); // ships onSpawn has handled
   const each = (name, ...args) => {
     for (const { m } of parts) if (m[name]) m[name](...args);
@@ -653,6 +805,7 @@ export function createMechanics(ids, ctx) {
   const api = {
     init() {
       each('init');
+      reach.prepare();
       // Wave 0 may have been spawned before the mechanics existed.
       for (const e of [...c.enemies()]) if (isShip(e) && !seen.has(e)) api.onSpawn(e, 0);
     },
@@ -660,6 +813,7 @@ export function createMechanics(ids, ctx) {
       if (!isShip(e) || seen.has(e)) return;
       seen.add(e);
       each('onSpawn', e, waveIndex);
+      reach.onSpawn(e, waveIndex); // (after the level's own placement: a galleon's start, the Phantom's ring)
     },
     onCapture(e) {
       if (isShip(e)) each('onCapture', e);
@@ -716,7 +870,7 @@ export function createMechanics(ids, ctx) {
       return parts.reduce((n, { m }) => n + (m.bonus ? m.bonus() : 0), 0);
     },
     get state() {
-      const s = { ids: [...list], time: c.now };
+      const s = { ids: [...list], time: c.now, relocated: reach.relocated };
       for (const { id, m } of parts) s[id] = m.snapshot();
       return s;
     },

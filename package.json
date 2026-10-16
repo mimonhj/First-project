@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "npx http-server -p 8080 -c-1 .",
-    "test": "node tests/combat.test.cjs && node tests/armory.test.cjs && node tests/cosmetics.test.cjs && node tests/walk.test.cjs && node tests/mechanics.test.cjs && node tests/upgrades.test.cjs && node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs && node tests/audio.cjs && node tests/battle.cjs",
+    "test": "node tests/combat.test.cjs && node tests/armory.test.cjs && node tests/cosmetics.test.cjs && node tests/walk.test.cjs && node tests/mechanics.test.cjs && node tests/upgrades.test.cjs && node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs && node tests/audio.cjs && node tests/battle.cjs && node tests/levels.cjs && node tests/town.cjs",
     "test:combat": "node tests/combat.test.cjs",
     "test:armory": "node tests/armory.test.cjs",
     "test:cosmetics": "node tests/cosmetics.test.cjs",
@@ -19,7 +19,9 @@
     "test:smoke": "node tests/smoke.cjs",
     "test:controls": "node tests/controls.cjs",
     "test:audio": "node tests/audio.cjs",
-    "test:battle": "node tests/battle.cjs"
+    "test:battle": "node tests/battle.cjs",
+    "test:levels": "node tests/levels.cjs",
+    "test:town": "node tests/town.cjs"
   },
   "devDependencies": {
     "http-server": "^14.1.1",

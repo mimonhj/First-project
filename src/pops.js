@@ -4,7 +4,7 @@ import * as THREE from 'three';
 // "CAPTURED! +145". Each pop is a recycled DOM span in the #pops layer, anchored to a world point and
 // projected every frame, so it costs 0 draw calls. ≥ 24 px light text with a 3 px ink outline (fx.css).
 //
-// createPops(layerEl, camera, { reducedMotion, avoid, insetTop }) → {
+// createPops(layerEl, camera, { reducedMotion, avoid, insetTop, furniture }) → {
 //   pop(text, x, y, z, style) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'capture'
 //                                           //        | 'gold' | 'bad'; a '\n' (or "CRIT! <effect>") splits
 //                                           //        the text into a big line and a smaller second line
@@ -18,6 +18,12 @@ import * as THREE from 'three';
 // every frame while pops are up, so a box that shows up (or grows) after a pop makes that pop hop aside
 // (not while paused: update(0) moves nothing).
 // insetTop: optional () => number: px from the top of the viewport the pops stay below (the top HUD row).
+// furniture: CSS selectors (or [selector, weight]) of the battle HUD's own pieces that pops keep off whenever
+// they show, counted like `avoid` boxes: by default the level / "X sunk!" banner, the minimap, the boss bar, the
+// boarding strip, the objective pill, the hint bubble, the gun card and the touch pads (FURNITURE). Looked up in
+// the layer's document; a piece that is hidden (display: none) or missing is skipped. Pass [] for none. A weight
+// below 1 makes a soft obstacle (an overlap with it counts that much of one with a pop).
+// A volley's "−N CREW" that comes right after its damage at the same point joins that pop as its second line.
 // Placement: a pop goes right at its impact unless that spot would meet another pop or an avoided box at
 // any moment of its life (pops rise, each at its own pace, and grow and tilt as they pop in); then it
 // takes the nearest clear spot straight above (or below) it, inside the screen if there is one, and only
@@ -26,12 +32,24 @@ import * as THREE from 'three';
 // edge; only an impact behind the camera, or far above or below the view, hides them.
 // Throttle: ≤ 12 alive (the oldest makes room), ≤ 8 new per second; a pop over the rate waits up to
 // 0.4 s in a short queue (CAPTURED!, CRIT!, gold and bad news jump it) and is dropped if it is still waiting then.
+// No room: a pop with no clear spot waits a moment for one (ROOM_WAIT); POINT BLANK! and the rake words (the
+// HIT mark's stickers say them too) are let go if none comes, anything else then shows least covered.
 
 const MAX_ALIVE = 12;
 const RATE = 8; // new pops per second
 const QUEUE_MAX = 8;
 const QUEUE_AGE = 0.4;
 const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold']);
+// A pop that finds no clear spot (a crowded short screen) waits up to ROOM_WAIT s for one (the words around it
+// rise and fade), looking again every ROOM_LOOK s; then it shows where it is least covered, except a word the
+// HIT mark's stickers already say or that only adds colour (DROPPABLE), which is let go. Important pops never wait.
+const ROOM_WAIT = 0.6;
+const ROOM_LOOK = 0.05;
+const DROPPABLE = new Set(['info', 'rake']);
+// The battle HUD's pieces the pops keep off (index.html ids; see `furniture`): [selector, weight]. The banner
+// is a soft obstacle: a pop crosses it rather than another pop, the HIT mark or a control when there is no room
+// for all (its words are big and it soon goes; a short landscape phone has room for little else).
+const FURNITURE = [['#banner', 0.3], '#minimap', '#boss', '#boarding-strip', '#objective', '#hint', '#hud .hud-bottom .card.guns', '#touch .pad'];
 
 // Per style: life (s), rise (px over the life), overshoot of the pop-in and entry wobble (deg).
 const STYLES = {
@@ -67,23 +85,28 @@ function popScale(age, d, over) {
   return over + (1 - over) * easeOut((x - 0.55) / 0.45);
 }
 
-// a caller's box as { l, t, r, b } grown by AVOID_PAD, or null when it is empty or not a box
-function avoidBox(r) {
+// a caller's box as { l, t, r, b } grown by `pad` (a share of its size) on each side, or null when it is
+// empty or not a box
+function avoidBox(r, pad = AVOID_PAD) {
   if (!r) return null;
   const l = Number(r.left ?? r.x);
   const t = Number(r.top ?? r.y);
   const rr = Number(r.right ?? l + Number(r.width));
   const b = Number(r.bottom ?? t + Number(r.height));
   if (![l, t, rr, b].every(Number.isFinite) || rr - l < 1 || b - t < 1) return null;
-  const px = (rr - l) * AVOID_PAD;
-  const py = (b - t) * AVOID_PAD;
+  const px = (rr - l) * pad;
+  const py = (b - t) * pad;
   return { l: l - px, t: t - py, r: rr + px, b: b + py };
 }
 
-export function createPops(layerEl, camera, { reducedMotion = false, avoid = null, insetTop = null } = {}) {
+export function createPops(layerEl, camera, { reducedMotion = false, avoid = null, insetTop = null, furniture = FURNITURE } = {}) {
   const rm = typeof reducedMotion === 'function' ? () => !!reducedMotion() : () => !!reducedMotion;
   const hasDom = !!layerEl && typeof document !== 'undefined';
   if (hasDom) layerEl.classList.remove('hidden');
+  const doc = hasDom ? layerEl.ownerDocument || document : null;
+  const pieces = (Array.isArray(furniture) ? furniture : [])
+    .map((q) => (typeof q === 'string' ? [q, 1] : Array.isArray(q) && typeof q[0] === 'string' ? [q[0], clamp(Number(q[1]) || 0, 0, 1)] : null))
+    .filter((q) => q && q[0] && q[1] > 0);
 
   // the pool: one span per pop (main line + optional second line), hidden while idle
   const pool = [];
@@ -101,6 +124,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
   }
   const alive = []; // oldest first
   const queue = [];
+  const waiting = []; // pops with no room yet: { ...q, lookAt }
   let tokens = RATE;
   let clock = 0;
   // the caller's limits, read when a pop is placed and once a frame while pops are up
@@ -127,6 +151,21 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
         }
       } catch {
         boxes = [];
+      }
+    }
+    // the HUD's own pieces, where they show (a hidden one has no box)
+    if (doc && pieces.length) {
+      try {
+        for (const [q, w] of pieces) {
+          for (const el of doc.querySelectorAll(q)) {
+            const r = el.getBoundingClientRect();
+            if (r.width < 1 || r.height < 1) continue;
+            const b = avoidBox(r, 0); // (it doesn't pop in: no margin beyond GAP)
+            if (b) boxes.push(w < 1 ? { ...b, w } : b);
+          }
+        }
+      } catch {
+        /* a bad selector: no furniture */
       }
     }
   }
@@ -231,7 +270,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
         const b0 = y + tr.down + GAP;
         for (const o of obs) {
           const ov = Math.min(b0, o.b) - Math.max(t0, o.t);
-          if (ov > 0.5) c += ov;
+          if (ov > 0.5) c += ov * (o.w ?? 1);
         }
         if (c > over) return c;
       }
@@ -312,6 +351,11 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
   }
 
   function spawn(q) {
+    // (a pop looking again for room never pushes out a pop that is showing)
+    if (q.lookAt !== undefined && !q.force && !pool.some((x) => !x.alive)) {
+      waiting.push({ ...q, lookAt: clock + ROOM_LOOK });
+      return true;
+    }
     let p = pool.find((x) => !x.alive);
     if (!p) {
       p = alive.shift(); // the oldest makes room
@@ -348,6 +392,13 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     p.ok = at.ok;
     if (at.ok) {
       const r = search(p);
+      // no clear spot: wait a moment for one (not an important pop, and not past its wait)
+      if (r.cost > 0 && !IMPORTANT.has(p.style) && !q.force && clock - q.at < ROOM_WAIT) {
+        p.alive = false;
+        p.el.style.display = 'none';
+        waiting.push({ ...q, lookAt: clock + ROOM_LOOK });
+        return true;
+      }
       p.dx = r.dx;
       p.stack = r.st;
     }
@@ -412,6 +463,33 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     return [a, b];
   }
 
+  // A crew count joins the damage pop just made at the same point (still unaged; or still waiting in the
+  // queue) as its smaller second line, so one volley shows one word, not two to find room for.
+  function joinCrew(q) {
+    const same = (a) => a.style === 'dmg' && Math.abs(a.x - q.x) < 1e-6 && Math.abs(a.y - q.y) < 1e-6 && Math.abs(a.z - q.z) < 1e-6;
+    for (const list of [waiting, queue]) {
+      const w = list.length ? list[list.length - 1] : null;
+      if (w && same(w) && !String(w.text).includes('\n')) {
+        w.text = `${w.text}\n${q.text}`;
+        return true;
+      }
+    }
+    const p = alive.length ? alive[alive.length - 1] : null;
+    if (!p || p.age > 0 || !same(p) || p.sub.textContent) return false;
+    p.sub.textContent = String(q.text).slice(0, 40);
+    p.sub.style.display = '';
+    p.w = p.el.offsetWidth;
+    p.h = p.el.offsetHeight;
+    readLimits();
+    if (p.ok) {
+      const r = search(p);
+      p.dx = r.dx;
+      p.stack = r.st;
+    }
+    place(p);
+    return true;
+  }
+
   function retire(p) {
     p.alive = false;
     p.el.style.display = 'none';
@@ -424,6 +502,8 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
       if (!hasDom || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
       if (text === null || text === undefined || String(text).trim() === '') return false;
       const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', at: clock };
+      // "−N CREW" right after its volley's damage at the same point: the damage pop's second line
+      if (q.style === 'crew' && joinCrew(q)) return true;
       if (tokens >= 1) {
         tokens -= 1;
         return spawn(q);
@@ -456,6 +536,18 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
         p.age += step;
         if (p.age >= p.life) retire(p);
       }
+      // pops waiting for room look again (after the old ones have moved on); past their wait they show, or go
+      if (step > 0 && waiting.length) {
+        const due = waiting.filter((w) => clock >= w.lookAt);
+        for (const w of due) {
+          waiting.splice(waiting.indexOf(w), 1);
+          if (clock - w.at >= ROOM_WAIT) {
+            if (DROPPABLE.has(w.style)) continue;
+            w.force = true;
+          }
+          spawn(w);
+        }
+      }
       if (!alive.length) return;
       readLimits();
       if (step > 0) for (const p of alive) makeWay(p); // (paused: nothing moves)
@@ -465,6 +557,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     clear() {
       for (const p of [...alive]) retire(p);
       queue.length = 0;
+      waiting.length = 0;
       tokens = RATE;
     },
 

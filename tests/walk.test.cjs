@@ -4,7 +4,9 @@
 //   obstacle; every place can be reached from the spawn and from every other place along a path
 //   that stays on the walk and clear of the obstacles all the way; 10,000 seeded random steps (some
 //   of them with townsfolk in the way) never leave the walk, never walk into anything and never rise
-//   or drop more than a step; taps on the decks and bridges land, taps on the water miss
+//   or drop more than a step; taps on the decks and bridges land, taps on the water miss; the
+//   camera-only volumes (the signs' boards on their posts and the like) are there, clear of the
+//   camera's target wherever the captain stops, and ignored by the walking
 // - small made-up towns: an L of two rects, a turned rect, a round mound, a sagging bridge (its
 //   height followed along the planks), two islands (no path between them)
 // - junk data and junk arguments never throw
@@ -88,6 +90,40 @@ function pathProblems(W, p, from, to) {
     check(!!data.spawn && Math.abs(Math.abs(data.spawn.h) - Math.PI) < 0.3, `the spawn faces the town (h ${f2(data.spawn && data.spawn.h)})`);
     check(data.blockers.length >= 60 && data.blockers.every((b) => Number.isFinite(b.h) && (Number.isFinite(b.r) || (Number.isFinite(b.w) && Number.isFinite(b.d)))), `${data.blockers.length} obstacles, each round or a box, each with a height for the camera`);
     check(JSON.stringify(JSON.parse(JSON.stringify(data))) === JSON.stringify(data), 'the data survives a JSON round trip unchanged');
+  }
+
+  // ---- the camera-only volumes (walk.camBlockers: town.js keeps the walk camera out of them) ----
+  {
+    const cb = Array.isArray(data.camBlockers) ? data.camBlockers : [];
+    const fin = (...v) => v.every(Number.isFinite);
+    const good = cb.every((b) => fin(b.x, b.z, b.y0, b.y1) && b.y1 > b.y0 && (b.r !== undefined ? fin(b.r) && b.r > 0 : fin(b.w, b.d, b.ry) && b.w > 0 && b.d > 0));
+    check(cb.length >= 8 && good, `${cb.length} camera-only volumes, each an upright box or cylinder with a bottom and a top`);
+    // is the point (x, y, z) inside one of them (pad: how far the lens keeps off)?
+    const inCam = (x, y, z, pad = 0) =>
+      cb.some((b) => {
+        if (y < b.y0 - pad || y > b.y1 + pad) return false;
+        const dx = x - b.x;
+        const dz = z - b.z;
+        if (b.r !== undefined) return Math.hypot(dx, dz) < b.r + pad;
+        const c = Math.cos(b.ry);
+        const sn = Math.sin(b.ry);
+        return Math.abs(dx * c - dz * sn) < b.w / 2 + pad && Math.abs(dx * sn + dz * c) < b.d / 2 + pad;
+      });
+    // the boards up on posts that the walk's blockers can't describe (the captain walks under or round them)
+    const posts = (x, z, h) => data.blockers.filter((b) => b.r !== undefined && Math.hypot(b.x - x, b.z - z) < 0.2 && b.h >= h);
+    check(posts(4.2, -13.7, 3.4).length === 1 && inCam(5.0, 1.3 + 3.02, -13.7) && inCam(5.9, 1.3 + 3.02, -13.72), "the TAILOR arrow board on its post by the pots stall");
+    const ws = data.blockers.filter((b) => b.r !== undefined && b.h >= 6);
+    const mid = ws.length >= 2 ? { x: (ws[0].x + ws[1].x) / 2, z: (ws[0].z + ws[1].z) / 2 } : { x: NaN, z: NaN };
+    check(ws.length === 2 && inCam(mid.x, 1.3 + 5.2, mid.z) && inCam(mid.x, 1.3 + 6.3, mid.z) && !inCam(mid.x, 1.3 + 2.4, mid.z, 0.3), `the welcome sign's board between its two tall posts (${f2(mid.x)}, ${f2(mid.z)}), high over the captain's head`);
+    // nowhere the captain stands still is the camera's target (his chest) inside one of them
+    const ends = [{ id: 'spawn', ...data.spawn }, ...data.places];
+    const W0 = createWalk(data);
+    const bad = ends.filter((e) => inCam(e.x, W0.heightAt(e.x, e.z) + 1.2, e.z, 0.3)).map((e) => e.id);
+    check(bad.length === 0, `the camera's target over the spawn and every place is clear of them${bad.length ? ': ' + bad.join(', ') : ''}`);
+    // walking ignores them: the same paths with or without
+    const W1 = createWalk({ ...data, camBlockers: undefined });
+    const same = data.places.every((p) => JSON.stringify(W0.path(data.spawn, p)) === JSON.stringify(W1.path(data.spawn, p)));
+    check(same, 'walking ignores them (the spawn-to-place paths are the same without them)');
   }
 
   const W = createWalk(data);

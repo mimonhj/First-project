@@ -14,7 +14,8 @@ import { buildPerson, animatePerson, disposePerson } from './people.js';
 //
 // createOverboard(scene, { foam, sfx, heightAt? }) → {
 //   prepare(optsList),            // prebuild looks for this level, one person per update() (no stall)
-//   throwOver(ship, side, opts) → boolean, showSurrender(ship, opts | [opts, opts]) → boolean,
+//   throwOver(ship, side, opts, { along }?) → boolean,   // along: where on the rail (ship-local z), else random
+//   showSurrender(ship, opts | [opts, opts]) → boolean,
 //   clearSurrender(ship?),        // without a ship: whichever ship has them
 //   update(t, dt),                // visual time; dt 0 (paused) freezes everything
 //   clear(), dispose(),
@@ -218,15 +219,17 @@ export function createOverboard(scene, { foam = null, sfx = null, heightAt = nul
       }
     },
 
-    throwOver(ship, side, opts) {
+    throwOver(ship, side, opts, where = null) {
       if (disposed || !ship || !ship.mesh) return false;
       const sd = side < 0 ? -1 : 1;
       const slot = take(keyOf(opts));
       if (!slot) return false;
       build(slot, opts);
-      // start on the rail at a random spot along the waist, ship-local (+x = port: local x = −side × half)
+      // start on the rail where the caller says (a boarding loser goes over where he stands), else at a
+      // random spot along the waist; ship-local (+x = port: local x = −side × half)
       const len = num(ship.type && ship.type.len, 8);
-      const along = (Math.random() - 0.5) * len * 0.45;
+      const at = where && typeof where === 'object' ? where.along : undefined;
+      const along = typeof at === 'number' && Number.isFinite(at) ? clamp(at, -len * 0.45, len * 0.45) : (Math.random() - 0.5) * len * 0.45;
       const half = halfAt(ship, along);
       shipMatrix(ship, _m);
       const p0 = new THREE.Vector3(-sd * (half - 0.15), railOf(ship) + 0.05, along).applyMatrix4(_m);

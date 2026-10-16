@@ -5,6 +5,20 @@
 //   5 Frostbite Straits  'floes'    drifting ice floes, and longship raiders that board YOU
 //   6 The Maelstrom      'current'  a whirlpool drags every ship in; the Phantom Galleon must be boarded
 // mechanicTouch: the intro subtitle on touch layouts, when the keyboard wording names a key.
+//
+// Balance (Stage 3, SPEC2 §6.8): the waves differ from the §6.4–6.6 starting values, tuned with the Act II
+// bot (§11.3) so that the Maelstrom always hurts more than Doubloon Bay and every level fights back.
+// lead and spreadMul barely moved the damage taken (most hits land at close range); enemy crew/grit
+// neither (the free types, galleon and corsair, are taken or sunk in a broadside or two). So, by the §6.8
+// order, maxAttackers and then the waves:
+//   4 Doubloon Bay      the privateer leaves the second wave (her long broadside duels made the damage
+//                       swing from 40 to 160 while you chase the galleons)
+//   5 Frostbite Straits the man-o'-war and the privateer trade waves (the man-o'-war's opening broadside
+//                       means the straits always fight back)
+//   6 The Maelstrom     3 attackers, and the first wave is two corsairs and a man-o'-war (the raider that
+//                       opened it was sunk or cut loose without a shot; the raider with the Phantom stays)
+// No wave got more ships: the Act II draw-call budgets (§12: level start ≤ 310, busiest ≤ 450) have no
+// room for them.
 import * as doubloon from './env/doubloon.js';
 import * as frost from './env/frost.js';
 import * as maelstrom from './env/maelstrom.js';
@@ -16,7 +30,7 @@ export const ACT2_LEVELS = [
     act: 2,
     stars: 4,
     scene: 'doubloon',
-    waves: [['galleon', 'cutter', 'cutter'], ['galleon', 'privateer', 'corsair']],
+    waves: [['galleon', 'cutter', 'cutter'], ['galleon', 'corsair']],
     nextWaveAt: 1,
     maxAttackers: 2,
     lead: 0.6,
@@ -39,7 +53,7 @@ export const ACT2_LEVELS = [
     act: 2,
     stars: 5,
     scene: 'frost',
-    waves: [['raider', 'raider', 'privateer'], ['raider', 'raider', 'manowar']],
+    waves: [['raider', 'raider', 'manowar'], ['raider', 'raider', 'privateer']],
     nextWaveAt: 1,
     maxAttackers: 3,
     lead: 0.65,
@@ -62,9 +76,9 @@ export const ACT2_LEVELS = [
     act: 2,
     stars: 6,
     scene: 'maelstrom',
-    waves: [['corsair', 'raider', 'corsair'], ['phantom', 'raider']],
+    waves: [['corsair', 'corsair', 'manowar'], ['phantom', 'raider']],
     nextWaveAt: 0,
-    maxAttackers: 2,
+    maxAttackers: 3,
     lead: 0.7,
     spreadMul: 0.9,
     grace: 3,

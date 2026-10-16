@@ -5,7 +5,7 @@ import { noOutline } from './style.js';
 // "ghost" segment lingers 0.45 s after each hit (so you see how big the hit was), a row of 10 crew
 // pips with the gold surrender notch, and a status icon (boarding odds, white flag, too hot).
 //
-//   [  PRIVATEER BRIG  ]
+//     ( PRIVATEER BRIG )            the name on an ink tab on top of the card
 //   [████████▒▒▒░░░░░░░]  (icon)    hull: red fill over the ghost over the ink background
 //   [▮▮▮▮▮▮▮░│░░       ]            crew: cream = aboard, dark = lost, the last one partly filled
 //
@@ -24,7 +24,8 @@ import { noOutline } from './style.js';
 // Reads per ship: hp, maxHp, crewShown (may be fractional during a brawl), crew0, strikeAt, tagIcon
 // ('capture' | 'fight' | 'risky' | 'white' | 'hot' | 'cooldown' | null; 'cooldown' draws the hook
 // greyed with a recharge ring from tagCool, the fraction of the cooldown still to go), tagPulse (the
-// hull bar throbs: "wrecked"), flash (a hit swells the tag), and the sinking / captured / escaped flags.
+// hull bar throbs: "wrecked"), flash (a hit swells the tag), tagHidden (boarding.js: hidden while the boarding
+// view is on), and the sinking / captured / escaped flags.
 // A tag shows for fighting and surrendered ships; it hides when its ship sinks, is captured or escapes,
 // or when it is within 10 units of the camera. Fields a ship doesn't have yet fall back gracefully
 // (crew0 → type.crew, crewShown → crew0, strikeAt → floor(0.2 × crew0)).
@@ -51,7 +52,11 @@ const NOTCH_INK_W = 0.24; // dark backing so the gold line reads across a cream 
 const NOTCH_INK_H = PIP_H + 0.06;
 const ICON = 1.45;
 const ICON_X = BG_W / 2 + 0.14 + ICON / 2;
-const LABEL_Y = 1.3;
+// the name tab's sprite: 8 × 1.25 tag units for its 512 × 80 canvas; the tab (the lower 56 px) overlaps the
+// card's top edge a little so the two read as one piece
+const LABEL_W = 8;
+const LABEL_H = 1.25;
+const LABEL_Y = BG_TOP + LABEL_H / 2 - 0.06;
 // The crew row hangs below the bar: lift the whole tag so its bottom edge stays where the old one-row
 // tag's was (the masthead flag, white or yours, stays in view below it).
 const LIFT = -0.375 - BG_BOTTOM;
@@ -299,18 +304,38 @@ function drawAtlas() {
 // ---------------------------------------------------------------------------
 // Name labels (moved from main.js: same look, cached per name, redrawn when the font arrives)
 // ---------------------------------------------------------------------------
+// The name sits on an ink tab joined to the top of the bar card, so it reads over any sky or sea (cream
+// letters on ink, like the card below it) instead of floating pale letters a bar's height above it.
+const LABEL_FONT = '38px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
+const TAB_H = 56; // px of the 80 px canvas
 function drawLabel(canvas, text) {
   const ctx = canvas.getContext('2d');
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-  ctx.font = '40px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
+  const W = canvas.width;
+  const H = canvas.height;
+  ctx.clearRect(0, 0, W, H);
+  ctx.font = LABEL_FONT;
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  ctx.lineWidth = 10;
+  // the tab: as wide as the name plus a margin (never past the canvas), round ends
+  const tw = Math.min(W - 8, Math.ceil(ctx.measureText(text).width) + 40);
+  const x0 = (W - tw) / 2;
+  const y0 = H - TAB_H;
+  const r = TAB_H / 2;
+  ctx.beginPath();
+  ctx.moveTo(x0 + r, y0);
+  ctx.lineTo(x0 + tw - r, y0);
+  ctx.arc(x0 + tw - r, y0 + r, r, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(x0 + r, y0 + TAB_H);
+  ctx.arc(x0 + r, y0 + r, r, Math.PI / 2, (Math.PI * 3) / 2);
+  ctx.closePath();
+  ctx.fillStyle = '#1d1330';
+  ctx.fill();
+  ctx.lineWidth = 6;
   ctx.strokeStyle = '#1d1330';
-  ctx.strokeText(text, canvas.width / 2, canvas.height / 2 + 2);
+  ctx.strokeText(text, W / 2, y0 + TAB_H / 2 + 2);
   ctx.fillStyle = '#fff4d6';
-  ctx.fillText(text, canvas.width / 2, canvas.height / 2 + 2);
+  ctx.fillText(text, W / 2, y0 + TAB_H / 2 + 2);
 }
 
 // A rounded rectangle (the tag's ink card).
@@ -471,7 +496,7 @@ export function createTags(scene) {
       fill.position.set(0, LIFT, Z_FILL);
       const name = (ship.type && ship.type.name) || String(ship.typeName || '');
       const label = new THREE.Sprite(labelMaterial(name));
-      label.scale.set(8, 1.25, 1);
+      label.scale.set(LABEL_W, LABEL_H, 1);
       label.position.y = LABEL_Y + LIFT;
       const icon = new THREE.Sprite(iconMaterial(0));
       icon.scale.set(ICON, ICON, 1);
@@ -543,7 +568,7 @@ export function createTags(scene) {
         const wy = mesh ? mesh.position.y : 0;
         g.position.set(num(ship.x, 0), wy + num(ship.tagY, 0), num(ship.z, 0));
         const d = g.position.distanceTo(camera.position);
-        g.visible = !gone && d > 10;
+        g.visible = !gone && d > 10 && !ship.tagHidden; // (tagHidden: a boarding shows her crews in its strip)
         if (!g.visible) continue;
 
         const pulse = ship.flash > 0 ? 1 + ship.flash : 1;

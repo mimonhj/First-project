@@ -52,8 +52,9 @@
 /* CRIT! + the effect line, 1.3× a damage pop */
 .pop-crit { --pop-size: clamp(36px, 6vmin, 52px); color: #ffe14d; }
 .pop-crit .pop-sub { color: #ffffff; font-size: max(24px, 0.6em); }
-/* −3 CREW */
+/* −3 CREW (on its own, or as the second line of the volley's damage pop) */
 .pop-crew { --pop-size: clamp(26px, 3.9vmin, 34px); color: #ffc4bc; }
+.pop-dmg .pop-sub { color: #ffc4bc; }
 /* POINT BLANK!, SAILS SHREDDED!, CRUNCH! */
 .pop-info { --pop-size: clamp(24px, 3.2vmin, 28px); color: #ffffff; }
 /* CAPTURED! +145 */
@@ -63,6 +64,17 @@
 .pop-gold { --pop-size: clamp(28px, 4.4vmin, 38px); color: var(--gold); }
 /* Driven back! −4 crew, −30 gold */
 .pop-bad { --pop-size: clamp(26px, 4.2vmin, 36px); color: #ff8f85; }
+
+/* A short landscape phone (568×320, 640×360) has room for few words between the top cards and the
+   touch pads: every pop at the 24 px floor, a crit still about 1.3× a damage pop. */
+@media (max-height: 420px) {
+  .pop { --pop-size: 24px; }
+  .pop-dmg { --pop-size: 25px; }
+  .pop-crit { --pop-size: 32px; }
+  .pop-capture { --pop-size: 34px; }
+  .pop-capture .pop-sub { font-size: 24px; }
+  .pop-gold { --pop-size: 26px; }
+}
 
 /* ---------------------------------------------------------------------------------------------
    Hitmark stickers: <div id="hitmark">HIT ×3<span class="hm-tags"><span class="hm-tag rake">RAKE ×2</span>

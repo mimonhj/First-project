@@ -1241,7 +1241,7 @@ export function build(scene, ctx = {}) {
   }
 
   // =========================================================================
-  // 7. Wreckage circling in the current (each piece one or two meshes, bobbing on the swell)
+  // 7. Wreckage circling in the current, bobbing on the swell (all of it one mesh, moved on the CPU)
   // =========================================================================
   const debris = [];
   {
@@ -1249,13 +1249,23 @@ export function build(scene, ctx = {}) {
     const hoop = new THREE.TorusGeometry(0.62, 0.07, 5, 14);
     const crate = new RoundedBoxGeometry(1.4, 1.2, 1.4, 2, 0.16);
     const plank = new RoundedBoxGeometry(3.4, 0.28, 0.75, 2, 0.12);
+    // Every piece is baked to vertex colours and all of them share ONE mesh whose vertices are moved on the
+    // CPU each frame (a few thousand): 1 draw call (2 with its ink line) for the whole flotsam instead of 20.
     const piece = (build) => {
       const g = new THREE.Group();
       build(g);
       mergeStatic(g);
-      g.userData.keep = true;
-      root.add(g);
-      return g;
+      g.updateMatrixWorld(true);
+      const parts = [];
+      for (const m of g.children) {
+        if (!m.isMesh) continue;
+        const geo = m.geometry;
+        const c = m.material.color.clone();
+        // (the chest's gold lock glows: bake its glow in)
+        if (m.material.emissive && m.material.emissiveIntensity > 0) c.add(m.material.emissive.clone().multiplyScalar(m.material.emissiveIntensity * 0.6));
+        parts.push({ geo, color: c, matrix: m.matrixWorld.clone() });
+      }
+      return parts;
     };
     const makeBarrel = () =>
       piece((g) => {
@@ -1297,13 +1307,63 @@ export function build(scene, ctx = {}) {
         mesh(g, new THREE.CylinderGeometry(0.5, 0.5, 1.5, 12, 1, false, 0, Math.PI), M.wood, 0, 0.45, 0).rotation.z = Math.PI / 2;
         mesh(g, new RoundedBoxGeometry(0.3, 0.35, 0.12, 1, 0.05), M.gold, 0, 0.35, 0.52);
       });
-    // eight pieces, one material each but the mast and the chest: 10 meshes, 20 draw calls
+    // eight pieces in one vertex-coloured toon mesh (2 draw calls with its ink line)
     const makers = [makeBarrel, makeMast, makeCrate, makeBarrel, makePlank, makeBoat, makeChest, makeCrate];
+    const pieces = makers.map((make) => make());
+    let nv = 0;
+    let ni = 0;
+    for (const parts of pieces) for (const q of parts) {
+      nv += q.geo.attributes.position.count;
+      ni += q.geo.index ? q.geo.index.count : q.geo.attributes.position.count;
+    }
+    const base = new Float32Array(nv * 3);
+    const baseN = new Float32Array(nv * 3);
+    const col = new Float32Array(nv * 3);
+    const idx = new (nv > 65535 ? Uint32Array : Uint16Array)(ni);
+    const ranges = []; // per piece: [first vertex, vertex count]
+    const tv = new THREE.Vector3();
+    const nm = new THREE.Matrix3();
+    let v0 = 0;
+    let i0 = 0;
+    for (const parts of pieces) {
+      const first = v0;
+      for (const q of parts) {
+        const pos = q.geo.attributes.position;
+        const nor = q.geo.attributes.normal;
+        nm.getNormalMatrix(q.matrix);
+        for (let k = 0; k < pos.count; k++) {
+          tv.fromBufferAttribute(pos, k).applyMatrix4(q.matrix).toArray(base, (v0 + k) * 3);
+          tv.fromBufferAttribute(nor, k).applyMatrix3(nm).normalize().toArray(baseN, (v0 + k) * 3);
+          q.color.toArray(col, (v0 + k) * 3);
+        }
+        if (q.geo.index) for (let k = 0; k < q.geo.index.count; k++) idx[i0 + k] = q.geo.index.getX(k) + v0;
+        else for (let k = 0; k < pos.count; k++) idx[i0 + k] = v0 + k;
+        i0 += q.geo.index ? q.geo.index.count : pos.count;
+        v0 += pos.count;
+        q.geo.dispose();
+      }
+      ranges.push([first, v0 - first]);
+    }
+    const flot = new THREE.BufferGeometry();
+    flot.setAttribute('position', new THREE.BufferAttribute(new Float32Array(base), 3).setUsage(THREE.DynamicDrawUsage));
+    flot.setAttribute('normal', new THREE.BufferAttribute(new Float32Array(baseN), 3).setUsage(THREE.DynamicDrawUsage));
+    flot.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    flot.setIndex(new THREE.BufferAttribute(idx, 1));
+    ownGeos.push(flot);
+    const flotMat = own(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradientMap(3) }));
+    setOutline(flotMat, true);
+    const flotMesh = new THREE.Mesh(flot, flotMat);
+    flotMesh.name = 'maelstrom-wreckage';
+    flotMesh.frustumCulled = false; // the pieces move every frame (and the eye swallows some)
+    flotMesh.userData.keep = true;
+    root.add(flotMesh);
     makers.forEach((make, i) => {
-      const g = make();
       const r0 = 18 + ((i * 29) % 42);
-      debris.push({ mesh: g, r: r0, th: (i / makers.length) * Math.PI * 2 + rng() * 0.4, sink: 0, spin: (rng() - 0.5) * 0.6, ph: rng() * 6, yaw: rng() * 6 });
+      debris.push({ range: ranges[i], m: new THREE.Matrix4(), q: new THREE.Quaternion(), e: new THREE.Euler(), p: new THREE.Vector3(), r: r0, th: (i / makers.length) * Math.PI * 2 + rng() * 0.4, sink: 0, spin: (rng() - 0.5) * 0.6, ph: rng() * 6, yaw: rng() * 6 });
     });
+    debris.geo = flot;
+    debris.base = base;
+    debris.baseN = baseN;
   }
 
   // =========================================================================
@@ -1566,7 +1626,12 @@ export function build(scene, ctx = {}) {
     }
   }
 
+  const _dn = new THREE.Matrix3();
+  const _dv = new THREE.Vector3();
+  const _one = new THREE.Vector3(1, 1, 1);
   function updateDebris(t, dt) {
+    const pos = debris.geo.attributes.position.array;
+    const nor = debris.geo.attributes.normal.array;
     for (const d of debris) {
       const k = Math.max(0, 1 - d.r / CURRENT.r);
       if (d.sink > 0) {
@@ -1587,10 +1652,31 @@ export function build(scene, ctx = {}) {
       const x = CURRENT.x + Math.cos(d.th) * d.r;
       const z = CURRENT.z - Math.sin(d.th) * d.r;
       const y = surfaceY(x, z, t) - 0.2 - (d.sink > 0 ? d.sink * d.sink * 0.7 : 0) - d.rise * 2.5;
-      d.mesh.position.set(x, y, z);
-      d.mesh.rotation.set(0.16 * Math.sin(t * 1.1 + d.ph), d.yaw + d.th * (1 + d.spin) + d.sink * 2, 0.14 * Math.sin(t * 0.9 + d.ph * 2) + d.sink * 0.4);
-      d.mesh.visible = d.sink < 3.2;
+      d.e.set(0.16 * Math.sin(t * 1.1 + d.ph), d.yaw + d.th * (1 + d.spin) + d.sink * 2, 0.14 * Math.sin(t * 0.9 + d.ph * 2) + d.sink * 0.4);
+      d.q.setFromEuler(d.e);
+      // gone down the eye: folded to a point (it draws nothing)
+      d.m.compose(d.p.set(x, y, z), d.q, d.sink < 3.2 ? _one : _dv.set(0, 0, 0));
+      _dn.setFromMatrix4(d.m);
+      const e = d.m.elements;
+      const [first, count] = d.range;
+      for (let v = first * 3, end = (first + count) * 3; v < end; v += 3) {
+        const bx = debris.base[v];
+        const by = debris.base[v + 1];
+        const bz = debris.base[v + 2];
+        pos[v] = e[0] * bx + e[4] * by + e[8] * bz + e[12];
+        pos[v + 1] = e[1] * bx + e[5] * by + e[9] * bz + e[13];
+        pos[v + 2] = e[2] * bx + e[6] * by + e[10] * bz + e[14];
+        const nx = debris.baseN[v];
+        const ny = debris.baseN[v + 1];
+        const nz = debris.baseN[v + 2];
+        const n = _dn.elements;
+        nor[v] = n[0] * nx + n[3] * ny + n[6] * nz;
+        nor[v + 1] = n[1] * nx + n[4] * ny + n[7] * nz;
+        nor[v + 2] = n[2] * nx + n[5] * ny + n[8] * nz;
+      }
     }
+    debris.geo.attributes.position.needsUpdate = true;
+    debris.geo.attributes.normal.needsUpdate = true;
   }
   update(0, 0, null);
 

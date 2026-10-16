@@ -33,6 +33,7 @@ export const palette = {
   skyHorizon: 0xf3e6ff,
   sunColor: 0xffe3f0,
   sunDir: [0.5, 0.25, -0.6],
+  waterSunDir: higherSun([0.5, 0.25, -0.6], 0.62), // the sun the water mirrors (see higherSun)
   sunIntensity: 1.9,
   hemiSky: 0xe9e6ff,
   hemiGround: 0x5a6a9a,
@@ -48,6 +49,15 @@ export const palette = {
   cloudShade: 0xd8d0f0,
   cloudCount: 12,
 };
+
+// The water mirrors a higher sun than the sky shows, on the same bearing (palette.waterSunDir, read by the shared
+// ocean in scenery.js): the low dawn sun makes the ocean shader paint a wide glitter path of pale pink dashes,
+// and out in the strait those read as the ice floes you must steer round. The sky, the sun disc and the
+// lighting keep palette.sunDir.
+function higherSun([x, , z], y) {
+  const k = Math.sqrt(1 - y * y) / Math.hypot(x, z);
+  return [x * k, y, z * k];
+}
 
 // ---------------------------------------------------------------------------
 // Layout
@@ -1347,17 +1357,19 @@ function buildSnow(ownMaterials) {
 // They are alpha-blended rather than additive: added light all but vanishes against the pale
 // pastel dawn horizon, while a blended curtain keeps its mint and pink.
 // ---------------------------------------------------------------------------
+// (high enough to hang over the fjord walls in the chase view, not just in the gap at the far end)
 const AURORA = [
-  { cx: -10, cz: -236, len: 420, ang: 0.08, y0: 22, h: 64, c0: 0x2dffa2, c1: 0xb06cff, ph: 0, amp: 26, op: 0.85, rays: 37 },
-  { cx: 90, cz: -262, len: 300, ang: -0.3, y0: 40, h: 56, c0: 0x4ff0ff, c1: 0xff62c8, ph: 2.1, amp: 20, op: 0.85, rays: 29 },
-  { cx: -110, cz: -214, len: 260, ang: 0.5, y0: 20, h: 48, c0: 0x6dff7a, c1: 0x7d8fff, ph: 4.2, amp: 16, op: 0.8, rays: 23 },
+  { cx: -10, cz: -236, len: 420, ang: 0.08, y0: 50, h: 86, c0: 0x1ff09a, c1: 0x8a3dff, ph: 0, amp: 26, op: 0.9, rays: 37 },
+  { cx: 90, cz: -262, len: 300, ang: -0.3, y0: 66, h: 74, c0: 0x2fe0ff, c1: 0xff3da8, ph: 2.1, amp: 20, op: 0.88, rays: 29 },
+  { cx: -110, cz: -214, len: 260, ang: 0.5, y0: 44, h: 70, c0: 0x4cf06a, c1: 0x5a62ff, ph: 4.2, amp: 16, op: 0.85, rays: 23 },
 ];
 const AURORA_COLS = 72;
 const AURORA_ROWS = [
   // [height fraction, colour (0 = c0, 1 = c1), alpha]
   [0, 0, 0],
-  [0.14, 0, 0.95],
-  [0.55, 0.6, 0.38],
+  [0.1, 0, 1],
+  [0.42, 0.45, 0.8],
+  [0.78, 0.85, 0.42],
   [1, 1, 0],
 ];
 function buildAurora(ownMaterials) {
@@ -1373,7 +1385,8 @@ function buildAurora(ownMaterials) {
     for (let i = 0; i <= n; i++) {
       const u = i / n;
       const end = Math.pow(Math.sin(Math.PI * u), 0.6);
-      const ray = 0.5 + 0.5 * Math.abs(Math.sin(u * A.rays + A.ph)) * (0.7 + 0.3 * Math.sin(u * 11 + A.ph));
+      // bright folds and fainter gaps along the curtain (its rays)
+      const ray = 0.35 + 0.65 * Math.pow(Math.abs(Math.sin(u * A.rays + A.ph)), 1.5) * (0.7 + 0.3 * Math.sin(u * 11 + A.ph));
       AURORA_ROWS.forEach(([, k, a], j) => {
         c.copy(c0).lerp(c1, k);
         col.set([c.r, c.g, c.b, a * end * (j === 1 ? 0.65 + 0.35 * ray : ray)], (i * NR + j) * 4);
@@ -1492,6 +1505,7 @@ function buildFloes(parent, ownMaterials) {
 // ---------------------------------------------------------------------------
 // Build
 // ---------------------------------------------------------------------------
+
 export function build(scene /* , ctx = {} */) {
   const rand = mulberry32(20261015); // fixed: the level always looks the same
   const root = new THREE.Group();

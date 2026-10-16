@@ -754,7 +754,9 @@ export function createOcean(scene) {
       uniforms.uShallow.value.setHex(P.waterShallow);
       uniforms.uFoam.value.setHex(P.waterFoam);
       uniforms.uSunColor.value.setHex(P.sunColor);
-      uniforms.uSunDir.value.fromArray(P.sunDir).normalize();
+      // A palette may give the water its own sun (same bearing, higher: a low sun's wide glitter path can read
+      // as sandbars or ice floes); the sky, the sun disc and the lights keep sunDir.
+      uniforms.uSunDir.value.fromArray(P.waterSunDir || P.sunDir).normalize();
       uniforms.uSkyHorizon.value.setHex(P.skyHorizon);
     },
     /**

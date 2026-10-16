@@ -29,12 +29,26 @@ import {
   plunderGold,
 } from './combat.js';
 import { parseArmoryConfig, serializeArmoryConfig, armoryStats, armoryNextCost } from './armory.js';
-import { parseLook, serializeLook, sanitizeLook, parseFeats, serializeFeats, FEAT_IDS, captainOpts, crewOpts, enemyCrewOpts } from './cosmetics.js';
+import {
+  parseLook,
+  serializeLook,
+  sanitizeLook,
+  parseFeats,
+  serializeFeats,
+  FEAT_IDS,
+  captainOpts,
+  crewOpts,
+  enemyCrewOpts,
+  wear as wearItem,
+  buy as buyItem,
+} from './cosmetics.js';
 import { createTags } from './tags.js';
 import { createPops } from './pops.js';
 import { createOverboard } from './overboard.js';
 import { createBoarding } from './boarding.js';
 import { createMechanics } from './mechanics.js';
+// The dock's other views: walking round the island, Polly's wardrobe and the tavern (townMode.js, town.js).
+import { createTownMode } from './townMode.js';
 import {
   UPGRADES,
   LOOKS,
@@ -191,6 +205,17 @@ const ui = {
   dockExits: $('dock-exits'),
   dockLive: $('dock-live'),
   dockToast: $('dock-toast'),
+  dockAshore: $('dock-ashore-btn'),
+  townScreen: $('town-screen'),
+  townMute: $('town-mute'),
+  wardrobeScreen: $('wardrobe-screen'),
+  tavernScreen: $('tavern-screen'),
+  harbourDialog: $('harbour-dialog'),
+  aboardDialog: $('aboard-dialog'),
+  wonText: $('won-text'),
+  wonHint: $('won-hint'),
+  act2Btn: $('act2-btn'),
+  againBtn: $('again-btn'),
   crewChip: $('crew-chip'),
   crewNum: document.querySelector('#crew-chip .crew-num') || document.createElement('b'),
   firePort: document.querySelector('#gun-port .fire-tag') || document.createElement('span'),
@@ -387,6 +412,24 @@ function syncArmory() {
   armoryCfg = next;
   return true;
 }
+// The look record (Polly's) changed in another tab: take it, so that a write here never drops an item
+// bought there. (This tab only changes its own look after saving it, so the saved record already holds
+// every item this tab bought.) Returns whether the look changed.
+function syncLook() {
+  const raw = readRaw(LOOK_KEY);
+  if (raw === null || raw === lookSeen) return false;
+  lookSeen = raw;
+  const next = sanitizeLook(parseLook(raw), feats);
+  if (serializeLook(next) === serializeLook(look)) return false;
+  look = next;
+  return true;
+}
+// Save a look (a validated record); the in-memory look is the caller's to set.
+function saveLook(next) {
+  if (!saveRecord(LOOK_KEY, serializeLook, next)) return false;
+  lookSeen = serializeLook(next);
+  return true;
+}
 
 // Another tab of the game may have banked gold or changed the ship since this one last read or
 // wrote them: take those records before changing anything, so neither tab undoes the other's work.
@@ -469,7 +512,7 @@ function sfxAt(x, z, extra) {
 }
 
 function updateMuteButtons() {
-  for (const btn of [ui.muteBtn, ui.menuMute, ui.dockMute]) {
+  for (const btn of [ui.muteBtn, ui.menuMute, ui.dockMute, ui.townMute]) {
     btn.classList.toggle('muted', audio.muted);
     btn.setAttribute('aria-pressed', String(audio.muted));
     btn.setAttribute('aria-label', audio.muted ? 'Unmute sound' : 'Mute sound');
@@ -521,6 +564,8 @@ function resize() {
   menuLayout = null;
   dockLayout = null;
   topInset = 0; // the HUD's top row is measured again (hudTopInset)
+  townMode.onResize(); // Polly's and the tavern frame their subject beside the panel again
+  menuPin(); // the title's pinned Set sail! row may have changed height
 }
 
 // The game's normal lens for the window (the shipyard view sets its own, see dockFraming()).
@@ -601,6 +646,7 @@ let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
   if (serializeLook(clean) !== serializeLook(look)) saveRecord(LOOK_KEY, serializeLook, clean);
   look = clean;
 }
+let lookSeen = readRaw(LOOK_KEY); // the look record as this tab last read or wrote it (see syncLook)
 let armoryCfg = loadRecord(ARMORY_KEY, parseArmoryConfig, serializeArmoryConfig); // the tavern's crew upgrades
 let tips = loadInt(TIPS_KEY, 0, 255, 0); // one-time tips already shown (SPEC2 §5.5)
 // Gameplay dice for hits (crits), reseeded at every level start so a level plays out the same way.
@@ -1302,6 +1348,7 @@ function finishLevel() {
   state.gold += def.bonus + prize + mech;
   show(ui.banner, false);
   show(ui.hint, false);
+  pops.clear(); // (a last "CAPTURED! +625 GOLD" still rising must not sit over the end screen)
   // This level's earnings (loot and bonus) go into the treasure chest for the shipyard.
   // (Gold from an attempt that is lost is never banked: a retry restores the voyage gold.)
   bankGold(state.gold - state.goldAtLevelStart);
@@ -1324,6 +1371,14 @@ function finishLevel() {
     ui.wonGold.textContent = state.gold;
     ui.wonChest.innerHTML = banked;
     show(ui.wonBest, isBest);
+    // The finale's own words; with more voyage after it (the Molten Maw opens the Far Seas) the first button
+    // sails on, gold and all (Enter does the same), and the main menu steps back.
+    const after = LEVELS[state.level];
+    if (def.finaleText) ui.wonText.textContent = def.finaleText;
+    ui.act2Btn.textContent = after && (after.act || 1) !== (def.act || 1) ? 'Sail on to the Far Seas' : after ? `Sail on to ${after.env.meta.name}` : '';
+    show(ui.act2Btn, !!after);
+    show(ui.wonHint, !!after);
+    ui.againBtn.classList.toggle('alt', !!after);
     show(ui.won, true);
   } else {
     state.mode = 'levelDone';
@@ -3118,8 +3173,11 @@ function step(dt) {
         ? `<small>${state.lastBossSunk} is sunk!</small>`
         : '';
     const struckLine = taken ? `<small>${taken === 1 ? 'The surrendered ship is yours!' : 'The surrendered ships are yours!'}</small>` : '';
+    const onward = won && state.level < LEVELS.length; // a finale with the Far Seas still to come
     showBanner(
-      won ? `Victory!${bossLine}${struckLine}<small>The seas are yours</small>` : `Level cleared!${bossLine}${struckLine}<small>Grab the loot</small>`,
+      won
+        ? `Victory!${bossLine}${struckLine}<small>${onward ? 'The Old World is yours' : 'The seas are yours'}</small>`
+        : `Level cleared!${bossLine}${struckLine}<small>Grab the loot</small>`,
       2.5
     );
   }
@@ -3419,10 +3477,14 @@ function onContextLost() {
   }
   if (state.mode === 'playing') pauseGame();
   if (activeModal() === ui.pause) closeModal(ui.pause);
+  // Ashore, the Harbour menu or All aboard? closes (focus goes back to the town when the view returns).
+  if (activeModal() === ui.harbourDialog || activeModal() === ui.aboardDialog) closeModal(modal);
   ui.recoverTitle.textContent = 'Graphics paused';
   const what =
     state.mode === 'dock'
-      ? 'The shipyard will be back in a moment; your treasure chest and your ship are safe.'
+      ? townMode.active
+        ? 'The town will be back in a moment; your treasure chest and your ship are safe.'
+        : 'The shipyard will be back in a moment; your treasure chest and your ship are safe.'
       : state.mode === 'menu'
         ? 'Your progress is safe.'
         : 'The voyage is paused and your progress is safe.';
@@ -3450,6 +3512,7 @@ function onContextRestored() {
     // It was paused before: stay paused (back at the choices). Not if Leave has taken the game to the shipyard
     // or the title meanwhile: there is no battle to pause any more.
     if (recovery.pauseWasOpen && state.mode === 'paused') openPause();
+    else if (state.mode === 'dock' && townMode.active) townMode.onContextRestored(); // the town HUD or the open panel
     else if (state.mode === 'dock') {
       // back to the shipyard panel, where the player was if that control is still there
       const f = recovery.focus;
@@ -3498,6 +3561,9 @@ window.addEventListener('keydown', (e) => {
     list[next].focus();
     return;
   }
+  // Ashore (walking, Polly's, the tavern, the Harbour menu and All aboard?) townMode decides: it walks,
+  // opens places, and Escape closes its dialogs (the dock's own P / Escape do nothing).
+  if (state.mode === 'dock' && townMode.onKey(e, true)) return;
   // At the shipyard the panel's buttons (and the browser) handle the keys: P, Escape and a bare
   // Enter do nothing, arrows scroll the panel. With nothing focused, ←/→ (or A/D) turn the view.
   if (state.mode === 'dock' && !open) {
@@ -3506,7 +3572,7 @@ window.addEventListener('keydown', (e) => {
         toggleMute();
         announce(audio.muted ? 'Sound off.' : 'Sound on.');
       }
-    } else if (KEYMAP[k] && !ui.dock.contains(document.activeElement)) {
+    } else if (KEYMAP[k] && townMode.view === 'shop' && !ui.dock.contains(document.activeElement)) {
       e.preventDefault();
       nudgeDockView(KEYMAP[k] === 'left' ? -1 : 1);
     }
@@ -3528,7 +3594,11 @@ window.addEventListener('keydown', (e) => {
   if (k === 'enter' || (k === ' ' && state.mode === 'menu')) {
     if (e.repeat || open) return;
     if (state.mode === 'menu') newGame();
-    else if (state.mode === 'won') showMenu();
+    else if (state.mode === 'won') {
+      // After a finale with more voyage to come (the Molten Maw): sail on, as the first button does.
+      if (state.level < LEVELS.length) nextLevel();
+      else showMenu();
+    }
     else if (state.mode === 'levelDone') nextLevel();
     else if (state.mode === 'over') retryLevel();
     else if (boarding.phase === 'brawl') boarding.skip();
@@ -3580,6 +3650,7 @@ window.addEventListener('keydown', (e) => {
 });
 
 window.addEventListener('keyup', (e) => {
+  if (state.mode === 'dock') townMode.onKey(e, false); // (a walking key let go)
   if (e.key.toLowerCase() === 'g' || e.code === 'KeyG') boarding.cutHold(false);
   const src = keySource(e);
   for (const dir of ['left', 'right']) if (steerSources[dir].has(src)) steerRelease(dir, src);
@@ -3746,6 +3817,7 @@ ui.quitMenu.addEventListener('click', () => askLeave('menu'));
 $('leave-yes-btn').addEventListener('click', confirmLeave);
 $('leave-no-btn').addEventListener('click', cancelLeave);
 $('next-btn').addEventListener('click', nextLevel);
+ui.act2Btn.addEventListener('click', nextLevel); // "Sail on to the Far Seas" (the won screen, when a level follows)
 $('retry-btn').addEventListener('click', retryLevel);
 $('menu-btn').addEventListener('click', () => {
   showMenu();
@@ -3777,13 +3849,17 @@ ui.dockMute.addEventListener('click', toggleMute);
 // The chest, the ship, the tavern record or the feats changed in another tab of the game: show it here too.
 window.addEventListener('storage', (e) => {
   const any = e.key === null; // (storage cleared)
-  if (any || e.key === FEATS_KEY) syncFeats(); // counted there: added to what this tab counted
+  const counted = (any || e.key === FEATS_KEY) && syncFeats(); // counted there: added to what this tab counted
   const armory = (any || e.key === ARMORY_KEY) && syncArmory(); // bought at the tavern there
   const chest = (any || e.key === PURSE_KEY || e.key === SHIP_KEY) && syncSaved();
+  const dressed = (any || e.key === LOOK_KEY) && syncLook(); // bought or worn at Polly's there
+  if (state.mode === 'dock' && (counted || dressed)) townMode.refresh(); // (the wardrobe, the log, the captain)
+  if (state.mode === 'dock' && dressed) restyleCrew();
   if (!armory && !chest) return;
   if (state.mode === 'dock') {
     rebuildDockShip();
     renderDock();
+    townMode.refresh();
   } else if (state.mode === 'menu') {
     renderLevelCards();
     menuShip();
@@ -3808,28 +3884,76 @@ function titleClickTooSoon(e) {
   return at - titleShownAt < 500;
 }
 
-// Level select cards on the title screen.
+// Level select cards on the title screen, one group per act (SPEC2 §5.6): a heading spanning the grid, then
+// that act's cards. Each card: number, name, difficulty word and skull pips ("Difficulty 4 of 6"), and Play
+// or why it is locked ("Beat the Molten Maw"). With a single act there are no headings.
+const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas' };
+const SKULL_SVG =
+  '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.6C4.6 1.6 2.2 3.9 2.2 6.9c0 1.8.8 3.2 2.1 4v1.9c0 .8.6 1.4 1.4 1.4h4.6c.8 0 1.4-.6 1.4-1.4v-1.9c1.3-.8 2.1-2.2 2.1-4 0-3-2.4-5.3-5.8-5.3z"/>' +
+  '<circle class="eye" cx="5.8" cy="7.3" r="1.55"/><circle class="eye" cx="10.2" cy="7.3" r="1.55"/><path class="eye" d="M7.2 10.4h1.6l-.8-1.3z"/></svg>';
 function renderLevelCards() {
   ui.best.textContent = state.best;
   ui.menuChest.textContent = state.purse;
   ui.levelCards.innerHTML = '';
+  const acts = new Set(LEVELS.map((d) => d.act || 1));
+  const maxStars = Math.max(LEVELS.length, ...LEVELS.map((d) => d.stars || 0));
+  let act = null;
   LEVELS.forEach((def, i) => {
     const n = i + 1;
+    if (acts.size > 1 && (def.act || 1) !== act) {
+      act = def.act || 1;
+      const h = document.createElement('h3');
+      h.className = `act-head act-${act}`;
+      h.textContent = ACT_NAMES[act] || `Voyage ${act}`;
+      ui.levelCards.appendChild(h);
+    }
     const locked = n > state.unlocked;
+    const stars = clamp(Math.round(def.stars || n), 1, maxStars);
     const btn = document.createElement('button');
+    btn.type = 'button';
     btn.className = `level-card lvl-${n}${locked ? ' locked' : ''}`;
     btn.disabled = locked;
     btn.dataset.level = n;
+    const pips = Array.from({ length: maxStars }, (_, k) => `<span class="skull${k < stars ? ' on' : ''}">${SKULL_SVG}</span>`).join('');
     btn.innerHTML =
       `<span class="lvl-num">${n}</span>` +
       `<span class="lvl-name">${def.env.meta.name}</span>` +
-      `<span class="lvl-diff" title="Difficulty" aria-label="Difficulty: ${def.difficulty}">${def.difficulty}</span>` +
-      `<span class="lvl-lock">${locked ? 'Locked' : 'Play'}</span>`;
+      `<span class="lvl-diff" title="Difficulty"><span class="diff-word">${def.difficulty}</span>` +
+      `<span class="lvl-pips" role="img" aria-label="Difficulty ${stars} of ${maxStars}">${pips}</span></span>` +
+      `<span class="lvl-lock">${locked ? def.lockText || 'Locked' : 'Play'}</span>`;
     btn.addEventListener('click', (e) => {
       if (!titleClickTooSoon(e)) newGame(n);
     });
     ui.levelCards.appendChild(btn);
   });
+  menuPin();
+}
+
+// When the title panel has to scroll, its Set sail! row stays pinned to the panel's foot (style.css). So that it
+// never hides what has focus (§13), the row's height plus the panel's bottom padding goes into --menu-pin, which
+// the panel's scroll-padding-bottom reads: a card that Tab (or a screen reader) focuses is scrolled to just
+// above the row, ring and all. The fade above the row shows only while cards pass beneath it ('pinned'), so it
+// never dims a card's focus ring when the row sits in its own place below the cards.
+const menuPinRow = ui.menu.querySelector('.menu-actions');
+const menuPinPanel = menuPinRow && menuPinRow.closest('.panel');
+function menuPin() {
+  const row = menuPinRow;
+  const panel = menuPinPanel;
+  if (!row || !panel || !row.getClientRects().length) return; // (the title is hidden)
+  const pad = parseFloat(getComputedStyle(panel).paddingBottom) || 0;
+  panel.style.setProperty('--menu-pin', `${Math.ceil(row.offsetHeight + pad)}px`);
+  // Pinned: the row is lifted above its place in the flow (just below the cards and their bottom margin).
+  const prev = row.previousElementSibling;
+  const flowTop = prev ? prev.getBoundingClientRect().bottom + (parseFloat(getComputedStyle(prev).marginBottom) || 0) : -Infinity;
+  row.classList.toggle('pinned', row.getBoundingClientRect().top < flowTop - 0.5);
+}
+if (menuPinPanel) {
+  menuPinPanel.addEventListener('scroll', menuPin, { passive: true });
+  if (typeof ResizeObserver === 'function') {
+    const ro = new ResizeObserver(() => menuPin());
+    ro.observe(menuPinPanel);
+    ro.observe(menuPinRow);
+  }
 }
 
 function showMenu() {
@@ -4003,6 +4127,7 @@ function openDock(from) {
   setEnvironment(sparrow, 77);
   dock.sup = null;
   placeDockShip(buildPlayerMesh());
+  restyleCrew(); // the cleaning crew in the uniform from Polly's (the default one leaves them as they are)
   dock.a = env.view.yaw;
   dock.phase = 0;
   dock.idle = 99; // start swaying straight away
@@ -4021,12 +4146,20 @@ function openDock(from) {
   dockLayout = null;
   // Keyboard focus starts on the Upgrades tab (unless the graphics-recovery dialog is up).
   if (!activeModal()) dockTab('up').focus({ preventScroll: true });
+  // The first visit since the town opened: the Go ashore button pulses once (one-time tip, SPEC2 §5.5).
+  ui.dockAshore.classList.remove('pulse');
+  if (!(tips & TIP.ashore)) {
+    tips |= TIP.ashore;
+    saveNumber(TIPS_KEY, tips);
+    retrigger(ui.dockAshore, 'pulse');
+  }
   return true;
 }
 
 // Tidy up the dock scene (the caller loads whatever comes next). Safe to call any time.
 function closeDock() {
   if (!dock.open) return;
+  townMode.close(); // the captain, the crew line-up and the town's screens and dialogs (before the island goes)
   dock.open = false;
   dock.cheering = [];
   dock.cheerUntil = 0;
@@ -4219,6 +4352,7 @@ function setPaint(part, id) {
     if (unsavedSpend > 0) saveChest();
     else saveShipConfig(shipConfig);
     rebuildDockShip();
+    if (part === 'hull') restyleCrew(); // a crew in "Match the ship's paint" follows the hull
     celebrate(false);
   }
   renderDock();
@@ -4347,7 +4481,8 @@ function buildDockPanel() {
   });
 }
 
-function renderDockExits() {
+// The ways out of the dock with their labels: the shipyard's footer, the Harbour menu and All aboard?.
+function dockExitList() {
   const next = state.level < LEVELS.length ? LEVELS[state.level].env.meta.name : '';
   const here = LEVELS[state.level - 1].env.meta.name;
   const label = {
@@ -4356,14 +4491,17 @@ function renderDockExits() {
     menu: 'Main menu',
     title: 'Back to the title',
   };
+  return dockExits(dock.from).map((action) => ({ action, label: label[action] }));
+}
+function renderDockExits() {
   ui.dockExits.innerHTML = '';
-  dockExits(dock.from).forEach((action, i) => {
+  dockExitList().forEach(({ action, label }, i) => {
     const b = document.createElement('button');
     b.type = 'button';
     b.className = i === 0 ? 'btn' : 'btn alt';
     b.id = `dock-${action}-btn`;
     b.dataset.exit = action;
-    b.textContent = label[action];
+    b.textContent = label;
     ui.dockExits.appendChild(b);
   });
 }
@@ -4436,6 +4574,11 @@ function endDockDrag(e) {
 }
 
 ui.canvas.addEventListener('pointerdown', (e) => {
+  // Ashore the canvas walks (tap), turns the camera (drag) or holds the touch stick: townMode's.
+  if (state.mode === 'dock' && townMode.active) {
+    townMode.onPointer('down', e);
+    return;
+  }
   if (state.mode !== 'dock' || dock.drag || activeModal()) return;
   if (e.pointerType === 'mouse' && e.button !== 0) return;
   dock.drag = { id: e.pointerId, x: e.clientX };
@@ -4447,6 +4590,10 @@ ui.canvas.addEventListener('pointerdown', (e) => {
   document.body.classList.add('dragging');
 });
 ui.canvas.addEventListener('pointermove', (e) => {
+  if (state.mode === 'dock' && townMode.active) {
+    townMode.onPointer('move', e);
+    return;
+  }
   const d = dock.drag;
   if (!d || e.pointerId !== d.id || state.mode !== 'dock') return;
   const v = env.view;
@@ -4457,7 +4604,12 @@ ui.canvas.addEventListener('pointermove', (e) => {
   dock.a = clamp(dock.a - (dx / width) * v.yawRange * 2.4, v.yaw - v.yawRange, v.yaw + v.yawRange);
   dock.idle = 0;
 });
-for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) ui.canvas.addEventListener(type, endDockDrag);
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  ui.canvas.addEventListener(type, (e) => {
+    if (state.mode === 'dock') townMode.onPointer(type === 'pointerup' ? 'up' : 'cancel', e);
+    endDockDrag(e);
+  });
+}
 
 // Frame the ship in the free space beside the panel (above it when the panel is a bottom sheet):
 // the camera's full frame is that free area, the canvas shows it plus what lies under the panel.
@@ -4568,6 +4720,129 @@ function updateDockCamera(dt) {
   camera.position.set(tx + Math.sin(dock.a) * v.dist, ty + v.height, tz + Math.cos(dock.a) * v.dist);
   camera.lookAt(tx, ty, tz);
 }
+
+// ---------------------------------------------------------------------------
+// Ashore on Sparrow's Floating Island (SPEC2 §7): walking round the town, Polly's Plumes & Trims and The
+// Salty Sparrow live in townMode.js (screens, dialogs, keys, the camera) and town.js (the captain). The
+// saved records stay here: the look (Polly's), the tavern's record (buyArmory) and the chest.
+// ---------------------------------------------------------------------------
+const hullPaintNow = () => LOOKS.hull.find((l) => l.id === shipConfig.look.hull) || LOOKS.hull[0];
+// Dress the cleaning crew on the docked ship in the uniform from Polly's (the default uniform leaves each
+// sailor exactly as he was).
+function restyleCrew() {
+  if (!env || typeof env.setCrewStyle !== 'function') return;
+  const paint = hullPaintNow();
+  env.setCrewStyle((role, seed, base) => crewOpts(look, seed, base, paint));
+}
+// A whole new look (Surprise me!, or the feats changed): validated, a trophy not earned comes off, and
+// saved. Items bought in another tab meanwhile stay owned.
+function setLook(next) {
+  syncLook();
+  const L = parseLook(next);
+  look = sanitizeLook(parseLook({ ...L, own: [...look.own, ...L.own] }), feats);
+  saveLook(look);
+}
+// Wear an item at Polly's (free or owned): saved (if storage refuses, it is worn for this visit).
+function wardrobeWear(id) {
+  syncLook();
+  const r = wearItem(look, feats, id);
+  if (!r.ok) return { ok: false, reason: r.reason };
+  look = r.look;
+  saveLook(look);
+  return { ok: true, reason: null };
+}
+// Buy an item at Polly's: paid from the treasure chest, owned and worn. The look record is saved first and
+// the chest only after it: if storage refuses the record, nothing is bought (gold is never spent on an item
+// that would be lost; SPEC2 §8, the shipyard's rule).
+function wardrobeBuy(id) {
+  if (state.mode !== 'dock') return { ok: false, reason: 'closed' };
+  if (syncSaved()) {
+    // gold banked (or the ship changed) in another tab: show that first
+    rebuildDockShip();
+    renderDock();
+  }
+  syncLook(); // items bought in another tab
+  const r = buyItem(look, state.purse, id);
+  if (!r.ok) return { ok: false, reason: r.reason };
+  if (!saveLook(r.look)) return { ok: false, reason: 'storage' };
+  look = r.look;
+  state.purse -= r.cost;
+  saveChest();
+  return { ok: true, reason: null };
+}
+// The tavern's rumour board: the next level after a cleared one, the level to retry after a wreck (or a
+// battle left early), else the highest unlocked one. null past the last level.
+function nextRumour() {
+  const from = dock.from;
+  const n = from === 'levelDone' || from === 'won' ? state.level + 1 : from === 'over' || from === 'quit' ? state.level : state.unlocked;
+  const def = LEVELS[n - 1];
+  if (!def) return null;
+  const r = def.rumour || null;
+  return { level: n, title: def.env.meta.name, lines: (r && Array.isArray(r.lines) && r.lines) || [], ammo: (r && r.ammo) || null };
+}
+// Prize ships moored off the town: the two most valuable kinds you have captured, flying your flag.
+function prizeShips() {
+  const flag = LOOKS.flag.find((l) => l.id === shipConfig.look.flag) || null;
+  const won = Object.entries((feats && feats.prizes) || {}).filter(([type, n]) => n > 0 && SHIP_TYPES[type] && type !== 'player');
+  won.sort((a, b) => (SHIP_TYPES[b[0]].gold || 0) - (SHIP_TYPES[a[0]].gold || 0) || b[1] - a[1]);
+  return won.slice(0, 2).map(([type]) => ({ type, flag }));
+}
+function hideShipyard() {
+  endDockDrag();
+  show(ui.dock, false);
+}
+// Back to the shipyard panel (the town's Shipyard place): the showcase framing is worked out again and
+// focus goes to the Upgrades tab.
+function showShipyard() {
+  show(ui.dock, true);
+  dockLayout = null;
+  dock.idle = 99; // sway straight away
+  renderDock();
+  setDockTab('up', false);
+  if (!activeModal()) dockTab('up').focus({ preventScroll: true });
+}
+const townMode = createTownMode({
+  scene,
+  camera,
+  canvas: ui.canvas,
+  env: () => env,
+  ui: {
+    townScreen: ui.townScreen,
+    wardrobeScreen: ui.wardrobeScreen,
+    tavernScreen: ui.tavernScreen,
+    harbourDialog: ui.harbourDialog,
+    aboardDialog: ui.aboardDialog,
+    dockScreen: ui.dock,
+    ashoreBtn: ui.dockAshore,
+  },
+  look: { get: () => look, set: setLook },
+  feats: () => feats,
+  wardrobe: { wear: wardrobeWear, buy: wardrobeBuy },
+  purse: () => state.purse,
+  armory: { config: () => armoryCfg, buy: (id) => buyArmory(id) },
+  hullPaint: hullPaintNow,
+  exits: dockExitList,
+  // (an exit to the title: its double-click must not start a voyage there, see titleClickTooSoon)
+  leaveDock: (action) => {
+    const ok = leaveDock(action);
+    titleShown();
+    return ok;
+  },
+  showShipyard,
+  hideShipyard,
+  setLens,
+  openModal,
+  closeModal,
+  activeModal,
+  announce,
+  audio,
+  isTouch,
+  reducedMotion: () => reducedMotion(),
+  rumour: nextRumour,
+  log: () => [],
+  toggleMute,
+  prizes: prizeShips,
+});
 
 // ---------------------------------------------------------------------------
 // HUD
@@ -5234,7 +5509,8 @@ function updateCamera(dt, paused) {
     }
     camera.lookAt(camLook);
   } else if (state.mode === 'dock' && dock.ship) {
-    updateDockCamera(dt);
+    // Ashore townMode drives the camera (walking, Polly's mirror, the tavern porch); else the showcase sway.
+    if (!townMode.update(dt, visualTime)) updateDockCamera(dt);
   } else if (env) {
     const ps = env.playerStart;
     // Frame the title-screen ship in the free margin beside the menu panel.
@@ -5597,9 +5873,14 @@ window.__game = {
       armoryCfg = parseArmoryConfig(cfg);
       saveRecord(ARMORY_KEY, serializeArmoryConfig, armoryCfg);
       if (state.mode === 'dock') rebuildDockShip();
+      townMode.refresh();
       return parseArmoryConfig(armoryCfg);
     },
-    buy: (id) => buyArmory(id),
+    buy(id) {
+      const ok = buyArmory(id);
+      townMode.refresh();
+      return ok;
+    },
     get stats() {
       return armoryStats(armoryCfg);
     },
@@ -5616,8 +5897,10 @@ window.__game = {
     const clean = sanitizeLook(look, feats);
     if (serializeLook(clean) !== serializeLook(look)) {
       look = clean;
-      saveRecord(LOOK_KEY, serializeLook, look);
+      saveLook(look);
+      if (state.mode === 'dock') restyleCrew();
     }
+    townMode.refresh(); // (Polly's trophies, the captain's log)
     return parseFeats(feats);
   },
   get look() {
@@ -5644,36 +5927,53 @@ window.__game = {
     }
     return parseShipConfig(shipConfig);
   },
+  // Polly's (SPEC2 §7.7): wear(id) a free or owned item, buy(id) a priced one from the treasure chest (in the
+  // dock); both save the look ({ ok, reason }). The open wardrobe and the captain follow.
   wardrobe: {
-    wear: () => ({ ok: false, reason: 'unknown' }),
-    buy: () => ({ ok: false, reason: 'unknown' }),
+    wear(id) {
+      const r = wardrobeWear(id);
+      if (r.ok && state.mode === 'dock') restyleCrew();
+      townMode.refresh();
+      return r;
+    },
+    buy(id) {
+      const r = wardrobeBuy(id);
+      if (r.ok && state.mode === 'dock') restyleCrew();
+      townMode.refresh();
+      return r;
+    },
   },
+  // Ashore (SPEC2 §7, townMode.js): the view, the captain and his walk, and the places.
   town: {
     get active() {
-      return false;
+      return state.mode === 'dock' && townMode.active;
     },
     get view() {
-      return null;
+      return state.mode === 'dock' ? townMode.view : null;
     },
     get pos() {
-      return null;
+      return townMode.api.pos;
     },
     get place() {
-      return null;
+      return townMode.api.place;
     },
     get walk() {
-      return null;
+      return townMode.api.walk;
     },
     get captain() {
-      return null;
+      return townMode.api.captain;
     },
-    setMove: () => {},
-    walkTo: () => false,
-    goTo: () => false,
-    interact: () => false,
-    open: () => false,
-    back: () => false,
-    simulate: () => {},
+    setMove: (x, z, run) => townMode.api.setMove(x, z, run),
+    walkTo: (x, z) => townMode.api.walkTo(x, z),
+    goTo: (id) => townMode.api.goTo(id),
+    interact: () => townMode.api.interact(),
+    open: (id) => state.mode === 'dock' && townMode.api.open(id),
+    back: () => state.mode === 'dock' && townMode.api.back(),
+    simulate: (seconds, input) => townMode.api.simulate(seconds, input),
+    // townMode's own test hooks (the wardrobe's tabs and Buy, the tavern, the line-up, the Harbour menu).
+    get api() {
+      return townMode.api;
+    },
   },
   // The shipyard: open('menu' | 'levelDone' | 'over' | 'won' | 'quit'), at once (the buttons wait two frames);
   // 'quit' leaves the battle in play as the pause dialog's Shipyard does (this level's plunder is dropped as
@@ -5694,12 +5994,14 @@ window.__game = {
     get layout() {
       return dockLayout ? { ...dockLayout, fov: camera.fov, angle: dock.a } : null;
     },
-    // Which dock view is showing (only the shipyard until the town arrives).
+    // Which dock view is showing: 'shop' (the shipyard) | 'town' | 'tailor' | 'tavern'.
     get view() {
-      return state.mode === 'dock' ? 'shop' : null;
+      return state.mode === 'dock' ? townMode.view : null;
     },
-    ashore: () => false,
-    back: () => false,
+    // Go ashore from the shipyard (as its Go ashore button does); back(): from a panel to the town, or from the
+    // shipyard back to the town.
+    ashore: () => state.mode === 'dock' && townMode.ashore(),
+    back: () => state.mode === 'dock' && townMode.back(),
   },
   camera,
   scene,

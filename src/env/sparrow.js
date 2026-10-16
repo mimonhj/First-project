@@ -36,7 +36,10 @@ import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIG
 // the art: the decks the captain may stand on (inset from the rails and the water's edge), the rope
 // bridges, the props in the way, the places (the ship, the shipyard, Polly's Plumes & Trims on
 // platform s1 and The Salty Sparrow) and the spawn at the gangplank. Walkable: the pier, the plaza,
-// the tavern raft, the tower raft, the shipyard, Polly's and the garden.
+// the tavern raft, the tower raft, the shipyard, Polly's and the garden. env.walk.camBlockers are
+// for the walk camera only (town.js): things up in the air the captain walks under or round but the
+// lens must not pass through (the signs' boards, the leaning palms, the beach umbrella, the tavern's
+// balcony, Polly's awning). env.cheer('polly' | 'snips' | 'tailors', seconds): a purchase at Polly's.
 
 export const meta = {
   name: "Sparrow's Floating Island",
@@ -1061,6 +1064,7 @@ function palm(parent, x, y, z, s, dirX, dirZ, rand) {
     const a = a0 + i * 2.1;
     add(parent, sphere(10), ink(COL.coconut), top.x + Math.cos(a) * 0.36 * s, top.y - 0.32 * s, top.z + Math.sin(a) * 0.36 * s, 0, 0, 0, 0.28 * s);
   }
+  return { pts, s }; // the trunk's centre line (parent's frame), for the walk camera
 }
 
 // Where a ship's skin is, seen from one side (side = +1 / -1 along its local x): returns
@@ -1411,7 +1415,10 @@ export function build(scene, ctx = {}) {
   // ----- the walk (plain data, see walk.js): filled in as the town is built -----
   const WALK_INSET = 0.65; // the captain's centre keeps this far from rails and the water's edge
   const BRIDGE_HW = 0.25; // and this close to a rope bridge's middle
-  const walkData = { radius: 0.3, areas: [], links: [], blockers: [], places: [], spawn: null };
+  // camBlockers: camera-only volumes (the walk camera keeps out of them; the captain may pass under or
+  // beside them): the signs' boards up on their posts, the leaning palm trunks, the beach umbrella...
+  // { x, z, w, d, ry, y0, y1 } (a box) or { x, z, r, y0, y1 } (an upright cylinder), world units.
+  const walkData = { radius: 0.3, areas: [], links: [], blockers: [], camBlockers: [], places: [], spawn: null };
   const walkDecks = []; // the walkable decks, whole (for telling which townsfolk stand on them)
   const r2 = (v) => Math.round(v * 100) / 100;
   const yawOf = (obj) => {
@@ -1432,6 +1439,18 @@ export function build(scene, ctx = {}) {
   function blockBox(obj, lx, lz, w, d, ry, h) {
     const p = worldAt(obj, lx, 0, lz);
     walkData.blockers.push({ x: r2(p.x), z: r2(p.z), w: r2(w), d: r2(d), ry: r3(yawOf(obj) + ry), h: r2(h) });
+  }
+  /** Camera-only: a box centred at (lx, lz) of obj, w x d turned by ry, from ly0 to ly1 up obj's frame. */
+  function camBox(obj, lx, lz, w, d, ry, ly0, ly1) {
+    const a = worldAt(obj, lx, ly0, lz);
+    const b = worldAt(obj, lx, ly1, lz);
+    walkData.camBlockers.push({ x: r2(a.x), z: r2(a.z), w: r2(w), d: r2(d), ry: r3(yawOf(obj) + ry), y0: r2(Math.min(a.y, b.y)), y1: r2(Math.max(a.y, b.y)) });
+  }
+  /** Camera-only: an upright cylinder of radius r at (lx, lz) of obj, from ly0 to ly1 up obj's frame. */
+  function camPost(obj, lx, lz, r, ly0, ly1) {
+    const a = worldAt(obj, lx, ly0, lz);
+    const b = worldAt(obj, lx, ly1, lz);
+    walkData.camBlockers.push({ x: r2(a.x), z: r2(a.z), r: r2(r), y0: r2(Math.min(a.y, b.y)), y1: r2(Math.max(a.y, b.y)) });
   }
   /** A walkable rect (a portal joining two decks, or a deck): world centre, size, turn, height. */
   function walkRect(id, x, z, w, d, ry, y) {
@@ -1732,8 +1751,7 @@ export function build(scene, ctx = {}) {
       add(g, sphere(8), ink([COL.pink, COL.yellow, COL.red, COL.white][i % 4]), fx, GARDEN.y + 0.36, fz, 0, 0, 0, 0.11);
     }
     add(g, sphere(9), ink(COL.stone), 2.1, GARDEN.y - 0.15, 1.2, 0.3, 0.4, 0, [0.55, 0.38, 0.45]);
-    palm(g, -0.6, GARDEN.y, -0.5, 1.0, -0.5, -0.6, rand);
-    palm(g, 1.0, GARDEN.y, -0.9, 0.82, 0.7, -0.3, rand);
+    const palms = [palm(g, -0.6, GARDEN.y, -0.5, 1.0, -0.5, -0.6, rand), palm(g, 1.0, GARDEN.y, -0.9, 0.82, 0.7, -0.3, rand)];
     // a beach umbrella over a driftwood bench
     // (the shade is up high enough for a captain in a tall hat to walk under its rim)
     const UMB = 0.4;
@@ -1755,6 +1773,19 @@ export function build(scene, ctx = {}) {
     block(g, 2.1, 1.2, 0.5, 0.4);
     blockBox(g, 1.5, 2.1, 1.6, 0.42, 0, 0.4);
     block(g, 1.5, 1.3, 0.08, 2.4);
+    // the camera keeps off the leaning palm trunks (a short upright cylinder round each stretch of the
+    // trunk), their crowns of fronds and the umbrella's shade (the captain walks under the shade)
+    for (const { pts, s } of palms) {
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const a = pts[i];
+        const b = pts[i + 1];
+        const r = 0.36 * s * (1 - (0.38 * i) / pts.length) + Math.hypot(b.x - a.x, b.z - a.z) / 2;
+        camPost(g, (a.x + b.x) / 2, (a.z + b.z) / 2, r, a.y, b.y);
+      }
+      const top = pts[pts.length - 1];
+      camPost(g, top.x, top.z, 2.6 * s, top.y - 0.7 * s, top.y + 0.5 * s);
+    }
+    camPost(g, 1.45, 1.35, 1.3, GARDEN.y + 2.1 + UMB - 0.3, GARDEN.y + 2.1 + UMB + 0.4);
   }
 
   // ----- the pier: bollards, fenders, lamp posts -----
@@ -1923,6 +1954,10 @@ export function build(scene, ctx = {}) {
     g.add(st);
     hatModel(st, 'straw', 0.66);
     block(g, 0, 0, 0.16, 3.6);
+    // the camera keeps off the arrow board, the display head in its hat on top and the post
+    camBox(g, 0.86, 0, 2.25, 0.3, 0, 2.62, 3.42);
+    camPost(g, 0, 0, 0.36, 3.3, 4.25);
+    camPost(g, 0, 0, 0.12, 0, 3.3);
   }
   {
     // the welcome sign: a big painted board on two tall posts, the pirate sparrow on top (high
@@ -1964,6 +1999,10 @@ export function build(scene, ctx = {}) {
       for (const sx of [-1, 1]) for (const yy of [-0.75, 0.75]) add(g, sphere(6), flat(COL.iron), sx * 1.9, 3.1 + up + yy, bz - 0.08, 0, 0, 0, 0.035);
     }
     for (const sx of [-1, 1]) block(g, sx * 2.85, 0, 0.32, 6 + up);
+    // the camera keeps off the board (and the lanterns at its ends), the bird on its perch and the posts
+    camBox(g, 0, -0.03, 7.0, 0.45, 0, 3.1 + up - 1.12, 3.1 + up + 1.12);
+    camBox(g, 0.4, 0, 1.3, 0.6, 0, 4.1 + up, 4.1 + up + 1.45);
+    for (const sx of [-1, 1]) camPost(g, sx * 2.85, 0, 0.22, 0, 4.9 + up);
   }
   {
     // a water barrel tower and a pile of crates on the plaza
@@ -2171,6 +2210,9 @@ export function build(scene, ctx = {}) {
     block(porch, -3.05, 0.4, 0.4, 0.8);
     block(porch, 2.9, 1.5, 0.58, 0.7);
     for (const sx of [-1, 1]) blockBox(porch, 2.9 + sx * 0.95, 1.5, 0.4, 1.25, 0, 0.35);
+    // the camera keeps out of the upper floor's overhang, the balcony (with its braces) and the eaves
+    // over the porch, where the captain walks underneath
+    camBox(g, 0, (D + 0.4) / 2 + 0.72, W + 0.6, 1.45, 0, H1 - 0.6, H1 + H2 + 1.2);
     // The Salty Sparrow (a place): the captain stops on the porch in front of the door; the
     // tavern panel's camera looks at the door and the table from the plaza side
     const door = worldAt(g, 0, 0, D / 2 + 1.15);
@@ -2367,6 +2409,9 @@ export function build(scene, ctx = {}) {
     bake(wheel, { force: 'ink' });
     // the hook and the cannon in its sling (moves)
     const tip = cr.localToWorld(jibB.clone().add(V3(0, -0.2, 0)));
+    // the camera keeps off the jib and the hoist hanging from its tip (the rope, the hook, the cannon)
+    camBox(cr, 0, (jibA.z + jibB.z) / 2, 0.8, jibB.z - jibA.z + 0.4, 0, CH - 0.5, jibB.y + 0.7);
+    camPost(cr, 0, jibB.z, 0.85, -cr.position.y, jibB.y);
     const hook = new THREE.Group();
     hook.userData.keep = true;
     root.add(hook);
@@ -2412,6 +2457,9 @@ export function build(scene, ctx = {}) {
     blockBox(g, 2.55, -2.2, 1.3, 3.25, 0, 1.0);
     block(g, 1.3, 3.3, 0.55, 0.7);
     for (const sx of [-1, 1]) block(sg, sx * 1.25, 0, 0.16, 3.5);
+    // the camera keeps off the sign's board over the way in and its posts (the captain walks under it)
+    camBox(sg, 0, 0, 2.95, 0.32, 0, 2.15, 3.55);
+    for (const sx of [-1, 1]) camPost(sg, sx * 1.25, 0, 0.14, 0, 3.3);
     blockBox(cr, 0, 0, 1.75, 1.75, 0, CH + 2.5);
     blockBox(cr, 1.0, 0.2, 0.45, 2.0, 0, 2.1);
     block(g, 3.4, 3.4, 0.42, 0.9);
@@ -2651,7 +2699,7 @@ export function build(scene, ctx = {}) {
   }
 
   // ----- Polly's Plumes & Trims, the tailor and barber, on platform s1 -----
-  const polly = { pole: null, podium: null, lineup: [], spots: {} };
+  const polly = { pole: null, podium: null, lineup: [], spots: {}, npc: null };
   {
     const P = plats.s1;
     const g = P.g;
@@ -2751,7 +2799,9 @@ export function build(scene, ctx = {}) {
         sc.scale.set(aw / (2.7 / 6), 1, 1);
       }
       for (const sx of [-1, 1]) rod(shop, thin(COL.iron), V3(sx * (w / 2 + 0.1), h1 + 0.25, fz + 0.03), V3(sx * (w / 2 + 0.1), h1 - 0.17, fz + 1.02), 0.02, 4);
-      polly.buntingEnd = worldAt(shop, w / 2 + 0.1, h1 + 0.3, fz + 0.05);
+      // (the bunting from the plaza ends up at the corner of the roof's eaves: high over the bridge, the
+      // fitting and the crew line-up, above the walk camera, clear of its view of the captain)
+      polly.buntingEnd = worldAt(shop, (w + 0.7) / 2 - 0.05, up + h2 + 0.05, (d + 0.8) / 2 - 0.05);
     }
     // the barber pole on a bracket at the front right corner (the striped part spins)
     {
@@ -2784,6 +2834,8 @@ export function build(scene, ctx = {}) {
     }
     // walk: the shop (with its step and the pole's bracket)
     blockBox(shop, 0.12, 0.1, w + 0.6, d + 0.5, 0, up + h2 + 1.5);
+    // the camera keeps out of the striped awning over the front (the captain walks under it)
+    camBox(shop, 0.07, fz + 0.62, w + 0.45, 1.0, 0, h1 - 0.42, h1 + 0.4);
 
     // out front: the podium with its rug, the tall mirror, the mannequin; the barber's chair at the side
     const pod = { x: -1.25, z: 1.55 };
@@ -3022,8 +3074,18 @@ export function build(scene, ctx = {}) {
   bunting(V3(-8.0, DECK + 2.55, -6.1), V3(-3.0, DECK + 2.5, -11.6), 0.5);
   bunting(welcomePost, V3(8.0, DECK + 2.55, -6.1), 0.7);
   tavernG.updateMatrixWorld(true);
-  bunting(V3(-8.0, DECK + 2.55, -14.4), tavernG.localToWorld(V3(-4.2, 2.9, 2.75)), 0.3);
-  bunting(V3(8.0, DECK + 2.55, -14.4), polly.buntingEnd, 0.5);
+  // (the two strings over the plaza's south corners run from tall masts up to the corners of the
+  // tavern's upper floor and of Polly's roof: above the walk camera, clear of its view of the captain)
+  const mast = (x, z) => {
+    const m = V3(x, DECK, z);
+    add(statics, cyl(0.06, 0.085, 5.5, 8), ink(COL.woodDark), m.x, DECK + 2.75, m.z);
+    add(statics, rbox(0.26, 0.12, 0.26, 0.04), ink(COL.woodDark), m.x, DECK + 0.06, m.z);
+    add(statics, sphere(8), ink(COL.brass), m.x, DECK + 5.55, m.z, 0, 0, 0, 0.1);
+    walkData.blockers.push({ x: r2(m.x), z: r2(m.z), r: 0.12, h: 5.6 });
+    return V3(m.x, DECK + 5.3, m.z);
+  };
+  bunting(mast(-8.25, -14.68), tavernG.localToWorld(V3(-4.35, 3.1 + 2.35, 3.32)), 0.4);
+  bunting(mast(8.25, -14.68), polly.buntingEnd, 0.4);
   // (along the pier's back rail: tight enough to clear a captain's hat in its gaps)
   bunting(V3(-10.4, DECK + 2.55, -5.35), V3(-5.8, DECK + 2.55, -5.35), 0.22);
   bunting(V3(5.8, DECK + 2.55, -5.35), V3(10.4, DECK + 2.55, -5.35), 0.22);
@@ -3247,8 +3309,10 @@ export function build(scene, ctx = {}) {
   // Polly measuring by the podium, Old Snips snipping by his barber's chair
   {
     const S = polly.spots;
-    person({ kind: 'woman', seed: 383, tool: 'tape', hat: 'none', shirt: 0xf58fb0 }, 'measure', S.polly, S.yaw - PI / 2 + 0.25);
-    person({ kind: 'old', seed: 390, tool: 'scissors', hat: 'none', shirt: 0xfaf3e3 }, 'snip', S.snips, S.yaw - PI / 2 - 0.35);
+    polly.npc = {
+      polly: person({ kind: 'woman', seed: 383, tool: 'tape', hat: 'none', shirt: 0xf58fb0 }, 'measure', S.polly, S.yaw - PI / 2 + 0.25),
+      snips: person({ kind: 'old', seed: 390, tool: 'scissors', hat: 'none', shirt: 0xfaf3e3 }, 'snip', S.snips, S.yaw - PI / 2 - 0.35),
+    };
   }
   // a walker crossing the bridge from the plaza to Polly's
   walker({ kind: 'woman', seed: 361, tool: 'bucket' }, [plaza.at(6.4, -3.3), ...bridges.plazaS1, plats.s1.at(0.6, 2.2)], { pause: 2.5 });
@@ -3804,7 +3868,7 @@ export function build(scene, ctx = {}) {
   walkData.places.push({ id: 'ship', name: 'The Sea Biscuit', x: r2(gangFoot.x), z: r2(pier.z + 0.25), r: 1.4, face: 0 });
   walkData.spawn = { x: r2(gangFoot.x), z: r2(pier.z + 0.15), h: r3(PI) };
   // the docked ship at the berth (beyond the pier's edge, so only the town camera ever meets it)
-  walkData.blockers.push({ x: BERTH.x, z: BERTH.z, w: 15, d: 3.4, ry: 0, h: 10 });
+  walkData.blockers.push({ x: BERTH.x, z: BERTH.z, w: 16, d: 4.8, ry: 0, h: 10 });
   const PLACE_ORDER = ['ship', 'shipyard', 'tailor', 'tavern'];
   walkData.places.sort((p, q) => PLACE_ORDER.indexOf(p.id) - PLACE_ORDER.indexOf(q.id));
   const gangTop = V3(1.62, 1.86, 0.6); // ship-local, on the rail
@@ -3998,6 +4062,22 @@ export function build(scene, ctx = {}) {
     return true;
   }
   /**
+   * Polly ('polly'), Old Snips ('snips') or both ('tailors') cheer for `seconds` (a purchase at the
+   * tailor's). Returns whether anyone did.
+   */
+  function cheer(who = 'polly', seconds = 1.5) {
+    const N = polly.npc || {};
+    const list = who === 'tailors' || who === 'all' ? [N.polly, N.snips] : [N[who]];
+    const until = lastT + Math.max(0, Math.min(10, Number.isFinite(seconds) ? seconds : 1.5));
+    let any = false;
+    for (const f of list) {
+      if (!f) continue;
+      f.cheerUntil = until;
+      any = true;
+    }
+    return any;
+  }
+  /**
    * The town view: hide the townsfolk farther than `radius` from (x, z) (the camera) or nearer than
    * `near` (right at the lens), and show the prize ships. cull() with no arguments goes back to the
    * shipyard view: everyone shown, the prize ships hidden.
@@ -4020,6 +4100,7 @@ export function build(scene, ctx = {}) {
     { x: 29.5, z: 3.0, h: PI / 2 - 0.35, ph: 0.4 },
     { x: 41.0, z: -3.5, h: PI / 2 + 0.25, ph: 2.1 },
   ];
+  const PRIZE_SIT = 0.45; // moored and laden with plunder, a prize sits deep: no hull bottom showing
   const prizes = [];
   /** list: [{ type, flag? }] (at most 2; flag: a LOOKS.flag entry for the pennant, default the player's). */
   function setPrizes(list) {
@@ -4149,6 +4230,10 @@ export function build(scene, ctx = {}) {
         f.greet = null;
       }
       if (!f.p.visible) continue; // culled in the town view
+      if (f.cheerUntil > t) {
+        animatePerson(f.p, t, 'cheer', f.aopts);
+        continue;
+      }
       if (f.greet) {
         if (G.at) f.p.rotation.y = turnTo(f.p.rotation.y, Math.atan2(G.at.x - f.p.position.x, G.at.z - f.p.position.z), 9 * dt);
         animatePerson(f.p, t, 'wave', f.aopts);
@@ -4167,7 +4252,7 @@ export function build(scene, ctx = {}) {
     for (const z of prizes) {
       if (!z.ship.visible) continue;
       const b = z.berth;
-      z.ship.position.set(b.x, waveHeight(b.x, b.z, t, amp), b.z);
+      z.ship.position.set(b.x, waveHeight(b.x, b.z, t, amp) - PRIZE_SIT, b.z);
       z.ship.rotation.set(Math.sin(t * 0.7 + b.ph) * 0.012, b.h + Math.sin(t * 0.15 + b.ph) * 0.05, Math.sin(t * 1.0 + b.ph) * 0.03);
       animateShip(z.ship, t, 0);
     }
@@ -4250,6 +4335,7 @@ export function build(scene, ctx = {}) {
     walk: walkData,
     folk: folkOnWalk,
     greet,
+    cheer,
     cull,
     setPrizes,
     update,
@@ -4260,12 +4346,13 @@ export function build(scene, ctx = {}) {
 
 /**
  * Author aid (?walkdebug=1): the walk data drawn as lines just above the decks. Areas teal (portals,
- * the ids with a '-', green), bridges yellow (their middle and their edges), blockers red, places
- * magenta (their reach and which way the captain faces), the spawn white. Add it to the scene;
+ * the ids with a '-', green), bridges yellow (their middle and their edges), blockers red, the
+ * camera-only volumes orange (at their bottom and top), places magenta (their reach and which way
+ * the captain faces), the spawn white. Add it to the scene;
  * dispose its geometry and material when done.
  */
 export function walkDebugLines(walk) {
-  const cols = { area: 0x19c3c9, portal: 0x3fe05a, link: 0xffd23c, block: 0xff3b3b, place: 0xff4fe0, spawn: 0xffffff };
+  const cols = { area: 0x19c3c9, portal: 0x3fe05a, link: 0xffd23c, block: 0xff3b3b, cam: 0xff9a1c, place: 0xff4fe0, spawn: 0xffffff };
   const pos = [];
   const col = [];
   const c = new THREE.Color();
@@ -4308,6 +4395,13 @@ export function walkDebugLines(walk) {
   for (const b of walk.blockers || []) {
     if (b.r !== undefined) circle(b.x, yAt, b.z, b.r, cols.block, 14);
     else box(b.x, yAt, b.z, b.w, b.d, b.ry || 0, cols.block);
+  }
+  // the camera-only volumes, outlined at their bottom and top (orange)
+  for (const b of walk.camBlockers || []) {
+    for (const y of [b.y0, b.y1]) {
+      if (b.r !== undefined) circle(b.x, y, b.z, b.r, cols.cam, 14);
+      else box(b.x, y, b.z, b.w, b.d, b.ry || 0, cols.cam);
+    }
   }
   for (const p of walk.places || []) {
     circle(p.x, yAt + 0.04, p.z, p.r, cols.place, 32);

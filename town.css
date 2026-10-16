@@ -266,11 +266,23 @@
   /* the stick and the button sit above the places bar on tall screens... */
   .town-prompt { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 226px); }
 }
+/* On a portrait phone up to 780 px tall, a prompt up there would sit over the captain (he stands in the
+   middle of the view): it goes to the top instead, under the chest and the corner buttons. */
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) and (max-height: 780px) {
+  .town-prompt { top: calc(max(12px, env(safe-area-inset-top)) + 60px); bottom: auto; }
+}
 /* ...and in the bottom corners beside it on short (landscape) ones. */
 @media (hover: none) and (pointer: coarse) and (max-height: 560px) and (orientation: landscape) {
   .town-joystick { left: 16px; bottom: max(12px, env(safe-area-inset-bottom)); width: 116px; height: 116px; }
   .town-action { right: 16px; bottom: max(12px, env(safe-area-inset-bottom)); }
-  .town-prompt { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 76px); left: 150px; right: 150px; max-width: calc(100% - 300px); }
+}
+/* A short landscape view has no room for the prompt above the places bar: it would hide the captain,
+   who stands in the middle. It goes up top, between the chest (icon-only here) and the corner buttons. */
+@media (orientation: landscape) and (max-height: 560px) {
+  .town-chest .chest-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .town-prompt { top: max(12px, env(safe-area-inset-top)); bottom: auto; left: 150px; right: 132px; max-width: calc(100% - 282px); font-size: 16px; padding: 7px 14px 5px; }
+  /* (at a door the prompt says which key to press: the keys legend under the chest steps aside) */
+  #town-screen:has(.town-prompt:not(.hidden)) .town-keys { visibility: hidden; }
 }
 @media (hover: none) and (pointer: coarse) and (max-width: 760px) and (orientation: landscape) {
   .town-place { width: 56px; padding: 4px; }
@@ -302,7 +314,7 @@
 .town-bubble::after {
   content: "";
   position: absolute;
-  left: 50%;
+  left: calc(50% + var(--tail, 0px));
   bottom: -11px;
   width: 14px;
   height: 14px;

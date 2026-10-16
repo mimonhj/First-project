@@ -37,6 +37,7 @@ export const palette = {
   skyHorizon: 0xffc27a,
   sunColor: 0xffd9a0,
   sunDir: [-0.7, 0.3, 0.4],
+  waterSunDir: higherSun([-0.7, 0.3, 0.4], 0.62), // the sun the water mirrors (see higherSun)
   sunIntensity: 2.3,
   hemiSky: 0xffe2b8,
   hemiGround: 0x5a6a8a,
@@ -52,6 +53,16 @@ export const palette = {
   cloudShade: 0xf2b48a,
   cloudCount: 10,
 };
+
+// The water mirrors a higher sun than the sky shows, on the same bearing (palette.waterSunDir, read by the shared
+// ocean in scenery.js). The low golden sun makes the ocean shader paint a wide glitter path of tan dashes across
+// the bay, and those read exactly like the sandbars (pale gold patches you must steer round). With the sun the
+// water sees at ~38° the path is a short trail of light water and glints instead. The sky, the sun disc and the
+// lighting keep palette.sunDir.
+function higherSun([x, , z], y) {
+  const k = Math.sqrt(1 - y * y) / Math.hypot(x, z);
+  return [x * k, y, z * k];
+}
 
 // ---------------------------------------------------------------------------
 // Layout

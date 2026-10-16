@@ -198,6 +198,12 @@ function installHelpers() {
           .map((s) => ({ text: s.textContent, shown: s.style.visibility !== 'hidden', o: Number(s.style.opacity), main: R(s.querySelector('.pop-main').getBoundingClientRect()), whole: R(s.getBoundingClientRect()) })),
         top: top.getBoundingClientRect().bottom,
         cards: [...top.children].map((c) => R(c.getBoundingClientRect())).filter((c) => c.r > c.l),
+        // the HUD pieces pops keep off (pops.js): the minimap and the level / "X sunk!" banner, while shown
+        furniture: Object.fromEntries(['minimap', 'banner'].map((id) => {
+          const el = document.getElementById(id);
+          const on = el && !el.classList.contains('hidden') && el.getClientRects().length && Number(getComputedStyle(el).opacity) > 0.3;
+          return [id, on ? R(el.getBoundingClientRect()) : null];
+        })),
       };
     },
     // One broadside at `e` from `side` (aim seeded, crit forced), with `hold` keeping the ships where they are:
@@ -297,7 +303,7 @@ function popReport(r, o = 0.3) {
     const h = Math.min(a.b, b.b) - Math.max(a.t, b.t);
     return w > 2 && h > 2 ? Math.round(w * h) : 0;
   };
-  const out = { frames: r.frames.length, seen: [], popPop: [], onMark: [], onTop: [], offScreen: [] };
+  const out = { frames: r.frames.length, seen: [], popPop: [], onMark: [], onTop: [], offScreen: [], onMinimap: [], onBanner: [], banner: 0 };
   const seen = new Set();
   for (const f of r.frames) {
     const ps = f.pops.filter((p) => p.shown && p.o > o);
@@ -314,6 +320,22 @@ function popReport(r, o = 0.3) {
         if (a) out.onMark.push(`${f.t}s "${p.text}" on "${f.hm.text}" ${a}px²`);
       }
     }
+    const fur = f.furniture || {};
+    if (fur.banner) out.banner++;
+    for (const p of ps) {
+      // (the minimap is round: a pop over a corner of its box is clear of it)
+      if (fur.minimap) {
+        const m = fur.minimap;
+        const cx = (m.l + m.r) / 2;
+        const cy = (m.t + m.b) / 2;
+        const rad = (m.r - m.l) / 2;
+        const nx = Math.max(p.whole.l, Math.min(cx, p.whole.r));
+        const ny = Math.max(p.whole.t, Math.min(cy, p.whole.b));
+        const into = rad - Math.hypot(nx - cx, ny - cy);
+        if (into > 2) out.onMinimap.push(`${f.t}s "${p.text}" ${Math.round(into)}px into it`);
+      }
+      if (fur.banner && ov(p.whole, fur.banner)) out.onBanner.push(`${f.t}s "${p.text}" ${ov(p.whole, fur.banner)}px²`);
+    }
     for (const p of ps) {
       const card = f.cards.find((c) => ov(p.whole, c));
       if (card) out.onTop.push(`${f.t}s "${p.text}" top ${Math.round(p.whole.t)} over a card down to ${Math.round(card.b)}`);
@@ -321,7 +343,7 @@ function popReport(r, o = 0.3) {
     }
   }
   out.seen = [...seen];
-  for (const k of ['popPop', 'onMark', 'onTop', 'offScreen']) if (out[k].length > 6) out[k] = [...out[k].slice(0, 6), `(+${out[k].length - 6} more)`];
+  for (const k of ['popPop', 'onMark', 'onTop', 'offScreen', 'onMinimap', 'onBanner']) if (out[k].length > 6) out[k] = [...out[k].slice(0, 6), `(+${out[k].length - 6} more)`];
   return out;
 }
 
@@ -2317,6 +2339,9 @@ function ev(page, fn, arg = null) {
       const k = popReport(phone.rake);
       check(phone.rake.fired && /^SUNK!/.test(phone.rake.mark) && k.seen.length >= 3 && k.popPop.length === 0 && k.onMark.length === 0 && k.offScreen.length === 0,
         `pops 390x844: a point-blank stern rake with a crit: its ${k.seen.length} pops (${k.seen.join(' / ')}) never cover each other or the "${phone.rake.mark}" mark (${k.frames} frames${k.popPop.length ? '; pop over pop: ' + k.popPop.join(', ') : ''}${k.onMark.length ? '; over the mark: ' + k.onMark.join(', ') : ''})`);
+      // ... nor the minimap or the "sunk!" banner (pops.js keeps off the HUD's own pieces, 3E)
+      check(k.seen.length >= 3 && k.onMinimap.length === 0 && k.onBanner.length === 0,
+        `pops 390x844: the stern rake's pops keep off the minimap and the "sunk!" banner (shown in ${k.banner} of ${k.frames} frames)${k.onMinimap.length ? '; over the minimap: ' + k.onMinimap.join(', ') : ''}${k.onBanner.length ? '; over the banner: ' + k.onBanner.join(', ') : ''}`);
       console.log(`      (camera settled in ${phone.settle} frames)`);
     }
 

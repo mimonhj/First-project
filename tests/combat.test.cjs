@@ -86,6 +86,7 @@ const isInt = (v) => Number.isInteger(v) && !Object.is(v, -0);
       RAIDERS: {
         reach: 10, threat: 1.5, reel: 1.0, cutTaps: 3, cutHold: 0.8, cooldownCut: 10, cooldownFight: 12, minCrew: 4,
         plunder: 0.25, counterWindow: 3, beside: 6,
+        gap: 3, sheer: 4, // main.js's RAID_GAP / RAID_SHEER, moved into the table in Stage 3 (raider balance in one place)
       },
       CAPTURE: { goldMul: 20, flat: 25, hull: 15, crew: 2, prizeBonus: 50, sailAway: 5, sailSpeed: 7 },
     };

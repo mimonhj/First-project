@@ -774,8 +774,13 @@ export function createTownMode(ctx = {}) {
     }
     const x = ((v.x + 1) / 2) * W;
     const y = ((1 - v.y) / 2) * H;
-    bubble.style.transform = `translate(${Math.round(x)}px, ${Math.round(y)}px) translate(-50%, calc(-100% - 12px))`;
     bubble.classList.remove('hidden');
+    // kept on screen: a speaker near the edge gets the bubble slid in, its tail still pointing at them
+    const half = bubble.offsetWidth / 2;
+    const bx = half && W > 2 * half + 16 ? Math.min(Math.max(x, half + 8), W - half - 8) : x;
+    const tail = Math.max(-half + 16, Math.min(half - 16, x - bx));
+    bubble.style.setProperty('--tail', `${Math.round(tail)}px`);
+    bubble.style.transform = `translate(${Math.round(bx)}px, ${Math.round(y)}px) translate(-50%, calc(-100% - 12px))`;
   }
 
   // ---------------------------------------------------------------------------------------------

@@ -90,10 +90,16 @@ export const BOARD = freeze({
   homeLossCap: 0.6,
 });
 
-/** Raiders that board you (§3.6). */
+/**
+ * Raiders that board you (§3.6). Not in the §3.8 listing (main.js's RAID_GAP / RAID_SHEER, moved here so raider
+ * balance lives in one table): gap: after any boarding, s before a raider may throw its hooks again (on top of
+ * its own cooldown); sheer: a raider whose ropes were cut (or who was beaten off) sheers away and circles wide
+ * until its own cooldown is down to this many s.
+ */
 export const RAIDERS = freeze({
   reach: 10, threat: 1.5, reel: 1.0, cutTaps: 3, cutHold: 0.8, cooldownCut: 10, cooldownFight: 12, minCrew: 4,
   plunder: 0.25, counterWindow: 3, beside: 6,
+  gap: 3, sheer: 4,
 });
 
 /** Capture (§3.7): type.gold × goldMul + flat at once, hull and crew back, a prize bonus at level end. */

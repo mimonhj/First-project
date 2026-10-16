@@ -10,8 +10,8 @@
 // - current: the drift formula at d 20, 40, 74, 76 (zero outside r) and its swirl direction, eye
 //   damage 5 hp/s, ghosts ignored, the eye banner once, avoid() and minimap circles, the Phantom rising
 //   18 u from the centre in open water facing you
-// - act2.js: the three levels exactly as §6.4–6.6, every ship type and mechanic id known, and the
-//   act slots into levels.js behind ?act2=1
+// - act2.js: the three levels exactly as §6.4–6.6 with the Stage 3 wave tuning, every ship type and mechanic id known, and the
+//   act slots into levels.js after Act I in every voyage (WITH_ACT2 = true since Stage 3)
 const fs = require('fs');
 const path = require('path');
 
@@ -139,7 +139,7 @@ const DT = 1 / 120; // main's simulation substep
       same(out, { steer: null, holdFire: false, drift: null, avoid: [], objective: null, minimap: [], summary: [], bonus: 0 }) && e.x === 30 && e.z === 0,
       `no mechanics (Act I): every hook is a no-op (${JSON.stringify(out)})`
     );
-    check(same(nul.state, { ids: [], time: DT }), `no mechanics: state is { ids: [], time } (${JSON.stringify(nul.state)})`);
+    check(same(nul.state, { ids: [], time: DT, relocated: 0 }), `no mechanics: state is { ids: [], time, relocated: 0 } (${JSON.stringify(nul.state)})`);
 
     const ids = createMechanics(['convoy', 'convoy', 'nope', 5, null, 'current', '__proto__', 'toString'], mock().ctx).state.ids;
     check(same(ids, ['convoy', 'current']), `unknown, junk and repeated ids are ignored (${JSON.stringify(ids)})`);
@@ -726,6 +726,74 @@ const DT = 1 / 120; // main's simulation substep
     m.dispose();
   }
 
+  // ---------------------------------------------------------------- reachable water (every level)
+  // A later wave's ship that main put in water cut off from the player's (behind a coast ringed by colliders,
+  // like Frostbite Straits' fjord walls) is moved to an env spawn point in the player's water.
+  {
+    // A wall of rocks along x = −40 from the south edge to the north edge cuts the sea in two.
+    const wall = [];
+    for (let z = -110; z <= 110; z += 6) wall.push({ x: -40, z, r: 5 });
+    const env = {
+      worldRadius: 100,
+      colliders: wall,
+      playerStart: { x: 0, z: 0, h: 0 },
+      enemySpawns: [
+        { x: -70, z: 10 }, // behind the wall: never used
+        { x: 20, z: 30 }, // too close to the player (36 u)
+        { x: 60, z: 55 }, // 81 u: the best
+        { x: 30, z: -60 }, // 67 u
+        { x: -20, z: 85 }, // 87 u
+      ],
+    };
+    const p = ship('player', 0, 0);
+    const mk = (enemies) => createMechanics([], mock({ env, player: p, enemies }).ctx);
+    const cut = ship('raider', -75, 0, 1.2);
+    const fine = ship('raider', 50, -40, 1.2);
+    const first = ship('raider', -75, 30, 0.3);
+    const test = ship('raider', -75, -30, 0.3);
+    const m = mk([cut, fine, first, test]);
+    m.onSpawn(first, 0); // wave 0 sails from env spawns: never moved
+    m.onSpawn(test, -1); // a test spawn keeps the test's position
+    m.onSpawn(fine, 1); // in the player's water: stays
+    m.onSpawn(cut, 1); // behind the wall: moved
+    const faces = near(cut.h, Math.atan2(p.x - cut.x, p.z - cut.z));
+    check(first.x === -75 && first.z === 30 && test.x === -75 && test.z === -30 && fine.x === 50 && fine.z === -40 && fine.h === 1.2,
+      'a ship in the player\'s water, a wave-0 ship and a test spawn (waveIndex −1) keep their spots');
+    check(cut.x === 60 && cut.z === 55 && faces && m.state.relocated === 1,
+      `a wave-1 ship behind the wall moves to the spawn point in the player's water nearest 80 u away, facing the player (${cut.x}, ${cut.z}; relocated ${m.state.relocated})`);
+    // A second one keeps 18 u from the first (which now holds the 81 u spot): 87 u is next nearest 80.
+    const second = ship('raider', -80, 20);
+    const m2 = mk([cut, second]);
+    m2.onSpawn(second, 2);
+    check(second.x === -20 && second.z === 85, `the next one keeps clear of ships already there (${second.x}, ${second.z})`);
+    m2.onSpawn(second, 2);
+    check(m2.state.relocated === 1, 'onSpawn is idempotent per ship');
+    // No colliders, no env or junk: nothing moves, nothing throws.
+    const loose = ship('raider', -75, 0);
+    let threw = '';
+    for (const junkEnv of [null, {}, { worldRadius: 100 }, { worldRadius: 'x', colliders: wall }, { worldRadius: 1e9, colliders: wall }, { worldRadius: 100, colliders: [null, { x: 'a' }, 7] }]) {
+      try {
+        const j = createMechanics(['floes'], mock({ env: junkEnv, player: p, enemies: [loose] }).ctx);
+        j.onSpawn(loose, 1);
+        if (loose.x !== -75 || loose.z !== 0) threw += ` moved with ${JSON.stringify(junkEnv)}`;
+      } catch (err) {
+        threw += ` ${err.message}`;
+      }
+    }
+    check(threw === '', `no colliders or a junk env: the ship stays where main put her${threw ? ' ->' + threw : ''}`);
+    // Hard by the wall on the player's side (her own cell is inside the collider padding): she stays.
+    const hug = ship('raider', -34.5, 1);
+    const m3 = mk([hug]);
+    m3.onSpawn(hug, 1);
+    check(hug.x === -34.5 && hug.z === 1 && m3.state.relocated === 0, 'a ship hard by a coast on the player\'s side stays');
+    // The water is mapped at init (level start, during the fly-in), not when the next wave sails in.
+    const m4 = createMechanics([], mock({ env, player: p, enemies: [] }).ctx);
+    m4.init();
+    const late = ship('raider', -75, 10, 0.3);
+    m4.onSpawn(late, 1);
+    check(late.x === 60 && late.z === 55 && m4.state.relocated === 1, `mapped at init: a later wave's ship behind the wall still moves to your water (${late.x}, ${late.z})`);
+  }
+
   // ---------------------------------------------------------------- act2.js: the level definitions
   {
     const envStub = (name) => `const ${name} = { stub: '${name}', meta: { name: '${name}' } };`;
@@ -734,10 +802,14 @@ const DT = 1 / 120; // main's simulation substep
     check(!/^\s*import\s/m.test(stubbed), 'act2.js imports only the three env modules');
     const { ACT2_LEVELS } = await import(dataUrl(stubbed));
     check(Array.isArray(ACT2_LEVELS) && ACT2_LEVELS.length === 3, `ACT2_LEVELS has three levels (${ACT2_LEVELS?.length})`);
+    // §6.4–6.6 as tuned in Stage 3 (SPEC2 §6.8; the reasons are in act2.js): Doubloon Bay's second wave
+    // loses its privateer; in Frostbite Straits the man-o'-war and the privateer trade waves; the Maelstrom
+    // has 3 attackers and its first wave is two corsairs and a man-o'-war. Everything else is the §6.4–6.6
+    // starting value.
     const WANT = [
       {
         env: 'doubloon', difficulty: 'Tricky', act: 2, stars: 4, scene: 'doubloon',
-        waves: [['galleon', 'cutter', 'cutter'], ['galleon', 'privateer', 'corsair']],
+        waves: [['galleon', 'cutter', 'cutter'], ['galleon', 'corsair']],
         nextWaveAt: 1, maxAttackers: 2, lead: 0.6, spreadMul: 1.0, grace: 4, enemyRake: 1, mechanics: ['convoy'], bonus: 500,
         mechanic: 'Treasure galleons are running for the open sea! Catch them, thin their crews and board them for a fortune.',
         rumour: { title: 'Doubloon Bay', lines: ['The treasure fleet sails at dusk.', 'Sink a galleon and her gold sinks too: board her instead!'], ammo: 'chain' },
@@ -745,15 +817,15 @@ const DT = 1 / 120; // main's simulation substep
       },
       {
         env: 'frost', difficulty: 'Tough', act: 2, stars: 5, scene: 'frost',
-        waves: [['raider', 'raider', 'privateer'], ['raider', 'raider', 'manowar']],
+        waves: [['raider', 'raider', 'manowar'], ['raider', 'raider', 'privateer']],
         nextWaveAt: 1, maxAttackers: 3, lead: 0.65, spreadMul: 0.95, grace: 3, enemyRake: 1, mechanics: ['floes'], bonus: 700,
         mechanic: 'Longship raiders board YOU! Press G three times (or hold it) to cut their ropes.',
         rumour: { title: 'Frostbite Straits', lines: ['Raiders with horned helmets row out of the fog.', 'Chain shot slows their longships; cut their ropes fast!'], ammo: 'chain' },
       },
       {
         env: 'maelstrom', difficulty: 'Legendary', act: 2, stars: 6, scene: 'maelstrom',
-        waves: [['corsair', 'raider', 'corsair'], ['phantom', 'raider']],
-        nextWaveAt: 0, maxAttackers: 2, lead: 0.7, spreadMul: 0.9, grace: 3, enemyRake: 1, mechanics: ['current'], bonus: 1000,
+        waves: [['corsair', 'corsair', 'manowar'], ['phantom', 'raider']],
+        nextWaveAt: 0, maxAttackers: 3, lead: 0.7, spreadMul: 0.9, grace: 3, enemyRake: 1, mechanics: ['current'], bonus: 1000,
         bombs: { kind: 'lightning', every: [5, 8], spread: 8, radius: 5, damage: 14, warn: [1.4, 1.6] },
         finale: true, finaleText: 'The Phantom Galleon is yours! You are the Legend of the Seven Seas.',
         mechanic: "The maelstrom pulls you in! Scatter the Phantom's ghost crew with grape shot, then board her.",
@@ -763,7 +835,7 @@ const DT = 1 / 120; // main's simulation substep
     WANT.forEach((want, i) => {
       const lv = ACT2_LEVELS[i] || {};
       const wrong = Object.keys(want).filter((k) => (k === 'env' ? lv.env?.stub !== want.env : !same(lv[k], want[k])));
-      check(wrong.length === 0, `level ${i + 4} (${want.difficulty}): every §6.${i + 4} field exact${wrong.length ? ' -> wrong: ' + wrong.map((k) => `${k} ${JSON.stringify(k === 'env' ? lv.env?.stub : lv[k])}`).join('; ') : ''}`);
+      check(wrong.length === 0, `level ${i + 4} (${want.difficulty}): every §6.${i + 4} field exact (waves as tuned)${wrong.length ? ' -> wrong: ' + wrong.map((k) => `${k} ${JSON.stringify(k === 'env' ? lv.env?.stub : lv[k])}`).join('; ') : ''}`);
     });
     const L5 = ACT2_LEVELS[1] || {};
     check(typeof L5.mechanicTouch === 'string' && /Tap CUT! three times or hold it/.test(L5.mechanicTouch), `Frostbite Straits has the touch wording "Tap CUT! three times or hold it" (${L5.mechanicTouch})`);
@@ -786,7 +858,8 @@ const DT = 1 / 120; // main's simulation substep
     check(numbersOk, 'every Act II level has sane knobs (waves of 1–6 ships, nextWaveAt, maxAttackers, lead 0..1, spread, grace, bonus, a mechanic line, a 2-line rumour)');
     check(ACT2_LEVELS.map((l) => l.bonus).every((b, i, a) => i === 0 || b > a[i - 1]) && ACT2_LEVELS.map((l) => l.stars).join() === '4,5,6', 'bonus and stars rise level by level');
 
-    // The act slots into levels.js: hidden without ?act2=1, appended after Act I with it.
+    // The act slots into levels.js: since Stage 3 (WITH_ACT2 = true) every voyage sails on after Act I,
+    // with or without the old ?act2=1 switch.
     const levelsSrc = fs.readFileSync(path.join(ROOT, 'src/levels.js'), 'utf8');
     const levelsStubbed = levelsSrc
       .replace(/^import \* as (\w+) from '\.\/env\/(\w+)\.js';$/gm, (_, name) => envStub(name))
@@ -797,10 +870,14 @@ const DT = 1 / 120; // main's simulation substep
     globalThis.location = { search: '?quality=low&act2=1' };
     const withAct2 = await import(dataUrl(levelsStubbed + '\n// act2'));
     delete globalThis.location;
-    check(plain.WITH_ACT2 === false && plain.LEVELS.length === 3, `without ?act2=1 the voyage is Act I only (${plain.LEVELS.length} levels)`);
+    check(
+      plain.WITH_ACT2 === true && plain.LEVELS.length === 6 && plain.ACT1.length === 3 &&
+        plain.LEVELS.slice(0, 3).every((l, i) => l === plain.ACT1[i]) && plain.LEVELS.slice(3).every((l, i) => l === ACT2_LEVELS[i]),
+      `Act II follows Act I in every voyage (${plain.LEVELS.length} levels, WITH_ACT2 ${plain.WITH_ACT2})`
+    );
     check(
       withAct2.WITH_ACT2 === true && withAct2.LEVELS.length === 6 && withAct2.LEVELS.slice(3).every((l, i) => l === ACT2_LEVELS[i]),
-      `with ?act2=1 Act II follows Act I (${withAct2.LEVELS.length} levels)`
+      `with the old ?act2=1 switch too (${withAct2.LEVELS.length} levels)`
     );
     const act1Keys = new Set(plain.ACT1.flatMap((l) => Object.keys(l)).filter((k) => !['bombs', 'finale', 'finaleText', 'mechanic', 'rumour', 'lockText'].includes(k)));
     const missing = ACT2_LEVELS.flatMap((l, i) => [...act1Keys].filter((k) => !(k in l)).map((k) => `L${i + 4} ${k}`));

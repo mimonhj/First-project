@@ -14,7 +14,8 @@ const path = require('path');
 const { chromium } = require('playwright');
 const { serve } = require('./server.cjs');
 
-// CONTROLS_ROOT serves another copy of the game; CONTROLS_ONLY=review2 runs only the Stage 2 review's checks.
+// CONTROLS_ROOT serves another copy of the game; CONTROLS_ONLY=review2 runs only the Stage 2 review's checks,
+// CONTROLS_ONLY=storage only the storage-full purchase at Polly's (FLOW-2).
 const ROOT = process.env.CONTROLS_ROOT || path.join(__dirname, '..');
 const ONLY = process.env.CONTROLS_ONLY || '';
 let failures = 0;
@@ -51,6 +52,10 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     }, level);
   if (ONLY === 'review2') {
     await review2();
+    return finish();
+  }
+  if (ONLY === 'storage') {
+    await pollyStorage();
     return finish();
   }
 
@@ -376,7 +381,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       { name: 'negative', set: { best: '-50', unlocked: '-2' }, best: 0, unlocked: 1, tutorial: false },
       { name: 'fractional', set: { best: '12.5', unlocked: '2.5' }, best: 0, unlocked: 1, tutorial: false },
       { name: 'exponent / huge', set: { best: '1e400', unlocked: '99999999999999999999' }, best: 0, unlocked: 1, tutorial: false },
-      { name: 'too large', set: { best: '5000000', unlocked: '7' }, best: 1000000, unlocked: 3, tutorial: false },
+      { name: 'too large', set: { best: '5000000', unlocked: '7' }, best: 1000000, unlocked: 6, tutorial: false },
       { name: 'zero progress', set: { unlocked: '0' }, best: 0, unlocked: 1, tutorial: false },
     ];
     const { ctx, page } = await open();
@@ -739,11 +744,12 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const name = (el) => el.id || (el.dataset.buy ? `Buy ${el.dataset.buy}` : el.dataset.look ? `swatch ${el.dataset.part} ${el.dataset.look}` : el.className);
     // A control is fine if it is on screen (after scrolling the panel to it), big enough to tap,
     // its label isn't cut off and nothing covers it.
-    const reach = (el) => {
+    // (floating: a control allowed just outside the panel, as Go ashore is on compact layouts.)
+    const reach = (el, floating = false) => {
       el.scrollIntoView({ block: 'nearest', inline: 'nearest' });
       const r = R(el);
       if (window.scrollX || window.scrollY) out.push(`showing ${name(el)} scrolled the page`);
-      if (!inside(r, screen) || !inside(r, panel) || (el.closest('.dock-body') && !inside(r, R(body)))) out.push(`${name(el)} can't be scrolled into view`);
+      if (!inside(r, screen) || (!floating && !inside(r, panel)) || (el.closest('.dock-body') && !inside(r, R(body)))) out.push(`${name(el)} can't be scrolled into view`);
       const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
       if (!hit || !(hit === el || el.contains(hit))) out.push(`${name(el)} is covered by ${hit && (hit.id || hit.className)}`);
       if (r.width < 44 || r.height < 44) out.push(`${name(el)} is only ${Math.round(r.width)}x${Math.round(r.height)}`);
@@ -758,6 +764,15 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const exits = [...panelEl.querySelectorAll('#dock-exits button')];
     noOverlap(exits, 'exit buttons');
     for (const el of [...panelEl.querySelectorAll('[role="tab"]'), ...exits]) reach(el);
+    // Go ashore (SPEC2 §7.1): in the panel's header, or just outside the panel on compact layouts; either
+    // way on screen, a 44px target, uncovered, and clear of the tabs, the ways out and the sound button.
+    const ashore = document.getElementById('dock-ashore-btn');
+    if (!ashore || ashore.hidden || !ashore.getClientRects().length) out.push('#dock-ashore-btn not shown');
+    else {
+      reach(ashore, true);
+      const others = [...panelEl.querySelectorAll('[role="tab"]'), ...exits, document.getElementById('dock-mute'), panelEl.querySelector('.dock-body')];
+      for (const o of others) if (o && ov(R(ashore), R(o)) > 1) out.push(`#dock-ashore-btn overlaps ${name(o)}`);
+    }
     const buys = [...panelEl.querySelectorAll('.buy-btn')];
     noOverlap([...panelEl.querySelectorAll('.up-row')], 'upgrade rows');
     for (const el of buys) reach(el);
@@ -1173,11 +1188,14 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const mode = await page.evaluate(() => window.__game.state.mode);
     check(mode === 'dock' && first && first.id === 'dock-tab-up' && first.ring && first.visible, `keyboard: Enter opens the shipyard with focus on the Upgrades tab (${JSON.stringify(first)})`);
     // M toggles the sound here too, says so, and the sound button shows it; Shift+Tab reaches that button.
+    // (Go ashore sits in the panel's header before the tabs (SPEC2 §7.1): the first Shift+Tab reaches it.)
     const sound = [];
     for (let i = 0; i < 2; i++) {
       await page.keyboard.press('m');
       sound.push(await page.evaluate(() => ({ muted: window.__game.audio.muted, pressed: document.getElementById('dock-mute').getAttribute('aria-pressed'), live: document.getElementById('dock-live').textContent.trim() })));
     }
+    await page.keyboard.press('Shift+Tab');
+    const ashoreFocus = await page.evaluate(focusProbe);
     await page.keyboard.press('Shift+Tab');
     const muteFocus = await page.evaluate(focusProbe);
     await page.keyboard.press('Enter');
@@ -1186,8 +1204,9 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const byButton2 = await page.evaluate(() => window.__game.audio.muted);
     check(
       JSON.stringify(sound) === JSON.stringify([{ muted: true, pressed: 'true', live: 'Sound off.' }, { muted: false, pressed: 'false', live: 'Sound on.' }]) &&
+        ashoreFocus && ashoreFocus.id === 'dock-ashore-btn' && ashoreFocus.ring && ashoreFocus.visible &&
         muteFocus && muteFocus.id === 'dock-mute' && muteFocus.ring && muteFocus.visible && byButton.muted && byButton.focus === 'dock-mute' && byButton2 === false,
-      `keyboard: M mutes and unmutes in the shipyard and says so; Shift+Tab reaches the sound button, which Enter and Space toggle (${JSON.stringify({ sound, muteFocus, byButton, byButton2 })})`,
+      `keyboard: M mutes and unmutes in the shipyard and says so; Shift+Tab reaches Go ashore, then the sound button, which Enter and Space toggle (${JSON.stringify({ sound, ashoreFocus, muteFocus, byButton, byButton2 })})`,
     );
     await page.focus('#dock-tab-up');
     const order = [];
@@ -1377,6 +1396,8 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     check(buy2.ok && buy2.unsaved === null && cleared2 === 'levelDone' && after2.guns === 1 && after2.purse === after1.purse - 300 + bank2, `storage full, then room again: the next banking saves the upgrade and the chest together (${after1.purse} - 300 + ${bank2} = ${after2.purse} gold, guns tier ${after2.guns})`);
     await ctx.close();
   }
+
+  await pollyStorage();
 
   // Building the shipyard holds the page up for a moment, so its buttons first say where you're going
   // (a status message) and the dock opens once that has been drawn. The test API's dock.open() stays synchronous.
@@ -1886,6 +1907,78 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
   // Leaving a battle for the title and what a double-click does there, graphics lost on the way to the shipyard,
   // leaving while "Level cleared!" counts down, two tabs buying at the tavern and counting feats, the Act II goal
   // pill and the HIT mark on small touch screens.
+  // Storage full at Polly's Plumes & Trims (FLOW-2, the same rule): an item is only paid for once its look
+  // record is saved. With no room for the record the purchase is refused ('storage'), nothing is spent and
+  // neither the chest nor the look is written; the shop says so and the item stays on the rack. With room
+  // again the look record is saved first and then the chest, and after a reload the item is owned and was
+  // paid for exactly once.
+  async function pollyStorage() {
+    const { ctx, page } = await open();
+    const reload = async () => {
+      await page.reload({ waitUntil: 'domcontentloaded' });
+      await page.waitForFunction(() => window.__gameReady === true, null, { timeout: 120000 });
+    };
+    await page.evaluate(() => { localStorage.clear(); localStorage.setItem('pirates-ahoy-purse', '1000'); });
+    await reload();
+    const filled = await page.evaluate(() => {
+      let n = 0;
+      for (let size = 1 << 20; size >= 1; size >>= 1) {
+        const chunk = 'x'.repeat(size);
+        for (;;) {
+          try { localStorage.setItem(`zz-fill-${n}`, chunk); n++; } catch { break; }
+        }
+      }
+      const probe = (() => { try { localStorage.setItem('zz-probe', '{"v":1,"cap":{}}'); localStorage.removeItem('zz-probe'); return true; } catch { return false; } })();
+      return { records: n, roomForALook: probe };
+    });
+    const saved = () => page.evaluate(() => ({ purse: localStorage.getItem('pirates-ahoy-purse'), look: localStorage.getItem('pirates-ahoy-look') }));
+    // Through the API, then through the shop itself (try on the plume, then Buy).
+    const api1 = await page.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      const r = G.wardrobe.buy('hat.plume');
+      return { r, purse: G.state.purse, hat: G.look.cap.hat, own: G.look.own };
+    });
+    const ui1 = await page.evaluate(() => {
+      const G = window.__game;
+      G.dock.ashore();
+      G.town.open('tailor');
+      const W = G.town.api.wardrobe;
+      W.tab('captain');
+      W.click('hat.plume');
+      const tried = G.town.api.trial;
+      const ok = W.buy();
+      return { view: G.town.view, tried, ok, trial: G.town.api.trial, purse: G.state.purse, hat: G.look.cap.hat, own: G.look.own, chest: document.getElementById('wardrobe-chest').textContent.replace(/\s+/g, ' ').trim(), live: document.getElementById('wardrobe-live').textContent.trim() };
+    });
+    const saved1 = await saved();
+    check(filled.records > 0 && !filled.roomForALook && api1.r.ok === false && api1.r.reason === 'storage' && api1.purse === 1000 && api1.hat === 'tricorn' && api1.own.length === 0 &&
+      ui1.view === 'tailor' && ui1.tried === 'hat.plume' && ui1.ok === false && ui1.trial === 'hat.plume' && ui1.purse === 1000 && ui1.hat === 'tricorn' && ui1.own.length === 0 &&
+      /\b1000\b/.test(ui1.chest) && /Couldn't buy/.test(ui1.live) && saved1.purse === '1000' && saved1.look === null,
+      `storage full at Polly's: buying the plume is refused ('storage'), by the API and in the shop, nothing is spent and neither the chest nor the look is written (${JSON.stringify({ filled, api1, ui1, saved1 })})`);
+    await reload();
+    const after1 = await page.evaluate(() => ({ purse: window.__game.state.purse, own: window.__game.look.own, hat: window.__game.look.cap.hat }));
+    // Room again: the look record first, then the chest.
+    const buy2 = await page.evaluate(() => {
+      for (const k of Object.keys(localStorage)) if (k.startsWith('zz-fill-')) localStorage.removeItem(k);
+      const G = window.__game;
+      G.dock.open('menu');
+      const order = [];
+      const set = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) { order.push(k); return set.call(this, k, v); };
+      let r;
+      try { r = G.wardrobe.buy('hat.plume'); } finally { Storage.prototype.setItem = set; }
+      return { r, purse: G.state.purse, order: order.filter((k) => k === 'pirates-ahoy-look' || k === 'pirates-ahoy-purse') };
+    });
+    const saved2 = await saved();
+    await reload();
+    const after2 = await page.evaluate(() => ({ purse: window.__game.state.purse, own: window.__game.look.own, hat: window.__game.look.cap.hat }));
+    const price = 180;
+    check(after1.purse === 1000 && after1.own.length === 0 && buy2.r.ok && buy2.purse === 1000 - price && buy2.order.join() === 'pirates-ahoy-look,pirates-ahoy-purse' &&
+      saved2.purse === String(1000 - price) && JSON.parse(saved2.look).own.includes('hat.plume') && after2.purse === 1000 - price && after2.own.includes('hat.plume') && after2.hat === 'plume',
+      `storage full, then room again at Polly's: the look record is saved before the chest, and after a reload the plume is owned, worn and paid for once (${JSON.stringify({ after1, buy2, saved2: { purse: saved2.purse }, after2 })})`);
+    await ctx.close();
+  }
+
   async function review2() {
     const J = (v) => JSON.stringify(v);
     // A page whose localStorage holds `store` when the game loads (a context of its own unless one is given).

@@ -36,6 +36,7 @@ const CAM = {
   lift: 1.2, // look at the captain's chest
   dist: 6.5,
   distPortrait: 7.5,
+  fovPortrait: 60, // degrees: the walk view's lens on a portrait screen (setLens() gives up to 90 there)
   pitch: 0.4,
   pitchMin: 0.2,
   pitchMax: 0.75,
@@ -43,6 +44,8 @@ const CAM = {
   followDelay: 1.5, // seconds after a drag before the camera swings behind again
   followRate: 1.5, // rad/s
   minBoom: 2.5,
+  closest: 1.2, // ...unless the lens would sit inside something there: then as close as this
+  pad: 0.3, // the lens keeps this far from anything it may not pass through
   clearance: 0.9, // never lower than the deck + this
   swoop: 0.8, // seconds from the shipyard view to behind the captain
 };
@@ -82,45 +85,32 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     }
   };
 
-  // Tall blockers stop the camera's boom (thin posts don't: the boom would pump in and out past them).
+  // What the camera's boom may not pass through (each padded by CAM.pad round its sides, top and
+  // bottom): the tall blockers (buildings, the tower, the crane, the docked ship; thin posts and low
+  // props don't count, the boom would pump in and out past them), and the camera-only volumes of
+  // walk.camBlockers: things up in the air the captain walks under or round but the lens must not
+  // pass through (the signs' boards on their posts, the leaning palm trunks, the beach umbrella):
+  // { x, z, w, d, ry, y0, y1 } or { x, z, r, y0, y1 }.
   const camBlocks = [];
+  const P = CAM.pad;
   for (const b of Array.isArray(data.blockers) ? data.blockers : []) {
     if (!b || !(b.h >= 2) || !finite(b.x, b.z)) continue;
     const base = walk.heightAt(b.x, b.z) ?? 1.3;
     if (b.r !== undefined) {
-      if (b.r >= 0.45) camBlocks.push({ x: b.x, z: b.z, r: b.r + 0.3, top: base + b.h, y0: -Infinity });
+      if (b.r >= 0.45) camBlocks.push({ x: b.x, z: b.z, r: b.r + P, top: base + b.h + P, y0: -Infinity });
     } else if (Math.min(b.w, b.d) >= 0.6) {
       const ry = b.ry || 0;
-      camBlocks.push({ x: b.x, z: b.z, hw: b.w / 2 + 0.3, hd: b.d / 2 + 0.3, c: Math.cos(ry), s: Math.sin(ry), top: base + b.h, y0: -Infinity });
+      camBlocks.push({ x: b.x, z: b.z, hw: b.w / 2 + P, hd: b.d / 2 + P, c: Math.cos(ry), s: Math.sin(ry), top: base + b.h + P, y0: -Infinity });
     }
   }
-  // Without camBlockers in the data: tall thin posts usually carry a board (the tailor's arrow, the
-  // welcome sign), so the camera gives them a wider berth, and two matching tall posts get the board
-  // between them.
-  if (!Array.isArray(data.camBlockers)) {
-    const posts = (Array.isArray(data.blockers) ? data.blockers : []).filter((b) => b && b.r !== undefined && b.r < 0.45 && b.h >= 3.4 && finite(b.x, b.z));
-    for (const b of posts) camBlocks.push({ x: b.x, z: b.z, r: 0.9 + 0.3, top: (walk.heightAt(b.x, b.z) ?? 1.3) + b.h, y0: -Infinity });
-    for (let i = 0; i < posts.length; i++) {
-      for (let j = i + 1; j < posts.length; j++) {
-        const a = posts[i];
-        const b = posts[j];
-        const d = Math.hypot(b.x - a.x, b.z - a.z);
-        if (a.h < 6 || Math.abs(a.h - b.h) > 0.2 || d < 3 || d > 8) continue;
-        const ry = Math.atan2(b.z - a.z, b.x - a.x);
-        camBlocks.push({ x: (a.x + b.x) / 2, z: (a.z + b.z) / 2, hw: d / 2 + 0.3, hd: 0.3 + 0.3, c: Math.cos(-ry), s: Math.sin(-ry), top: 1.3 + a.h, y0: -Infinity });
-      }
-    }
-  }
-  // Camera-only boxes (optional, walk.camBlockers): elevated things the captain walks under but the
-  // camera must not pass through, like the boards of the signposts: { x, z, w, d, ry, y0, y1 } or { x, z, r, y0, y1 }.
   for (const b of Array.isArray(data.camBlockers) ? data.camBlockers : []) {
     if (!b || !finite(b.x, b.z)) continue;
-    const y0 = Number.isFinite(b.y0) ? b.y0 : -Infinity;
-    const top = Number.isFinite(b.y1) ? b.y1 : Infinity;
-    if (b.r !== undefined) camBlocks.push({ x: b.x, z: b.z, r: b.r + 0.3, top, y0 });
+    const y0 = Number.isFinite(b.y0) ? b.y0 - P : -Infinity;
+    const top = Number.isFinite(b.y1) ? b.y1 + P : Infinity;
+    if (b.r !== undefined) camBlocks.push({ x: b.x, z: b.z, r: (Number.isFinite(b.r) ? b.r : 0) + P, top, y0 });
     else {
-      const ry = b.ry || 0;
-      camBlocks.push({ x: b.x, z: b.z, hw: (b.w || 0) / 2 + 0.3, hd: (b.d || 0) / 2 + 0.3, c: Math.cos(ry), s: Math.sin(ry), top, y0 });
+      const ry = Number.isFinite(b.ry) ? b.ry : 0;
+      camBlocks.push({ x: b.x, z: b.z, hw: (Number.isFinite(b.w) ? b.w : 0) / 2 + P, hd: (Number.isFinite(b.d) ? b.d : 0) / 2 + P, c: Math.cos(ry), s: Math.sin(ry), top, y0 });
     }
   }
   const insideBlock = (o, x, z, pad = 0) => {
@@ -132,7 +122,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     return Math.abs(lx) < o.hw + pad && Math.abs(lz) < o.hd + pad;
   };
   const camBlocked = (x, y, z) => {
-    for (const o of camBlocks) if (y < o.top && y > o.y0 - 0.3 && insideBlock(o, x, z)) return true;
+    for (const o of camBlocks) if (y < o.top && y > o.y0 && insideBlock(o, x, z)) return true;
     return false;
   };
 
@@ -380,7 +370,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     if (!finite(x, z)) return false;
     const s = walk.snap(x, z, 3);
     if (!s) return false;
-    return startAuto(s, null, false);
+    if (startAuto(s, null, false)) return true;
+    // A corner shut in by props (or one the path graph misses): walk as near to it as he can get.
+    const near = walk.graph.nodes
+      .map((n) => ({ ...n, d: Math.hypot(n.x - s.x, n.z - s.z) }))
+      .filter((n) => n.d <= 4)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, 8);
+    for (const n of near) if (startAuto({ x: n.x, z: n.z }, null, false)) return true;
+    return false;
   }
 
   function goTo(id, { open = true } = {}) {
@@ -641,6 +639,12 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   function updateCamera(dt, snap = false) {
     const portrait = (globalThis.innerHeight || 1) > (globalThis.innerWidth || 1);
     const dist = portrait ? CAM.distPortrait : CAM.dist;
+    // The lens is setLens()'s (main.js), narrower in portrait: its lens there is wide (up to 90°, so a
+    // broadside stays in view in battle), which would leave the walking captain tiny on a phone.
+    if (portrait && camera.isPerspectiveCamera && camera.fov > CAM.fovPortrait) {
+      camera.fov = CAM.fovPortrait;
+      camera.updateProjectionMatrix();
+    }
     cam.ty = snap ? cap.yVis : cam.ty + (cap.yVis - cam.ty) * Math.min(1, dt * 6);
     const tx = cap.x;
     const ty = cam.ty + CAM.lift;
@@ -668,8 +672,33 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       }
       return 1;
     };
+    // the nearest yaw (either way, in `step`s) whose boom is clear for at least `need`, or null
+    const clearSide = (step, n, need) => {
+      const save = cam.yaw;
+      let best = null;
+      for (let k = 1; k <= n && best === null; k++) {
+        for (const sgn of [1, -1]) {
+          cam.yaw = save + sgn * k * step;
+          if (clearAt(cam.pitch) * dist >= need) {
+            best = cam.yaw;
+            break;
+          }
+        }
+      }
+      cam.yaw = save;
+      return best;
+    };
     let hit = clearAt(cam.pitch);
     let pitch = cam.pitch;
+    // A cut (stepping ashore, a teleport): with something close behind him (at the gangplank, the
+    // docked ship), start from the nearest side with a clear view instead of craning down on his hat.
+    if (snap && hit < 0.75) {
+      const best = clearSide(0.2, 9, dist * 0.9);
+      if (best !== null) {
+        cam.yaw = wrap(best);
+        hit = clearAt(cam.pitch);
+      }
+    }
     if (hit < 0.85) {
       for (let k = 1; k <= 3; k++) {
         const p = cam.pitch + ((CAM.pitchMax - cam.pitch) * k) / 3;
@@ -681,24 +710,13 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
         if (h >= 0.85) break;
       }
     }
-    // Still cramped (his back to a wall or a door): swing round to the nearest clear side.
+    // Still cramped (his back to a wall or a door): swing round to the nearest clear side (quickly
+    // when even the shortest boom would leave the lens inside something).
     if (hit * dist < CAM.minBoom + 0.2 && (snap || cam.sinceDrag > 0.6)) {
-      let best = null;
-      for (let k = 1; k <= 9 && best === null; k++) {
-        for (const sgn of [1, -1]) {
-          const a = cam.yaw + sgn * k * 0.35;
-          const save = cam.yaw;
-          cam.yaw = a;
-          const h = clearAt(cam.pitch);
-          cam.yaw = save;
-          if (h * dist >= Math.min(dist * 0.8, CAM.minBoom + 2.4)) {
-            best = a;
-            break;
-          }
-        }
-      }
+      const best = clearSide(0.35, 9, Math.min(dist * 0.8, CAM.minBoom + 2.4));
       if (best !== null) {
-        cam.yaw = snap ? wrap(best) : turnToward(cam.yaw, best, 2.2 * dt);
+        const inside = hit * dist < CAM.minBoom - 0.25;
+        cam.yaw = snap ? wrap(best) : turnToward(cam.yaw, best, (inside ? 5 : 2.2) * dt);
         if (snap) {
           hit = clearAt(cam.pitch);
           pitch = cam.pitch;
@@ -711,7 +729,13 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const oy = Math.sin(cam.pitchEff);
     const oz = -Math.cos(cam.yaw) * cp;
     if (Math.abs(cam.pitchEff - pitch) > 1e-3) hit = clearAt(cam.pitchEff);
-    const want = Math.max(CAM.minBoom / dist, hit);
+    // The boom stops short of what is behind him, but no shorter than minBoom, unless the lens would
+    // then sit inside something: then it comes in over his shoulder, as close as `closest`.
+    let want = Math.max(CAM.minBoom / dist, hit);
+    if (hit * dist < CAM.minBoom) {
+      const Lm = CAM.minBoom;
+      if (camBlocked(tx + ox * Lm, Math.max(ty + oy * Lm, cap.yVis + CAM.clearance), tz + oz * Lm)) want = Math.max(CAM.closest, hit * dist) / dist;
+    }
     if (snap) cam.boom = want;
     else if (want < cam.boom) cam.boom += (want - cam.boom) * Math.min(1, dt * 14);
     else cam.boom += (want - cam.boom) * Math.min(1, dt * 2);

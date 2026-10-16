@@ -1720,8 +1720,147 @@ body.docked.dragging #game { cursor: grabbing; }
   .bar.small { width: 44px; }
   .sails { font-size: 13px; }
 }
+/* Short landscape phones (568x320, 640x360): the minimap sits top-right, beside the banner's lines, so the banner
+   keeps to the middle, clear of it on both sides. Small portrait phones (320x480, 360x480): the banner starts
+   below the minimap, as on taller phones. */
+@media (max-height: 500px) and (orientation: landscape) and (hover: none) and (pointer: coarse) {
+  .banner { max-width: min(92vw, 760px, calc(100vw - 2 * (var(--mm) + var(--edge) + 16px))); }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .banner { top: max(24%, calc(var(--edge) + var(--top-h) + var(--mm) + 28px)); }
+}
 /* A boss bar and the boarding strip both up top: banners start below them. */
 body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: max(24%, 228px); }
 @media (max-height: 500px) {
   body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: max(27%, 172px); }
+}
+
+/* ---------- Title: the voyage in two acts (SPEC2 §5.6) ----------
+   The level cards come in one group per act, each under a heading that spans the grid. A card shows its
+   number, name, the difficulty word with skull pips ("Difficulty 4 of 6") and Play or why it is locked.
+   If the panel has to scroll, Set sail! stays in view at its bottom. */
+.level-cards { gap: 10px; margin: 10px 0 10px; }
+.level-cards .act-head {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 -3px;
+  font-family: var(--body);
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--sea-text);
+}
+.level-cards .act-head.act-2 { color: #6a2c8a; } /* plum: 7.7:1 on the parchment */
+.level-cards .act-head::before,
+.level-cards .act-head::after { content: ""; flex: 1 1 0; min-width: 12px; height: 3px; border-radius: 2px; background: currentColor; opacity: 0.4; }
+.level-cards .act-head + .level-card,
+.level-cards .act-head ~ .level-card { margin-top: 0; }
+.level-card { min-height: 0; padding: 7px 8px 8px; gap: 3px; }
+.level-card .lvl-num { font-size: 28px; }
+#menu-screen .tagline { text-wrap: balance; }
+.level-card .lvl-lock { margin-top: auto; }
+.lvl-4 { background: linear-gradient(180deg, #ffbe6b 0%, #ff8c69 45%, #2fa0a6 46%, #1a6a84 100%); }
+.lvl-5 { background: linear-gradient(180deg, #b9c8ff 0%, #e9a9d9 45%, #4fa8de 46%, #285f9e 100%); }
+.lvl-6 { background: linear-gradient(180deg, #5a46a8 0%, #251f52 45%, #2b4c6a 46%, #0d1d2e 100%); }
+.lvl-4 .lvl-diff { background: #ffd6a3; }
+.lvl-5 .lvl-diff { background: #d6e2ff; }
+.lvl-6 .lvl-diff { background: #e8ccff; }
+/* The difficulty pill: the word, then one skull per step of difficulty (dim ones above it). */
+.lvl-diff { display: inline-flex; align-items: center; gap: 5px; }
+.lvl-pips { display: inline-flex; align-items: center; gap: 1px; }
+.lvl-pips .skull { display: block; width: 11px; height: 11px; opacity: 0.22; }
+.lvl-pips .skull.on { opacity: 1; }
+.lvl-pips svg { display: block; width: 100%; height: 100%; fill: var(--ink); }
+.lvl-pips svg .eye { fill: #fff; }
+/* A locked card (and a heading) takes no clicks: a click there lands on the card grid, which does nothing. */
+.level-card.locked, .level-cards .act-head { pointer-events: none; }
+/* A locked card's reason ("Beat the Molten Maw") may take two short lines. */
+.level-card.locked .lvl-lock { line-height: 1.2; padding-top: 2px; padding-bottom: 2px; text-wrap: balance; }
+/* Set sail! and the shipyard stay in view at the panel's bottom while the rest of it scrolls. */
+#menu-screen .menu-actions { position: sticky; bottom: 0; z-index: 1; background: var(--paper); }
+#menu-screen .menu-actions::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 100%;
+  height: 14px;
+  background: linear-gradient(to top, var(--paper), rgba(255, 244, 214, 0));
+  pointer-events: none;
+  opacity: 0;
+}
+/* The fade shows only while cards pass beneath the pinned row (main.js menuPin() sets .pinned). */
+#menu-screen .menu-actions.pinned::before { opacity: 1; }
+/* ...and the cards passing beneath don't peek out below the row, in the panel's bottom padding. */
+#menu-screen .menu-actions.pinned { box-shadow: 0 24px 0 var(--paper); }
+/* A card that takes focus is scrolled to just above the pinned row, never under it (SPEC2 §13: focus never
+   obscured): --menu-pin is the row's height plus the panel's bottom padding (main.js menuPin()); 24px more
+   keeps the focus ring (7px) clear of the fade (14px). */
+#menu-screen .panel { scroll-padding-bottom: calc(var(--menu-pin, 76px) + 24px); }
+/* Phones held upright and narrow windows: each card is a row ([number] name ... Play, the difficulty below
+   the name), one card per row; Set sail! and the shipyard side by side. */
+@media (max-width: 640px) and (orientation: portrait), (max-width: 640px) and (min-height: 501px) {
+  .level-cards { grid-template-columns: 1fr; gap: 8px; }
+  .level-card {
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    grid-template-areas: "num name lock" "num diff diff";
+    align-items: center;
+    column-gap: 10px;
+    row-gap: 3px;
+    padding: 7px 12px 8px;
+    text-align: left;
+  }
+  .level-card .lvl-num { grid-area: num; font-size: 28px; }
+  .level-card .lvl-name { grid-area: name; text-align: left; }
+  .level-card .lvl-diff { grid-area: diff; justify-self: start; }
+  .level-card .lvl-lock { grid-area: lock; margin-top: 0; max-width: 8.5em; text-align: center; }
+  #menu-screen .menu-actions { flex-wrap: nowrap; gap: 0; }
+  #menu-screen .menu-actions .btn { min-height: 44px; margin: 6px 4px 4px; font-size: 20px; padding: 9px 18px 7px; border-width: 3px; box-shadow: 0 5px 0 var(--ink); }
+  #menu-screen .menu-actions .dock-link { font-size: 17px; padding: 9px 14px 7px; }
+}
+@media (max-width: 360px) and (orientation: portrait) {
+  #menu-screen .menu-actions .btn { font-size: 17px; padding: 8px 12px 6px; }
+  #menu-screen .menu-actions .dock-link { font-size: 15px; padding: 8px 10px 6px; gap: 5px; }
+}
+/* Short screens (landscape phones): smaller cards, three to a row, the number beside the name. */
+@media (max-height: 500px) and (orientation: landscape) {
+  .level-cards { grid-template-columns: repeat(3, 1fr); gap: 6px 8px; margin: 6px 0 8px; } /* 8px: room for a focus ring (7px) above Set sail! */
+  .level-cards .act-head { font-size: 12px; margin-bottom: -2px; }
+  .level-card {
+    display: grid;
+    grid-template-columns: auto auto;
+    grid-template-areas: "num name" "diff diff" "lock lock";
+    justify-content: center;
+    justify-items: center;
+    align-items: center;
+    column-gap: 6px;
+    row-gap: 3px;
+    padding: 4px 6px 5px;
+  }
+  .level-card .lvl-num { grid-area: num; font-size: 20px; }
+  .level-card .lvl-name { grid-area: name; justify-self: start; text-align: left; }
+  .level-card .lvl-diff { grid-area: diff; }
+  .level-card .lvl-lock { grid-area: lock; margin-top: 0; }
+  .lvl-diff { font-size: 10px; gap: 3px; padding: 0 6px; }
+  .lvl-pips .skull { width: 9px; height: 9px; }
+}
+@media (max-height: 500px) and (orientation: portrait) {
+  .lvl-diff { font-size: 10px; }
+}
+/* Victory with more voyage to come: "Sail on to the Far Seas" leads, the main menu steps back beside the dock. */
+#won-screen #again-btn.alt { font-size: 18px; min-height: 44px; padding: 11px 20px 9px; border-width: 3px; box-shadow: 0 5px 0 var(--ink); }
+#won-screen #again-btn.alt:active { box-shadow: 0 1px 0 var(--ink); }
+/* The first shipyard visit since the town opened: the Go ashore button pulses once (SPEC2 §5.5). */
+.dock-ashore.pulse { animation: ashore-pulse 0.9s ease-in-out 0.6s 2; }
+@keyframes ashore-pulse {
+  0%, 100% { transform: scale(1); box-shadow: 0 5px 0 var(--ink); }
+  50% { transform: scale(1.08); box-shadow: 0 5px 0 var(--ink), 0 0 0 6px rgba(255, 201, 60, 0.85); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .dock-ashore.pulse { animation: none; box-shadow: 0 5px 0 var(--ink), 0 0 0 4px var(--gold); }
 }

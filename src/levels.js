@@ -94,7 +94,7 @@ export const ACT1 = [
   },
 ];
 
-// Act II joins the voyage in Stage 3 of the build (SPEC2 §10). Until then it can be played with ?act2=1.
-export const WITH_ACT2 = /[?&]act2=1(&|$)/.test(globalThis.location?.search ?? '');
+// Act II (The Far Seas) sails with every voyage: beating the Molten Maw opens Doubloon Bay (SPEC2 §6.1).
+export const WITH_ACT2 = true;
 
 export const LEVELS = WITH_ACT2 ? [...ACT1, ...ACT2_LEVELS] : ACT1;

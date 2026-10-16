@@ -110,11 +110,12 @@ async function shotColours(page) {
   const colours = await shotColours(page);
   check(colours > 40, `title scene renders with rich colour (${colours} colour buckets)`);
 
-  // Level select: 3 cards, only the first unlocked on a fresh profile.
+  // Level select: 6 cards in two acts, only the first unlocked on a fresh profile.
   const cards = await page.$$eval('.level-card', (els) => els.map((e) => ({ text: e.textContent, locked: e.disabled })));
-  check(cards.length === 3, `3 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
-  check(!cards[0].locked && cards[1].locked && cards[2].locked, 'only level 1 is unlocked at first');
-  check(/Easy/.test(cards[0].text) && /Medium/.test(cards[1].text) && /Hard/.test(cards[2].text), 'level cards show the difficulty');
+  check(cards.length === 6, `6 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
+  check(!cards[0].locked && cards.slice(1).every((c) => c.locked), 'only level 1 is unlocked at first');
+  check(/Easy/.test(cards[0].text) && /Medium/.test(cards[1].text) && /Hard/.test(cards[2].text) &&
+    /Tricky/.test(cards[3].text) && /Tough/.test(cards[4].text) && /Legendary/.test(cards[5].text), 'level cards show the difficulty');
   check(await page.evaluate(() => window.__gameReady === true), 'startup sets the ready flag');
 
   // ---- Level 1.
@@ -501,7 +502,7 @@ async function shotColours(page) {
     };
   });
   check(dock.mode === 'dock' && dock.from === 'won' && dock.crew >= 5 && dock.people >= 20, `"Visit the dock" opens Sparrow's Floating Island: ${dock.crew} crew cleaning the ship, ${dock.people} people in all`);
-  check(dock.chest === String(chestAtWin) && dock.exits === 'Back to the title', `the shipyard shows the chest (${dock.chest} gold) and the way back (${dock.exits})`);
+  check(dock.chest === String(chestAtWin) && dock.exits === 'Set sail for Doubloon Bay | Back to the title', `the shipyard shows the chest (${dock.chest} gold) and the way back (${dock.exits})`);
   check(dock.calls > 0 && dock.calls <= 450, `draw calls at the dock stay within the budget (${dock.calls} of 450)`);
   // The townsfolk are only ever seen small: they use the light build, which keeps the dock's triangle
   // count (both passes: colour and ink outline) well under what a full-detail crowd costs (~1.74M).
@@ -535,7 +536,8 @@ async function shotColours(page) {
 
   // Draw calls stay reasonable on every level.
   const calls = [];
-  for (let n = 1; n <= 3; n++) {
+  const nLevels = await g(page, 'LEVELS.length');
+  for (let n = 1; n <= nLevels; n++) {
     await page.evaluate((n) => { window.__game.startLevel(n); }, n);
     await page.evaluate(() => new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r))));
     calls.push(await page.evaluate(() => window.__game.renderInfo.calls));
@@ -543,13 +545,13 @@ async function shotColours(page) {
   check(calls.every((c) => c > 0 && c < 1600), `draw calls per frame are reasonable (${calls.join(', ')})`);
   await freeze(page);
 
-  // ---- A bot captain plays every level with simulated controls.
+  // ---- A bot captain plays every Act I level with simulated controls (Act II has its own bot in tests/levels.cjs).
   const bot = await page.evaluate(() => {
     const G = window.__game;
     const wrap = (a) => ((((a + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
     const results = [];
     // Like a player, the bot gets a second try at a level it loses.
-    for (let n = 1, attempt = 1; n <= G.LEVELS.length; n++) {
+    for (let n = 1, attempt = 1; n <= 3; n++) {
       G.startLevel(n);
       G.togglePause();
       G.state.mode = 'playing';
@@ -621,7 +623,8 @@ async function shotColours(page) {
   // ---- Main menu again; mobile touch controls.
   await page.evaluate(() => window.__game.showMenu());
   const unlockedCards = await page.$$eval('.level-card', (els) => els.filter((e) => !e.disabled).length);
-  check(unlockedCards === 3, 'all levels unlocked on the menu after winning');
+  // Winning the Act I finale opens Doubloon Bay (the smoke run never clears Act II).
+  check(unlockedCards === 4, 'all levels unlocked on the menu after winning');
   // Keyboard users: Enter on a focused level card starts that level (not the default level 1).
   await page.focus('.level-card.lvl-3');
   await page.keyboard.press('Enter');

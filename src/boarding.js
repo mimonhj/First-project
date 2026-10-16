@@ -14,7 +14,9 @@ import { gradientMap, setOutline } from './style.js';
 // SIMULATED time, and writes the two ships' x / z / h / speed. render(t, dt) only draws: the grapnels and
 // their lines, the boarding party (your captain leading from the quarterdeck, up to 4 sailors) swinging
 // across on ropes from the main yard, the brawl (cutlass duels, clang stars, dust), losers tumbling
-// overboard (through ctx.overboard when given), the prize gold, and the camera pose (camera()).
+// overboard (through ctx.overboard when given), the prize gold, and the camera pose (camera()). While the
+// boarding view is on, the sails of the ship nearest the camera turn see-through (both decks and the swing
+// stay in sight) and her floating tag hides (ship.tagHidden, read by tags.js; the strip shows her crew).
 // Every boarding figure is a child of the SCENE (never of a ship mesh: disposeShip would dispose shared
 // geometry), built with share: true and placed from the ships' transforms every frame.
 //
@@ -28,7 +30,7 @@ import { gradientMap, setOutline } from './style.js';
 //   camera(aspect?, from?) → { pos, look, blend } | null,
 //       // from = { pos, look } (the chase camera this frame): boarding eases along an orbit itself and
 //       // returns blend 1; without it main lerps with `blend`
-//   heave() → number,          // a heave press (G / Board) during 'reel': returns the new heave bonus
+//   heave() → number,          // a heave press (G / Board) in your attack's 'reel': returns the new heave bonus
 //   cut(how = 'tap') → boolean,// during 'threat': a tap (RAIDERS.cutTaps of them cut) or 'hit' (a ball)
 //   cutHold(down), skip() → boolean, cancel(reason) → boolean,
 //   clear(),                   // silent stop (no callbacks): level teardown
@@ -102,14 +104,17 @@ const SET = Object.freeze({
   coins: 30,
 });
 
-// The boarding camera (§3.4 "Boarding camera", tuned with screenshots): a raised three-quarter view from
-// beyond the deck the brawl is on, a little astern, so the square sails are seen nearly edge-on and the
-// fight is in front of all the rigging. dist grows with the gap while she is still being hauled in; yaw: 0 = straight across, + astern.
+// The boarding camera (§3.4 "Boarding camera", tuned with in-game screenshots): a raised three-quarter view
+// from beyond the deck the brawl is on, a little astern, so the square sails are seen nearly edge-on and the
+// fight is in front of all the rigging. dist grows with the gap while she is still being hauled in; yaw: 0 =
+// straight across, + astern. The brawl ship's sails fade while the view is on (SAIL_FADE): from beyond her
+// deck they would hide your ship and the swing (a cutter's big lugsail covers both decks).
 const CAM = Object.freeze({
-  land: { dist: 12, el: 0.9, yaw: 0.2, lookUp: 1.2, toBrawl: 0.6, sepGain: 0.55, sizeGain: 0.45 },
-  port: { dist: 11.5, el: 1.05, yaw: 0.25, lookUp: 2.2, toBrawl: 0.55, sepGain: 0.7, sizeGain: 0.5 },
+  land: { dist: 14, el: 1.0, yaw: 0.2, lookUp: 1.2, toBrawl: 0.45, sepGain: 0.55, sizeGain: 0.45 },
+  port: { dist: 15, el: 1.1, yaw: 0.35, lookUp: 2.8, toBrawl: 0.25, sepGain: 0.7, sizeGain: 0.55 },
   kick: 0.06, // capture: the view punches in by this fraction and settles
 });
+const SAIL_FADE = 0.22; // the brawl ship's sails at full boarding view (opacity; the ink lines fade with them)
 
 const DECK = { player: 1.2, cutter: 1.2, privateer: 1.2, prahu: 1.15, junk: 1.4, corsair: 1.2, manowar: 1.8, inferno: 1.8, galleon: 1.4, raider: 1.0, phantom: 1.8 };
 const KINDS = ['attack', 'defend', 'surrender', 'counter'];
@@ -405,6 +410,70 @@ export function createBoarding(ctx = {}) {
   let camBlend = 0;
   let camPair = null; // { p, e, side, brawl } (kept while the camera eases back)
   let kickAt = -10;
+
+  // ------------------------------------------------------------------------------- faded sails
+  // The ship nearest the boarding camera shows her sails see-through while the view is on: each sail mesh
+  // gets a transparent copy of its material(s) (one copy per material, kept for the level), the originals
+  // come back when the camera has eased out (or at once on clear()). Draw calls are unchanged.
+  const fadeCopy = new Map(); // original material -> its see-through copy
+  const fadeOrig = new Map(); // copy -> original
+  let fadedShip = null;
+  function fadeMat(m, k) {
+    if (!m || !m.isMaterial) return m;
+    const o = fadeOrig.get(m) || m;
+    let c = fadeCopy.get(o);
+    if (!c) {
+      c = o.clone();
+      c.transparent = true;
+      c.depthWrite = false;
+      c.userData = { ...o.userData, outlineParameters: { ...(o.userData.outlineParameters || {}) } };
+      fadeCopy.set(o, c);
+      fadeOrig.set(c, o);
+    }
+    c.opacity = (o.transparent ? o.opacity : 1) * k;
+    if (c.userData.outlineParameters.visible !== false) c.userData.outlineParameters.alpha = k;
+    return c;
+  }
+  const unfadeMat = (m) => fadeOrig.get(m) || m;
+  function setSailFade(ship, k) {
+    const sails = ship && ship.mesh && ship.mesh.userData && Array.isArray(ship.mesh.userData.sails) ? ship.mesh.userData.sails : [];
+    for (const s of sails) {
+      if (!s || !s.material) continue;
+      if (k >= 0.999) s.material = Array.isArray(s.material) ? s.material.map(unfadeMat) : unfadeMat(s.material);
+      else s.material = Array.isArray(s.material) ? s.material.map((m) => fadeMat(m, k)) : fadeMat(s.material, k);
+    }
+  }
+  function updateFade() {
+    const b = camPair && camPair.p ? (camPair.brawl && camPair.brawl.mesh ? camPair.brawl : camPair.e && camPair.e.mesh ? camPair.e : null) : null;
+    const want = b && camBlend > 0 ? b : null;
+    if (fadedShip && fadedShip !== want) {
+      setSailFade(fadedShip, 1);
+      fadedShip = null;
+    }
+    tagShip(camPair && camBlend > 0.02 ? camPair.e : null);
+    if (!want) return;
+    fadedShip = want;
+    setSailFade(want, 1 - (1 - SAIL_FADE) * smooth(camBlend));
+  }
+  function clearFade() {
+    if (fadedShip) setSailFade(fadedShip, 1);
+    fadedShip = null;
+    tagShip(null);
+  }
+  // Her floating tag hides while the boarding view is on (the boarding strip shows both crews, and the tag
+  // would sit right under it): tags.js reads ship.tagHidden.
+  let tagged = null;
+  function tagShip(e) {
+    if (tagged && tagged !== e) tagged.tagHidden = false;
+    tagged = e && e.mesh ? e : null;
+    if (tagged) tagged.tagHidden = true;
+  }
+  function dropFadeCopies() {
+    clearFade();
+    for (const c of fadeCopy.values()) c.dispose();
+    fadeCopy.clear();
+    fadeOrig.clear();
+  }
 
   // ------------------------------------------------------------------------------- people
   const figs = []; // every built person: { pivot, person, key, opts, use, st }
@@ -1164,24 +1233,11 @@ export function createBoarding(ctx = {}) {
     const ob = overboardPool();
     let ok = false;
     if (ob && typeof ob.throwOver === 'function') {
-      // overboard.throwOver picks its spot along the waist with its first Math.random(): pin that draw
-      // to where he stands, so he goes over the rail right there (the pool keeps the same look).
-      const v = clamp(z / (lenOf(ship) * 0.45) + 0.5, 0, 0.999);
-      const rnd = Math.random;
-      let first = true;
-      Math.random = () => {
-        if (first) {
-          first = false;
-          return v;
-        }
-        return rnd();
-      };
+      // he goes over the rail right where he stands (the pool keeps the same look)
       try {
         ok = !!ob.throwOver(ship, gameplaySide, f.opts, { along: z });
       } catch {
         ok = false;
-      } finally {
-        Math.random = rnd;
       }
     }
     if (ok) {
@@ -1657,6 +1713,7 @@ export function createBoarding(ctx = {}) {
       else if (wantCam > camBlend) camBlend = Math.min(1, camBlend + vdt / SET.camIn);
       else camBlend = Math.max(0, camBlend - vdt / SET.camOut);
       if (camBlend <= 0 && !active) camPair = null;
+      updateFade();
       releaseCoins();
       renderPeople(tt);
       renderRig(tt);
@@ -1717,7 +1774,8 @@ export function createBoarding(ctx = {}) {
     },
 
     heave() {
-      if (!active || phase !== 'reel' || kind === 'defend') return heaveBonus;
+      // (only your own attack's reel: a struck ship comes quietly, a raider reels you in)
+      if (!active || phase !== 'reel' || kind !== 'attack') return heaveBonus;
       heaves++;
       heaveBonus = Math.min(BOARD.heaveMax, Math.round((heaveBonus + BOARD.heaveStep) * 1e6) / 1e6);
       lastHeaveAt = clock;
@@ -1838,6 +1896,7 @@ export function createBoarding(ctx = {}) {
       counterUntil = -Infinity;
       camBlend = 0;
       camPair = null;
+      clearFade();
       partyFigs = [];
       foeFigs = [];
       attackers = [];
@@ -1860,6 +1919,7 @@ export function createBoarding(ctx = {}) {
       api.clear();
       for (const f of [...figs]) disposeFig(f);
       queue.length = 0;
+      dropFadeCopies();
     },
 
     dispose() {
@@ -1868,6 +1928,7 @@ export function createBoarding(ctx = {}) {
       disposed = true;
       for (const f of [...figs]) disposeFig(f);
       queue.length = 0;
+      dropFadeCopies();
       if (rig.parent) rig.parent.remove(rig);
       rigGeo.dispose();
       hookGeo.dispose();
