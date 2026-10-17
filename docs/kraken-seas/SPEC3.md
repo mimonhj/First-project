@@ -81,7 +81,7 @@ sparrow.js: `env.folk()` lists the walkers on walkable decks (`walker()`/`person
 `s2`–`s18` are scenery (not walkable); walkable decks are pier, plaza, tavern raft, tower raft, yard, garden and `s1`
 (Polly's), joined by the rope bridges `plazaS1`, `plazaYard`, `plazaGarden`, `tavernTower`.
 
-Measured draw calls today (SPEC2 §12, Stage 4): level starts L1 299, L4 274, L5 271, L6 297; busiest Act II play 404
+Measured draw calls today, re-measured on `933395c` after the phone-battle fix with Stage 0's probe (`?quality=low`, 1280×720, `newGame(n)`, intro 0, 1 s stepped, frozen, 2 frames; the older SPEC2 numbers used a different method and can't be compared): level starts L1 290, L2 211, L3 169, L4 235, L5 189, L6 202; shipyard view 286–292; town walk view max 349 (30 spots × 8 headings). Older SPEC2 §12 figures for reference: level starts L1 299, L4 274, L5 271, L6 297; busiest Act II play 404
 (L5); boardings peak 378; town walk view worst 371 (30 spots × 8 headings); shipyard view 297–341; Polly's 41–46;
 tavern 54–66.
 
@@ -1665,9 +1665,9 @@ suites, with a `test:<name>` script for each; plus the opt-in `test:balance` (no
 | Voyage III level start | ≤ 310 | — | env ≤ 220 + ships + helm captain + tags |
 | Voyage III busiest (a wave of 3 + a leftover, a boarding, statuses, hazards, rings, crates) | **≤ 450** | — | ≤ 4 ships alive; statusfx ≤ 8; status badges ≤ 4; warning rings ≤ 6; crates ≤ 2; slicks 1 InstancedMesh |
 | The Kraken fight | **≤ 450** | — | the Kraken ≤ 30 (body ≤ 5, 4 tentacles ≤ 16, eyes 2, shadow 1); no other ships; rings ≤ 4 (the 4-tentacle cap of §5.7.3, sinking ones included) |
-| Act I/II level starts with the update | ≤ today + 4 | L1 299, L4 274, L5 271, L6 297 (re-measured after the phone-battle fix, §0.3) | the keg rack (recipes owned) and rudder props on the player |
-| Town walk view, every plot at tier 3, 8 villagers, Bess, Barnacle, 2 prize ships (30 spots × 8 headings) | **≤ 450** | 371 | development layer ≤ 6 (≤ 3 outlined meshes × 2 passes), animated parts ≤ 6, villagers ≤ 40, NPCs ≤ 10, bell/chalkboard/easel baked → ≈ 433 |
-| Shipyard view | ≤ 450 | 297–341 | development layer ≤ 6 + animated ≤ 6; villagers hidden; NPCs + 10 |
+| Act I/II level starts with the update | ≤ today + 4 | L1 290, L2 211, L3 169, L4 235, L5 189, L6 202 (re-measured on 933395c after the phone-battle fix with Stage 0's probe: `newGame(n)`, intro 0, 1 s stepped, frozen, 2 frames) | the keg rack (recipes owned) and rudder props on the player |
+| Town walk view, every plot at tier 3, 8 villagers, Bess, Barnacle, 2 prize ships (30 spots × 8 headings) | **≤ 450** | 349 (max of 30 × 8; re-measured on 933395c) | development layer ≤ 6 (≤ 3 outlined meshes × 2 passes), animated parts ≤ 6, villagers ≤ 40, NPCs ≤ 10, bell/chalkboard/easel baked → ≈ 433 |
+| Shipyard view | ≤ 450 | 286–292 (from the title, 12 samples; re-measured on 933395c) | development layer ≤ 6 + animated ≤ 6; villagers hidden; NPCs + 10 |
 | Quiz view / build view | ≤ 450 | — | the captain + Barnacle + Quizzle ≈ 20 / the island framed: the walk view's numbers |
 | Per new ship model | ≤ the Man-o'-War's calls (the Inkheart ≤ 1.3×) | — | — |
 | Per person | 3 material groups; the light build (`detail: 'low'`, ≤ 4,000 triangles) for villagers and NPCs; the dock frame ≤ 1.5M triangles (smoke check) | — | `share: true` |
