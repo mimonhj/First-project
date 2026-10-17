@@ -90,7 +90,7 @@ export const ACT1 = [
     },
     finale: true,
     finaleText:
-      'The Molten Maw is sunk and every pirate fleet of the Old World is at the bottom of the sea. But sailors whisper of the Far Seas…',
+      'The Molten Maw is beaten, and so is every pirate fleet of the Old World. But sailors whisper of the Far Seas…',
   },
 ];
 

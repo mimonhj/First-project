@@ -174,6 +174,7 @@ const ui = {
   dockMute: $('dock-mute'),
   menu: $('menu-screen'),
   levelCards: $('level-cards'),
+  menuLive: $('menu-live'),
   pause: $('pause-screen'),
   pauseChoices: $('pause-choices'),
   pauseConfirm: $('pause-confirm'),
@@ -1322,6 +1323,12 @@ function nextLevel() {
   startLevel(state.level + 1);
 }
 
+// Camera shake (a hull hit, a bomb or a bolt close by, a rake): updateCamera jitters the view by state.shake,
+// easing it off. Never under reduced motion (SPEC2 §13), so the hit is never scheduled there.
+function shakeCamera(amount) {
+  if (!reducedMotion()) state.shake = Math.max(state.shake, amount);
+}
+
 function blurActive() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
@@ -1359,15 +1366,8 @@ function finishLevel() {
   if (isFinale(state.level)) {
     state.mode = 'won';
     // A finale with more voyage after it (Act II) opens the next level too.
-    if (state.level < LEVELS.length && state.level + 1 > state.unlocked) {
-      state.unlocked = state.level + 1;
-      saveNumber(PROGRESS_KEY, state.unlocked);
-    }
-    const isBest = state.gold > state.best;
-    if (isBest) {
-      state.best = state.gold;
-      saveNumber(BEST_KEY, state.best);
-    }
+    if (state.level < LEVELS.length) raiseProgress(state.level + 1);
+    const isBest = raiseBest(state.gold);
     ui.wonGold.textContent = state.gold;
     ui.wonChest.innerHTML = banked;
     show(ui.wonBest, isBest);
@@ -1382,10 +1382,7 @@ function finishLevel() {
     show(ui.won, true);
   } else {
     state.mode = 'levelDone';
-    if (state.level + 1 > state.unlocked) {
-      state.unlocked = state.level + 1;
-      saveNumber(PROGRESS_KEY, state.unlocked);
-    }
+    raiseProgress(state.level + 1);
     const next = LEVELS[state.level].env.meta;
     ui.levelTitle.textContent = `${def.env.meta.name} cleared!`;
     // "Ships sunk: 3 · Captured: 2 · Level bonus: +500 gold", the prize and mechanic bonuses, the plunder.
@@ -1407,6 +1404,34 @@ function finishLevel() {
   updateHud(true);
 }
 
+// Progress (the levels open) and the best voyage only ever go up, in this tab and across tabs: a save takes the
+// larger of this tab's value and the saved one, so a tab opened earlier can never re-lock a level (or lower
+// the best) that another tab saved. The 'storage' listener raises this tab's values as soon as another saves.
+function raiseProgress(to) {
+  const saved = loadInt(PROGRESS_KEY, 1, LEVELS.length, 1);
+  state.unlocked = clamp(Math.max(state.unlocked, saved, Math.round(Number(to)) || 1), 1, LEVELS.length);
+  if (state.unlocked > saved) saveNumber(PROGRESS_KEY, state.unlocked);
+}
+// Returns whether `gold` beats every best so far (this tab's and the saved one).
+function raiseBest(gold) {
+  const saved = loadInt(BEST_KEY, 0, MAX_GOLD, 0);
+  const before = Math.max(state.best, saved);
+  const g = clamp(Math.round(Number(gold)) || 0, 0, MAX_GOLD);
+  state.best = Math.max(before, g);
+  if (state.best > saved) saveNumber(BEST_KEY, state.best);
+  return g > before;
+}
+// Another tab saved progress or a best (or cleared storage): take the larger values, writing nothing. Returns
+// whether either changed here.
+function syncProgress() {
+  const unlocked = Math.max(state.unlocked, loadInt(PROGRESS_KEY, 1, LEVELS.length, 1));
+  const best = Math.max(state.best, loadInt(BEST_KEY, 0, MAX_GOLD, 0));
+  const changed = unlocked !== state.unlocked || best !== state.best;
+  state.unlocked = unlocked;
+  state.best = best;
+  return changed;
+}
+
 // Put gold into the treasure chest (and save it).
 function bankGold(amount) {
   const n = Math.max(0, Math.round(Number(amount) || 0));
@@ -1420,10 +1445,7 @@ function bankGold(amount) {
 // Leave the voyage between levels for the title screen: progress and the chest are already
 // saved; the plunder so far counts for the best score, as it does when the ship is sunk.
 function exitVoyage() {
-  if (state.gold > state.best) {
-    state.best = state.gold;
-    saveNumber(BEST_KEY, state.best);
-  }
+  raiseBest(state.gold);
   showMenu();
 }
 
@@ -1434,10 +1456,7 @@ function playerSunk() {
   saveFeats();
   show(ui.hint, false);
   audio.play('defeat');
-  if (state.gold > state.best) {
-    state.best = state.gold;
-    saveNumber(BEST_KEY, state.best);
-  }
+  raiseBest(state.gold);
   const meta = LEVELS[state.level - 1].env.meta;
   const worst = Object.entries(state.hurtBy).sort((a, b) => b[1] - a[1])[0];
   let tip = '';
@@ -1497,10 +1516,9 @@ const boarding = createBoarding({
 // The level's twist (Act II: the treasure convoy, drifting floes, the maelstrom), see mechanics.js.
 // A level without mechanics gets an instance that does nothing.
 let mechanics = createMechanics([], {});
-// After any boarding, raiders give you this long before the next one throws its hooks (on top of their own cooldown).
-const RAID_GAP = 3;
-// A raider sheers off and circles wide until its own boarding cooldown is down to this (then it closes in again).
-const RAID_SHEER = 4;
+// Raider pacing lives in combat.js RAIDERS: gap (after any boarding, the breather before the next raider throws
+// its hooks, on top of its own cooldown) and sheer (a beaten-off raider circles wide until its own boarding
+// cooldown is down to this, then closes in again).
 
 // The two sides of a boarding, fresh (boarding.js asks for them again at the start of 'swing'):
 // { crew, crew0, blade | grit, hpFrac } for you and for her.
@@ -1596,7 +1614,7 @@ function raiderTry(e, dist) {
   if (!player || player.sinking || state.clearTimer > 0 || state.deathTimer > 0 || state.intro > 0) return false;
   const def = LEVELS[state.level - 1];
   if (state.combatTime <= def.grace || dist > RAIDERS.reach || crewOf(e) < RAIDERS.minCrew) return false;
-  if (state.boardCooldown > BOARD.cooldown - RAID_GAP) return false; // a breather after any boarding
+  if (state.boardCooldown > BOARD.cooldown - RAIDERS.gap) return false; // a breather after any boarding
   return boarding.start({ kind: 'defend', enemy: e, getSides: () => boardingSides(e, 'defend') });
 }
 const theName = (name) => (/^The /.test(name) ? name : `The ${name}`);
@@ -2227,7 +2245,7 @@ function hullHit(ship, hx, hz, amount, info, effect) {
       if (T) T.rake = true;
       pops.pop(info.aspect === 'stern' ? WORDS.stern : WORDS.bow, hx, py + 0.4, hz, 'rake');
       audio.play('rake', sfxAt(hx, hz));
-      if (!reducedMotion()) state.shake = Math.max(state.shake, 0.15);
+      shakeCamera(0.15);
       splinters(hx, hz, 9); // a double burst down her length
     }
   }
@@ -2321,7 +2339,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
   if (ship.kind === 'player') {
     state.hurtBy[source] = (state.hurtBy[source] || 0) + amt;
     state.lastHit = state.time;
-    state.shake = Math.max(state.shake, 0.4);
+    shakeCamera(0.4);
     state.ghostHold = 0.45;
     retrigger(ui.hullCard, 'hurt');
     if (state.edgeCooldown <= 0) {
@@ -2483,7 +2501,7 @@ function updateBombs(dt, frozen = false) {
       const reach = radius + s.type.wid * 0.4;
       if (d < reach) damage(s, Math.round(dmg * (1 - (0.5 * d) / reach)), b.tx, b.tz, source);
     }
-    if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) state.shake = Math.max(state.shake, 0.5);
+    if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) shakeCamera(0.5);
     removeBomb(b);
     bombs.splice(i, 1);
   }
@@ -2585,7 +2603,7 @@ function updateEnemy(e, dt, attacking) {
     } else if (r.dist > t.engage + 8) {
       desired = toPlayer;
       targetSpeed = t.maxSpeed;
-    } else if (t.boarder && e.boardCooldown > RAID_SHEER && boarding.counterTarget !== e) {
+    } else if (t.boarder && e.boardCooldown > RAIDERS.sheer && boarding.counterTarget !== e) {
       // A raider whose ropes were just cut (or who was beaten off) sheers away and circles wide for a while.
       // (Not while her lines are still on you in the counter-board window: she holds alongside for it.)
       const a1 = wrapAngle(toPlayer + Math.PI / 2);
@@ -3452,10 +3470,7 @@ function abandonLevel() {
   clearSteering();
   boarding.cutHold(false);
   state.gold = state.goldAtLevelStart;
-  if (state.gold > state.best) {
-    state.best = state.gold;
-    saveNumber(BEST_KEY, state.best);
-  }
+  raiseBest(state.gold);
 }
 
 // ---------------------------------------------------------------------------
@@ -3559,6 +3574,13 @@ window.addEventListener('keydown', (e) => {
     const i = list.indexOf(document.activeElement);
     const next = e.shiftKey ? (i <= 0 ? list.length - 1 : i - 1) : (i + 1) % list.length;
     list[next].focus();
+    return;
+  }
+  // A held Enter or Space auto-repeats. Outside play (the title, the end screens, a dialog, the shipyard and the
+  // town) a repeat never clicks the button that has focus: the first press may have put it there, on the next
+  // screen (All aboard?'s first exit, a place's button after "Back to town"). One press is one click.
+  if ((k === 'enter' || k === ' ') && e.repeat && (state.mode !== 'playing' || open) && document.activeElement instanceof HTMLButtonElement) {
+    e.preventDefault();
     return;
   }
   // Ashore (walking, Polly's, the tavern, the Harbour menu and All aboard?) townMode decides: it walks,
@@ -3850,14 +3872,17 @@ ui.dockMute.addEventListener('click', toggleMute);
 window.addEventListener('storage', (e) => {
   const any = e.key === null; // (storage cleared)
   const counted = (any || e.key === FEATS_KEY) && syncFeats(); // counted there: added to what this tab counted
+  const grapple = armoryCfg.up.grapple;
   const armory = (any || e.key === ARMORY_KEY) && syncArmory(); // bought at the tavern there
   const chest = (any || e.key === PURSE_KEY || e.key === SHIP_KEY) && syncSaved();
   const dressed = (any || e.key === LOOK_KEY) && syncLook(); // bought or worn at Polly's there
+  // A level opened (or a best voyage) there: never lower here, and the title's cards show it.
+  if ((any || e.key === PROGRESS_KEY || e.key === BEST_KEY) && syncProgress() && state.mode === 'menu') renderLevelCards();
   if (state.mode === 'dock' && (counted || dressed)) townMode.refresh(); // (the wardrobe, the log, the captain)
   if (state.mode === 'dock' && dressed) restyleCrew();
   if (!armory && !chest) return;
   if (state.mode === 'dock') {
-    rebuildDockShip();
+    if (chest || armoryCfg.up.grapple !== grapple) rebuildDockShip(); // (of the tavern's goods only grapples show)
     renderDock();
     townMode.refresh();
   } else if (state.mode === 'menu') {
@@ -3894,6 +3919,8 @@ const SKULL_SVG =
 function renderLevelCards() {
   ui.best.textContent = state.best;
   ui.menuChest.textContent = state.purse;
+  // (a re-render, e.g. for progress made in another tab, keeps focus on the same card)
+  const had = ui.levelCards.contains(document.activeElement) ? document.activeElement.dataset.level : null;
   ui.levelCards.innerHTML = '';
   const acts = new Set(LEVELS.map((d) => d.act || 1));
   const maxStars = Math.max(LEVELS.length, ...LEVELS.map((d) => d.stars || 0));
@@ -3912,21 +3939,45 @@ function renderLevelCards() {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `level-card lvl-${n}${locked ? ' locked' : ''}`;
-    btn.disabled = locked;
     btn.dataset.level = n;
+    // A locked card stays focusable (Tab and screen readers reach it, SPEC2 §13): aria-disabled, and its lock
+    // text ("Beat the Molten Maw") is its description rather than part of its name.
+    if (locked) {
+      btn.setAttribute('aria-disabled', 'true');
+      btn.setAttribute('aria-describedby', `lvl-${n}-why`);
+    }
     const pips = Array.from({ length: maxStars }, (_, k) => `<span class="skull${k < stars ? ' on' : ''}">${SKULL_SVG}</span>`).join('');
     btn.innerHTML =
       `<span class="lvl-num">${n}</span>` +
       `<span class="lvl-name">${def.env.meta.name}</span>` +
       `<span class="lvl-diff" title="Difficulty"><span class="diff-word">${def.difficulty}</span>` +
       `<span class="lvl-pips" role="img" aria-label="Difficulty ${stars} of ${maxStars}">${pips}</span></span>` +
-      `<span class="lvl-lock">${locked ? def.lockText || 'Locked' : 'Play'}</span>`;
+      (locked ? `<span class="lvl-lock" id="lvl-${n}-why" aria-hidden="true">${def.lockText || 'Locked'}</span>` : '<span class="lvl-lock">Play</span>');
     btn.addEventListener('click', (e) => {
+      // A locked level never starts: Enter, Space or an assistive click on its card says why instead.
+      if (n > state.unlocked) {
+        lockedCard(btn, n);
+        return;
+      }
       if (!titleClickTooSoon(e)) newGame(n);
     });
     ui.levelCards.appendChild(btn);
   });
+  if (had) {
+    const again = ui.levelCards.querySelector(`.level-card[data-level="${had}"]`);
+    if (again) again.focus({ preventScroll: true });
+  }
   menuPin();
+}
+// A locked card pressed: its lock text flashes and is read out ("Doubloon Bay is locked. Beat the Molten Maw.").
+function lockedCard(btn, n) {
+  const def = LEVELS[n - 1];
+  const prev = LEVELS[n - 2];
+  const pill = btn.querySelector('.lvl-lock');
+  if (pill) retrigger(pill, 'refused');
+  const why = def.lockText || (prev ? `Clear ${prev.env.meta.name} first` : 'Locked');
+  const text = `${def.env.meta.name} is locked. ${why}.`;
+  ui.menuLive.textContent = ui.menuLive.textContent === text ? `${text} ` : text;
 }
 
 // When the title panel has to scroll, its Set sail! row stays pinned to the panel's foot (style.css). So that it
@@ -4125,6 +4176,9 @@ function openDock(from) {
   pausedDrawn = false;
 
   setEnvironment(sparrow, 77);
+  // The prize ships moored off the town are built here, behind the "Rowing to…" transition, not in the frame the
+  // first Go ashore swoops in (sparrow keeps them hidden until the town view; ashore keeps ships of the same kind).
+  if (env.setPrizes) env.setPrizes(prizeShips());
   dock.sup = null;
   placeDockShip(buildPlayerMesh());
   restyleCrew(); // the cleaning crew in the uniform from Polly's (the default one leaves them as they are)
@@ -4319,10 +4373,11 @@ function buyUpgrade(id) {
 // bought (no gold is ever spent on an upgrade that would be lost). (The tavern panel comes with the town.)
 function buyArmory(id) {
   // Another tab may have banked gold or bought at the tavern: start from what is saved (see syncArmory).
+  const grapple = armoryCfg.up.grapple;
   const synced = syncSaved();
   const armoryChanged = syncArmory();
   if ((synced || armoryChanged) && state.mode === 'dock') {
-    rebuildDockShip();
+    if (synced || armoryCfg.up.grapple !== grapple) rebuildDockShip();
     renderDock();
   }
   const cost = armoryNextCost(armoryCfg, id);
@@ -4335,7 +4390,8 @@ function buyArmory(id) {
   state.purse -= cost;
   saveChest();
   if (state.mode === 'dock') {
-    rebuildDockShip(); // Long grapples show on the rail
+    // Only Long grapples change the ship (their coils on the rail); a full rebuild is a long stall.
+    if (id === 'grapple') rebuildDockShip();
     renderDock();
   }
   return true;
@@ -4976,7 +5032,8 @@ function updateHud(force = false, dt = 0) {
   if (boss) {
     // The Phantom Galleon, spectral (or struck): only a boarding takes her (SPEC2 §5.3).
     const boardHer = boss.type.ghost && (boss.spectral || boss.surrendered);
-    setText(ui.bossName, 'bossName', boardHer ? `${boss.type.name} — BOARD HER!` : boss.type.name, force);
+    // The order first, so a narrow bar's ellipsis cuts her name, never the order (portrait phones).
+    setText(ui.bossName, 'bossName', boardHer ? `BOARD HER! — ${boss.type.name}` : boss.type.name, force);
     setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
     // The boss's crew: 10 pips with the surrender notch (SPEC2 §5.3).
     const c0 = boss.crew0 || 0;
@@ -5501,7 +5558,9 @@ function updateCamera(dt, paused) {
       camera.position.lerp(bc.pos, bc.blend);
       camLook.lerp(bc.look, bc.blend);
     }
-    if (state.shake > 0 && !paused && boarding.locked) state.shake = 0; // no shake while the decks are glued
+    // No shake while the decks are glued, nor ever under reduced motion (SPEC2 §13: the hull flash and the edge
+    // vignette carry the hit).
+    if (state.shake > 0 && !paused && (boarding.locked || reducedMotion())) state.shake = 0;
     if (state.shake > 0 && !paused) {
       state.shake = Math.max(0, state.shake - dt);
       camera.position.x += (Math.random() - 0.5) * state.shake;
@@ -5870,9 +5929,10 @@ window.__game = {
     },
     // Validated and saved; the crew and the crit chance change at the next level start.
     set(cfg) {
+      const grapple = armoryCfg.up.grapple;
       armoryCfg = parseArmoryConfig(cfg);
       saveRecord(ARMORY_KEY, serializeArmoryConfig, armoryCfg);
-      if (state.mode === 'dock') rebuildDockShip();
+      if (state.mode === 'dock' && armoryCfg.up.grapple !== grapple) rebuildDockShip(); // (only grapples show)
       townMode.refresh();
       return parseArmoryConfig(armoryCfg);
     },

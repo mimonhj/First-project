@@ -4261,7 +4261,8 @@ function bakeColours(group) {
     let mat = bakedMats.get(k);
     if (!mat) {
       const m0 = list[0].material;
-      mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: m0.gradientMap, side: m0.side, flatShading: !!m0.flatShading, fog: m0.fog });
+      // (MeshToonMaterial has no flatShading option: passing one only logs a three.js warning)
+      mat = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: m0.gradientMap, side: m0.side, fog: m0.fog });
       mat.userData.outlineParameters = { ...(m0.userData.outlineParameters || {}) };
       mat.name = 'ship-baked';
       bakedMats.set(k, mat);

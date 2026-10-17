@@ -39,7 +39,9 @@ import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIG
 // the tavern raft, the tower raft, the shipyard, Polly's and the garden. env.walk.camBlockers are
 // for the walk camera only (town.js): things up in the air the captain walks under or round but the
 // lens must not pass through (the signs' boards, the leaning palms, the beach umbrella, the tavern's
-// balcony, Polly's awning). env.cheer('polly' | 'snips' | 'tailors', seconds): a purchase at Polly's.
+// balcony, Polly's awning, the market stalls' awnings). env.cheer('polly' | 'snips' | 'tailors',
+// seconds): a purchase at Polly's. env.setCaptain(x, z) (null to clear): where the captain stands in
+// the town view, each frame (town.js); a townsperson walking a path waits while he stands in the way.
 
 export const meta = {
   name: "Sparrow's Floating Island",
@@ -1662,14 +1664,17 @@ export function build(scene, ctx = {}) {
     }
     if (o.walk) {
       // a walkable bridge: its walk curve, run on 0.9 into both decks so it overlaps their walk areas;
-      // the posts at the ends are thin obstacles (the hand ropes keep the walker on the planks)
+      // the posts at the ends are obstacles exactly as wide as the band leaves room for (the hand ropes keep
+      // the walker on the planks): wider, they would make a lip at the band's edge that stops a walker
+      // sliding along a rope dead at the post
       const run = V3(dir.x, 0, dir.z).normalize().multiplyScalar(0.9);
       const pts = [a.clone().sub(run), ...walk, b.clone().add(run)];
       walkData.links.push({ id: o.walk, pts: pts.map((p) => [r2(p.x), r2(p.y), r2(p.z)]), hw: BRIDGE_HW });
+      const postR = Math.max(0, r2(hw - BRIDGE_HW - walkData.radius));
       for (const e of [a, b]) {
         for (const s of [-1, 1]) {
           const pp = e.clone().addScaledVector(side, s * hw);
-          walkData.blockers.push({ x: r2(pp.x), z: r2(pp.z), r: 0.05, h: 1.1 });
+          walkData.blockers.push({ x: r2(pp.x), z: r2(pp.z), r: postR, h: 1.1 });
         }
       }
     }
@@ -1716,6 +1721,18 @@ export function build(scene, ctx = {}) {
     const zA = plaza.z - plaza.d / 2 + WALK_INSET + 0.1;
     const zB = tavernRaft.z + tavernRaft.d / 2 - WALK_INSET - 0.1;
     walkRect('plaza-tavern', (x0 + x1) / 2, (zA + zB) / 2, x1 - x0, zA - zB, 0, DECK);
+    // ...over a few long boards laid across the seam (else a strip of open water runs under the walkway)
+    const sa = Math.max(plaza.x - plaza.w / 2, tavernRaft.x - tavernRaft.w / 2) + 0.06;
+    const sb = Math.min(plaza.x + plaza.w / 2, tavernRaft.x + tavernRaft.w / 2) - 0.06;
+    const zEdge = plaza.z - plaza.d / 2;
+    const gap = zEdge - (tavernRaft.z + tavernRaft.d / 2);
+    const n = Math.max(1, Math.round((sb - sa) / 2.6));
+    const L = (sb - sa) / n;
+    for (let i = 0; i < n; i++) {
+      const board = rbox(L - 0.05, 0.1, gap + 0.34, 0.035);
+      const m = add(statics, board, thin(i % 2 ? COL.wood3 : COL.plank), sa + L * (i + 0.5), plaza.y - 0.035, zEdge - gap / 2);
+      m.rotation.y = (i % 2 ? 1 : -1) * 0.006;
+    }
   }
 
   // ----- sandy floating garden -----
@@ -1918,6 +1935,9 @@ export function build(scene, ctx = {}) {
     }
     // the walk: the counter, its posts and awning; the goods stacked in front
     blockBox(g, 0, 0.15, 2.65, 1.42, 0, 2.6);
+    // the camera keeps off the awning (and a little out in front of it): walking past a stall it cranes up
+    // over the stripes instead of skimming them (the slab would fill a quarter of the view)
+    camBox(g, 0, 0.45, 3.0, 2.4, 0, 2.0, 2.9);
     if (st.goods === 'fruit') block(g, 1.6, 1.1, 0.42, 0.9);
     else if (st.goods === 'fish') block(g, 1.65, 1.0, 0.36, 0.7);
     else {
@@ -4136,6 +4156,25 @@ export function build(scene, ctx = {}) {
     return prizes.length;
   }
   let lastCam = null;
+  // Where the captain stands in the town view (town.js tells each frame; null otherwise): a walker whose
+  // way he blocks waits for him, as people do, instead of walking through him.
+  let captainAt = null;
+  function setCaptain(x, z) {
+    captainAt = Number.isFinite(x) && Number.isFinite(z) ? { x, z } : null;
+  }
+  // (the two touch at 0.65, his radius 0.3 and theirs 0.35; one he already stands in, put there by a door
+  // or squeezing past, walks on out of him rather than wait inside him)
+  const WAIT = { ahead: 1.0, side: 0.7, inside: 0.6 };
+  const inTheWay = (f) => {
+    if (!captainAt || !townView || f.p.parent !== root) return false;
+    const p = f.p.position;
+    const dx = captainAt.x - p.x;
+    const dz = captainAt.z - p.z;
+    const fx = Math.sin(f.p.rotation.y);
+    const fz = Math.cos(f.p.rotation.y);
+    const along = dx * fx + dz * fz;
+    return along > 0 && along < WAIT.ahead && Math.abs(dx * fz - dz * fx) < WAIT.side && Math.hypot(dx, dz) > WAIT.inside;
+  };
 
   function update(t, dt0, ctx) {
     if (ctx && ctx.camera && ctx.camera.position) lastCam = { x: ctx.camera.position.x, z: ctx.camera.position.z };
@@ -4241,7 +4280,13 @@ export function build(scene, ctx = {}) {
       }
       let act = typeof f.action === 'function' ? f.action(t) : f.action;
       if (f.path) {
-        const moving = walkerPose(f, t);
+        let moving = walkerPose(f, t);
+        if (moving && inTheWay(f)) {
+          // the captain stands in his way: he waits (his clock held back), and goes on once the way is clear
+          f.off -= dt;
+          walkerPose(f, t);
+          moving = false;
+        }
         if (!moving) act = 'idle'; // a breather at each end of the path
       } else if (f.p.rotation.y !== f.h0) {
         f.p.rotation.y = turnTo(f.p.rotation.y, f.h0, 4 * dt);
@@ -4334,6 +4379,7 @@ export function build(scene, ctx = {}) {
     peopleCount: folk.length + crew.length,
     walk: walkData,
     folk: folkOnWalk,
+    setCaptain,
     greet,
     cheer,
     cull,

@@ -18,7 +18,8 @@
 //   exits: () => [{ action, label }], leaveDock(action), showShipyard(), hideShipyard(), setLens(),
 //   openModal(el), closeModal(el), activeModal(), announce(text), audio, isTouch(), reducedMotion(),
 //   rumour() → { title, lines, ammo } | null, log() → [string] (extra captain's-log lines),
-//   optional: toggleMute(), prizes() → [{ type, flag }] }
+//   optional: toggleMute(), prizes() → [{ type, flag }], restyleCrew() (dress the cleaning crew on the
+//   docked ship in the saved uniform; townMode's own env.setCrewStyle call otherwise) }
 import { createTown } from './town.js';
 import { ITEMS, SLOTS, SLOT_NAMES, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
 import { ARMORY, armoryMaxTier, armoryNextCost, armoryStatText, parseArmoryConfig } from './armory.js';
@@ -191,6 +192,7 @@ export function createTownMode(ctx = {}) {
   let shownPurse = -1;
   let lastPrompt = null;
   let lastBuy = { id: '', at: -Infinity };
+  let crewDirty = false; // a uniform chosen at Polly's: the cleaning crew is dressed once, when she closes
   let bought = null; // { slot, id }: the Buy button stays put as "Bought" until the next choice
   const held = new Set(); // movement directions held: f b l r
   let shift = false;
@@ -370,10 +372,20 @@ export function createTownMode(ctx = {}) {
       town.setCaptain(captainOpts(look, trial));
       if (lineupOn) town.setLineup(lineupOpts(look));
     }
-    if (crew) restyleCrew(look);
+    // (the docked ship's cleaning crew isn't in Polly's view: rebuilding its six sailors on every click
+    // there would stall the panel, so they are dressed once, when the wardrobe closes)
+    if (crew) {
+      if (view === 'tailor') crewDirty = true;
+      else restyleCrew(look);
+    }
     if (view === 'tailor') renderWardrobe();
   }
   function restyleCrew(look = lookNow()) {
+    crewDirty = false;
+    if (typeof C.restyleCrew === 'function') {
+      call(C.restyleCrew);
+      return;
+    }
     const env = envNow();
     if (!env || typeof env.setCrewStyle !== 'function') return;
     const paint = hullPaint();
@@ -530,6 +542,7 @@ export function createTownMode(ctx = {}) {
       lineupOn = false;
       if (town) town.setLineup(null);
       show(el.wardrobe, false);
+      if (crewDirty) restyleCrew(); // the uniform chosen there, on the cleaning crew at last
     } else if (view === 'tavern') show(el.tavern, false);
     else return;
     if (town) town.park(null);
@@ -566,6 +579,7 @@ export function createTownMode(ctx = {}) {
     if (view === 'tailor' && trial) revertTrial(false, true);
     trial = null;
     lineupOn = false;
+    crewDirty = false; // (the island goes; the next visit dresses its crew from the saved look)
     hideAllScreens();
     clearInput();
     if (town) town.dispose();
@@ -633,7 +647,13 @@ export function createTownMode(ctx = {}) {
   function closeDialogs(refocus) {
     for (const d of [el.harbour, el.aboard]) closeDialog(d, refocus);
   }
-  el.menuBtn.addEventListener('click', () => openHarbour());
+  // A mouse or finger press shouldn't leave keyboard focus on ☰ or 🔊 (nor have the Harbour menu hand it back
+  // there): Enter and Space at the next door must go in (a keyboard press keeps focus where it was).
+  const pointerClick = (e) => !!e && (e.detail > 0 || (typeof e.pointerType === 'string' && !!e.pointerType));
+  el.menuBtn.addEventListener('click', (e) => {
+    if (pointerClick(e)) el.menuBtn.blur();
+    openHarbour();
+  });
   el.hWalk.addEventListener('click', () => closeDialog(el.harbour));
   for (const [id, b] of Object.entries(el.hPlaces)) {
     b.addEventListener('click', () => {
@@ -668,13 +688,16 @@ export function createTownMode(ctx = {}) {
     if (!b) return;
     walkToPlace(b.dataset.place);
     // a mouse or finger press shouldn't leave keyboard focus on the bar (E and Enter then work at the door)
-    if (e.detail > 0 || (typeof e.pointerType === 'string' && e.pointerType)) b.blur();
+    if (pointerClick(e)) b.blur();
   });
   el.prompt.addEventListener('click', () => interact());
   el.action.addEventListener('click', () => {
     if (!interact()) announce('Walk up to a door to go in.', el.live);
   });
-  el.mute.addEventListener('click', () => toggleMute());
+  el.mute.addEventListener('click', (e) => {
+    toggleMute();
+    if (pointerClick(e)) el.mute.blur();
+  });
 
   function interact() {
     if (view !== 'town' || !town || activeModal()) return false;
@@ -705,6 +728,8 @@ export function createTownMode(ctx = {}) {
     lastPrompt = id;
     const p = id && town ? town.places.find((q) => q.id === id) : null;
     if (!p) {
+      // (focus on the prompt as he walks away: onto the town region, not lost to the page)
+      if (document.activeElement === el.prompt) focus(el.town);
       show(el.prompt, false);
       el.action.setAttribute('aria-disabled', 'true');
       el.action.setAttribute('aria-label', 'Go in (walk up to a door first)');
@@ -716,6 +741,8 @@ export function createTownMode(ctx = {}) {
     el.prompt.innerHTML = touch()
       ? `<span class="tp-name">${esc(p.name)}</span><span class="tp-sep" aria-hidden="true"> — </span><span class="tp-key">${verb}</span>`
       : `<span class="tp-name">${esc(p.name)}</span><span class="tp-sep" aria-hidden="true"> — </span><span class="tp-key"><kbd>Enter</kbd><span aria-hidden="true"> &#9166;</span></span>`;
+    // its name spelled out (the visible " — " between the two parts is decoration)
+    el.prompt.setAttribute('aria-label', touch() ? `${p.name}: ${verb}` : `${p.name}: press Enter to ${verb === 'All aboard' ? 'go aboard' : 'go in'}`);
     show(el.prompt, true);
     el.action.setAttribute('aria-disabled', 'false');
     el.action.setAttribute('aria-label', `${verb}: ${p.name}`);
@@ -931,6 +958,14 @@ export function createTownMode(ctx = {}) {
     // a priced item: try it on
     trial = id;
     applyLook();
+    // (its Buy row now shows above the group's items and pushes the focused item down: both kept in view,
+    // the focused item first when the panel is too short for both)
+    const b = itemBtns.get(id);
+    if (b && document.activeElement === b) {
+      const g = groupEls.get(it.slot);
+      if (g && g.buyWrap.scrollIntoView) g.buyWrap.scrollIntoView({ block: 'nearest' });
+      if (b.scrollIntoView) b.scrollIntoView({ block: 'nearest' });
+    }
     if (town) town.cheer(crew ? 'lineup' : 'captain', 0.9);
     announce(
       st.affordable
@@ -1012,10 +1047,12 @@ export function createTownMode(ctx = {}) {
   el.wSurprise.addEventListener('click', () => surpriseMe());
   el.wBack.addEventListener('click', () => back());
   el.tBack.addEventListener('click', () => back());
-  // a held Enter clicks again on every auto-repeat: one press is one purchase (or one choice)
-  for (const p of [el.wPanel, el.tPanel]) {
+  // A held Enter or Space presses a button again on every auto-repeat, and the key that opened a panel or a
+  // dialog (at a door, at the gangplank) is still held when focus lands on its first button there: one press
+  // is one purchase, one choice (a repeat that is cancelled doesn't arm the button, so its key-up won't click).
+  for (const p of [el.wPanel, el.tPanel, el.harbour, el.aboard, el.town]) {
     p.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && e.repeat && e.target instanceof HTMLButtonElement) e.preventDefault();
+      if ((e.key === 'Enter' || e.key === ' ') && e.repeat && e.target instanceof HTMLButtonElement) e.preventDefault();
     });
   }
 
@@ -1171,6 +1208,12 @@ export function createTownMode(ctx = {}) {
     const a = document.activeElement;
     return a instanceof HTMLButtonElement && !a.disabled && a.offsetParent !== null;
   };
+  // Walking (a key or the stick) with a town HUD button focused (the places bar, ☰, 🔊, the prompt): focus
+  // goes back to the town region, so Enter and Space at the next door go in as its prompt says.
+  function leaveHudButton() {
+    const a = document.activeElement;
+    if (view === 'town' && a instanceof HTMLButtonElement && el.town.contains(a)) focus(el.town);
+  }
 
   function onKey(e, down) {
     if (view === 'shop' || !e) return false;
@@ -1207,6 +1250,7 @@ export function createTownMode(ctx = {}) {
     if (view === 'town') {
       if (dir) {
         if (k.startsWith('arrow')) e.preventDefault();
+        leaveHudButton();
         held.add(dir);
         shift = !!e.shiftKey;
         applyMove();
@@ -1227,7 +1271,8 @@ export function createTownMode(ctx = {}) {
         return true;
       }
       if (k === 'e' || k === 'enter' || k === ' ') {
-        if (buttonFocused()) return false; // the focused button handles Enter/Space itself
+        // (E is always the door's; a focused button handles Enter and Space itself)
+        if (k !== 'e' && buttonFocused()) return false;
         e.preventDefault();
         if (!e.repeat && !interact() && k === 'e') announce('Walk up to a door to go in.', el.live);
         return true;
@@ -1289,6 +1334,7 @@ export function createTownMode(ctx = {}) {
         el.stick.style.top = `${Math.round(e.clientY)}px`;
         el.stick.classList.add('on');
         if (town) town.cancelAuto();
+        leaveHudButton();
         capture();
         return true;
       }
@@ -1515,6 +1561,8 @@ export function createTownMode(ctx = {}) {
       const r = town.simulate(seconds, input);
       if (r.arrived) open(r.arrived);
       refreshPrompt();
+      // (a greeting started meanwhile: its words in the bubble, as update() does, never an empty bubble)
+      if (r.greet && view === 'town') bubble.textContent = greetLine();
       return r;
     },
     wardrobe: {

@@ -8,9 +8,11 @@
 //   surrender capture, context loss, pause, the glued pair, reduced motion
 // - raiders, the Phantom Galleon, HUD and layout, audio, draw calls, saved records, Act II (?act2=1), and
 //   leaving the battle from the pause dialog in the middle of a raid
+// - the Stage 4 review's battle fixes (review4): no camera shake under reduced motion, the boarding sail fade
+//   keeps depth (no slate sails), the Phantom's boss bar leads with BOARD HER!, no three.js warnings from the bake
 // The simulation is frozen (the real-time loop is paused) and driven with G.step(1/120) like smoke.cjs;
 // crits are pinned with G.combat.seed() / forceCrit(). Run with `npm test` or `npm run test:battle`
-// (BATTLE_ONLY=damage,ammo runs some sections; BATTLE_ROOT serves another copy of the game).
+// (BATTLE_ONLY=damage,ammo,review4 runs some sections; BATTLE_ROOT serves another copy of the game).
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -373,8 +375,8 @@ function ev(page, fn, arg = null) {
     p.on('console', (m) => m.type() === 'warning' && /^audio:/.test(m.text()) && errors.push(`${label}: ${m.text()}`));
   };
   // A page of the game. store: localStorage records set before the game loads.
-  async function open({ width = 1280, height = 720, touch = false, query = '?quality=low', store = null, label = 'page' } = {}) {
-    const ctx = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch });
+  async function open({ width = 1280, height = 720, touch = false, query = '?quality=low', store = null, label = 'page', reducedMotion = 'no-preference' } = {}) {
+    const ctx = await browser.newContext({ viewport: { width, height }, hasTouch: touch, isMobile: touch, reducedMotion });
     if (store) await ctx.addInitScript((s) => { try { for (const [k, v] of Object.entries(s)) localStorage.setItem(k, v); } catch {} }, store);
     const page = await ctx.newPage();
     watch(page, label);
@@ -2711,6 +2713,115 @@ function ev(page, fn, arg = null) {
     }
     check(errors.length === before, `Act II: no page errors on levels 4-6${errors.length > before ? ': ' + errors.slice(before).join(' | ') : ''}`);
     await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------------------------------ review4
+  // The Stage 4 review's battle fixes (each of these checks failed on ebad6f2): A11Y-1 reduced motion never shakes
+  // the camera, LOOK-1 the boarding view's see-through sails keep writing depth, LOOK-3 the spectral Phantom's boss
+  // bar keeps BOARD HER! in view on a portrait phone, POL-1 baking enemy ships logs no three.js warnings.
+  await section('review4', async () => {
+    // A11Y-1: a hull hit, and the Maelstrom's eye grinding the hull (5 hp/s), with reduced motion: no shake at all.
+    // (The same on a no-preference page does shake: the check isn't vacuous.)
+    const shake = (pg) => ev(pg, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.state.shake = 0;
+      G.damage(p, 3, p.x + 3, p.z, 'cutter');
+      const hit = G.state.shake;
+      T.level(6);
+      const pl = G.player;
+      pl.hp = pl.maxHp = 9999;
+      const mm = G.mechanics.minimap();
+      const eye = mm.find((m) => m.kind === 'eye') || mm.find((m) => m.kind === 'vortex');
+      const hurt0 = G.state.hurtBy.maelstrom || 0;
+      G.state.shake = 0;
+      let most = 0;
+      T.steps(2, () => {
+        G.place(pl, eye.x, eye.z, pl.h);
+        pl.speed = 0;
+        most = Math.max(most, G.state.shake);
+      });
+      return { hit, eye: !!eye, eyeHurt: (G.state.hurtBy.maelstrom || 0) - hurt0, eyeShake: most, reduce: matchMedia('(prefers-reduced-motion: reduce)').matches };
+    });
+    const rm = await open({ label: 'review4-reduce', reducedMotion: 'reduce' });
+    const calm = await shake(rm.page);
+    await rm.ctx.close();
+    const np = await open({ label: 'review4-motion' });
+    const usual = await shake(np.page);
+    await np.ctx.close();
+    check(calm.reduce && calm.eye && calm.eyeHurt > 0 && calm.hit === 0 && calm.eyeShake === 0 && usual.hit > 0 && usual.eyeShake > 0,
+      `A11Y-1: with reduced motion a hull hit and the Maelstrom's eye never shake the camera (shake ${calm.hit} / ${calm.eyeShake}; without it ${usual.hit} / ${usual.eyeShake}) (${J({ calm, usual })})`);
+
+    // LOOK-1: in the boarding view the boarded ship's sails turn see-through copies that still write depth (without
+    // it the ink outline shell behind each sail shows through: slate-black sails).
+    const fp = await open({ label: 'review4-fade' });
+    const fade = await ev(fp.page, async () => {
+      const G = window.__game;
+      T.level(1);
+      const e = T.spawn('cutter', 8.5);
+      G.damage(e, e.maxHp * 0.6);
+      G.combat.setCrew(e, 3);
+      const g = G.grapple();
+      T.steps(8, () => G.boarding.active && G.boarding.phase !== 'brawl');
+      const phase = G.boarding.phase;
+      await T.live(3); // (the fade is drawn by the boarding view's render, frame by frame)
+      const mats = [];
+      for (const s of [G.player, e]) {
+        for (const m of (s.mesh.userData.sails || []).flatMap((q) => (Array.isArray(q.material) ? q.material : [q.material]))) if (m && m.transparent && m.opacity < 1) mats.push({ ship: s.kind, opacity: +m.opacity.toFixed(2), depthWrite: m.depthWrite });
+      }
+      G.boarding.resolveNow();
+      return { grapple: g.ok, phase, faded: mats.length, depthWrite: [...new Set(mats.map((m) => m.depthWrite))], opacity: [...new Set(mats.map((m) => m.opacity))] };
+    });
+    await fp.ctx.close();
+    check(fade.grapple && fade.faded > 0 && fade.depthWrite.length === 1 && fade.depthWrite[0] === true,
+      `LOOK-1: the boarding view's see-through sails (${fade.faded} materials) keep writing depth, so their ink outline stays hidden (${J(fade)})`);
+
+    // LOOK-3: the spectral Phantom on a 390x844 phone: the boss bar's narrow name line leads with BOARD HER!, which is
+    // all in view (the ellipsis cuts her name instead).
+    const ph = await open({ width: 390, height: 844, touch: true, label: 'review4-phone' });
+    const bar = await ev(ph.page, async () => {
+      const G = window.__game;
+      T.level(6);
+      const e = T.spawn('phantom', 14, 10);
+      G.damage(e, 9999);
+      T.steps(0.2);
+      G.state.mode = 'paused';
+      await T.redraw();
+      const el = document.getElementById('boss-name');
+      const text = el.textContent;
+      const at = text.indexOf('BOARD HER!');
+      let end = null;
+      if (at >= 0) {
+        const tn = [...el.childNodes].find((c) => c.nodeType === 3);
+        const rg = document.createRange();
+        rg.setStart(tn, at);
+        rg.setEnd(tn, at + 'BOARD HER!'.length);
+        end = Math.round(rg.getBoundingClientRect().right);
+      }
+      const r = el.getBoundingClientRect();
+      return { spectral: !!e.spectral, text, at, end, edge: Math.round(r.left + el.clientWidth), cut: el.scrollWidth > el.clientWidth };
+    });
+    await ph.ctx.close();
+    check(bar.spectral && bar.at === 0 && bar.end !== null && bar.end <= bar.edge, `LOOK-3: at 390x844 the spectral Phantom's boss bar reads "${bar.text}" with BOARD HER! first and in view (ends at ${bar.end}, the line at ${bar.edge}${bar.cut ? ', her name cut' : ''})`);
+
+    // POL-1: a level start bakes the enemy ships' colours; three.js logs no warning about it (it did, for an option
+    // MeshToonMaterial doesn't have: flatShading).
+    const wp = await open({ label: 'review4-warn' });
+    const warns = [];
+    wp.page.on('console', (m) => m.type() === 'warning' && warns.push(m.text()));
+    const baked = await ev(wp.page, async () => {
+      const G = window.__game;
+      for (const n of [1, 4]) T.level(n);
+      await T.redraw();
+      let n = 0;
+      G.scene.traverse((o) => { if (o.material && o.material.name === 'ship-baked') n++; });
+      return n;
+    });
+    await frames(wp.page, 2);
+    await wp.page.waitForTimeout(300); // (console messages reach the test a moment later)
+    await wp.ctx.close();
+    const three = warns.filter((w) => /THREE|flatShading/.test(w));
+    check(baked > 0 && three.length === 0, `POL-1: baking the enemy ships (${baked} baked meshes) logs no three.js warnings${three.length ? ': ' + J(three.slice(0, 3)) : ''}`);
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

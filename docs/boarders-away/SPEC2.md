@@ -11,6 +11,11 @@ recommended. Every conflict between them is resolved here; **where this file and
 Numbers are starting values: each lives in exactly one table in one module (named in §9), so balance changes touch
 one place.
 
+**As built (Stage 4).** This file now matches the finished game. Where the build differs from the plan, the section
+says so in a **Built:** note, and §17 lists every decision and deviation recorded here, with the review finding
+that raised it (ids like `TOWN-1`, from the Stage 4 review). The stage reports (`stage1-reports.md` …
+`stage3-reports.md`) keep the smaller API-level deviations of each stage in more detail.
+
 ---------------------------------------------------------------------------------------------------
 
 ## 0. Read this first
@@ -387,11 +392,20 @@ CREW    { hullShare: 0.5, strike: 0.2, minToBoard: 3, waveRefill: 3, captureRefi
 BOARD   { cooldown: 6, range: [14, 17, 20], lenFactor: 0.25, reel: [1.2, 1.0, 0.8], heaveStep: 0.04, heaveMax: 0.2,
           slope: 0.45, minFrac: 0.15, lossK: 0.3, minR: 0.5, hullPerKill: 2, homeDefence: 1.5, enemyMorale: 0.5,
           fightAt: 1.2, slotGap: 0.7, glueSpeed: 2, pushApart: { speed: 4, time: 1 }, breakFree: 3,
-          phases: { hook: 0.45, swing: 0.7, brawl: 2.0, result: 0.65 }, partyShown: 4, defendersShown: 4 }
+          phases: { hook: 0.45, swing: 0.7, brawl: 2.0, result: 0.65 }, partyShown: 4, defendersShown: 4,
+          homeLossCap: 0.6 }
 RAIDERS { reach: 10, threat: 1.5, reel: 1.0, cutTaps: 3, cutHold: 0.8, cooldownCut: 10, cooldownFight: 12, minCrew: 4,
-          plunder: 0.25, counterWindow: 3, beside: 6 }
+          plunder: 0.25, counterWindow: 3, beside: 6, gap: 3, sheer: 4 }
 CAPTURE { goldMul: 20, flat: 25, hull: 15, crew: 2, prizeBonus: 50, sailAway: 5, sailSpeed: 7 }
 ```
+
+**Built:** three constants were added to the tables so every number stays in one place. `BOARD.homeLossCap` is the
+0.6 of §3.3's "player defending" cap (`defLoss ≤ min(def.crew − 1, ceil(0.6 × def.crew))`). `RAIDERS.gap` (3 s) is
+a breather after any boarding before a raider may throw its hooks (`raiderTry` refuses while `state.boardCooldown >
+BOARD.cooldown − RAIDERS.gap`); `RAIDERS.sheer` (4 s) is how long a raider that was cut loose or beaten off keeps
+circling wide (until its own cooldown is down to it). Both used to be main.js constants (`RAID_GAP`, `RAID_SHEER`)
+with the same values; Stage 4 made main read them from `RAIDERS`. combat.js also exports `WORDS`, the pop and label
+words (`STERN RAKE ×2!`, `CAPTURE!`, …), so every screen says the same thing.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -424,12 +438,19 @@ treasure chest (`PURSE_KEY`).
 | Battle, steering keys | — | ignored while `boarding.locked` (swing..result) |
 | Town walk view | **W A S D / arrows** | move (camera-relative) |
 | Town | **Shift** (held) | sprint |
-| Town | **E**, or **Enter / Space** when no button is focused | go in / talk at the nearest place |
+| Town | **E** (always, whatever has focus), or **Enter / Space** when no button is focused | go in at the nearest place (built: TOWN-1) |
+| Town | a walking key, or the touch stick | also moves focus off a town HUD button (places bar, ☰, 🔊, the prompt) to `#town-screen`, so Enter / Space at the next door go in (built: TOWN-1) |
 | Town | **C** | snap the camera behind the captain |
-| Town | **P / Esc** | open the Harbour menu (modal); Esc inside it closes it |
+| Town | **P / Esc** | open the Harbour menu (modal); Esc inside it closes it (P too) |
 | Tailor / tavern panel | **Esc** | back to town (P does nothing) |
 | Any dock view | **M** | mute (as today) |
 | Shipyard panel | — | **unchanged**: P / Esc / bare Enter / Space do nothing, A/D/←/→ turn the view (focus outside the panel) |
+| Outside play (any screen but a running battle, or with a dialog open) | held **Enter / Space** | the auto-repeats are swallowed on a focused button: one press is one click, so a held key never carries into the next screen or dialog (built: A11Y-2, TOWN-2, TOWN-4) |
+
+**Built (TOWN-1):** the plan let a focused button take E as well. Since focus returns to a places-bar button after
+every panel (§7.1), E at a door then did nothing and Enter pressed that button instead of going in. Now E always
+goes in, Enter and Space are a focused button's, walking moves focus off the town HUD, and ☰ and 🔊 drop focus
+after a mouse or finger click (a keyboard press keeps it).
 
 Help texts: the title and pause `.controls` lists gain `<kbd>G</kbd> board · <kbd>R</kbd> / <kbd>1</kbd>–<kbd>3</kbd> ammo`;
 touch help gains "⚓ Board · Ammo".
@@ -469,7 +490,7 @@ touch help gains "⚓ Board · Ammo".
 | `.fire-tag` | port/starboard cells | reads **RAKE!** (ink on `--gold`, class `rake`) instead of FIRE! when that side's aimed target (the one `playerFire(side)` would pick) presents bow or stern to that side's beam (`\|dot(beamDir, fwd(target.h))\| ≥ 0.8`); the touch fire button gets the same gold glow |
 | `#objective` | small pill under the hull card (left), hidden when empty | `mechanics.objective()` text, e.g. "Galleons: 1 taken · 0 escaped · 1 to go"; updates at most 4×/s |
 | `#boarding-strip` (`aria-hidden`) | top centre; below `#boss` when the boss bar shows | "⚔ 12 vs 9 ☠", a tug-of-war bar (your P vs their D) and 5 heave pips during `reel`; shows only during a set-piece |
-| `#boss-crew` | inside `#boss`, under the boss bar | the boss's 10 crew pips + notch (every boss); the Phantom's name line reads "The Phantom Galleon — BOARD HER!" while spectral |
+| `#boss-crew` | inside `#boss`, under the boss bar | the boss's 10 crew pips + notch (every boss); the Phantom's name line reads "BOARD HER! — The Phantom Galleon" while spectral (**built, LOOK-3:** instruction first, so the ellipsis on a narrow portrait phone cuts the name, never the instruction) |
 | `#pops` (`aria-hidden`) | full-screen layer inside `#hud` | ≤ 12 recycled spans (pops.js), **0 draw calls** |
 | `#game-live` | sr-only, `role="status"`, polite | big events only, ≤ one per 1.5 s, de-duplicated like `announce()`: captures, boardings won/lost, ropes cut, overrun, new ammo, ammo switched, galleon escaped, Phantom spectral/banished |
 | `#hitmark` | as today | main text + `.hm-tags` stickers (§2.5) |
@@ -518,11 +539,21 @@ one-time tips (bitmask `pirates-ahoy-tips`, §8) in the same hint bubble, keyboa
   difficulty labels Easy / Medium / Hard / **Tricky / Tough / Legendary**, plus skull pips (`aria-label="Difficulty 4 of 6"`).
   A locked Act II card reads "Beat the Molten Maw" (card 4) or "Locked". The title tagline mentions the Far Seas. No page
   scroll at any F01 size (the panel scrolls inside if needed; Set sail! stays visible).
+  **Built (A11Y-5):** a locked card is not `disabled` (that hid it from Tab and from screen readers). It keeps
+  `aria-disabled="true"`, `aria-describedby` points at its lock pill (`#lvl-N-why`, itself `aria-hidden` so the
+  reason is read once), and the click handler refuses it (`n > state.unlocked`): the pill flashes (class `refused`)
+  and the new polite region `#menu-live` (in the title panel) says "Doubloon Bay is locked. Beat the Molten Maw."
+  (for cards 5–6: "Clear <previous level> first"). Tab order on the title: mute, cards 1–6, Set sail!, Shipyard.
+  A locked card has `pointer-events: none`, so only the keyboard and assistive clicks reach it.
+- **Built:** "Set sail!" (and Enter or Space on the title with no button focused) always starts level 1; a level card
+  starts its own level.
 - **Level 3 stays a finale** (`def.finale`): beating the Molten Maw shows the Victory screen (`state.mode === 'won'`,
   best saved) and **unlocks level 4**. `#won-text` comes from `def.finaleText`. When a next level exists the new primary
   button **`#act2-btn` "Sail on to the Far Seas"** (first in the panel) calls `nextLevel()` (gold carries on) and Enter on
   the won screen does the same; "Main menu" and "Visit the dock" stay. After level 6 (also `finale`) the screen reads
   "The Phantom Galleon is yours! You are the Legend of the Seven Seas." and `#act2-btn` is hidden.
+  **Built:** the default `#won-text` in index.html reads "The Molten Maw is beaten, and so is every pirate fleet. The
+  seas are yours, Captain!" (it no longer says she is sunk; see §6.1).
 - `finishLevel()` and the victory banner in `step()` use `def.finale` instead of `state.level >= LEVELS.length`; a
   captured boss is named as captured in that banner ("The Phantom Galleon is yours!").
 - `dockExits(from)`: `won` → `['next', 'title']` when a next level exists ("Set sail for Doubloon Bay", "Back to the
@@ -543,6 +574,7 @@ one-time tips (bitmask `pirates-ahoy-tips`, §8) in the same hint bubble, keyboa
   scene: 'doubloon',         // audio scene (replaces LEVEL_SCENES; unknown names are ignored by audio.setScene)
   waves, nextWaveAt, maxAttackers, lead, spreadMul, grace, bonus,   // as today
   mechanic: '…',             // intro banner subtitle (as today)
+  mechanicTouch: '…',        // optional (built): the subtitle on touch layouts when `mechanic` names a key (L5)
   enemyRake: 1,              // §2.1
   mechanics: ['convoy'],     // ids into src/mechanics.js
   bombs: { kind: 'lava' | 'lightning', every: [a, b], spread, radius: 5, damage: 16, warn: [2.4, 3.2] },  // optional
@@ -554,7 +586,10 @@ one-time tips (bitmask `pirates-ahoy-tips`, §8) in the same hint bubble, keyboa
 
 Act I (moved verbatim into `src/levels.js` in Stage 0, plus): L1 `act 1, stars 1, scene 'europe', enemyRake 0.4`;
 L2 `stars 2, scene 'bali', enemyRake 0.6`; L3 `stars 3, scene 'volcano', enemyRake 0.8, bombs.kind 'lava', finale: true,
-finaleText: "The Molten Maw is sunk and every pirate fleet of the Old World is at the bottom of the sea. But sailors whisper of the Far Seas…"`.
+finaleText: "The Molten Maw is beaten, and so is every pirate fleet of the Old World. But sailors whisper of the Far Seas…"`.
+**Built:** the planned text said she "is sunk"; it was reworded in Stage 4 so it never contradicts how the level was
+won. (No separate captured-text key was added: `tests/mechanics.test.cjs` checks that Act II levels have every
+field Act I levels have, so a new Act I key would need one on every Act II level too.)
 Act I waves, layouts and knobs are otherwise unchanged; Act I gains boarding, rakes/range/crits and ammo as they unlock.
 
 `src/levels.js` exports `ACT1`, `LEVELS` and `WITH_ACT2`. Until Stage 3: `WITH_ACT2 = /[?&]act2=1(&|$)/.test(globalThis.location?.search ?? '')`
@@ -606,6 +641,12 @@ export function createMechanics(ids, ctx) → {
   `ctx.escape(e)`, banner "The galleon escaped with its gold!", `escaped++`. `onCapture`: merchant → `taken++`.
   `objective`: "Galleons: {taken} taken · {escaped} escaped · {toGo} to go" (to go counts unspawned ones). `bonus`:
   `150 × taken`. `summary`: "Galleons taken: 1 of 2". No failure state.
+- **Built (every level, 3B):** `onSpawn(e, waveIndex ≥ 1)` moves a later-wave ship that main placed in water cut off
+  from the player's start (behind Frostbite Straits' fjord walls, or behind Doubloon Bay's southern shore) to an
+  `env.enemySpawns` point in the player's water: about 80 u from the player if it can, at least 40 (35 as a
+  fallback), 18 from other ships, facing the player. The water map is built in `init()` (3–10 ms, during the fly-in);
+  numbers in mechanics.js's `REACH` table; `state.relocated` counts the moves. Wave 0 and test spawns (`G.spawn`,
+  waveIndex −1) are never moved. It moves about 2 ships per Frostbite Straits run and none elsewhere in the bot runs.
 - **`floes`** (L5): ice floes are `env.reefs` entries with `ice: true` that `env.step(simTime)` moves (same objects,
   mutated in place). `step`: a ship whose centre enters a floe at speed > 6, at most once per 1.5 s per ship → 6 damage
   (source `'ice'`), pop "CRUNCH!", sfx `crunch`. `minimap`: floes.
@@ -635,8 +676,11 @@ export function createMechanics(ids, ctx) → {
   harbour mouth, 130–150 u from both gates, ≥ 45 u from `playerStart`, clear of colliders by 12 and of reefs by r + 4 —
   the smoke layout check requires every enemy > 35 u from the player at the start); `enemySpawns` ≥ 6 (open water, ≥ 35 from the
   start, 58–92 from it, inside `worldRadius − 16`); `playerStart` mid-bay facing the harbour.
-- **Waves:** `[['galleon', 'cutter', 'cutter'], ['galleon', 'privateer', 'corsair']]`, `nextWaveAt: 1`, `maxAttackers: 2`,
-  `lead 0.6, spreadMul 1.0, grace 4, enemyRake 1, mechanics ['convoy'], bonus 500, scene 'doubloon'`.
+- **Waves (as built):** `[['galleon', 'cutter', 'cutter'], ['galleon', 'corsair']]`, `nextWaveAt: 1`, `maxAttackers: 2`,
+  `lead 0.6, spreadMul 1.0, grace 4, enemyRake 1, mechanics ['convoy'], bonus 500, scene 'doubloon'`,
+  `lockText: 'Beat the Molten Maw'`. **Built (3B):** the plan's second wave was `['galleon', 'privateer', 'corsair']`;
+  the privateer left it because her long broadside duels swung the damage taken from 40 to 160 while you chase the
+  galleons. Bot v2, mid-game ship, 72 runs: cleared 72/72 on the first try, damage taken median 43 [26..59].
   `mechanic: 'Treasure galleons are running for the open sea! Catch them, thin their crews and board them for a fortune.'`
   `rumour: { title: 'Doubloon Bay', lines: ['The treasure fleet sails at dusk.', 'Sink a galleon and her gold sinks too: board her instead!'], ammo: 'chain' }`.
 - **Why it is more complex:** two goals pull against each other (escorts vs the loot), channels and time pressure matter,
@@ -658,10 +702,13 @@ export function createMechanics(ids, ctx) → {
   along a fixed ellipse (`cx + rx·cos(ωt + φ)`, `cz + rz·sin(ωt + φ)`, 0.6–1.2 u/s) that never enters a collider or the
   player start (clear by r + 8); the floe meshes follow in `update`. Floes are **not** colliders, so `ocean.setFoam` (baked
   once per level) is unaffected; each floe carries its own flat foam-ring mesh.
-- **Waves:** `[['raider', 'raider', 'privateer'], ['raider', 'raider', 'manowar']]`, `nextWaveAt: 1`, `maxAttackers: 3`,
-  `lead 0.65, spreadMul 0.95, grace 3, enemyRake 1, mechanics ['floes'], bonus 700, scene 'frost'`.
-  `mechanic: 'Longship raiders board YOU! Press G three times (or hold it) to cut their ropes.'` (touch wording: "Tap CUT!
-  three times or hold it"). `rumour: { title: 'Frostbite Straits', lines: ['Raiders with horned helmets row out of the fog.', 'Chain shot slows their longships; cut their ropes fast!'], ammo: 'chain' }`.
+- **Waves (as built):** `[['raider', 'raider', 'manowar'], ['raider', 'raider', 'privateer']]`, `nextWaveAt: 1`,
+  `maxAttackers: 3`, `lead 0.65, spreadMul 0.95, grace 3, enemyRake 1, mechanics ['floes'], bonus 700, scene 'frost'`.
+  **Built (3B):** the man-o'-war and the privateer traded waves (the plan had the privateer first), so the straits
+  always fight back: the planned waves had runs with 0–5 damage taken. Bot v2, mid-game ship, 72 runs: 72/72 on the
+  first try, median 46 [21..169].
+  `mechanic: 'Longship raiders board YOU! Press G three times (or hold it) to cut their ropes.'`, `mechanicTouch:
+  'Longship raiders board YOU! Tap CUT! three times or hold it.'`. `rumour: { title: 'Frostbite Straits', lines: ['Raiders with horned helmets row out of the fog.', 'Chain shot slows their longships; cut their ropes fast!'], ammo: 'chain' }`.
 - **Why it is more complex:** the threat comes to you (cut, fight or counter-board), moving obstacles, and distance
   management flips: raiders (12.5 u/s, faster than a stock ship) want to be close, you want them slowed at broadside range.
 
@@ -679,12 +726,18 @@ export function createMechanics(ids, ctx) → {
   `worldRadius 140`.
 - **Gameplay data:** `current: { x: 0, z: 0, r: 75, pull: 3.2, swirl: 2.8, eye: 12, eyeDps: 5 }`; `playerStart` at radius
   ≈ 95; `enemySpawns` ≥ 6 at radius 60–100 (≥ 35 from the start); `flash(x, z)`.
-- **Waves:** `[['corsair', 'raider', 'corsair'], ['phantom', 'raider']]`, `nextWaveAt: 0`, `maxAttackers: 2`,
+- **Waves (as built):** `[['corsair', 'corsair', 'manowar'], ['phantom', 'raider']]`, `nextWaveAt: 0`, `maxAttackers: 3`,
   `lead 0.7, spreadMul 0.9, grace 3, enemyRake 1, mechanics ['current'],
   bombs: { kind: 'lightning', every: [5, 8], spread: 8, radius: 5, damage: 14, warn: [1.4, 1.6] }, bonus 1000,
   scene 'maelstrom', finale: true, finaleText: 'The Phantom Galleon is yours! You are the Legend of the Seven Seas.'`.
   `mechanic: "The maelstrom pulls you in! Scatter the Phantom's ghost crew with grape shot, then board her."`
   `rumour: { title: 'The Maelstrom', lines: ['A ghost ship sails where the sea swallows itself.', "Round shot barely scratches her. Grape and cutlasses don't!"], ammo: 'grape' }`.
+  **Built (3B):** the plan had `[['corsair', 'raider', 'corsair'], ['phantom', 'raider']]` with 2 attackers. The raider
+  that opened the level was sunk or cut loose without a shot, so it became a man-o'-war, and 3 may attack at once;
+  the raider that comes with the Phantom stays. Bot v2, mid-game ship, 72 runs: 72/72 on the first try, median 136
+  [52..225]; the Maelstrom out-hurt Doubloon Bay in 72 of 72 paired runs (with the planned waves: 13 of 24). No wave
+  got more ships: a 4th raider in Frostbite Straits' first wave measured 312 draw calls at the level start and 6 ships
+  alive at once 461, over the §12 budgets.
 - **The Phantom Galleon** (boss, `ghost: true`, crew 24, grit 1.5, hp 300): while her `crewNow > strikeAt` (4): round and
   chain do ×0.5, **her hull never drops below 1** (`minHp` 1) and at 1 hp she turns **spectral** (green glow, tag/boss name
   "BOARD HER!"; balls still hit her and grape still kills ghosts, but her hull stays at 1; she keeps sailing and firing).
@@ -722,6 +775,25 @@ Expected damage taken: Europe < Bali < Volcano < Doubloon Bay < Frostbite Strait
 winnable with the stock ship; Act II expects a few upgrades. The Act I bot keeps checking "volcano > Europe"; the Act II
 bot checks "Maelstrom > Doubloon Bay" (§11.3). Tuning knobs, in order of preference: `maxAttackers`, `lead`,
 `spreadMul`, enemy `crew`/`grit`, `BOARD.slope`, `RAKE`, then wave composition.
+
+**Decision (ACT-2, Stage 4): the order is promised within each act, not across them.** Act I is measured on the
+stock ship and Act II on the mid-game ship (the §11.3 bot profile), and the first level of an act may be easier than
+the previous act's finale. The cards' labels (Hard ★3 < Tricky ★4) are not a promise across acts.
+
+Why: on every profile Doubloon Bay and Frostbite Straits cost less than the Volcano. Bot v2 (the one in
+`tests/levels.cjs`), damage taken as the sum of hull drops, medians from the reviewer's and the verifier's runs:
+
+| Profile | L3 Volcano | L4 Doubloon Bay | L5 Frostbite Straits | L6 The Maelstrom |
+|---|---|---|---|---|
+| stock ship | 130 / 143 (some runs lost) | 95 / 99 | 120 / 122 | 205 |
+| a few upgrades (about 1,120 gold; a stock Act I voyage banks 2,485–2,890) | 91 / 102 | 31 / 37 | 40 / 42 | 103 |
+| mid-game ship (§11.3) | 96 / about 105 (3B) | 43 | 46 | 136 (3B) |
+
+Inside each act the order holds. Retuning across the
+boundary was rejected: on the stock ship L4 would have to pass about 143, which puts it above L5 (122), so L5 and L6
+would have to rise too, and the draw-call budget (busiest ≤ 450; L5 already peaks at 404) leaves no room for more
+ships. If a cross-act rise is wanted later, tune L4's `maxAttackers` and `lead` first, then re-run the Act II bot and
+the draw-call checks.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -761,14 +833,27 @@ working). `townMode.view` says what is on screen:
   `= speed / walkSpeed(captain, action, 1)` so the feet never slide; `'proud'` when idle. Acceleration 12 u/s², stop in
   ≈ 0.15 s; the body turns toward the move direction at 10 rad/s. Footsteps sfx `step` on each foot plant.
 - Input = a camera-relative move vector `{ x, z, run }` from keys, the joystick or auto-walk.
+  **Built (Stage 4, with TOWN-3):** a held walking input keeps the world direction it started with (`hold` in
+  town.js `stepWalk`): when the camera swings round by itself (the follow swing, or out of a cramped corner) it no
+  longer re-aims the captain. A drag or **C** turns the held direction with the camera, and turning the input more
+  than 0.35 rad (`HOLD_TURN`, about 20°) re-reads the camera. Without it, W held from some bridge ends veered into
+  the rope.
 - **Auto-walk:** a tap/click on the boardwalk (pointerdown → up within 250 ms and 10 px; `walk.pick` ray, then
   `walk.snap`) or a places-bar button → `walk.path` (A* + string pulling), followed at jog speed with a gold ring at the
   target; any move key or stick input cancels it. Arriving at a place **through the places bar** opens it; a tapped
   point just walks there.
+  **Built:** a tap on a corner shut in by props walks to the nearest reachable graph node within 4 u (`walkTo`
+  returns true; 3D). An auto-walk skips a waypoint within 0.25 u only when `walk.clear()` to the next one is true
+  (Stage 4: a places-bar walk could stall at the plaza end of the yard bridge, at (7.90, −12.43)).
 - Townsfolk are soft obstacles (`env.folk()` circles r 0.35, updated each frame). Within 2.2 u the nearest one turns,
   `'wave'`s for 2 s and says one line in a DOM speech bubble ("Ahoy, Captain!", "Fine coat, Cap'n!" when a paid coat is
   worn, "Is that a parrot?!", "Heard you took a prize!" after a capture); one bubble at a time, 20 s per person
   (`env.greet(index, seconds)`).
+  **Built (LOOK-2):** townsfolk on fixed paths no longer walk through the captain. town.js tells the env where he
+  stands each frame (`env.setCaptain(x, z)`, `null` when parked, inactive or gone); a walker waits (its path time
+  stands still, idle pose) while he is 0–1.0 u ahead of it along its facing, less than 0.7 u to the side and more
+  than 0.6 u away. A walker already overlapping him walks on out, so it can never be trapped. (Tests that step the
+  town with `simulate()` and frozen townsfolk see the captain squeeze past instead, as before.)
 - `?walkdebug=1` draws the walk areas, links, blockers and places as lines (author aid; tests screenshot it once).
 
 ### 7.3 Town camera
@@ -781,6 +866,24 @@ working). `townMode.view` says what is on screen:
   within 0.2–0.75 rad.
 - Collision: march the boom like `collideCamera()` against blockers with `h ≥ 2` (buildings, tower, crane); shorten to
   ≥ 2.5; never below deck height + 0.9. Townsfolk within 1.0 of the lens are hidden for that frame.
+  **Built (3D, extended in Stage 4):**
+  - The boom's no-go volumes are the tall walk blockers (`h ≥ 2`, and `r ≥ 0.45` or a box with both sides ≥ 0.6;
+    thin posts and low props don't count, the boom would pump past them) plus every entry of the new
+    **`walk.camBlockers`** (§7.4): camera-only volumes up in the air that the captain walks under or round. All are
+    padded by `CAM.pad` = 0.3 on the sides, top and bottom. The planned thin-post heuristic was dropped.
+  - camBlockers cover the TAILOR arrow board with its display head and post, the welcome sign's board, bird and posts,
+    the shipyard sign, both leaning palm trunks and their crowns, the beach umbrella, the tavern's overhang, balcony
+    and eaves, Polly's awning, the crane jib and its hoist, and (Stage 4, LOOK-4) a box over each of the three market
+    stalls' awnings (world y 3.3–4.2), so the camera cranes over the stripes instead of skimming them. 40 entries.
+  - A cut (stepping ashore, a teleport) with the boom short takes the nearest clear yaw (0.2-rad steps out to ±1.8):
+    at the gangplank the camera starts beside the captain looking along the pier (yaw ≈ −1.74 while he faces π),
+    not "behind" him, because the docked ship is right behind him.
+  - When the boom is cramped (shorter than `minBoom` + 0.2) the camera first tilts up (toward `pitchMax`), then
+    swings round to the nearest clear side at 2.2 rad/s, or 5 rad/s when even the shortest boom would leave the lens
+    inside something; in that case the boom may come in over his shoulder to `CAM.closest` = 1.2.
+  - **Portrait walk lens:** in the walk view on a portrait screen `camera.fov = 60` (`CAM.fovPortrait`) instead of
+    `setLens()`'s up to 90°, so the captain is about 1.7× taller on a 390×844 phone (171 px instead of 99 px).
+    Landscape keeps `setLens()`.
 - Panel views use the place's `cam` pose and frame the subject (captain on the podium, or the tavern table) in the free
   area beside the panel (above it when the panel is a bottom sheet) with `camera.setViewOffset`, the same idea as
   `dockFraming()` (helper `frameBeside()` in town.js). Drag (or ←/→ with nothing focused) turns the captain on the podium.
@@ -812,6 +915,9 @@ walk: {
     { x, z, r, h } | { x, z, w, d, ry, h }   // stall counters (STALL_Z), the welcome sign posts, the well, benches,
   ],                                          // lamp posts, barrel stacks, the tavern building, tower legs, crane base,
                                               // the slipway boat, shacks, Polly's shop, the podium edge…
+  camBlockers: [ // (built, 3D) camera-only volumes, world units; walk.js ignores them (§7.3)
+    { x, z, w, d, ry, y0, y1 } | { x, z, r, y0, y1 }
+  ],
   places: [
     { id: 'ship', name: 'The Sea Biscuit', x, z, r: 1.4, face },                 // the gangplank foot on the pier
     { id: 'shipyard', name: 'The Shipyard', x, z, r: 1.8, face },               // in front of the shipwright, yard.at(-0.6, 1.6)
@@ -828,6 +934,14 @@ Walkable: pier, plaza, tavern raft, tower raft (via `tavernTower`), yard (via `p
 sits at its foot. Water edges are walls (you can't fall in). Walkable surfaces seen from the walk camera must show no
 holes or unfinished backs (the welcome sign's back, stall backs, tavern sides, Polly's shop back): add simple backs where
 the stage-1 walk screenshots show gaps.
+
+**Built:** the live data (and `tests/fixtures/sparrow-walk.json`, regenerated from it byte for byte) has 10 areas, 4
+links, 108 blockers, 40 camBlockers, the 4 places and the spawn `{ x: 0.6, z: −4.25, h: 3.142 }`. The berth blocker is
+16 × 4.8 (the docked ship's yards reach z ±2.2), and two 5.5 m masts at the plaza's south corners carry the bunting
+to Polly's and the tavern above the walk camera (3D). The rope-post blockers at a bridge's land ends have
+`r = max(0, hw − BRIDGE_HW − radius)` = 0, so there is no 0.05 u lip at the band's edge (Stage 4, TOWN-3). Three
+boards are laid across the 0.3 u seam between the plaza and the tavern raft, from x −8.44 to −1.01 with their tops
+0.015 above the deck, baked into the statics (LOOK-5).
 
 ### 7.5 Places and new art in sparrow.js
 
@@ -850,10 +964,21 @@ the stage-1 walk screenshots show gaps.
 - **Prize berths (cut-able):** up to 2 captured ships moored off the east arm (water near `s9` / `s18`), built with
   `buildShip(type)` for the two most valuable types in `feats.prizes`, each with a small "Prize" pennant in your flag
   look; `env.setPrizes([{ type }])`; `visible` only in the town view (so the shipyard view's draw calls are unchanged).
+  **Built:** they sit 0.45 below the wave height (`PRIZE_SIT`, 3D). Stage 4 (PERF-2): main calls
+  `env.setPrizes(prizeShips())` in `openDock`, right after `setEnvironment(sparrow)` and behind the "Rowing to…"
+  toast, so the first Go ashore of a visit no longer builds two ship models on the spot (≈ 0.2 s → 15–53 ms);
+  sparrow keeps them hidden until the town view, and the call on Go ashore keeps ships of the same kind.
 - `env.setCrewStyle(fn)`: rebuilds the six cleaning-crew people with `fn(role, seed, baseOpts) → opts` (roles
   `'mopA' | 'mopB' | 'polish' | 'bosun' | 'plank' | 'boat'`), keeping their tools, actions and placement on the current
   ship; disposes the old people. Called on every `openDock` and after every crew-look change. With the default crew look
-  (`own`) it must reproduce today's crew exactly.
+  (`own`) it must reproduce today's crew exactly. **Built (PERF-3):** while Polly's is open a crew change only marks
+  the cleaning crew dirty (each restyle rebuilt 9 people, 90–125 ms a click); they are dressed once when the wardrobe
+  closes (Back to town, the Shipyard place or another panel). A hull repaint at the shipyard restyles them at once
+  (a crew in "Match the ship's paint" follows the hull). townMode accepts an optional `ctx.restyleCrew()`; main
+  doesn't pass one, and townMode's own `env.setCrewStyle` call does the same.
+- **Built:** `env.cheer(who = 'polly' | 'snips' | 'tailors' | 'all', seconds = 1.5) → bool` plays `'cheer'` on Polly
+  and/or Old Snips (capped at 10 s); townMode calls `env.cheer('polly', 1.6)` on every wardrobe purchase (3D).
+  `env.setCaptain(x, z)` / `env.setCaptain(null)` tells the town where the walking captain stands (LOOK-2, §7.2).
 - `env.folk()` → `[{ x, z, r: 0.35, index }]` for standing/walking townsfolk on walkable areas; `env.greet(index, seconds)`
   makes that person turn to the captain and `'wave'`; `env.cull(x, z, radius)` hides townsfolk farther than `radius`
   (40) from the camera in the town view; `env.peopleCount` still counts folk + crew (Polly and Snips included).
@@ -868,7 +993,7 @@ the stage-1 walk screenshots show gaps.
 | `#town-chest` | top-left | "Treasure chest: 340 gold", `aria-live="polite"` like `#dock-chest` |
 | `#town-menu-btn` (☰ "Harbour menu"), `#town-mute` | top-right | 48 px; mute shares `toggleMute()` and stays in sync |
 | `#town-places` | bottom centre | 4 buttons `data-place="shipyard\|tailor\|tavern\|ship"`: icon + label "Shipyard", "Tailor", "Tavern", "Set sail"; below 480 px icon-only with `aria-label` ("Walk to the tailor") |
-| `#town-prompt` | above the places bar | a real button: "Polly's Plumes & Trims — Enter ⏎" (touch: "Go in") when within a place's `r`; announced politely |
+| `#town-prompt` | above the places bar | a real button: "Polly's Plumes & Trims — Enter ⏎" (touch: "Go in"; at the ship "All aboard") when within a place's `r`; announced politely. **Built:** its `aria-label` spells the name out ("The Sea Biscuit: press Enter to go aboard", "Polly's Plumes & Trims: press Enter to go in"; touch "<name>: <verb>"), since the visible " — " is decoration (A11Y-6). If it has focus when the captain walks away, focus moves to `#town-screen` before it hides (A11Y-4). On touch screens in portrait up to 780 px tall, and in any landscape view up to 560 px tall, it sits at the top of the screen (above the places bar it hid the captain); in short landscape the chest shows its icon only and `#town-keys` steps aside while it shows (3D) |
 | `#town-action` | bottom-right, **touch only** | 76 px round "Go in" (place icon), enabled only at a place |
 | `#town-joystick` | bottom-left, **touch only** | the base (128 px) appears where the left thumb lands in the left 45 % of the screen; knob 56 px; dead zone 0.15; pointer capture; `aria-hidden="true"` (the places bar is the accessible equivalent) |
 | `#town-keys` | bottom-left, desktop only | "Walk WASD · Sprint Shift · Go in E · Camera C · Menu Esc" |
@@ -897,13 +1022,17 @@ wide screens, bottom sheet in portrait.
   the top of that group: "Buy Cavalier's plume — 180 gold" (`aria-disabled` + "Need 30 more gold" when too poor; focus
   stays put). Buying spends the treasure chest, owns + wears + saves, coin sound, gold sparkle, Polly `'cheer'`s,
   announced. Leaving the tab or the panel without buying puts the last owned choice back ("The plume goes back on the
-  rack"). A double-click or held Enter buys once (400 ms guard).
+  rack"). A double-click or held Enter buys once (400 ms guard). **Built (A11Y-3):** the Buy row appearing above the
+  group pushes the items down; after a try-on the Buy row and then the focused item are scrolled into view
+  (`block: 'nearest'`), so the item that has focus stays fully visible on short screens. **Built:** the look record
+  is saved before the chest; if storage refuses it, nothing is bought (FLOW-2 of the Stage 2 review).
 - **Trophy item not earned:** stays focusable with `aria-disabled` and its unlock text.
 - Footer: **Surprise me!** (randomises the free options of the current tab, saved) and **Back to town** (primary).
 - 3D: the captain turns slowly on the podium (`'proud'`), drag to spin. On the **Crew** tab the camera pans to the
   **crew line-up**: three of your sailors (seeds 1–3, the line-up spots) who walk out of the shop door and stand in a row
   wearing the uniform. Every change rebuilds the affected people (dispose the old) and calls `env.setCrewStyle()` so the
-  cleaning crew on the docked ship changes too.
+  cleaning crew on the docked ship changes too. **Built (PERF-3):** the line-up changes on every click; the cleaning
+  crew is dressed once, when the wardrobe closes (§7.5).
 
 ### 7.8 The Salty Sparrow — the tavern panel (`#tavern-screen`)
 
@@ -914,7 +1043,12 @@ wide screens, bottom sheet in portrait.
 - **Captain's log** `#tavern-log`: captures, boardings, rakes, crits, and the trophies still to win with their progress
   ("Admiral's white coat: 3 of 10 captures").
 - Footer: **Back to town**. Buying works like the shipyard (`buyArmory(id)` in main: spend, save, announce); `grapple`
-  purchases rebuild the docked ship (coiled grapples on the rail).
+  purchases rebuild the docked ship (coiled grapples on the rail). **Built (PERF-1):** *only* `grapple` purchases
+  rebuild it (the build first rebuilt it on every tavern purchase, a 0.2–0.5 s stall); the resync at the start of a
+  purchase rebuilds only when another tab changed the chest, the ship or the grapple tier. The armory record is saved
+  before the chest: if storage refuses it, nothing is bought.
+- **Built:** the rumour board for Act I uses the levels' own `rumour` data (townMode keeps the same lines as a
+  fallback, `OLD_RUMOURS`); past the last level it reads "No news today. The regulars are arguing about seagulls."
 
 ### 7.9 Cosmetic catalogue — `src/cosmetics.js` (pure)
 
@@ -1004,6 +1138,18 @@ head down), `'haul'` (hand-over-hand on a rope), `'measure'`, `'snip'`.
 | `pirates-ahoy-feats` (new) | `{"captures":3,"boardings":5,"rakes":41,"crits":12,"legend":0,"prizes":{"privateer":2,"galleon":1}}` | `parseFeats(raw)` (cosmetics.js): each counter a plain integer in `[0, 1_000_000]` (`legend` in `[0, 1]`), else 0; `prizes` keys must be enemy type keys (`FEAT_PRIZE_TYPES`, cross-checked against `SHIP_TYPES` by a Node test), values plain integers `[0, 9999]`; saved on capture, at level end, on pause, when the page is hidden and when leaving to the menu |
 | `pirates-ahoy-tips` (new) | plain integer bitmask | `loadInt(key, 0, 255, 0)`; bits in §5.5 |
 
+**Built:** the other records are unchanged: `pirates-ahoy-best`, `pirates-ahoy-purse`, `pirates-ahoy-tutorial-done` (main,
+`loadInt`) and `pirates-ahoy-muted` (audio.js, `'1'` / `'0'`). Two tabs share every record. Purchases are saved
+record first, chest second (a tavern upgrade or a priced wardrobe item is refused when its record can't be written;
+a shipyard upgrade keeps its gold in the saved chest until the ship record can be saved, as before), and each tab
+takes what another saved (the `storage` listener: feats, armory, chest and ship, look). **Stage 4 (ACT-3):**
+progress and the best score are synced too and only ever go up: `raiseProgress(to)` and `raiseBest(gold)` write the
+larger of this tab's value, the stored value and the new one, and only when it is higher (in both `finishLevel`
+branches, `exitVoyage`, `playerSunk` and `abandonLevel`); `syncProgress()` raises the in-memory values on a storage
+event (or a storage clear) without writing, and re-renders the cards on the title. Before, a tab opened earlier
+could save a lower `pirates-ahoy-unlocked` and re-lock Act II levels another tab had opened. `raiseBest` returns
+whether the gold is a new best (the Victory screen's "New best!").
+
 main.js gets one generic loader used for armory, look and feats: `loadRecord(key, parse, serialize)` (the
 `loadShipConfig` pattern: read, parse, rewrite when `serialize(parsed) !== raw`) and `saveRecord(key, serialize, value)`.
 Feats count: `captures` (ships captured), `boardings` (boardings that reached `brawl`, either side), `rakes` (player
@@ -1078,14 +1224,23 @@ export function createWalk(data /* env.walk */) → {
   heightAt(x, z, yHint = null) → number | null,   // overlapping surfaces: the one closest to yHint
   blocked(x, z, r, dynamic = []) → boolean,   // inside a blocker inflated by r (or a dynamic {x, z, r})
   move(from /* {x, z, y} */, dx, dz, r, dynamic = []) → { x, z, y, moved },
-      // full step if inside && !blocked && |Δy| ≤ 0.35; else x-only; else z-only; else stay
+      // full step if inside && !blocked && |Δy| ≤ 0.35; else (built, TOWN-3) the best of: the x-only step, the z-only
+      // step, and the step turned ±15°, ±30°, ±45°, ±60° and shortened by the cosine, tried in order of how far each
+      // gets the intended way; else stay. So a walker slides along a slanting rope and round a round post.
   nearestPlace(x, z) → { place, dist } | null,      // within place.r
   path(from, to) → [{ x, z }],                // A* over the graph + string pulling; [] when unreachable
   snap(x, z, maxDist = 3) → { x, z } | null,
   pick(origin /* [x, y, z] */, dir /* [x, y, z] */) → { x, z } | null,   // ray vs walk surfaces
+  clear(a /* {x, z} */, b, r = radius) → boolean,   // (built) the straight way from a to b is walkable and unblocked
   graph → { nodes: [{ x, z }], edges: [[i, j]] },  // area centres, portal centres, link ends + every 1.5 u along links, places
+  get radius, get places, get spawn,                // (built)
 }
 ```
+
+**Built (TOWN-3):** with only the axis fallbacks, W held across a rope bridge stopped dead against the rope when the
+heading was a few degrees off the bridge line (on ebad6f2, 67 of 72 simulated land-end runs stopped). With the
+slide, the post fix of §7.4 and the held direction of §7.2, 48 of 48 runs from the land end or 0.5 u back cross in
+1.3–2.1 s, and real key presses cross from all 8 land ends at 1280×720 and 390×844.
 
 **`src/mechanics.js`** (new, pure) — §6.3. **`src/act2.js`** (new) — `export const ACT2_LEVELS` (levels 4–6, §6.4–6.6;
 imports the three env modules). **`src/levels.js`** (new) — `export const ACT1, LEVELS, WITH_ACT2` (§6.1).
@@ -1122,7 +1277,8 @@ plus: doubloon `escapes`, `convoyStarts`; frost ice floes in `reefs` + `step(sim
 
 **`src/env/sparrow.js`** (extended) — returns `walk`, `setCrewStyle(fn)`, `folk()`, `greet(index, seconds)`,
 `cull(x, z, radius)`, `setPrizes(list)`; Polly's shop and NPCs; everything else unchanged (`view`, `berth`, `setShip`,
-`peopleCount`, the crew placement).
+`peopleCount`, the crew placement). **Built:** also `cheer(who, seconds)` (3D), `setCaptain(x, z)` (Stage 4, LOOK-2)
+and `walk.camBlockers` (§7.4); `?walkdebug=1` draws the camera volumes too, in orange.
 
 **`src/tags.js`** (new)
 
@@ -1179,6 +1335,11 @@ export function createTown({ scene, camera, walkData, audio, reducedMotion, env 
   simulate(seconds, input),         // fixed-dt stepping for tests (no rendering)
   get captain /* { x, y, z, h, mesh } */, get walk, dispose()
 }
+// Built: also park(placeId | null), setPanel(view, panelEl, subject), setLineup(optsList | null), cheer(who, s),
+//   sparkle(x, y, z), get places, get lineup, get auto, get active, get parked, get speed, get camera;
+//   goTo(placeId, { open = true }); update() returns
+//   { place, arrived, moving, greet, bubble }; simulate() returns { x, y, z, h, place, arrived, moving, greet }
+//   (greet: a townsperson started a greeting during it; Stage 4 — townMode then fills in the bubble's words).
 ```
 
 **`src/townMode.js`** (new; DOM + glue for every non-shop dock view; styles in **`town.css`**)
@@ -1197,6 +1358,9 @@ export function createTownMode(ctx) → {
 //   purse: () => state.purse, armory: { config(), buy(id) }, hullPaint: () => findLook('hull', shipConfig.look.hull),
 //   exits: () => [{ action, label }], leaveDock(action), showShipyard(), hideShipyard(), setLens(),
 //   openModal, closeModal, activeModal, announce(text), audio, isTouch(), reducedMotion(), rumour(), log() }
+// Built: ctx also takes prizes() (the prize ships for env.setPrizes), toggleMute(), and an optional restyleCrew()
+// (main doesn't pass one; townMode then calls env.setCrewStyle itself, §7.5). api.simulate() fills in the greeting
+// bubble's text when a greeting started, as update() does (Stage 4).
 ```
 
 ### 9.2 What main.js gets (integration points, by function)
@@ -1312,6 +1476,15 @@ One agent owns every file. Full suite; draw-call audit (every level start, a boa
 spots, Polly's, the tavern); accessibility audit (§13); small-screen layouts; cut decisions (§15); **README**: levels,
 Act II, controls (battle + town), the tavern and tailor tables, saves, tests.
 
+**Built:** Stage 4 ran as a review in five dimensions (town, progress, accessibility, robustness and performance,
+look), each finding checked by an independent verifier on a copy of `ebad6f2`; 24 findings were confirmed. Two fix
+agents with disjoint files then fixed them: **T** (`src/townMode.js`, `src/town.js`, `src/walk.js`,
+`src/env/sparrow.js`, `tests/walk.test.cjs`, the walk fixture) and **G** (`src/main.js`, `index.html`, `style.css`,
+`src/levels.js`, `src/ships.js`, `src/boarding.js`). A test agent owned the browser suites (updating them for the
+changed behaviour and for TEST-1, and adding regression checks for the fixes), and a writer updated the README,
+this file and the build plan's README.
+Nothing was cut (§15). §17 lists what each finding changed.
+
 ### Dependency graph
 
 ```
@@ -1424,6 +1597,10 @@ the existing ones.
 - Each places-bar button walks to and opens its place (shipyard panel, tavern, wardrobe, All aboard dialog); a move key
   cancels auto-walk; E / Enter / Space at a place open it only when no button is focused; P/Esc open the Harbour menu
   (modal: labelled, Tab trapped, focus returns, Esc closes); the All aboard exits do what the shipyard's do for each origin.
+  **Built (TOWN-1):** at a place **E** opens it whatever has focus; Enter and Space open it only when no button is
+  focused (a focused button takes them). After ☰ is clicked with the mouse and Keep walking pressed, focus is on
+  `#town-screen`, not ☰ (☰ opened from the keyboard still gets focus back). **Built (3D):** at the spawn the camera
+  starts beside the captain, not behind him (§7.3): "camera behind" is checked as "in his back half-plane".
 - Touch: joystick drag moves, tap-to-walk moves, the action button opens the place; every town control ≥ 44 px.
 - Wardrobe: wearing a free item rebuilds the captain (`userData.look` shows it) and saves `pirates-ahoy-look`; try-on of a
   priced item shows the Buy button and reverts on leaving; buying deducts the chest, saves, wears; poor → `aria-disabled`
@@ -1467,6 +1644,16 @@ node tests/walk.test.cjs && node tests/mechanics.test.cjs && node tests/upgrades
 node tests/smoke.cjs && node tests/controls.cjs && node tests/battle.cjs && node tests/levels.cjs && node tests/town.cjs`,
 plus a `test:<name>` script for each.
 
+**Built:** the chain also runs `tests/audio.cjs` after `controls.cjs` (it was in `npm test` before this update), so
+`npm test` runs 13 suites: combat, armory, cosmetics, walk, mechanics, upgrades, server, smoke, controls, audio,
+battle, levels, town. **Stage 4 behaviour changes the existing checks must follow:** locked level cards are read
+through `aria-disabled="true"` (or `.locked`), not `disabled` (A11Y-5: `smoke.cjs` "only level 1 is unlocked" and
+"all levels unlocked … after winning", `levels.cjs` title checks, `controls.cjs` "saved data" and "leave during
+Level cleared!"); E at a door goes in whatever has focus, and ☰ clicked with the mouse hands focus to
+`#town-screen` (TOWN-1: two `town.cjs` places checks); the cleaning crew is dressed when Polly's closes (PERF-3:
+three `town.cjs` wardrobe crew checks); and `town.cjs`'s wardrobe section must wait out the 400 ms purchase guard
+between a purchase and the next item click (TEST-1: it only passed because SwiftShader frames are slow).
+
 ---------------------------------------------------------------------------------------------------
 
 ## 12. Performance budgets (draw calls = `renderInfo.calls`, both outline passes, `?quality=low`, 1280×720)
@@ -1483,6 +1670,28 @@ plus a `test:<name>` script for each.
 | Polly's view | ≤ 450 | — | captain + 3 line-up sailors + 2 NPCs ≈ 30 |
 | Per new ship model | ≤ the Man-o'-War's calls (phantom ≤ 1.3×) | — | — |
 | Per person | 3 material groups (4 with a lantern); captain ≤ 12k triangles | — | `share: true` for repeated looks |
+
+**Decision (DRAW-1, Stage 4): the level-start budgets are for the stock ship.** The player's ship is never baked
+(`bakeColours` skips `'player'`), so shipyard upgrades add meshes. Measured two frames into the L1 fly-in: stock 299,
+mid-game ship 315, a fully upgraded ship (every shipyard tier, Long grapples 2, trophy cosmetics) 323–324; the armory
+and the look add nothing. So a fully upgraded ship reads about 324 at the Act I start, 4 over 320. It is not a
+regression (before this update the same probe read 317 stock and 341–342 fully upgraded) and 4 calls can't be seen,
+so the art was left alone: merging the upgrade props into a bake is not worth it. The tests measure the stock ship
+(`tests/battle.cjs`, `tests/levels.cjs`).
+
+Stage 4 measurements (`renderInfo.calls`, `?quality=low`, 1280×720 unless noted):
+
+| Scene | Measured |
+|---|---|
+| Level starts, stock ship | L1 299, L4 251, L5 195, L6 232 (fly-in); 3B with the intro camera: L4 274, L5 271, L6 297 |
+| Level starts, fully upgraded | L1 323–324, L2 255, L3 191, L4 276, L5 219, L6 256 |
+| Boardings, all six levels with the wave alive | peak 378 (fully upgraded ship, L1, defending) |
+| Busiest Act II play (bot v2, a frame every 0.25 s) | L4 318, L5 300, L6 272; 3B's sampling, boardings included: L4 366, L5 404, L6 313 |
+| Town walk view, the 6 test spots | spawn 216, plaza 170, yard 124, tavern 61, tower 28, garden 338 (after LOOK-4/5) |
+| Town walk view, 30 spots × 8 headings, 2 prize ships | at most 371 (1280×720 and 844×390), 280 (390×844) |
+| Town walk from the shipyard to the tavern | 51–243 |
+| Shipyard view | 297–341 across the probes (smoke: 297 of 450) |
+| Polly's / line-up / tavern | 41–46 / 46–61 / 54–66 |
 
 CPU: prebuild boarding people during the level fly-in (one per frame) and defenders during the reel (one per frame);
 pips are one InstancedMesh; pops are DOM (0 calls); never raycast per ball (holes are placed analytically from
@@ -1510,6 +1719,24 @@ density, hole decals on far ships.
 - **Photosensitivity:** lightning flash overlay ≤ 0.25 opacity, ≤ 1 flash per 3 s, no strobing anywhere.
 - Context loss anywhere in the dock returns focus to the open panel's first tab or to `#town-screen`.
 - Touch layouts pass at 320×480, 360×480/640, 390×844, 568×320, 640×360, 844×390, 1024×600, 1280×720.
+
+**Built (Stage 4 accessibility fixes):**
+- **No camera shake at all under reduced motion (A11Y-1).** The plan only named the rake kick; hull hits, lava bombs
+  and lightning within 25 u, ice-floe crunches and the Maelstrom's eye (5 hp/s, so nearly every frame) still shook the
+  camera. All of them now go through `shakeCamera(amount)`, which does nothing under reduced motion, and
+  `updateCamera` zeroes any shake while `boarding.locked` or under reduced motion as a backstop.
+- **One press is one click (A11Y-2, TOWN-2, TOWN-4).** Outside a running battle (and whenever a dialog is open), the
+  auto-repeats of a held Enter or Space on a focused button are swallowed (main's window keydown, before townMode;
+  townMode guards its panels, dialogs and `#town-screen` too). Before, a slow press carried into the next screen:
+  All aboard? left at once, Back to town reopened the panel, and holding Space at the tavern door bought Boarding
+  party. A swallowed Space repeat never arms the button, so its key-up doesn't click either.
+- **Locked level cards stay focusable (A11Y-5):** `aria-disabled` + `aria-describedby`, and `#menu-live` (§5.6).
+- **Focus never falls to `<body>` in town (A11Y-4)** when the prompt that had it hides (§7.6), and the prompt has a
+  spelled-out name (A11Y-6).
+- **The focused item stays in view after a try-on at Polly's (A11Y-3)** (§7.7).
+- Short, narrow desktop windows (≤ 760 × 500, landscape, mouse): the level banner is centred in the space left of the
+  minimap and no wider than it, so it never touches the minimap's ring (at 568×320 the L1, L4, L5 and L6 banners
+  used to overlap it); it sits a little left of centre there.
 
 ---------------------------------------------------------------------------------------------------
 
@@ -1558,6 +1785,10 @@ Never cut: see §1.
 
 ## 16. Open questions for the user (defaults are built unless you say otherwise)
 
+**Built:** all three defaults: the Molten Maw shows the Victory screen with "Sail on to the Far Seas"; raiders who
+overrun you take 25 % of the level's plunder (never the chest) and can't end the run; cosmetics are priced (1,200
+gold for everything) with four trophies.
+
 1. **The Molten Maw finale.** Default: beating it still shows the big Victory screen, now with "Sail on to the Far Seas".
    Would you rather the voyage just carry on to level 4 with a normal "level cleared" card?
 2. **Enemy boarders and your gold.** Default: if raiders win a fight on your deck they grab 25 % of the gold you have
@@ -1567,6 +1798,61 @@ Never cut: see §1.
    most options are free and four trophies are earned by feats. Or should every cosmetic be free?
 
 ---------------------------------------------------------------------------------------------------
+
+## 17. Build record: decisions and deviations (Stage 4)
+
+Every place where the finished game differs from the plan above, or a decision the plan left open, with the
+section that records it. Ids are the Stage 4 review's confirmed findings; "3B", "3D" are Stage 3 agents.
+
+| Id | Where | Decision or deviation |
+|---|---|---|
+| 3B | §6.4–6.6 | Act II waves tuned with the Act II bot: L4 `[[galleon, cutter, cutter], [galleon, corsair]]`; L5 `[[raider, raider, manowar], [raider, raider, privateer]]`; L6 `[[corsair, corsair, manowar], [phantom, raider]]` with `maxAttackers: 3`. Everything else in those sections is the planned value. L5 gained `mechanicTouch`. |
+| 3B | §6.3 | `onSpawn` moves a later-wave ship placed in water cut off from the player to a spawn point in the player's water. |
+| ACT-2 | §6.8 | The difficulty order is promised within each act (Act I on the stock ship, Act II on the mid-game ship); the first level of an act may be easier than the previous act's finale. Not retuned. |
+| DRAW-1 | §12 | The level-start budgets are for the stock ship; a fully upgraded ship reads about 324 at the L1 start. No art change. |
+| TOWN-1 | §5.1, §7.6, §11.3 | At a door E always goes in; Enter and Space go in only when no button has focus; walking moves focus off the town HUD; ☰ and 🔊 drop focus after a pointer click. |
+| TOWN-2, TOWN-4, A11Y-2 | §5.1, §13 | Auto-repeats of a held Enter or Space on a focused button are swallowed outside play and in every town panel and dialog. |
+| TOWN-3 | §7.2, §7.4, §9.1 | `walk.move` slides a blocked step (axis steps and turns of ±15–60°); the bridge-end rope posts have `r = 0`; a held walking input keeps the direction it started with when the camera swings by itself; an auto-walk skips a near waypoint only when the way on is clear. |
+| 3D | §7.3, §7.4, §9.1 | The walk camera keeps out of `walk.camBlockers` (camera-only volumes, 40 entries) and tall blockers, all padded 0.3; the thin-post heuristic was dropped; a cut at the spawn starts beside the captain; a cramped camera tilts up and swings to the clear side. |
+| 3D | §7.3 | The portrait walk view uses a 60° lens (`CAM.fovPortrait`) instead of `setLens()`. |
+| 3D | §7.6 | On short portrait phones and short landscape views the town prompt sits at the top of the screen. |
+| 3D | §7.5, §9.1 | `env.cheer(who, seconds)`; prize ships sit 0.45 deeper; bunting raised on two plaza masts; berth blocker 16 × 4.8; a tap in a shut-in corner walks to the nearest reachable node. |
+| LOOK-2 | §7.2, §7.5 | `env.setCaptain(x, z)`: walkers on fixed paths wait while the captain stands in their way. |
+| LOOK-4 | §7.3 | camBlockers over the three market-stall awnings, so the camera no longer skims them on the way to the tavern. |
+| LOOK-5 | §7.4 | Planks across the seam between the plaza and the tavern raft. |
+| LOOK-3 | §5.3 | The spectral Phantom's boss bar reads "BOARD HER! — The Phantom Galleon". |
+| LOOK-1 | (§3.4 visuals) | The see-through sails during a boarding keep writing depth, so the ink outline no longer turns them slate-black. |
+| A11Y-1 | §13 | No camera shake of any kind under reduced motion (`shakeCamera`, plus a backstop in `updateCamera`). |
+| A11Y-3 | §7.7 | After a try-on the Buy row and the focused item are scrolled into view. |
+| A11Y-4, A11Y-6 | §7.6 | Focus moves to `#town-screen` when the focused prompt hides; the prompt has a spelled-out `aria-label`. |
+| A11Y-5 | §5.6 | Locked level cards are `aria-disabled` and described, not `disabled`; `#menu-live` says why a card is locked. |
+| ACT-3 | §8 | Progress and the best score are synced between tabs and only ever go up. |
+| PERF-1 | §7.8 | Only a Long grapples purchase rebuilds the docked ship. |
+| PERF-2 | §7.5 | Prize ships are built when the dock opens, not on the first Go ashore. |
+| PERF-3 | §7.5, §7.7 | The cleaning crew is dressed once when Polly's closes, not on every crew click. |
+| POL-1 | — | The baked ship material no longer passes `flatShading` to `MeshToonMaterial` (it logged three three.js warnings per page; nothing looks different). |
+| (Stage 4) | §6.1, §5.6 | The Molten Maw's `finaleText` and the default `#won-text` say she is beaten, not sunk. |
+| (Stage 4) | §3.8 | `BOARD.homeLossCap`, `RAIDERS.gap`, `RAIDERS.sheer` added to the tables; main reads `RAIDERS.gap` / `.sheer` (it had its own `RAID_GAP` / `RAID_SHEER`, same values); `WORDS` exported. |
+| (Stage 4) | §13 | The level banner keeps clear of the minimap on short, narrow desktop windows (568×320, 640×360). |
+| (Stage 4) | §9.1 | `town.simulate()` returns `greet`, and `__game.town.simulate()` fills in the greeting bubble's words. |
+| — | §15, §16 | Nothing on the cut list was cut; the three open questions were built with their defaults. |
+
+**Known and accepted (not changed):**
+- **PERF-4:** the step that spawns a wave builds every ship of it at once: 100–350 ms in one step (L6 the most). It
+  was the same before this update (Act I's L2 already did it), and the loop clamps `dt`, so it is a one-frame
+  stutter as reinforcements arrive. If wanted later: prebuild the next wave's meshes hidden, one per frame, while
+  the current wave fights.
+- **Cramped camera spots in town:** the plaza end of the bridge to Polly's (pots stall and TAILOR signpost) and the
+  tavern door (balcony) still give a low, close camera, as before Stage 4. Walking along the stall row, an awning can
+  still fill about 15–16 % of the frame for about 0.17 s.
+- **Shut-in pockets:** about 2.5 % of the free deck is shut in by props (south of the lookout tower, behind the
+  slipway, behind Polly's, a couple of yard corners); a tap there walks to the nearest reachable spot. Starting 1.5 u
+  back from a bridge mouth and 5° off, a held key can stop where a deck corner meets the bridge band; from the land
+  end or 0.5 u back every run crosses.
+- With townsfolk frozen (tests that step the town with `simulate()` and no `env.update`), the captain squeezes past
+  a waiting walker, as before.
+- **Act II balance** (ACT-2 above): Frostbite Straits sits only just above Doubloon Bay for the mid-game bot (medians
+  46 and 43); it can't get more ships within the draw-call budgets.
 
 ## Appendix A — DOM ids added in Stage 0 (all start `hidden`)
 
@@ -1583,6 +1869,8 @@ Town (`.overlay`, before `#recover-screen`): `#town-screen` (`tabindex="-1"`, `r
 `aria-modal="true"`, `aria-labelledby="harbour-title"`) with `#harbour-walk-btn`, `#harbour-shipyard-btn`,
 `#harbour-tailor-btn`, `#harbour-tavern-btn`, `#harbour-exits`; `#aboard-dialog` (dialog, `aria-labelledby="aboard-title"`)
 with `#aboard-exits`, `#aboard-stay-btn`.
+**Built (Stage 4):** `#menu-live` (`sr-only`, `role="status"`, polite) at the end of the title panel, for why a
+locked level card can't start (A11Y-5); each locked card's pill carries `id="lvl-N-why"`.
 
 ## Appendix B — How the three designs were merged
 

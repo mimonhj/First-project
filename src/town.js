@@ -15,7 +15,8 @@
 //   pose(viewName) → { pos, target } | null,
 //   frameBeside(panelEl, points),          lens shift so the points sit in the free area beside panelEl
 //   park(placeId | null), setPanel(view, panelEl, subject), setLineup(optsList | null), cheer(who, s),
-//   sparkle(x, y, z), simulate(seconds, input), get captain, get walk, get lineup, get auto, dispose()
+//   sparkle(x, y, z), simulate(seconds, input) → { x, y, z, h, place, arrived, moving, greet },
+//   get captain, get walk, get lineup, get auto, dispose()
 // }
 import * as THREE from 'three';
 import { createWalk } from './walk.js';
@@ -31,6 +32,7 @@ const DECEL = 20; // u/s² stopping (from a jog in about 0.15 s)
 const TURN = 10; // rad/s: the body turns toward the way he walks
 const STEER = 16; // rad/s: the way he walks follows the input (a quick arc instead of a moonwalk)
 const RUN_AT = 1.5; // u/s: faster than this the legs run
+const HOLD_TURN = 0.35; // rad: a held walking input turned further than this re-reads the camera
 const LINEUP_TEMPO = 1.6; // the sailors stride out of the shop briskly
 const CAM = {
   lift: 1.2, // look at the captain's chest
@@ -142,6 +144,11 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     opts: null,
   };
   const input = { x: 0, z: 0, run: false };
+  // The camera a held walking input is read against: the camera's yaw when the input began (or turned).
+  // The camera swinging round by itself (to follow him, or out of a cramped corner) doesn't turn a key that
+  // is still held, so W held keeps him going the way he set off (across a rope bridge, say); a drag or C
+  // does turn it.
+  let hold = null; // { yaw, x, z }
   let auto = null; // { pts, i, place, open, pass, stuck, repaths }
   let arrivedNow = null;
   let active = false;
@@ -304,6 +311,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     input.x = 0;
     input.z = 0;
     input.run = false;
+    hold = null;
     cam.yaw = yaw === null ? h : yaw;
     cam.pitch = CAM.pitch;
     cam.sinceDrag = 99;
@@ -332,6 +340,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
 
   function exit() {
     active = false;
+    tellEnv(false);
     cancelAuto();
     input.x = 0;
     input.z = 0;
@@ -432,6 +441,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       return;
     }
     cam.yaw = wrap(cam.yaw - dx * CAM.dragK);
+    if (hold) hold.yaw = wrap(hold.yaw - dx * CAM.dragK); // (a drag turns a held key with the camera)
     cam.pitch = clamp(cam.pitch + dy * CAM.dragK, CAM.pitchMin, CAM.pitchMax);
     cam.sinceDrag = 0;
     cam.swoop = null;
@@ -445,6 +455,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       return;
     }
     cam.yaw = cap.h;
+    if (hold) hold.yaw = cam.yaw;
     cam.pitch = CAM.pitch;
     cam.sinceDrag = 99;
   }
@@ -515,10 +526,12 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     let want = 0;
     let dir = cap.move;
     const mag = Math.hypot(input.x, input.z);
+    if (mag <= 0.01) hold = null;
     if (mag > 0.01) {
       if (auto) cancelAuto();
-      const fx = Math.sin(cam.yaw);
-      const fz = Math.cos(cam.yaw);
+      if (!hold || Math.abs(wrap(Math.atan2(input.x, input.z) - Math.atan2(hold.x, hold.z))) > HOLD_TURN) hold = { yaw: cam.yaw, x: input.x, z: input.z };
+      const fx = Math.sin(hold.yaw);
+      const fz = Math.cos(hold.yaw);
       // right = (-cos yaw, sin yaw), as for the ships
       const wx = -fz * input.x + fx * input.z;
       const wz = fx * input.x + fz * input.z;
@@ -527,7 +540,9 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     } else if (auto) {
       let tgt = auto.pts[auto.i];
       let d = Math.hypot(tgt.x - cap.x, tgt.z - cap.z);
-      while (d < 0.25 && auto.i < auto.pts.length - 1) {
+      // (a corner is cut only when the way on from here is clear: at the narrow mouth of a rope bridge the
+      // corner itself must be walked, or he'd press into the rope beside it)
+      while (auto.i < auto.pts.length - 1 && (d < 0.06 || (d < 0.25 && walk.clear({ x: cap.x, z: cap.z }, auto.pts[auto.i + 1])))) {
         auto.i++;
         tgt = auto.pts[auto.i];
         d = Math.hypot(tgt.x - cap.x, tgt.z - cap.z);
@@ -593,6 +608,19 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       cap.h = turnToward(cap.h, cap.move, TURN * dt); // arrived at a place: face the door
     }
     cap.yVis += (cap.y - cap.yVis) * Math.min(1, dt * 15);
+  }
+
+  // Where he stands, for the townsfolk walking their rounds (env.setCaptain: they wait for him rather than
+  // walk through him); null while he isn't walking the town (the panels, the shipyard, gone).
+  function tellEnv(on) {
+    const e = envNow();
+    if (!e || typeof e.setCaptain !== 'function') return;
+    try {
+      if (on) e.setCaptain(cap.x, cap.z);
+      else e.setCaptain(null, null);
+    } catch {
+      // the townsfolk are decoration
+    }
   }
 
   function stepGreet(dt) {
@@ -1019,10 +1047,12 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       animateCaptain(dt, time);
       placeLineup(dt);
       updatePanelCamera(dt);
+      tellEnv(false);
       result.place = parked.id;
       result.moving = false;
     } else if (active) {
       stepWalk(dt);
+      tellEnv(true);
       animateCaptain(dt, time);
       result.greet = stepGreet(dt);
       result.bubble = bubbleAt();
@@ -1036,6 +1066,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       }
     } else {
       animateCaptain(dt, time);
+      tellEnv(false);
     }
     if (arrivedNow) {
       result.arrived = arrivedNow;
@@ -1050,6 +1081,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const n = Math.max(0, Math.round((Number.isFinite(seconds) ? seconds : 0) * 60));
     const dt = 1 / 60;
     let arrived = null;
+    let greet = false; // someone started a greeting meanwhile (townMode puts words in the bubble)
     cam.swoop = null;
     quiet = true;
     try {
@@ -1058,12 +1090,13 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
         if (m) setMove(m);
         const r = update(dt, time + dt);
         if (r.arrived) arrived = r.arrived;
+        if (r.greet) greet = true;
       }
     } finally {
       quiet = false;
     }
     const np = walk.nearestPlace(cap.x, cap.z);
-    return { x: cap.x, y: cap.y, z: cap.z, h: cap.h, place: np ? np.place.id : null, arrived, moving: !!auto || cap.act > 0.25 };
+    return { x: cap.x, y: cap.y, z: cap.z, h: cap.h, place: np ? np.place.id : null, arrived, moving: !!auto || cap.act > 0.25, greet };
   }
 
   function dispose() {

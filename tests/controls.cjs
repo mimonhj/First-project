@@ -399,7 +399,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
         unlocked: window.__game.state.unlocked,
         tutorial: window.__game.state.tutorialDone,
         shown: document.getElementById('best').textContent,
-        cards: [...document.querySelectorAll('.level-card')].filter((b) => !b.disabled).length,
+        cards: [...document.querySelectorAll('.level-card')].filter((b) => b.getAttribute('aria-disabled') !== 'true').length,
         stored: localStorage.getItem('pirates-ahoy-best'),
       }));
       const ok = r.best === c.best && r.unlocked === c.unlocked && r.tutorial === c.tutorial && r.shown === String(c.best) && r.cards === c.unlocked;
@@ -1077,6 +1077,9 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     check(slowDbl.hull === 1 && slowDbl.purse === 1880, `shipyard (slow device): a double-click on Buy buys one tier (${JSON.stringify(slowDbl)})`);
     // Two separate clicks 150 ms apart, the second arriving while the first purchase is still under way.
     const cdp = await ctx.newCDPSession(page);
+    // The raw presses below go to screen coordinates, so the button must be inside the scrolled list first
+    // (the double-click above can leave the list scrolled with this row above its top edge).
+    await page.locator('.up-row[data-id="crew"] .buy-btn').scrollIntoViewIfNeeded();
     const box = await page.locator('.up-row[data-id="crew"] .buy-btn').boundingBox();
     const at = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
     const press = () => Promise.all(['mousePressed', 'mouseReleased'].map((type) => cdp.send('Input.dispatchMouseEvent', { type, ...at, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 })));
@@ -2159,7 +2162,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       await page.waitForTimeout(400);
       await page.click('#leave-yes-btn');
       await frames(page, 2);
-      const title = await page.evaluate(() => ({ mode: window.__game.state.mode, purse: window.__game.state.purse, savedPurse: localStorage.getItem('pirates-ahoy-purse'), unlocked: window.__game.state.unlocked, chest: document.getElementById('menu-chest').textContent.trim(), cards: [...document.querySelectorAll('.level-card')].filter((b) => !b.disabled).length }));
+      const title = await page.evaluate(() => ({ mode: window.__game.state.mode, purse: window.__game.state.purse, savedPurse: localStorage.getItem('pirates-ahoy-purse'), unlocked: window.__game.state.unlocked, chest: document.getElementById('menu-chest').textContent.trim(), cards: [...document.querySelectorAll('.level-card')].filter((b) => b.getAttribute('aria-disabled') !== 'true').length }));
       check(askedMenu.q === 'Level cleared! Back to the main menu?' && askedMenu.no === 'Stay' && title.mode === 'menu' && title.purse === won && title.savedPurse === String(won) && title.chest === String(won) && title.unlocked === 2 && title.cards === 2,
         `leave during "Level cleared!" for the main menu: the title shows the ${won} gold banked and level 2 open (${J({ askedMenu, title })})`);
       await ctx.close();
@@ -2177,8 +2180,9 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       await A.evaluate(() => window.__game.dock.open('menu'));
       await B.evaluate(() => window.__game.dock.open('menu'));
       const a = await A.evaluate(() => ({ ok: window.__game.armory.buy('boarders'), purse: window.__game.state.purse }));
-      // (another tab's writes reach this one a moment later, sometimes seconds under load)
-      await B.waitForFunction(() => /"boarders":1/.test(localStorage.getItem('pirates-ahoy-armory') || ''), null, { timeout: 30000 }).catch(() => {});
+      // (another tab's writes reach this one a moment later, sometimes seconds under load, and one record at a time:
+      // A saves the armory first, then the chest, so B waits for both before it buys)
+      await B.waitForFunction(() => /"boarders":1/.test(localStorage.getItem('pirates-ahoy-armory') || '') && localStorage.getItem('pirates-ahoy-purse') === '800', null, { timeout: 30000 }).catch(() => {});
       const b = await B.evaluate(() => ({ ok: window.__game.armory.buy('cutlass'), purse: window.__game.state.purse, up: window.__game.armory.config.up }));
       const saved = await savedOf(B);
       const aSees = await A.waitForFunction(() => window.__game.armory.config.up.cutlass === 1, null, { timeout: 30000 }).then(() => true, () => false);

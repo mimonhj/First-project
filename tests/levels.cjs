@@ -12,9 +12,11 @@
 //   than Doubloon Bay, never inside land
 // - draw calls at each Act II level start (≤ 310) and during a boarding on each (≤ 450); screenshots
 //   doubloon.png, frost.png, maelstrom.png
+// - the Stage 4 review's fixes (review4): locked cards focusable and described, progress never lowered by an older
+//   tab, the Victory words after capturing the Molten Maw, the level banners clear of the minimap at 568x320
 // The simulation is frozen (the real-time loop paused) and driven with G.step(1/120) like smoke.cjs; only the
 // draw-call and screenshot parts let real frames run. Run with `npm test` or `npm run test:levels`
-// (LEVELS_ONLY=cards,finale,doubloon,frost,maelstrom,bot,draws runs some sections; LEVELS_ROOT serves another
+// (LEVELS_ONLY=cards,finale,doubloon,frost,maelstrom,bot,draws,review4 runs some sections; LEVELS_ROOT serves another
 // copy of the game).
 const fs = require('fs');
 const path = require('path');
@@ -396,7 +398,7 @@ function botLevel(args) {
           const pips = b.querySelector('.lvl-pips');
           return {
             n: Number(b.dataset.level),
-            locked: b.disabled,
+            locked: b.getAttribute('aria-disabled') === 'true', // (focusable, not disabled: SPEC2 §13)
             name: (b.querySelector('.lvl-name') || {}).textContent,
             word: (b.querySelector('.diff-word') || {}).textContent,
             pips: pips && pips.getAttribute('aria-label'),
@@ -1151,6 +1153,154 @@ function botLevel(args) {
       `draw calls: a boarding on each Act II level with her wave alive stays within 450 in every frame (${boards.map((b) => `L${b.n} ${b.kind} ${b.max} in ${b.at}`).join(', ')})`);
     check(boards.every((b) => b.tagHidden && b.fade !== null && b.fade < 0.5), `boarding view: the boarded ship's tag hides and the sails over the brawl's deck turn see-through (${boards.map((b) => `L${b.n} tag hidden ${b.tagHidden}, sails ${b.fade}`).join('; ')})`);
     await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------------------------------ review4
+  // The Stage 4 review's fixes on the title and the voyage (each of these checks failed on ebad6f2): A11Y-5 locked
+  // level cards, ACT-3 progress shared between tabs, the Victory words after a capture (a Stage 3 leftover), the
+  // level banners beside the minimap at 568x320 on a desktop (a Stage 3 leftover).
+  await section('review4', async () => {
+    const TITLE = { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' };
+    // A11Y-5: locked cards stay focusable (aria-disabled, not disabled), described by their lock text, reached by
+    // Tab, and pressing one never starts its level: it says why instead.
+    {
+      const { ctx, page } = await open({ label: 'locked', store: TITLE });
+      const cdp = await ctx.newCDPSession(page);
+      const cards = await page.evaluate(() => [...document.querySelectorAll('.level-card')].map((b) => {
+        const why = document.getElementById(b.getAttribute('aria-describedby') || '');
+        return { n: Number(b.dataset.level), disabled: b.disabled, aria: b.getAttribute('aria-disabled'), tab: b.tabIndex, why: why ? why.textContent.trim() : null };
+      }));
+      const { nodes } = await cdp.send('Accessibility.getFullAXTree');
+      const n4 = nodes.find((n) => !n.ignored && n.role && n.role.value === 'button' && /^4 Doubloon Bay/.test((n.name && n.name.value) || ''));
+      const prop = (n, k) => ((n && n.properties) || []).some((q) => q.name === k && q.value && q.value.value === true);
+      const ax = n4 ? { name: n4.name.value, desc: n4.description ? n4.description.value : null, focusable: prop(n4, 'focusable'), disabled: prop(n4, 'disabled') } : null;
+      await page.focus('.level-card.lvl-3');
+      const tabs = [];
+      for (let i = 0; i < 3; i++) {
+        await page.keyboard.press('Tab');
+        tabs.push(await page.evaluate(() => (document.activeElement.dataset.level ? `card${document.activeElement.dataset.level}` : document.activeElement.id || document.activeElement.tagName)));
+      }
+      await page.focus('.level-card.lvl-4');
+      await page.keyboard.press('Enter');
+      await frames(page, 2);
+      const enter = await page.evaluate(() => ({ mode: window.__game.state.mode, focus: document.activeElement.dataset.level || null, live: (document.getElementById('menu-live') || {}).textContent || '' }));
+      await page.keyboard.press('Space');
+      await frames(page, 2);
+      const space = await page.evaluate(() => window.__game.state.mode);
+      await page.evaluate(() => document.querySelector('.level-card.lvl-6').click()); // (an assistive technology's click)
+      await frames(page, 2);
+      const click = await page.evaluate(() => ({ mode: window.__game.state.mode, live: (document.getElementById('menu-live') || {}).textContent || '' }));
+      const locked = cards.filter((c) => c.n > 3);
+      check(locked.length === 3 && locked.every((c) => !c.disabled && c.aria === 'true' && c.tab === 0 && !!c.why) && locked[0].why === 'Beat the Molten Maw' && cards.filter((c) => c.n <= 3).every((c) => c.aria !== 'true') &&
+        !!ax && ax.focusable && /Beat the Molten Maw/.test(ax.desc || '') && tabs.join() === 'card4,card5,card6',
+        `A11Y-5: locked cards 4-6 are focusable and aria-disabled (not disabled), described by their lock text, and Tab reaches them (${J({ locked, ax, tabs })})`);
+      check(enter.mode === 'menu' && enter.focus === '4' && /Doubloon Bay is locked/.test(enter.live) && space === 'menu' && click.mode === 'menu' && /The Maelstrom is locked/.test(click.live),
+        `A11Y-5: Enter, Space or a click on a locked card starts nothing; the title says why ("${enter.live.trim()}" / "${click.live.trim()}") (${J({ enter, space, click: click.mode })})`);
+      await ctx.close();
+    }
+
+    // ACT-3: two tabs of the game. Tab A beats the Volcano and Doubloon Bay (5 levels open); tab B, open on the title
+    // all along, shows them open at once; B then beats the Volcano again: the saved progress stays at 5.
+    {
+      const { ctx, page: A } = await open({ label: 'tabA', store: TITLE });
+      const B = await ctx.newPage();
+      watch(B, 'tabB');
+      await B.goto(base + '?quality=low', { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await B.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+      await B.evaluate(installHelpers);
+      const lockedCards = (p) => p.evaluate(() => ({ unlocked: window.__game.state.unlocked, mode: window.__game.state.mode, cards: [...document.querySelectorAll('.level-card')].map((b) => (b.getAttribute('aria-disabled') === 'true' || b.disabled ? 'L' : 'P')).join('') }));
+      const win = (p, n) => ev(p, (n) => {
+        const G = window.__game;
+        T.level(n);
+        for (let w = 0; w < 8 && G.state.mode === 'playing'; w++) {
+          for (const e of G.enemies) {
+            if (!G.fighting(e)) continue;
+            if (e.type.merchant || e.type.ghost) {
+              e.rise = 0;
+              G.capture.take(e);
+            } else G.damage(e, 9999);
+          }
+          T.steps(1, () => G.state.mode === 'playing');
+        }
+        T.steps(12, () => G.state.mode === 'playing');
+        return { mode: G.state.mode, unlocked: G.state.unlocked, saved: localStorage.getItem('pirates-ahoy-unlocked') };
+      }, n);
+      const b0 = await lockedCards(B);
+      const a3 = await win(A, 3);
+      const a4 = await win(A, 4);
+      const synced = await B.waitForFunction(() => window.__game.state.unlocked === 5, null, { timeout: 20000 }).then(() => true, () => false);
+      const b1 = await lockedCards(B);
+      const b3 = await win(B, 3);
+      check(b0.cards === 'PPPLLL' && a3.saved === '4' && a4.mode === 'levelDone' && a4.saved === '5' && synced && b1.mode === 'menu' && b1.cards === 'PPPPPL' && b3.mode === 'won' && b3.saved === '5' && b3.unlocked === 5,
+        `ACT-3: progress saved in another tab opens the cards here at once, and a win in the older tab never lowers it (B before ${b0.cards}, after A's wins ${b1.cards}; B beats the Volcano: saved ${b3.saved}) (${J({ a3, a4, synced, b1, b3 })})`);
+      await ctx.close();
+    }
+
+    // Victory after capturing the Molten Maw (not sinking her): the words don't say she was sunk.
+    {
+      const { ctx, page } = await open({ label: 'victory' });
+      const before = await page.evaluate(() => T.text('won-text')); // (the page's own words, before any win)
+      const w = await ev(page, async () => {
+        const G = window.__game;
+        T.level(3);
+        const banners = [];
+        let captured = null;
+        for (let k = 0; k < 6 && G.state.mode === 'playing'; k++) {
+          for (const e of G.enemies) {
+            if (!G.fighting(e)) continue;
+            if (e.type.boss) {
+              e.rise = 0;
+              G.capture.take(e);
+              captured = e.type.name;
+            } else G.damage(e, 9999);
+          }
+          T.steps(1, () => {
+            if (T.shown('banner')) banners.push(T.text('banner'));
+            return G.state.mode === 'playing';
+          });
+        }
+        T.steps(10, () => {
+          if (G.state.mode === 'playing' && T.shown('banner')) banners.push(T.text('banner'));
+          return G.state.mode === 'playing';
+        });
+        await T.redraw();
+        return { mode: G.state.mode, captured, text: T.text('won-text'), victory: [...new Set(banners)].filter((b) => /Victory/.test(b)) };
+      });
+      const sunk = /sunk|bottom of the sea/i;
+      check(w.mode === 'won' && w.captured === 'The Molten Maw' && !sunk.test(w.text) && /Molten Maw/.test(w.text) && /Far Seas/.test(w.text) && !sunk.test(before) && w.victory.some((b) => /Molten Maw is yours/.test(b)),
+        `Victory after capturing the Molten Maw: "${w.text}" (true whether she was sunk or taken; the page's default words "${before}") (${J(w.victory)})`);
+      await ctx.close();
+    }
+
+    // The level banners at 568x320 on a desktop window: each level's banner keeps clear of the minimap's ring.
+    {
+      const { ctx, page } = await open({ width: 568, height: 320, label: 'banner-568', store: { ...TITLE, 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-tips': '65535' } });
+      const rows = [];
+      for (let n = 1; n <= 6; n++) {
+        rows.push(await page.evaluate(async (n) => {
+          const G = window.__game;
+          G.state.tutorialDone = true;
+          G.newGame(n);
+          G.state.mode = 'paused'; // (frozen at the level's start: its banner stays up)
+          await T.redraw();
+          document.getAnimations().forEach((a) => { try { if (a.effect.getComputedTiming().iterations !== Infinity) a.finish(); } catch { /* */ } });
+          const R = (id) => {
+            const el = document.getElementById(id);
+            if (!el || el.closest('.hidden') || !el.getClientRects().length) return null;
+            const b = el.getBoundingClientRect();
+            return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom) };
+          };
+          const banner = R('banner');
+          const mm = R('minimap');
+          // (the minimap's ring reaches 7 px beyond its box)
+          const clear = !!banner && !!mm && (banner.r <= mm.l - 7 || banner.l >= mm.r + 7 || banner.b <= mm.t - 7 || banner.t >= mm.b + 7);
+          return { n, clear, banner, mm, text: T.text('banner').slice(0, 30) };
+        }, n));
+      }
+      const bad = rows.filter((r) => !r.clear);
+      check(rows.length === 6 && bad.length === 0, `the level banners at 568x320 (desktop) keep clear of the minimap's ring on all 6 levels${bad.length ? ' -> ' + J(bad) : ''}`);
+      await ctx.close();
+    }
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

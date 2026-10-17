@@ -4,8 +4,8 @@
 //   Shift+Tab to the Go ashore button, the town's Shipyard place back to the shop ("Back to town")
 // - walking: WASD and the arrows camera-relative, Shift sprints, 30 s of random keys and taps never leave the
 //   walk, the tavern building blocks
-// - the places: each places-bar button walks there and opens it, a move key cancels the auto-walk, E / Enter /
-//   Space open a place only when no button is focused, P / Esc open the Harbour menu (a labelled modal, Tab
+// - the places: each places-bar button walks there and opens it, a move key cancels the auto-walk, E opens a
+//   place (Enter / Space too, when no button is focused), P / Esc open the Harbour menu (a labelled modal, Tab
 //   trapped, focus returned, Esc closes), All aboard? offers and does what the shipyard's ways out do
 // - touch: the stick, tap-to-walk, the Go in button, 44 px controls, the portrait walk lens
 // - Polly's wardrobe: wearing, try-on and its revert, buying (saved, worn), too poor (aria-disabled, the reason,
@@ -16,10 +16,14 @@
 // - layout at the 7 town sizes (town HUD, wardrobe, tavern, dialogs: no page scroll, nothing overlapping,
 //   44 px, small text 4.5:1), draw calls in the walk view at 6 spots and at Polly's, a lost graphics context,
 //   M mutes; screenshots town.png, tailor.png, tavern.png
+// - the Stage 4 review's fixes (review4, review4-world): E at a door and focus off the HUD buttons, held Enter /
+//   Space (tavern door, gangplank, Back to town), the prompt's focus and name, try-on scrolling, simulate()'s
+//   greeting; the rope bridges, walkers waiting for the captain, the market awnings, the seam planks, and what
+//   tavern buys, Go ashore and Polly's crew clicks rebuild
 // Walking is stepped with __game.town.simulate() (fixed steps, no rendering) inside one evaluate, so the real
 // loop never moves the captain in between; keys go through the game's own handlers. Run with `npm test` or
-// `npm run test:town` (TOWN_ONLY=ashore,walk,places,touch,wardrobe,tavern,records,layout,draws runs some
-// sections; TOWN_ROOT serves another copy of the game).
+// `npm run test:town` (TOWN_ONLY=ashore,walk,places,touch,wardrobe,tavern,records,layout,draws,review4,review4-world
+// runs some sections; TOWN_ROOT serves another copy of the game).
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -437,11 +441,11 @@ function installHelpers() {
       return { before: before && before.place, after, view: G.town.view };
     });
     check(cancel.before === 'tavern' && cancel.after === null && cancel.view === 'town', `a move key cancels the walk to a place (${J(cancel)})`);
-    // E, Enter and Space at a door open the place only when no button is focused.
+    // E at a door always goes in; Enter and Space go in when no button is focused (a focused button takes them).
     const keys = [];
     for (const key of ['e', 'Enter', ' ']) {
-      // a button focused (the Tavern one in the places bar): the key is the button's (Enter and Space press it,
-      // so he sets off for the tavern; E does nothing)
+      // a button focused (the Tavern one in the places bar): E is still the door's (no button handles E), so
+      // he goes in; Enter and Space are the button's (they press it, so he sets off for the tavern)
       await page.evaluate(() => {
         T.town().enter('tailor');
         window.__game.town.simulate(0.2, { x: 0, z: 0 });
@@ -451,6 +455,8 @@ function installHelpers() {
       const withButton = await page.evaluate(() => ({ view: window.__game.town.view, auto: window.__game.town.api.auto && window.__game.town.api.auto.place }));
       // nothing focused but the town HUD region: the door opens
       const prompt = await page.evaluate(() => {
+        // (E went into Polly's above: back out to the town first)
+        if (window.__game.town.view !== 'town') window.__game.town.back();
         T.town().cancelAuto();
         T.town().enter('tailor');
         window.__game.town.simulate(0.2, { x: 0, z: 0 });
@@ -465,8 +471,8 @@ function installHelpers() {
       });
       keys.push({ key: key === ' ' ? 'Space' : key, withButton, prompt, free });
     }
-    check(keys.every((k) => k.free === 'tailor' && k.withButton.view === 'town' && /Polly/.test(k.prompt || '')) && keys[0].withButton.auto === null && keys[1].withButton.auto === 'tavern' && keys[2].withButton.auto === 'tavern',
-      `at Polly's door E, Enter and Space go in, but not while a button has focus (Enter and Space press that button instead) (${J(keys)})`);
+    check(keys.every((k) => k.free === 'tailor' && /Polly/.test(k.prompt || '')) && keys[0].withButton.view === 'tailor' && keys[0].withButton.auto === null && keys.slice(1).every((k) => k.withButton.view === 'town' && k.withButton.auto === 'tavern'),
+      `at Polly's door E, Enter and Space go in; E even with a places-bar button focused, while Enter and Space press the focused button instead (${J(keys)})`);
     // P / Esc: the Harbour menu, a labelled modal dialog; Tab stays inside; Esc (or P) closes it and focus returns.
     const harbour = [];
     for (const [key, code, close] of [['p', 'KeyP', 'p'], ['Escape', 'Escape', 'Escape']]) {
@@ -490,13 +496,20 @@ function installHelpers() {
       check(h.open && h.role === 'dialog' && h.modal === 'true' && !!h.label && h.inDialog && h.townInert && h.trapped && h.buttons.length >= 5 && /harbour-walk-btn/.test(h.buttons.join()) && !h.after.open && !h.after.townInert && h.after.focus === 'town-screen' && h.after.view === 'town',
         `${h.key === 'p' ? 'P' : 'Esc'} opens the Harbour menu ("${h.label}": a modal dialog, focus inside, the town inert, Tab trapped) and ${h.key === 'p' ? 'P' : 'Esc'} closes it, focus back on the town (${J(h)})`);
     }
-    // The ☰ button opens it too; Keep walking closes it and focus returns to ☰.
+    // The ☰ button opens it too; Keep walking closes it. Clicked with the mouse, ☰ keeps no focus, so focus goes
+    // back to the town region (Enter at the next door goes in); opened from the keyboard, focus returns to ☰.
     await page.click('#town-menu-btn');
     const viaBtn = await page.evaluate(() => ({ open: T.shown('harbour-dialog'), places: ['harbour-shipyard-btn', 'harbour-tailor-btn', 'harbour-tavern-btn'].every((id) => T.shown(id)), exits: [...document.querySelectorAll('#harbour-exits button')].map((b) => b.textContent.trim()) }));
     await page.click('#harbour-walk-btn');
     const viaBtn2 = await page.evaluate(() => ({ open: T.shown('harbour-dialog'), focus: T.focus() }));
-    check(viaBtn.open && viaBtn.places && viaBtn.exits.join() === 'Back to the title' && !viaBtn2.open && viaBtn2.focus === 'town-menu-btn',
-      `the ☰ button opens the Harbour menu (Keep walking, Shipyard, Tailor, Tavern, the ways out); Keep walking closes it, focus back on ☰ (${J({ viaBtn, viaBtn2 })})`);
+    await page.focus('#town-menu-btn');
+    await page.keyboard.press('Enter');
+    const viaKey = await page.evaluate(() => ({ open: T.shown('harbour-dialog'), inDialog: document.getElementById('harbour-dialog').contains(document.activeElement) }));
+    await page.keyboard.press('Escape');
+    const viaKey2 = await page.evaluate(() => ({ open: T.shown('harbour-dialog'), focus: T.focus() }));
+    check(viaBtn.open && viaBtn.places && viaBtn.exits.join() === 'Back to the title' && !viaBtn2.open && viaBtn2.focus === 'town-screen' && viaKey.open && viaKey.inDialog && !viaKey2.open && viaKey2.focus === 'town-menu-btn',
+      `the ☰ button opens the Harbour menu (Keep walking, Shipyard, Tailor, Tavern, the ways out); closed again, focus goes to the town after a mouse click on ☰, back to ☰ after Enter on it (${J({ viaBtn, viaBtn2, viaKey, viaKey2 })})`);
+    await page.evaluate(() => document.getElementById('town-screen').focus());
     // All aboard? offers the shipyard's ways out for every way the dock was opened, and does what they do.
     const exits = await page.evaluate(() => {
       const G = window.__game;
@@ -609,6 +622,10 @@ function installHelpers() {
   // ------------------------------------------------------------------------------------------- wardrobe
   await section('wardrobe', async () => {
     const { ctx, page: wp } = await open({ label: 'wardrobe', store: { ...RETURNING, 'pirates-ahoy-purse': '1000' } });
+    // Polly's ignores an item click less than BUY_GUARD (400 ms) after a purchase (the second click of a double-click
+    // on Buy). Called after a purchase, before the next item click: 450 ms of wall clock (page time runs with it),
+    // so the check doesn't depend on how slow the frames in between happen to be.
+    const pastBuyGuard = () => wp.waitForTimeout(450);
     // the cleaning crew with the default uniform, before anything is worn
     const crew0 = await wp.evaluate(() => {
       const G = window.__game;
@@ -668,6 +685,9 @@ function installHelpers() {
     // Too poor: the Buy button is aria-disabled with the reason; pressing it buys nothing and keeps focus.
     await wp.evaluate(() => { window.__game.state.purse = 50; });
     await frames(wp, 2);
+    // (an item click within 400 ms of a purchase is the tail of a double-click and is ignored, src/townMode.js
+    // BUY_GUARD: wait it out, however fast the frames above were)
+    await pastBuyGuard();
     await wp.click('#wardrobe-captain [data-item="hat.bicorne"]');
     await frames(wp, 2);
     await wp.focus('[data-buy-item="hat.bicorne"]');
@@ -695,6 +715,7 @@ function installHelpers() {
     });
     await wp.evaluate(() => { window.__game.setFeats({ captures: 0, boardings: 0, rakes: 0, crits: 0, legend: 1, prizes: {} }); });
     await frames(wp, 2);
+    await pastBuyGuard(); // (the black coat was just bought)
     await wp.click('#wardrobe-captain [data-item="hat.crown"]');
     const crown1 = await wp.evaluate(() => ({ disabled: document.querySelector('[data-item="hat.crown"]').getAttribute('aria-disabled'), hat: window.__game.look.cap.hat, captain: window.__game.town.captain.userData.look.hat, purse: window.__game.state.purse }));
     check(crown0.disabled === 'true' && crown0.tabbable && /Locked/i.test(crown0.state) && crown0.hat === 'plume' && crown1.disabled === 'false' && crown1.hat === 'crown' && crown1.captain === 'crown' && crown1.purse === 440,
@@ -723,29 +744,38 @@ function installHelpers() {
     });
     check(surprise.every((s) => s.notFree.length === 0 && s.otherSame && s.ownSame && s.purse) && surprise.filter((s) => s.tab === 'captain').some((s) => s.changed > 0) && surprise.filter((s) => s.tab === 'crew').some((s) => s.changed > 0),
       `wardrobe: Surprise me! changes only free options, and only of the open tab (${J(surprise)})`);
-    // The crew: a uniform shows on the line-up and on the cleaning crew; Match the ship's paint follows the hull;
-    // the default uniform leaves the cleaning crew exactly as before.
+    // The crew: a uniform shows on the line-up at once, and on the cleaning crew once Polly's closes (they are
+    // dressed then, not rebuilt on every click there: PERF-3); Match the ship's paint follows the hull; the default
+    // uniform leaves the cleaning crew exactly as before.
     const uniform = await wp.evaluate(async () => {
       const G = window.__game;
       const Cm = await import('/src/cosmetics.js');
+      const reopen = () => { G.town.open('tailor'); G.town.api.wardrobe.tab('crew'); };
       G.town.api.wardrobe.tab('crew');
       const out = {};
       const red = Cm.crewOpts({ ...G.look, crew: { ...G.look.crew, shirt: 'red' } }, 1, {}, null).shirt;
       document.querySelector('[data-item="shirt.red"]').click();
-      out.red = { shirt: G.look.crew.shirt, hex: red, crew: T.crew().map((p) => p.userData.look.shirt === red && T.colours(p, red).has), lineup: G.town.api.lineup.map((p) => p.userData.look.shirt === red) };
+      const lineupRed = G.town.api.lineup.map((p) => p.userData.look.shirt === red);
+      G.town.back();
+      out.red = { shirt: G.look.crew.shirt, hex: red, crew: T.crew().map((p) => p.userData.look.shirt === red && T.colours(p, red).has), lineup: lineupRed };
+      reopen();
       // (a new hull paint first: the uniform follows it)
       G.dock.paint('hull', 'royal');
       document.querySelector('[data-item="shirt.paint"]').click();
       const { LOOKS } = await import('/src/upgrades.js');
       const royal = LOOKS.hull.find((l) => l.id === 'royal');
-      out.paint = { shirt: G.look.crew.shirt, top: royal.top, crew: T.crew().map((p) => p.userData.look.shirt), lineup: G.town.api.lineup.map((p) => p.userData.look.shirt), colours: T.crew().every((p) => T.colours(p, royal.top).has) };
+      const lineupPaint = G.town.api.lineup.map((p) => p.userData.look.shirt);
+      G.town.back();
+      out.paint = { shirt: G.look.crew.shirt, top: royal.top, crew: T.crew().map((p) => p.userData.look.shirt), lineup: lineupPaint, colours: T.crew().every((p) => T.colours(p, royal.top).has) };
+      reopen();
       // the default uniform (Surprise me! above may have changed the headgear and sashes too)
       for (const id of ['shirt.own', 'head.mixed', 'sash.own']) document.querySelector(`[data-item="${id}"]`).click();
+      G.town.back();
       out.own = { shirt: G.look.crew.shirt, crew: T.crew().map((p) => ({ look: JSON.stringify(p.userData.look), hash: T.colours(p).hash })) };
       return out;
     });
     check(uniform.red.shirt === 'red' && uniform.red.crew.length === 6 && uniform.red.crew.every(Boolean) && uniform.red.lineup.length === 3 && uniform.red.lineup.every(Boolean),
-      `wardrobe: red stripes for the crew dress the 3-sailor line-up and all 6 sailors cleaning the docked ship (their vertex colours hold the shirt colour) (${J(uniform.red)})`);
+      `wardrobe: red stripes for the crew dress the 3-sailor line-up, and all 6 sailors cleaning the docked ship once Polly's closes (their vertex colours hold the shirt colour) (${J(uniform.red)})`);
     check(uniform.paint.shirt === 'paint' && uniform.paint.crew.length === 6 && [...uniform.paint.crew, ...uniform.paint.lineup].every((x) => x === uniform.paint.top) && uniform.paint.colours,
       `wardrobe: Match the ship's paint dresses the crew in the hull paint's colour (royal blue & gold: ${uniform.paint.top.toString(16)}) (${J(uniform.paint)})`);
     const crewDiff = uniform.own.crew.map((c, i) => (c.look === crew0[i].look && c.hash === crew0[i].hash ? null : { i, look: c.look === crew0[i].look, colours: c.hash === crew0[i].hash })).filter(Boolean);
@@ -1214,6 +1244,471 @@ function installHelpers() {
       check(out.every((o) => o.lost.shown && /town/i.test(o.lost.msg) && !o.back.recover && !o.back.harbour && o.back.mode === 'dock' && o.back.focus === wantFocus[o.where] && o.back.view === (o.where === 'tailor' ? 'tailor' : 'town')),
         `a lost graphics context in town says the town will be back; restored, focus returns to the town HUD (the Harbour menu closed) or to Polly's tab (${J(out)})`);
     }
+    await ctx.close();
+  });
+
+  // -------------------------------------------------------------------------------------------- review4
+  // The Stage 4 review's town fixes, met the way a player meets them (each of these checks failed on ebad6f2):
+  // TOWN-1 E at a door and focus off the HUD buttons, TOWN-2 a held Space at the tavern door, TOWN-4 a held Enter
+  // or Space at the gangplank, A11Y-2 a held Enter on "Back to town", A11Y-3 a try-on keeps the focused item in
+  // view, A11Y-4 the prompt hiding under focus, A11Y-6 the prompt's accessible name, and simulate()'s greeting
+  // words (a Stage 3 leftover). Held keys are Playwright's: a second keydown of a held key is a repeat.
+  await section('review4', async () => {
+    const { ctx, page: kp } = await open({ label: 'review4' });
+    const cdp = await ctx.newCDPSession(kp);
+    // the accessible name Chromium computes for an element (CDP accessibility tree)
+    const axName = async (session, sel) => {
+      const { root } = await session.send('DOM.getDocument', { depth: 0 });
+      const { nodeId } = await session.send('DOM.querySelector', { nodeId: root.nodeId, selector: sel });
+      if (!nodeId) return null;
+      const { nodes } = await session.send('Accessibility.getPartialAXTree', { nodeId, fetchRelatives: false });
+      return nodes[0] && nodes[0].name ? nodes[0].name.value : null;
+    };
+    // a fresh visit to the town (from the title), the captain out of a place's door, focus on the town region
+    const atDoor = (id, from = 'menu') => kp.evaluate(([id, from]) => {
+      const G = window.__game;
+      G.showMenu();
+      G.state.level = 1;
+      G.dock.open(from);
+      G.dock.ashore();
+      T.town().enter(id);
+      G.town.simulate(0.2, { x: 0, z: 0 });
+      document.getElementById('town-screen').focus();
+      return { prompt: G.town.api.prompt, purse: G.state.purse, armory: localStorage.getItem('pirates-ahoy-armory'), muted: G.audio.muted };
+    }, [id, from]);
+    const now = () => kp.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level, view: window.__game.town.view, focus: T.focus(), auto: window.__game.town.api.auto && window.__game.town.api.auto.place, purse: window.__game.state.purse, armory: localStorage.getItem('pirates-ahoy-armory'), muted: window.__game.audio.muted, harbour: T.shown('harbour-dialog'), aboard: T.shown('aboard-dialog') }));
+
+    // TOWN-1: E goes in whatever has focus; a walking key takes focus off a town HUD button; a mouse click on 🔊 or ☰
+    // leaves no focus there, so Enter at the next door goes in (not a second press of that button).
+    await atDoor('spawn');
+    const walkOff = await kp.evaluate(() => {
+      const G = window.__game;
+      const out = [];
+      for (const id of ['place:tavern', 'town-menu-btn', 'town-mute']) {
+        T.at(0.5, -9, Math.PI);
+        (id.startsWith('place:') ? document.querySelector(`#town-places [data-place="${id.slice(6)}"]`) : document.getElementById(id)).focus();
+        const before = T.focus();
+        T.down('w', 'KeyW');
+        G.town.simulate(0.2, null);
+        T.up('w', 'KeyW');
+        G.town.simulate(0.1, { x: 0, z: 0 });
+        out.push({ before, after: T.focus() });
+      }
+      return out;
+    });
+    await atDoor('tavern');
+    await kp.evaluate(() => document.querySelector('#town-places [data-place="tailor"]').focus());
+    await kp.keyboard.press('e');
+    const eKey = await now();
+    const m0 = await atDoor('tavern');
+    await kp.click('#town-mute');
+    const m1 = await now();
+    await kp.keyboard.press('Enter');
+    const m2 = await now();
+    await kp.evaluate(() => { if (window.__game.audio.muted) document.getElementById('town-mute').click(); });
+    const h0 = await atDoor('tavern');
+    await kp.click('#town-menu-btn');
+    await kp.click('#harbour-walk-btn');
+    const h1 = await now();
+    await kp.keyboard.press('Enter');
+    const h2 = await now();
+    check(walkOff.every((w) => w.before !== 'town-screen' && w.after === 'town-screen') && eKey.view === 'tavern' &&
+      !m0.muted && m1.muted && m1.focus !== 'town-mute' && m2.view === 'tavern' && m2.muted === true &&
+      !h1.harbour && h1.focus === 'town-screen' && h2.view === 'tavern' && !h2.harbour && h2.purse === h0.purse,
+      `TOWN-1: a walking key moves focus off the places bar, ☰ and 🔊 to the town; E goes in with a places-bar button focused; after a mouse click on 🔊, or on ☰ then Keep walking, Enter at the tavern door goes in (not unmuting, not the Harbour menu again) (${J({ walkOff, eKey: eKey.view, m1: { focus: m1.focus, muted: m1.muted }, m2: { view: m2.view, muted: m2.muted }, h1: { open: h1.harbour, focus: h1.focus }, h2: { view: h2.view, harbour: h2.harbour, purse: h2.purse } })})`);
+
+    // TOWN-2: Space (or Enter) held at the tavern door opens the tavern once and buys nothing: its auto-repeat lands
+    // on the first Buy button and is ignored.
+    const held = [];
+    for (const key of [' ', 'Enter']) {
+      const d = await atDoor('tavern');
+      await kp.keyboard.down(key);
+      for (let i = 0; i < 3; i++) await kp.keyboard.down(key);
+      await kp.keyboard.up(key);
+      await frames(kp, 2);
+      const a = await now();
+      held.push({ key: key === ' ' ? 'Space' : key, prompt: d.prompt, view: a.view, focus: a.focus, purse: [d.purse, a.purse], armory: a.armory });
+    }
+    check(held.every((h) => /Salty Sparrow/.test(h.prompt || '') && h.view === 'tavern' && h.focus === 'armory:boarders' && h.purse[0] === h.purse[1] && h.armory === null),
+      `TOWN-2: Space or Enter held at the tavern door opens the tavern and buys nothing (the purse and the armory unchanged) (${J(held)})`);
+
+    // TOWN-4: Enter or Space held at the gangplank opens All aboard? and stays there (the repeat doesn't press its
+    // first way out: after a cleared level that would set sail for level 2).
+    const aboard = [];
+    for (const key of ['Enter', ' ']) {
+      const d = await atDoor('spawn', 'levelDone');
+      await kp.keyboard.down(key);
+      for (let i = 0; i < 3; i++) await kp.keyboard.down(key);
+      await kp.keyboard.up(key);
+      await frames(kp, 4); // (the dock's ways out act two frames after their press)
+      const a = await now();
+      aboard.push({ key: key === ' ' ? 'Space' : key, prompt: d.prompt, mode: a.mode, level: a.level, aboard: a.aboard, focus: a.focus });
+      await kp.evaluate(() => { if (T.shown('aboard-dialog')) document.getElementById('aboard-stay-btn').click(); });
+    }
+    check(aboard.every((a) => /Sea Biscuit/.test(a.prompt || '') && a.mode === 'dock' && a.aboard && /^aboard-/.test(a.focus || '')),
+      `TOWN-4: Enter or Space held at the gangplank (after a cleared level) opens All aboard? and waits there, nothing set off (${J(aboard)})`);
+
+    // A11Y-2: Enter held on "Back to town" in Polly's or the tavern: back in town once, focus on that place's button,
+    // and the repeat doesn't press it (he'd walk straight back in).
+    const backs = [];
+    for (const place of ['tailor', 'tavern']) {
+      await atDoor('spawn');
+      await kp.evaluate((place) => window.__game.town.open(place), place);
+      await frames(kp, 2);
+      await kp.evaluate((place) => document.getElementById(place === 'tailor' ? 'wardrobe-back-btn' : 'tavern-back-btn').focus(), place);
+      await kp.keyboard.down('Enter');
+      await kp.keyboard.down('Enter');
+      await kp.keyboard.up('Enter');
+      const r = await kp.evaluate(() => {
+        const G = window.__game;
+        if (G.town.view === 'town') G.town.simulate(0.5, null); // (a walk the repeat may have started)
+        return { view: G.town.view, focus: T.focus(), auto: G.town.api.auto && G.town.api.auto.place };
+      });
+      backs.push({ place, ...r });
+    }
+    check(backs.every((b) => b.view === 'town' && b.focus === `place:${b.place}` && !b.auto),
+      `A11Y-2: Enter held on "Back to town" in Polly's and the tavern goes back to town once, focus on the place's button (${J(backs)})`);
+
+    // A11Y-4: the prompt has focus and he walks away from the door: focus goes to the town region, not the page.
+    await atDoor('tavern');
+    const a4 = await kp.evaluate(() => {
+      const G = window.__game;
+      const prompt = G.town.api.prompt;
+      document.getElementById('town-prompt').focus();
+      const on = T.focus();
+      T.at(0.5, -9, Math.PI); // (moved off without a key: the prompt hides while it has focus)
+      return { prompt, on, gone: G.town.api.prompt, after: T.focus() };
+    });
+    check(!!a4.prompt && a4.on === 'town-prompt' && a4.gone === null && a4.after === 'town-screen', `A11Y-4: the prompt hiding under focus hands focus to the town region (${J(a4)})`);
+
+    // A11Y-6: the prompt's accessible name reads as words ("The Sea Biscuit: press Enter to go aboard"), on touch too.
+    const names = {};
+    await atDoor('spawn');
+    names.ship = await axName(cdp, '#town-prompt');
+    await atDoor('tavern');
+    names.tavern = await axName(cdp, '#town-prompt');
+    const touch = await open({ width: 390, height: 844, touch: true, label: 'review4-touch' });
+    const tcdp = await touch.ctx.newCDPSession(touch.page);
+    await touch.page.evaluate(() => { const G = window.__game; G.dock.open('menu'); G.dock.ashore(); G.town.simulate(0.2, { x: 0, z: 0 }); });
+    names.touchShip = await axName(tcdp, '#town-prompt');
+    check(names.ship === 'The Sea Biscuit: press Enter to go aboard' && names.tavern === 'The Salty Sparrow: press Enter to go in' && names.touchShip === 'The Sea Biscuit: All aboard',
+      `A11Y-6: the town prompt's accessible name is a phrase, not its parts run together (${J(names)})`);
+
+    // A11Y-3: on a phone, a keyboard try-on of a priced item at the foot of Polly's list keeps that item in view
+    // (the Buy row that appears above the group's items no longer pushes it under the panel's edge).
+    const tp = touch.page;
+    await tp.evaluate(() => window.__game.town.open('tailor'));
+    await frames(tp, 2);
+    const vis = () => tp.evaluate(() => {
+      T.finish();
+      const body = document.querySelector('#wardrobe-panel .dock-body');
+      const item = document.querySelector('#wardrobe-captain [data-item="pet.parrot"]');
+      const r = item.getBoundingClientRect();
+      const b = body.getBoundingClientRect();
+      return { shown: Math.round(Math.max(0, Math.min(r.bottom, b.bottom) - Math.max(r.top, b.top))), of: Math.round(r.height), focus: T.focus(), trial: window.__game.town.api.trial };
+    });
+    await tp.evaluate(() => {
+      T.finish();
+      const item = document.querySelector('#wardrobe-captain [data-item="pet.parrot"]');
+      item.focus({ preventScroll: true });
+      item.scrollIntoView({ block: 'end' }); // (where Tab leaves an item it reaches going down: at the list's foot)
+    });
+    const before = await vis();
+    await tp.keyboard.press('Enter');
+    await frames(tp, 2);
+    const after = await vis();
+    check(before.shown === before.of && before.focus === 'item:pet.parrot' && after.trial === 'pet.parrot' && after.focus === 'item:pet.parrot' && after.shown >= after.of - 1,
+      `A11Y-3: at 390x844 touch, Enter on the Red parrot at the foot of Polly's list tries it on and the focused item stays in view (${after.shown} of ${after.of} px; ${J({ before, after })})`);
+    await touch.ctx.close();
+
+    // Stage 3 leftover: simulate() next to a greeter: it says so (greet) and the bubble has the greeting's words.
+    await atDoor('spawn');
+    const greet = await kp.evaluate(() => {
+      const G = window.__game;
+      const t = T.town();
+      const tries = [];
+      for (const f of G.env.folk().filter((q) => q.greets)) {
+        const s = t.walk.snap(f.x + 1.2, f.z, 1.5);
+        if (!s) continue;
+        t.enter({ x: s.x, z: s.z, h: 0 });
+        const r = G.town.simulate(1, { x: 0, z: 0 });
+        const b = document.querySelector('#town-screen .town-bubble');
+        tries.push({ folk: f.index, greet: r && r.greet, text: b ? b.textContent.trim() : null });
+        if ((r && r.greet) || tries.length >= 12) break;
+      }
+      return tries;
+    });
+    const g = greet[greet.length - 1] || {};
+    check(g.greet === true && !!g.text, `simulate() beside a townsperson who greets: the result says greet, and the bubble has the words ("${g.text}"; ${J(greet)})`);
+    await ctx.close();
+  });
+
+  // -------------------------------------------------------------------------------------- review4-world
+  // The Stage 4 review's fixes to the island and its costs (each of these checks failed on ebad6f2): TOWN-3 W held
+  // across every rope bridge, a few degrees off its line, and a places-bar walk from a bridge mouth; LOOK-2 walkers
+  // wait for the captain; LOOK-4 the market awnings out of the walk camera's face; LOOK-5 planks over the plaza /
+  // tavern seam; PERF-1 tavern buys rebuild the docked ship only for grapples; PERF-2 the prize ships built when the
+  // dock opens; PERF-3 Polly's crew clicks don't rebuild the cleaning crew. Stepped in-page (G.town.simulate and,
+  // for the townsfolk, env.update by hand), so the real loop never moves anything in between.
+  await section('review4-world', async () => {
+    const feats = '{"captures":2,"boardings":0,"rakes":0,"crits":0,"legend":0,"prizes":{"galleon":1,"manowar":1}}';
+    const { ctx, page: wp } = await open({ label: 'review4-world', store: { ...RETURNING, 'pirates-ahoy-purse': '5000', 'pirates-ahoy-feats': feats } });
+
+    // PERF-2: the moored prize ships are built when the dock opens (hidden in the shipyard view), and Go ashore
+    // shows the same ships rather than building them then.
+    const prizes = await wp.evaluate(() => {
+      const G = window.__game;
+      const ships = () => {
+        const out = [];
+        G.env.group.traverse((o) => { if (o.userData && Array.isArray(o.userData.sails) && (o.userData.type === 'galleon' || o.userData.type === 'manowar') && o !== G.dock.ship) out.push(o); });
+        return out;
+      };
+      G.dock.open('menu');
+      const before = ships();
+      const shown = before.map((o) => o.visible);
+      G.dock.ashore();
+      G.town.simulate(0.2, { x: 0, z: 0 });
+      const after = ships();
+      return { before: before.map((o) => o.userData.type).sort(), shownInShipyard: shown, after: after.map((o) => o.userData.type).sort(), same: after.length === before.length && after.every((o) => before.includes(o)) };
+    });
+    check(prizes.before.join() === 'galleon,manowar' && prizes.shownInShipyard.every((v) => v === false) && prizes.same,
+      `PERF-2: the two prize ships are built (hidden) when the dock opens, and Go ashore moors those same ships (${J(prizes)})`);
+
+    // TOWN-3: W held from each land end of each rope bridge (on it, or half a unit before it), the camera squared
+    // behind him, heading on the bridge's line or 5° off: he gets across every time (the townsfolk set aside).
+    const bridges = await wp.evaluate(() => {
+      const G = window.__game;
+      const t = T.town();
+      const env = G.env;
+      const folk = env.folk;
+      env.folk = () => [];
+      const stops = [];
+      let runs = 0;
+      let slowest = 0;
+      try {
+        for (const link of env.walk.links) {
+          for (const dir of [1, -1]) {
+            const pts = dir === 1 ? link.pts : [...link.pts].reverse();
+            const a = pts[0];
+            const b = pts[pts.length - 1];
+            const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+            const ux = (b[0] - a[0]) / L;
+            const uz = (b[2] - a[2]) / L;
+            for (const back of [0, 0.5]) {
+              for (const off of [0, 5, -5]) {
+                const st = t.walk.snap(a[0] - ux * back, a[2] - uz * back, 0.5) || { x: a[0], z: a[2] };
+                t.enter({ x: st.x, z: st.z, h: Math.atan2(ux, uz) + (off * Math.PI) / 180 });
+                t.recenter();
+                let k = 0;
+                let along = 0;
+                for (; k < 600; k++) {
+                  G.town.simulate(1 / 60, { x: 0, z: 1 });
+                  const c = t.captain;
+                  along = ((c.x - a[0]) * ux + (c.z - a[2]) * uz) / L;
+                  if (along > 1.02 || G.town.view !== 'town') break;
+                }
+                G.town.simulate(0.1, { x: 0, z: 0 });
+                runs++;
+                if (along > 1.02) slowest = Math.max(slowest, k / 60);
+                else stops.push(`${link.id}${dir > 0 ? '>' : '<'} ${back} back ${off}°: stopped at ${Math.round(along * 100)}%`);
+                if (G.town.view !== 'town') G.town.back();
+              }
+            }
+          }
+        }
+        // a places-bar walk to the tavern from the plaza end of the yard bridge (it used to stall at the corner)
+        t.enter({ x: 7.9045, z: -12.4263, h: -0.81 });
+        G.town.goTo('tavern');
+        let i = 0;
+        for (; i < 900 && G.town.view === 'town' && G.town.api.auto; i++) G.town.simulate(1 / 30);
+        var corner = { view: G.town.view, seconds: +(i / 30).toFixed(1), at: [+G.town.pos.x.toFixed(2), +G.town.pos.z.toFixed(2)] };
+        if (G.town.view !== 'town') G.town.back();
+      } finally {
+        env.folk = folk;
+      }
+      return { links: env.walk.links.length, runs, stops, slowest: +slowest.toFixed(2), corner };
+    });
+    check(bridges.links >= 4 && bridges.runs === bridges.links * 12 && bridges.stops.length === 0 && bridges.corner.view === 'tavern',
+      `TOWN-3: W held across every rope bridge from both ends, on the line or 5° off, gets across (${bridges.runs} runs, ${bridges.stops.length} stopped, slowest crossing ${bridges.slowest} s); the places-bar walk from the yard bridge's plaza end reaches the tavern (${J({ stops: bridges.stops.slice(0, 8), corner: bridges.corner })})`);
+
+    // LOOK-2: the captain stands on a walker's round (the porter's, the bandana stroller's): over a minute, nobody
+    // walks through him. (The town and the townsfolk stepped together by hand, 1/30 s at a time.)
+    const walkers = await wp.evaluate(async () => {
+      const G = window.__game;
+      const env = G.env;
+      // the visual clock the real loop gives env.update: one frame's, then on from there by hand
+      let t = null;
+      const upd = env.update;
+      env.update = function (tt, ...rest) {
+        t = tt;
+        return upd.call(this, tt, ...rest);
+      };
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      env.update = upd;
+      if (!Number.isFinite(t)) t = 100;
+      const step = (dt) => {
+        G.town.simulate(dt, { x: 0, z: 0 });
+        t += dt;
+        env.update(t, dt, { simTime: G.state.time, camera: G.camera });
+      };
+      const out = [];
+      for (const [name, x, z] of [['porter', 1.45, -6.6], ['stroller', -6.6, -5.9]]) {
+        const p0 = T.at(x, z, Math.PI);
+        for (let i = 0; i < 30; i++) step(1 / 30);
+        let min = { d: 9 };
+        for (let i = 0; i < 60 * 30; i++) {
+          step(1 / 30);
+          const c = T.pos();
+          for (const q of env.folk()) {
+            const d = Math.hypot(q.x - c.x, q.z - c.z);
+            if (d < min.d) min = { d: +d.toFixed(2), folk: q.index, t: +(i / 30).toFixed(1) };
+          }
+        }
+        const p1 = T.pos();
+        out.push({ name, at: [+p0.x.toFixed(2), +p0.z.toFixed(2)], moved: +Math.hypot(p1.x - p0.x, p1.z - p0.z).toFixed(2), closest: min });
+      }
+      return out;
+    });
+    check(walkers.every((w) => w.moved < 0.2 && w.closest.d > 0.5),
+      `LOOK-2: standing on a townsperson's round for a minute, nobody walks through the captain (closest ${walkers.map((w) => `${w.name} ${w.closest.d} u`).join(', ')}; bodies touch at 0.65) (${J(walkers)})`);
+
+    // LOOK-4: the places-bar walks to the tavern (from the spawn, Polly's and the shipyard) at 1280x720: the fruit
+    // stall's awning by the tavern door (it filled the lower right quarter as he reached the door) stays under 18% of
+    // the view and over 15% for at most 0.2 s; no market awning ever fills a fifth of it. (The townsfolk set aside, as
+    // above: the walk, and so the camera, is then the same every run.)
+    const awnings = await wp.evaluate(async () => {
+      const THREE = await import('three');
+      const G = window.__game;
+      const t = T.town();
+      // an awning's top: 2.7 wide, 1.6 deep, tilted 0.28 rad, its centre 2.42 above the deck (1.3) and 0.25 in
+      // front of the stall (src/env/sparrow.js STALLS, at z -12.4)
+      const quad = (sx) => {
+        const y = 1.3 + 2.42;
+        const c = Math.cos(0.28) * 0.8;
+        const s = Math.sin(0.28) * 0.8;
+        const z = -12.4 + 0.25;
+        return [[sx - 1.35, y + s, z - c], [sx + 1.35, y + s, z - c], [sx + 1.35, y - s, z + c], [sx - 1.35, y - s, z + c]].map((p) => new THREE.Vector3(...p));
+      };
+      // the share of the screen a projected quad covers (clipped to the view)
+      const share = (poly) => {
+        for (const [inside, tOf] of [[(p) => p.x >= -1, (a, b) => (-1 - a.x) / (b.x - a.x)], [(p) => p.x <= 1, (a, b) => (1 - a.x) / (b.x - a.x)], [(p) => p.y >= -1, (a, b) => (-1 - a.y) / (b.y - a.y)], [(p) => p.y <= 1, (a, b) => (1 - a.y) / (b.y - a.y)]]) {
+          const res = [];
+          for (let i = 0; i < poly.length; i++) {
+            const a = poly[i];
+            const b = poly[(i + 1) % poly.length];
+            if (inside(a)) res.push(a);
+            if (inside(a) !== inside(b)) {
+              const k = tOf(a, b);
+              res.push({ x: a.x + (b.x - a.x) * k, y: a.y + (b.y - a.y) * k });
+            }
+          }
+          poly = res;
+          if (!poly.length) return 0;
+        }
+        let A = 0;
+        for (let i = 0; i < poly.length; i++) A += poly[i].x * poly[(i + 1) % poly.length].y - poly[(i + 1) % poly.length].x * poly[i].y;
+        return Math.abs(A) / 8;
+      };
+      const out = [];
+      const folk = G.env.folk;
+      G.env.folk = () => [];
+      try {
+        for (const from of ['spawn', 'tailor', 'shipyard']) {
+          if (G.town.view !== 'town') G.town.back();
+          t.enter(from);
+          t.recenter();
+          G.town.simulate(0.6, { x: 0, z: 0 });
+          G.town.goTo('tavern');
+          let worst = 0;
+          let fruit = 0;
+          let fruitOver = 0;
+          let i = 0;
+          for (; i < 900 && G.town.view === 'town'; i++) {
+            G.town.simulate(1 / 30);
+            const cam = G.camera;
+            cam.updateMatrixWorld();
+            for (const sx of [-3.2, 0.6, 4.4]) {
+              const q = quad(sx);
+              if (q.some((v) => v.clone().applyMatrix4(cam.matrixWorldInverse).z > -0.05)) continue; // (behind the lens)
+              const f = share(q.map((v) => v.clone().project(cam)).map((p) => ({ x: p.x, y: p.y })));
+              worst = Math.max(worst, f);
+              if (sx === -3.2) {
+                fruit = Math.max(fruit, f);
+                if (f > 0.15) fruitOver += 1 / 30;
+              }
+            }
+          }
+          out.push({ from, view: G.town.view, seconds: +(i / 30).toFixed(1), fruit: +fruit.toFixed(3), fruitOver15: +fruitOver.toFixed(2), anyAwning: +worst.toFixed(3) });
+          if (G.town.view !== 'town') G.town.back();
+        }
+      } finally {
+        G.env.folk = folk;
+      }
+      return out;
+    });
+    check(awnings.every((a) => a.view === 'tavern' && a.fruit < 0.18 && a.fruitOver15 <= 0.2 && a.anyAwning < 0.2),
+      `LOOK-4: on the places-bar walks to the tavern the fruit stall's awning stays out of the walk camera's face (at most ${awnings.map((a) => `${a.from} ${Math.round(a.fruit * 100)}%`).join(', ')} of the view; any awning at most ${Math.round(Math.max(...awnings.map((a) => a.anyAwning)) * 100)}%) (${J(awnings)})`);
+
+    // LOOK-5: the 0.3 u seam between the plaza and the tavern raft, under the walkway, is boarded over.
+    const seam = await wp.evaluate(async () => {
+      const THREE = await import('three');
+      const G = window.__game;
+      T.at(0.5, -9, Math.PI); // (the captain out of the way)
+      G.scene.updateMatrixWorld(true);
+      const ray = new THREE.Raycaster();
+      const out = [];
+      for (const x of [-8, -6, -4, -3, -2, -1.2]) {
+        ray.set(new THREE.Vector3(x, 3, -14.95), new THREE.Vector3(0, -1, 0));
+        ray.far = 2.2;
+        const hit = ray.intersectObjects(G.scene.children, true).find((q) => q.object.isMesh && q.object.visible);
+        out.push({ x, y: hit ? +hit.point.y.toFixed(3) : null });
+      }
+      return out;
+    });
+    check(seam.every((s) => s.y !== null && Math.abs(s.y - 1.31) < 0.05), `LOOK-5: planks under the plaza-tavern walkway: a ray down the seam at z -14.95 meets a deck at about 1.31 everywhere (${J(seam)})`);
+
+    // PERF-3: at Polly's, crew items restyle the line-up only; the six cleaning sailors on the docked ship are dressed
+    // once, when the wardrobe closes, in the last pick.
+    const crew = await wp.evaluate(() => {
+      const G = window.__game;
+      if (G.town.view !== 'town') G.town.back();
+      const env = G.env;
+      const f = env.setCrewStyle;
+      let calls = 0;
+      env.setCrewStyle = function (...a) {
+        calls++;
+        return f.apply(this, a);
+      };
+      try {
+        G.town.open('tailor');
+        G.town.api.wardrobe.tab('crew');
+        for (const id of ['shirt.red', 'sash.gold', 'head.caps', 'shirt.blue']) document.querySelector(`#wardrobe-crew [data-item="${id}"]`).click();
+        const during = { calls, lineup: G.town.api.lineup.map((p) => p.userData.look.shirt), want: G.look.crew.shirt };
+        G.town.back();
+        return { during, closed: calls, crew: T.crew().map((p) => p.userData.look.shirt), lineupWant: during.lineup[0] };
+      } finally {
+        env.setCrewStyle = f;
+      }
+    });
+    check(crew.during.calls === 0 && crew.during.want === 'blue' && crew.closed === 1 && crew.crew.length === 6 && crew.crew.every((s) => s === crew.lineupWant),
+      `PERF-3: four crew clicks at Polly's dress the line-up but don't rebuild the cleaning crew (${crew.during.calls} rebuilds); closing the wardrobe dresses them once, in the last pick (${J(crew)})`);
+
+    // PERF-1: at the tavern, Boarding party, Cutlass drills and Master gunner leave the docked ship as it is (no
+    // rebuild: a third of a second's freeze each); Long grapples rebuild it, for their coils on the rail.
+    const tavern = await wp.evaluate(() => {
+      const G = window.__game;
+      if (G.town.view !== 'town') G.town.back();
+      G.town.open('tavern');
+      const ship0 = G.dock.ship;
+      const out = [];
+      for (const id of ['boarders', 'cutlass', 'gunner', 'grapple']) {
+        const ok = G.armory.buy(id);
+        out.push({ id, ok, same: G.dock.ship === ship0 });
+      }
+      return { buys: out, coils: G.dock.ship.userData.coils };
+    });
+    check(tavern.buys.every((b) => b.ok && b.same === (b.id !== 'grapple')) && tavern.coils > 0,
+      `PERF-1: tavern buys rebuild the docked ship only for Long grapples (their coils: ${tavern.coils}) (${J(tavern.buys)})`);
     await ctx.close();
   });
 

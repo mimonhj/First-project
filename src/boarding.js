@@ -415,6 +415,9 @@ export function createBoarding(ctx = {}) {
   // The ship nearest the boarding camera shows her sails see-through while the view is on: each sail mesh
   // gets a transparent copy of its material(s) (one copy per material, kept for the level), the originals
   // come back when the camera has eased out (or at once on clear()). Draw calls are unchanged.
+  // The copy keeps writing depth: the ink outline pass draws each sail's back faces again as a shell just
+  // behind the cloth, and only the cloth's depth hides that shell. Without it the whole sail is painted ink
+  // (at the fade's alpha): slate-black sails as the view eases in, and on a captured prize as she sails away.
   const fadeCopy = new Map(); // original material -> its see-through copy
   const fadeOrig = new Map(); // copy -> original
   let fadedShip = null;
@@ -425,7 +428,6 @@ export function createBoarding(ctx = {}) {
     if (!c) {
       c = o.clone();
       c.transparent = true;
-      c.depthWrite = false;
       c.userData = { ...o.userData, outlineParameters: { ...(o.userData.outlineParameters || {}) } };
       fadeCopy.set(o, c);
       fadeOrig.set(c, o);

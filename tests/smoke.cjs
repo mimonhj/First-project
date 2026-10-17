@@ -111,7 +111,8 @@ async function shotColours(page) {
   check(colours > 40, `title scene renders with rich colour (${colours} colour buckets)`);
 
   // Level select: 6 cards in two acts, only the first unlocked on a fresh profile.
-  const cards = await page.$$eval('.level-card', (els) => els.map((e) => ({ text: e.textContent, locked: e.disabled })));
+  // (a locked card is aria-disabled, not disabled: it stays focusable and says why it is locked, SPEC2 §13)
+  const cards = await page.$$eval('.level-card', (els) => els.map((e) => ({ text: e.textContent, locked: e.getAttribute('aria-disabled') === 'true' })));
   check(cards.length === 6, `6 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
   check(!cards[0].locked && cards.slice(1).every((c) => c.locked), 'only level 1 is unlocked at first');
   check(/Easy/.test(cards[0].text) && /Medium/.test(cards[1].text) && /Hard/.test(cards[2].text) &&
@@ -622,7 +623,7 @@ async function shotColours(page) {
 
   // ---- Main menu again; mobile touch controls.
   await page.evaluate(() => window.__game.showMenu());
-  const unlockedCards = await page.$$eval('.level-card', (els) => els.filter((e) => !e.disabled).length);
+  const unlockedCards = await page.$$eval('.level-card', (els) => els.filter((e) => e.getAttribute('aria-disabled') !== 'true').length);
   // Winning the Act I finale opens Doubloon Bay (the smoke run never clears Act II).
   check(unlockedCards === 4, 'all levels unlocked on the menu after winning');
   // Keyboard users: Enter on a focused level card starts that level (not the default level 1).

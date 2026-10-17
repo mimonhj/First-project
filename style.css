@@ -508,7 +508,7 @@ p { font-size: 16px; line-height: 1.5; margin: 10px 0; }
   min-height: 132px;
   text-shadow: 0 2px 0 rgba(29, 19, 48, 0.8);
 }
-.level-card:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
+.level-card:not(.locked):active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
 .level-card:hover:not(.locked) { filter: brightness(1.08); }
 .lvl-1 { background: linear-gradient(180deg, #7cc7ff 0%, #7cc7ff 45%, #2a77c9 46%, #1d5ea8 100%); }
 .lvl-2 { background: linear-gradient(180deg, #ffd27a 0%, #ffb35c 45%, #2fd3c9 46%, #12a1a6 100%); }
@@ -1729,6 +1729,14 @@ body.docked.dragging #game { cursor: grabbing; }
 @media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
   .banner { top: max(24%, calc(var(--edge) + var(--top-h) + var(--mm) + 28px)); }
 }
+/* Short, narrow desktop windows (568x320, 640x360): the minimap sits bottom-right, level with the banner's last
+   lines, and nothing sits on the left there. The banner keeps to the free space beside it: centred between the
+   left edge and the minimap's ring, and no wider than that space, so its lines never touch the ring. (The
+   first voyage's banner still fits its lines, so it stays clear of the tutorial hint below it.) */
+@media (max-height: 500px) and (max-width: 760px) and (orientation: landscape) and (hover: hover),
+  (max-height: 500px) and (max-width: 760px) and (orientation: landscape) and (pointer: fine) {
+  .banner { left: calc(50% - (var(--mm) + 8px) / 2); max-width: calc(100vw - 2 * var(--edge) - var(--mm) - 24px); }
+}
 /* A boss bar and the boarding strip both up top: banners start below them. */
 body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: max(24%, 228px); }
 @media (max-height: 500px) {
@@ -1780,6 +1788,12 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
 .level-card.locked, .level-cards .act-head { pointer-events: none; }
 /* A locked card's reason ("Beat the Molten Maw") may take two short lines. */
 .level-card.locked .lvl-lock { line-height: 1.2; padding-top: 2px; padding-bottom: 2px; text-wrap: balance; }
+/* A locked card stays focusable (aria-disabled); pressed with Enter, Space or an assistive click it never starts a
+   voyage: its reason flashes (ink and paper swap, which reads through the card's grey filter). */
+.level-card.locked .lvl-lock.refused { animation: lock-refused 0.9s ease-out; }
+@keyframes lock-refused {
+  0%, 45% { background: var(--ink); color: var(--paper); }
+}
 /* Set sail! and the shipyard stay in view at the panel's bottom while the rest of it scrolls. */
 #menu-screen .menu-actions { position: sticky; bottom: 0; z-index: 1; background: var(--paper); }
 #menu-screen .menu-actions::before {

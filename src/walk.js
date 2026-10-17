@@ -14,6 +14,7 @@
 
 const CLIMB = 0.35; // the most the feet may rise or drop in one step
 const SUB = 0.1; // move() and the path checks advance in steps no longer than this
+const SLIDE = [15, 30, 45, 60].map((d) => (d * Math.PI) / 180); // a blocked step tries these turns, either way
 const EPS = 1e-9;
 const CELL = 2; // spatial hash cell for obstacles and surfaces
 
@@ -214,11 +215,35 @@ export function createWalk(data = {}) {
       y = ny;
       return true;
     };
+    // A blocked step slides: it tries the step along each axis alone and the step turned up to 60° either
+    // way (shortened by the cosine), the one that gets furthest the intended way first. So a walker slides
+    // along a slanting edge (a rope bridge's side), and round a round post, instead of stopping dead.
+    const alt = [];
+    if (sx || sz) {
+      const s2 = sx * sx + sz * sz;
+      if (sx && sz) alt.push([sx, 0, (sx * sx) / s2], [0, sz, (sz * sz) / s2]);
+      for (const a of SLIDE) {
+        const c = Math.cos(a);
+        const sn = Math.sin(a);
+        for (const sg of [1, -1]) alt.push([(sx * c - sg * sz * sn) * c, (sg * sx * sn + sz * c) * c, c * c]);
+      }
+      alt.sort((p, q) => q[2] - p[2]);
+    }
     for (let i = 0; i < n; i++) {
-      if ((sx || sz) && tryTo(x + sx, z + sz)) moved = true;
-      else if (sx && tryTo(x + sx, z)) moved = true;
-      else if (sz && tryTo(x, z + sz)) moved = true;
-      else break;
+      if (!(sx || sz)) break;
+      if (tryTo(x + sx, z + sz)) {
+        moved = true;
+        continue;
+      }
+      let ok = false;
+      for (const [ax, az] of alt) {
+        if (tryTo(x + ax, z + az)) {
+          ok = true;
+          break;
+        }
+      }
+      if (!ok) break;
+      moved = true;
     }
     return { x, z, y, moved };
   }

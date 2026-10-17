@@ -6,7 +6,8 @@
 //   of them with townsfolk in the way) never leave the walk, never walk into anything and never rise
 //   or drop more than a step; taps on the decks and bridges land, taps on the water miss; the
 //   camera-only volumes (the signs' boards on their posts and the like) are there, clear of the
-//   camera's target wherever the captain stops, and ignored by the walking
+//   camera's target wherever the captain stops, and ignored by the walking; the rope bridges have no lip at
+//   their posts, and a jog held from each land end, straight or a little off the line, gets across
 // - small made-up towns: an L of two rects, a turned rect, a round mound, a sagging bridge (its
 //   height followed along the planks), two islands (no path between them)
 // - junk data and junk arguments never throw
@@ -170,6 +171,62 @@ function pathProblems(W, p, from, to) {
     }
     const G = W.graph;
     check(G.nodes.length > 50 && G.edges.length > G.nodes.length && G.edges.every(([i, j]) => i !== j && G.nodes[i] && G.nodes[j]), `the walk graph: ${G.nodes.length} nodes, ${G.edges.length} edges`);
+  }
+
+  // ---- the rope bridges: no lip at the posts, and a walker heading a little off the line still gets across ----
+  {
+    const lips = [];
+    for (const l of data.links) {
+      // every 0.05 along the bridge, just inside either edge of its band: free (the posts at its ends included)
+      for (let i = 0; i + 1 < l.pts.length; i++) {
+        const [ax, , az] = l.pts[i];
+        const [bx, , bz] = l.pts[i + 1];
+        const L = Math.hypot(bx - ax, bz - az);
+        const nx = -(bz - az) / L;
+        const nz = (bx - ax) / L;
+        for (let s = 0; s <= L; s += 0.05) {
+          for (const side of [-1, 1]) {
+            const x = ax + ((bx - ax) * s) / L + nx * side * (l.hw - 0.01);
+            const z = az + ((bz - az) * s) / L + nz * side * (l.hw - 0.01);
+            if (W.inside(x, z) && W.blocked(x, z, R)) lips.push(`${l.id}@${f2(x)},${f2(z)}`);
+          }
+        }
+      }
+    }
+    check(lips.length === 0, `the rope bridges' bands are free right up to their edges, past the posts too (no lip a walker sliding along a rope stops at)${lips.length ? ': ' + lips.slice(0, 4).join(' ') : ''}`);
+    // from each land end, a jog held in a fixed direction straight along the bridge, or 5° or 15° off it into a rope
+    const runs = [];
+    for (const l of data.links) {
+      for (const dir of [1, -1]) {
+        const pts = dir === 1 ? l.pts : [...l.pts].reverse();
+        const a = pts[0];
+        const b = pts[pts.length - 1];
+        const Lb = Math.hypot(b[0] - a[0], b[2] - a[2]);
+        const ux = (b[0] - a[0]) / Lb;
+        const uz = (b[2] - a[2]) / Lb;
+        for (const deg of [0, 5, -5, 15, -15]) {
+          const h = Math.atan2(ux, uz) + (deg * Math.PI) / 180;
+          let p = { x: a[0], z: a[2], y: W.heightAt(a[0], a[2], a[1]) };
+          let t = 0;
+          let along = 0;
+          for (; t < 8 && along < 1; t += 1 / 60) {
+            p = W.move(p, Math.sin(h) * 3.0 / 60, Math.cos(h) * 3.0 / 60, R);
+            along = ((p.x - a[0]) * ux + (p.z - a[2]) * uz) / Lb;
+          }
+          runs.push({ id: `${l.id}${dir > 0 ? '>' : '<'}${deg}°`, ok: along >= 1, s: t, along });
+        }
+      }
+    }
+    const stuck = runs.filter((r) => !r.ok);
+    check(runs.length === data.links.length * 10 && stuck.length === 0, `a jog held from each bridge's land end crosses it, straight or 5° or 15° off the line (sliding along the rope): ${stuck.length ? 'stuck: ' + stuck.map((r) => `${r.id} at ${(r.along * 100).toFixed(0)}%`).join(', ') : `slowest ${Math.max(...runs.map((r) => r.s)).toFixed(1)} s`}`);
+    // and round a post: walking at one off its middle, he slides round it instead of stopping dead (square on,
+    // he stops)
+    const P = createWalk({ areas: [{ id: 'a', kind: 'rect', x: 0, z: 0, w: 10, d: 10, ry: 0, y: 1 }], blockers: [{ x: 0, z: 0, r: 0.2, h: 1 }] });
+    let q = { x: 0.3, z: -2, y: 1 };
+    for (let i = 0; i < 120; i++) q = P.move(q, 0, 3.0 / 60, R);
+    let q0 = { x: 0, z: -2, y: 1 };
+    for (let i = 0; i < 120; i++) q0 = P.move(q0, 0, 3.0 / 60, R);
+    check(q.z > 1 && !P.blocked(q.x, q.z, R) && q0.z < -0.49 && q0.z > -0.51, `walking at a round post, off its middle he slides round it (to ${f2(q.x)}, ${f2(q.z)}); square on he stops at it (${f2(q0.x)}, ${f2(q0.z)})`);
   }
 
   // ---- 10,000 seeded random steps ----
