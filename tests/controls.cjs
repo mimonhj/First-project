@@ -10,6 +10,9 @@
 // - the shipyard on Sparrow's Floating Island: the level-cleared choices, banking into the treasure
 //   chest, the docked ship and its working crew, buying and painting, the ways out, saved records,
 //   keyboard use, and the panel's layout and contrast on small and large screens
+// - phones (phoneFraming): a broadside's target framed with her tag clear of the HUD at 390x844 (both sides),
+//   360x640 and 320x480; a phone on its side (568x320, 844x390) and a desktop window keep their chase view, which
+//   shows her; the ammo hint and the Fire button's "Loading…" fitting
 const path = require('path');
 const { chromium } = require('playwright');
 const { serve } = require('./server.cjs');
@@ -56,6 +59,10 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
   }
   if (ONLY === 'storage') {
     await pollyStorage();
+    return finish();
+  }
+  if (ONLY === 'phone') {
+    await phoneFraming();
     return finish();
   }
 
@@ -1895,8 +1902,156 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     await ctx.close();
   }
 
+  await phoneFraming();
   await review2();
   return finish();
+
+  // ------------------------------------------------------------------ phone fix: a broadside's target framed
+  // On a phone held upright a privateer 15 paces off your beam that you fire at is wholly on screen with her name
+  // tag, clear of the HUD (the top cards, the minimap, the touch pads, the gun card and the hint bubble), from 1.5 s
+  // of play after the shot (on a 390x844 phone on either side); a screen wider than tall (a phone on its side, a
+  // desktop window) keeps its chase view, which shows her. The hint that says what an ammo does fits each screen
+  // (on screen, at most 110 px tall, clear of the controls), and so does "Loading…" inside the round Fire button.
+  // Screenshots: tests/screenshots/phone-frame-<size>.png. (CONTROLS_ONLY=phone runs only this.)
+  async function phoneFraming() {
+    const shots = path.join(ROOT, 'tests', 'screenshots');
+    require('fs').mkdirSync(shots, { recursive: true });
+    for (const [w, h, touch, lat] of [[390, 844, true, 15], [390, 844, true, -15], [360, 640, true, 15], [320, 480, true, 15], [568, 320, true, 15], [844, 390, true, 15], [1280, 720, false, 15]]) {
+      const { ctx, page } = await open({ viewport: { width: w, height: h }, hasTouch: touch, isMobile: touch });
+      const r = await page.evaluate(async (lat) => {
+        const G = window.__game;
+        G.state.unlocked = 3;
+        G.state.tutorialDone = true;
+        G.newGame(1);
+        G.state.intro = 0;
+        G.state.bannerTimer = 0.001; // (the level banner goes)
+        const p = G.player;
+        p.speed = 0;
+        G.state.sail = 0;
+        G.colliders.forEach((c) => (c.x += 5000));
+        G.reefs.forEach((c) => (c.x += 5000));
+        const ps = G.env.playerStart;
+        // the level's own ships parked out of reach on the far side of the sea
+        G.enemies.forEach((e, k) => { e.rise = 1e6; e.x = -ps.x * 2 + k * 9; e.z = -ps.z * 2 - 300; e.speed = 0; });
+        G.state.combatTime = 30;
+        const at = { x: p.x, z: p.z, h: p.h };
+        const e = G.spawn('privateer', p.x - Math.cos(p.h) * lat, p.z + Math.sin(p.h) * lat, p.h);
+        e.rise = 0;
+        const her = { x: e.x, z: e.z, h: e.h };
+        const hold = () => {
+          Object.assign(p, at, { speed: 0 });
+          Object.assign(e, her, { speed: 0 });
+          e.reload.port = e.reload.star = 99;
+        };
+        hold();
+        const V = G.camera.position.constructor;
+        const W = innerWidth;
+        const H = innerHeight;
+        const R = (el) => {
+          if (!el || el.classList.contains('hidden')) return null;
+          const b = el.getBoundingClientRect();
+          return b.width > 0 && b.height > 0 ? { l: b.left, t: b.top, r: b.right, b: b.bottom } : null;
+        };
+        const hud = () => [...document.querySelectorAll('#hud .hud-top > *'), document.getElementById('minimap'), ...document.querySelectorAll('#touch .pad'), document.querySelector('#hud .card.guns'), document.getElementById('hint')].map(R).filter(Boolean);
+        const ov = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+        const hullBox = () => {
+          const L = e.type.len / 2;
+          const B = e.type.wid / 2;
+          const box = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity };
+          for (const a of [-L, L]) for (const c of [-B, B]) for (const y of [0, (e.mesh.userData.deckY ?? 1.4) + 0.4]) {
+            const v = new V(e.x + Math.sin(e.h) * a - Math.cos(e.h) * c, e.mesh.position.y + y, e.z + Math.cos(e.h) * a + Math.sin(e.h) * c).project(G.camera);
+            const x = (v.x * 0.5 + 0.5) * W;
+            const yy = (-v.y * 0.5 + 0.5) * H;
+            box.l = Math.min(box.l, x);
+            box.r = Math.max(box.r, x);
+            box.t = Math.min(box.t, yy);
+            box.b = Math.max(box.b, yy);
+          }
+          return box;
+        };
+        const what = () => {
+          const hull = hullBox();
+          const tag = G.tagRect ? G.tagRect(e) : null;
+          const boxes = hud();
+          const clear = (b) => !!b && b.l >= 0 && b.t >= 0 && b.r <= W && b.b <= H && boxes.every((x) => ov(b, x) < 1);
+          const round = (b) => (b ? Object.fromEntries(Object.entries(b).map(([k, v]) => [k, Math.round(v)])) : null);
+          const onScreen = (b) => !!b && b.l >= 0 && b.t >= 0 && b.r <= W && b.b <= H;
+          return { ok: clear(hull) && clear(tag), hullOn: onScreen(hull), hull: round(hull), tag: round(tag) };
+        };
+        G.state.mode = 'playing';
+        await new Promise((res) => requestAnimationFrame(res));
+        hold();
+        // fire at her (as the Fire key / button does)
+        const key = lat > 0 ? ['e', 'KeyE'] : ['q', 'KeyQ'];
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: key[0], code: key[1], bubbles: true, cancelable: true }));
+        window.dispatchEvent(new KeyboardEvent('keyup', { key: key[0], code: key[1], bubbles: true, cancelable: true }));
+        const tf = G.state.time;
+        const fired = (lat > 0 ? p.reload.star : p.reload.port) > 0;
+        let first = null;
+        let stays = true;
+        let n = 0;
+        while (G.state.time < tf + 2.4 && n < 400) {
+          await new Promise((res) => requestAnimationFrame(res));
+          hold();
+          n++;
+          if (G.state.time < tf + 1.5) continue;
+          const now = what();
+          if (!first) first = { t: Math.round((G.state.time - tf) * 100) / 100, ...now };
+          else if (!now.ok) stays = false;
+        }
+        G.state.mode = 'paused';
+        const framing = G.framing ? { w: Math.round(G.framing.w * 100) / 100, focus: G.framing.focus === e } : { w: null, focus: false };
+        // what an ammo is for, in the hint bubble: it fits this screen
+        G.state.mode = 'playing';
+        G.combat.setAmmo('grape');
+        G.state.mode = 'paused';
+        await new Promise((res) => requestAnimationFrame(() => requestAnimationFrame(res)));
+        const hint = R(document.getElementById('hint'));
+        const controls = [...document.querySelectorAll('#touch button'), document.querySelector('#hud .card.guns'), document.getElementById('minimap')].map(R).filter(Boolean);
+        const hintText = document.getElementById('hint').textContent.replace(/\s+/g, ' ').trim();
+        const hintOk = !!hint && hint.l >= 0 && hint.t >= 0 && hint.r <= W && hint.b <= H && hint.b - hint.t <= 110 && controls.every((c) => ov(hint, c) < 1);
+        // "Loading…" fits inside the round Fire button (the cue's circle covers the button): the word's width
+        // against the circle's chord at the word's half height
+        let loading = null;
+        const btn = document.querySelector('[data-tap="fireStar"]');
+        if (btn && btn.getBoundingClientRect().width > 0) {
+          btn.classList.add('loading');
+          const cs = getComputedStyle(btn, '::before');
+          const word = document.createElement('span');
+          word.textContent = cs.content.replace(/^"|"$/g, '');
+          Object.assign(word.style, { position: 'fixed', left: '0', top: '0', visibility: 'hidden', whiteSpace: 'nowrap', fontFamily: cs.fontFamily, fontSize: cs.fontSize, fontWeight: cs.fontWeight, letterSpacing: cs.letterSpacing, textTransform: cs.textTransform });
+          document.body.appendChild(word);
+          const tw = word.getBoundingClientRect().width;
+          const font = cs.fontSize; // (read while the class is on: the style object is live)
+          word.remove();
+          btn.classList.remove('loading');
+          const D = btn.getBoundingClientRect().width;
+          const y = parseFloat(font) * 0.4;
+          const chord = 2 * Math.sqrt(Math.max(0, (D / 2) ** 2 - y * y));
+          loading = { text: word.textContent, button: Math.round(D), font, width: Math.round(tw * 10) / 10, room: Math.round(chord * 10) / 10 };
+        }
+        return { fired, first, stays, framing, hint: { ok: hintOk, text: hintText, h: hint && Math.round(hint.b - hint.t) }, loading };
+      }, lat);
+      const name = `phone-frame-${w}x${h}${lat < 0 ? '-port' : ''}.png`;
+      // (the ammo hint is up: it is part of what is checked here)
+      await page.screenshot({ path: path.join(shots, name), timeout: 120000 });
+      const where = `${w}x${h}${touch ? ' touch' : ''}${lat < 0 ? ', port side' : ''}`;
+      if (h > w) {
+        check(r.fired && !!r.first && r.first.ok && r.stays,
+          `phone framing ${where}: a privateer 15 paces off the beam that you fire at is wholly on screen with her tag, clear of the HUD, ${r.first && r.first.t} s after the shot and after (${JSON.stringify(r.first)}; framing ${r.framing.w}; ${name})`);
+      } else {
+        // A screen wider than tall (a desktop window, a phone on its side) keeps the chase view: she is on screen in it.
+        check(r.fired && !!r.first && r.first.hullOn && r.framing.w === 0,
+          `phone framing ${where}: a screen wider than tall keeps its chase view (framing ${r.framing.w}), and a privateer 15 paces off the beam that you fire at is on screen in it (${JSON.stringify(r.first)}; ${name})`);
+      }
+      if (r.loading) {
+        check(r.loading.width <= r.loading.room,
+          `phone framing ${where}: "${r.loading.text}" fits inside the ${r.loading.button} px Fire button (${r.loading.width} px wide at ${r.loading.font}, room ${r.loading.room} px)`);
+      }
+      check(r.hint.ok && r.hint.text === 'Grape shot: knocks out her crew', `phone framing ${where}: the ammo hint "${r.hint.text}" fits (on screen, ${r.hint.h}px tall, clear of the controls)`);
+      await ctx.close();
+    }
+  }
 
   async function finish() {
     check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 5).join(' | ') : ''}`);

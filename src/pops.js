@@ -5,9 +5,11 @@ import * as THREE from 'three';
 // projected every frame, so it costs 0 draw calls. ≥ 24 px light text with a 3 px ink outline (fx.css).
 //
 // createPops(layerEl, camera, { reducedMotion, avoid, insetTop, furniture }) → {
-//   pop(text, x, y, z, style) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'capture'
-//                                           //        | 'gold' | 'bad'; a '\n' (or "CRIT! <effect>") splits
-//                                           //        the text into a big line and a smaller second line
+//   pop(text, x, y, z, style, mod) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'slow'
+//                                           //        | 'capture' | 'gold' | 'bad'; a '\n' (or "CRIT! <effect>")
+//                                           //        splits the text into a big line and a smaller second
+//                                           //        line; mod (optional, a word): an extra class pop-<mod>,
+//                                           //        e.g. 'round' for round shot's bigger hull damage
 //   update(dt),   // ages, moves and fades the pops (dt in seconds; 0 while paused freezes them)
 //   clear(), get count /* pops alive */
 // }
@@ -58,6 +60,7 @@ const STYLES = {
   crit: { life: 1.35, rise: 50, pop: 1.45, wobble: 9 },
   crew: { life: 1.15, rise: 50, pop: 1.2, wobble: 0 },
   info: { life: 0.95, rise: 50, pop: 1.15, wobble: 0 },
+  slow: { life: 1.3, rise: 44, pop: 1.3, wobble: -7 }, // SLOWED! (chain shot's first hit on her)
   capture: { life: 2.0, rise: 60, pop: 1.5, wobble: -5 },
   gold: { life: 1.4, rise: 56, pop: 1.25, wobble: 0 },
   bad: { life: 1.5, rise: 50, pop: 1.2, wobble: 0 },
@@ -379,7 +382,8 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     p.main.textContent = a;
     p.sub.textContent = b;
     p.sub.style.display = b ? '' : 'none';
-    p.el.className = `pop pop-${p.style}${p.still ? ' still' : ''}`;
+    const mod = typeof q.mod === 'string' && /^[a-z]{1,16}$/.test(q.mod) ? ` pop-${q.mod}` : '';
+    p.el.className = `pop pop-${p.style}${mod}${p.still ? ' still' : ''}`;
     p.el.style.display = '';
     p.el.style.opacity = '0';
     // measure once (one layout per new pop), then find it a spot that stays clear all its life
@@ -498,10 +502,10 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
   }
 
   return {
-    pop(text, x, y, z, style = 'dmg') {
+    pop(text, x, y, z, style = 'dmg', mod = '') {
       if (!hasDom || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
       if (text === null || text === undefined || String(text).trim() === '') return false;
-      const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', at: clock };
+      const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', mod, at: clock };
       // "−N CREW" right after its volley's damage at the same point: the damage pop's second line
       if (q.style === 'crew' && joinCrew(q)) return true;
       if (tokens >= 1) {

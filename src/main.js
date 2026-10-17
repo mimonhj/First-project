@@ -115,6 +115,8 @@ const AMMO_ICONS = {
     `<svg ${AMMO_SVG}><g fill="#3a3443" ${AMMO_INK}><circle cx="8" cy="15.6" r="3.6"/><circle cx="16" cy="15.6" r="3.6"/><circle cx="12" cy="18.6" r="3.6"/>` +
     '<circle cx="8.4" cy="8.6" r="3.6"/><circle cx="15.6" cy="8.6" r="3.6"/><circle cx="12" cy="12" r="3.6"/></g></svg>',
 };
+// What each ammo is for, in a few words (the hint bubble when it is loaded, the Ammo button's name).
+const AMMO_DOES = { round: 'smashes her hull', chain: 'slows her down', grape: 'knocks out her crew' };
 // One-time battle tips (bits of TIPS_KEY, SPEC2 §5.5).
 const TIP = { board: 1, chain: 2, grape: 4, raiders: 8, ashore: 16, rake: 32, counter: 64, surrender: 128 };
 // Why an ammo can't be loaded yet (hint bubble), and the level that unlocks it.
@@ -256,6 +258,13 @@ function retrigger(el, cls) {
   el.classList.remove(cls);
   void el.offsetWidth;
   el.classList.add(cls);
+}
+// retrigger, then take the class off again after `ms` (real time): for a cue whose animation keeps its last frame.
+const flashTimers = new WeakMap();
+function flashClass(el, cls, ms) {
+  retrigger(el, cls);
+  clearTimeout(flashTimers.get(el));
+  flashTimers.set(el, setTimeout(() => el.classList.remove(cls), ms));
 }
 
 // Saved records are plain decimal integers in [min, max]. Anything else (missing, garbage, NaN,
@@ -565,6 +574,7 @@ function resize() {
   menuLayout = null;
   dockLayout = null;
   topInset = 0; // the HUD's top row is measured again (hudTopInset)
+  framing.hud = null; // and the HUD boxes the battle camera frames around (framingHud)
   townMode.onResize(); // Polly's and the tavern frame their subject beside the panel again
   menuPin(); // the title's pinned Set sail! row may have changed height
 }
@@ -824,12 +834,19 @@ function clearParticles() {
 // Floating name tags (hull bar, crew pips) above enemy ships, pop words over the view and the
 // sailors who go overboard: see tags.js, pops.js and overboard.js.
 // ---------------------------------------------------------------------------
-const tags = createTags(scene);
+const tags = createTags(scene, { reducedMotion: () => reducedMotion() });
 // (reducedMotion is declared further down: the lambda reads it when a pop appears.) Pops keep clear of the
 // HIT ×N / SUNK! mark (hitmarkRects) and stay below the top HUD row (hudTopInset).
 const pops = createPops(ui.pops, camera, {
   reducedMotion: () => reducedMotion(),
-  avoid: () => hitmarkRects(),
+  // (and the name tag of the ship the battle camera frames: her hull bar and crew pips show what the hit did)
+  avoid: () => {
+    const list = hitmarkRects();
+    const e = framing.focus;
+    const r = e && state.mode === 'playing' ? tags.rect(e, camera) : null;
+    if (r && typeof DOMRect === 'function') list.push(new DOMRect(r.l, r.t, r.r - r.l, r.b - r.t));
+    return list;
+  },
   insetTop: () => hudTopInset(),
 });
 const overboardCtx = {
@@ -917,7 +934,8 @@ function createShip(typeName, kind, x, z, h) {
     removeAt: Infinity,
     boardCooldown: 0,
     // ---- damage (SPEC2 §2.3, §2.4)
-    effects: { slow: 0, slowTurn: 0, mast: 0, rudder: 0, burn: 0 }, // seconds left (chain shot, crit effects)
+    effects: { slow: 0, slowTurn: 0, slowFull: 0, mast: 0, rudder: 0, burn: 0 }, // seconds left (chain shot, crit effects)
+    crewLost: { n: 0, from: 0, at: -Infinity }, // sailors lost to shots: her tag flashes the pips from `from` down (n counts)
     burnAcc: 0, // seconds towards the next keg-fire tick
     burnTicks: 0, // keg-fire ticks (1 hp each) still to come
     lastEffectAt: -Infinity, // simulated time of her last new crit effect (one per CRIT.effectGap)
@@ -1035,6 +1053,9 @@ function clearLevelEntities() {
   overboard.clear();
   pops.clear();
   state.hitStop.left = 0;
+  clearFireQueue();
+  loadingSaid.port = loadingSaid.star = false;
+  resetFraming();
 }
 
 // ---------------------------------------------------------------------------
@@ -1971,10 +1992,92 @@ function aimTarget(side) {
 }
 
 // The player's guns aim at the nearest enemy inside that side's firing arc, or
-// failing that the nearest one roughly abeam.
+// failing that the nearest one roughly abeam. (The battle camera frames her while the volley flies.)
 function playerFire(side) {
   if (state.mode !== 'playing' || !player || player.sinking) return false;
-  return fire(player, side, aimTarget(side).target);
+  const target = aimTarget(side).target;
+  if (!fire(player, side, target)) return false;
+  const key = side > 0 ? 'star' : 'port';
+  if (fireQueue[key]) setQueued(key, null);
+  loadingSaid[key] = false;
+  if (target) frameShip(target, Math.hypot(target.x - player.x, target.z - player.z) / BALL_SPEED);
+  return true;
+}
+
+// A Fire key or button pressed while that side is still loading is never lost (phones: tapping Ammo then
+// Fire straight away). A side that will be loaded within FIRE_QUEUE s queues one shot, fired the moment it
+// is loaded just as a tap then would be (serviceFireQueue: at the ship in that side's aim, else along the
+// beam); it is dropped if the ammo changes again, the game pauses or the level ends, or your gun crews go to
+// the ropes. A longer wait says so: that side's Fire button and reload bar flash "Loading…", a soft dull
+// click, and screen readers hear it once per reload. `repeat`: a held key's auto-repeat (it queues, but says
+// nothing).
+const FIRE_QUEUE = 0.6;
+const fireQueue = { port: null, star: null }; // { ammo, at }: a shot waiting for that side's guns
+const loadingSaid = { port: false, star: false }; // "still loading" read out this reload
+const fireButtons = {
+  port: document.querySelector('[data-tap="firePort"]') || document.createElement('button'),
+  star: document.querySelector('[data-tap="fireStar"]') || document.createElement('button'),
+};
+// Returns 'fired' | 'queued' | 'loading' (a long wait: said unless `quiet` or a repeat) | 'no'.
+function fireInput(side, repeat = false, quiet = false) {
+  if (state.mode !== 'playing' || !player || player.sinking) return 'no';
+  if (playerFire(side)) return 'fired';
+  const key = side > 0 ? 'star' : 'port';
+  const left = player.reload[key];
+  if (!(left > 0) || !mayFire(player)) return 'no'; // (no gun crew at the guns: a boarding says so itself)
+  if (left <= FIRE_QUEUE + 1e-9) {
+    setQueued(key, { ammo: state.ammo, at: state.time });
+    return 'queued';
+  }
+  if (!repeat && !quiet) gunsLoading([key]);
+  return 'loading';
+}
+// Space: both broadsides. "Loading…" only when neither side fired nor queued (once, for both sides).
+function fireBoth(repeat = false) {
+  const a = fireInput(-1, repeat, true);
+  const b = fireInput(1, repeat, true);
+  if (repeat || a === 'fired' || b === 'fired' || a === 'queued' || b === 'queued') return;
+  const keys = [a === 'loading' ? 'port' : null, b === 'loading' ? 'star' : null].filter(Boolean);
+  if (keys.length) gunsLoading(keys);
+}
+// Show (or drop) a queued shot on that side's Fire button and gun cell.
+function setQueued(key, q) {
+  fireQueue[key] = q;
+  const on = !!q;
+  fireButtons[key].classList.toggle('queued', on);
+  (key === 'star' ? ui.gunStar : ui.gunPort).classList.toggle('queued', on);
+}
+function clearFireQueue() {
+  setQueued('port', null);
+  setQueued('star', null);
+}
+// "Loading…" on those sides' Fire buttons and reload bars, a soft dull click; read out once per reload.
+// (The class goes again once its 0.9 s cue has played: left on, its last frame would hide the queued ring.)
+function gunsLoading(keys) {
+  for (const key of keys) {
+    flashClass(fireButtons[key], 'loading', 950);
+    flashClass(key === 'star' ? ui.gunStar : ui.gunPort, 'loading', 950);
+  }
+  audio.play('click', { pitch: 0.4, volume: 0.6 });
+  const fresh = keys.filter((key) => !loadingSaid[key]);
+  if (!fresh.length) return;
+  for (const key of fresh) loadingSaid[key] = true;
+  gameAnnounce(fresh.length > 1 ? 'Guns still loading.' : `${fresh[0] === 'star' ? 'Starboard' : 'Port'} guns still loading.`);
+}
+// Each simulation step, right after the reloads tick down: a queued shot fires the moment its side is loaded.
+function serviceFireQueue() {
+  for (const key of ['port', 'star']) {
+    const q = fireQueue[key];
+    if (!q) continue;
+    if (!player || player.sinking || q.ammo !== state.ammo || !mayFire(player)) {
+      setQueued(key, null);
+      continue;
+    }
+    if (player.reload[key] > 0) continue;
+    // loaded: it goes off as a tap now would (at the ship in that side's aim, else along the beam)
+    setQueued(key, null);
+    playerFire(key === 'star' ? 1 : -1);
+  }
 }
 
 // The RAKE! cue: does the target in that side's arc show you her stern or her bow (the beam lies within
@@ -2065,7 +2168,8 @@ function volleyDone(v) {
     hitmarkState.until = performance.now() + 700; // (the hitmark animation's length, style.css)
   }
   for (const T of (v.targets || new Map()).values()) {
-    if (T.dmg > 0) pops.pop(String(Math.round(T.dmg)), T.x, T.y, T.z, 'dmg');
+    // (round shot is the hull smasher: its damage pops bigger)
+    if (T.dmg > 0) pops.pop(String(Math.round(T.dmg)), T.x, T.y, T.z, 'dmg', T.ammo === 'round' ? 'round' : '');
     if (T.crew > 0) pops.pop(`−${T.crew} CREW`, T.x, T.y, T.z, 'crew');
   }
 }
@@ -2074,7 +2178,7 @@ function volleyDone(v) {
 function volleyTarget(v, s) {
   let T = v.targets.get(s);
   if (!T) {
-    T = { dmg: 0, crew: 0, rake: false, crit: false, blank: false, chain: false, overboard: false, x: s.x, y: 0, z: s.z };
+    T = { dmg: 0, crew: 0, rake: false, crit: false, blank: false, chain: false, overboard: false, ammo: 'round', x: s.x, y: 0, z: s.z };
     v.targets.set(s, T);
   }
   return T;
@@ -2101,12 +2205,14 @@ function applyCritEffect(s, id) {
 }
 
 // Chain shot tears her rigging: slower and clumsier for a while (each hit adds, up to the maximum).
+// slowFull: the slow as this hit left it (her tag's chain timer shows what is left of it).
 function applySlow(s) {
   const k = s.type.boss ? CRIT.bossDuration : 1;
   const c = EFFECTS.chain;
   const f = s.effects;
   f.slow = Math.min(c.max * k, Math.max(0, f.slow) + c.time * k);
   f.slowTurn = f.slow;
+  f.slowFull = f.slow;
 }
 
 // Effects wear off; a powder keg burns 1 hp at a time (simulated time).
@@ -2217,7 +2323,14 @@ function hullHit(ship, hx, hz, amount, info, effect) {
       const before = crewOf(ship);
       ship.killed += kills;
       killed = before - crewOf(ship);
-      if (killed > 0) checkSurrender(ship);
+      if (killed > 0) {
+        // her tag flashes the pips of the sailors just lost (tags.js): all of a volley's (its balls can land
+        // in one frame), so `from` is her crew before the first of a quick run of losses
+        const prev = ship.crewLost || { n: 0, from: 0, at: -Infinity };
+        const run = state.time - (prev.at ?? -Infinity) < 1.2;
+        ship.crewLost = { n: prev.n + 1, from: run ? Math.max(prev.from, before) : before, at: state.time };
+        checkSurrender(ship);
+      }
     }
   }
   info.killed = killed;
@@ -2229,15 +2342,18 @@ function hullHit(ship, hx, hz, amount, info, effect) {
   if (T) {
     T.dmg += amount;
     T.crew += killed;
+    T.ammo = info.ammo;
     T.x = hx;
     T.y = py;
     T.z = hz;
     for (const tag of info.tags) v.tags.add(tag);
   } else {
     // a hit outside a volley pops at once
-    pops.pop(String(Math.round(amount)), hx, py, hz, 'dmg');
+    pops.pop(String(Math.round(amount)), hx, py, hz, 'dmg', info.ammo === 'round' ? 'round' : '');
     if (killed > 0) pops.pop(`−${killed} CREW`, hx, py, hz, 'crew');
   }
+  // the battle camera keeps the ship you just hit framed while her pops play
+  if (ship.kind === 'enemy') frameShip(ship, 0);
   if (info.aspect) {
     feats.rakes++;
     featsDirty = true;
@@ -2274,9 +2390,12 @@ function hullHit(ship, hx, hz, amount, info, effect) {
       const c = [0xfff4d6, 0xf2e2bd, 0xe8d3a8, 0xffffff][i % 4];
       spawnParticle('puff', c, hx + rand(-1.5, 1.5), rand(3, 6), hz + rand(-1.5, 1.5), rand(-3, 3), rand(1, 4), rand(-3, 3), rand(1.2, 1.8), rand(0.28, 0.45), GRAVITY * 0.12, false, true);
     }
+    // The first hit that slows her says so ("SLOWED!", and her tag shows the chain badge); a hit on a ship
+    // already slowed only adds time: "SAILS SHREDDED!".
     if (!T || !T.chain) {
       if (T) T.chain = true;
-      pops.pop(WORDS.chain, hx, py - 0.2, hz, 'info');
+      if (info.firstSlow) pops.pop('SLOWED!', hx, py - 0.2, hz, 'slow');
+      else pops.pop(WORDS.chain, hx, py - 0.2, hz, 'info');
     }
   }
   // Grape sweeps a sailor over the side (one per volley per ship).
@@ -2307,7 +2426,10 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
   if (info) {
     if (info.crit) effect = applyCritEffect(ship, info.critEffect);
     if (effect === 'keg') amt += EFFECTS.keg.burst * (info.ghostMul ?? 1); // the keg blows at once
-    if (info.slow) applySlow(ship);
+    if (info.slow) {
+      info.firstSlow = !(ship.effects.slow > 0); // she wasn't slowed: SLOWED! (hullHit)
+      applySlow(ship);
+    }
     info.applied = effect;
   }
   const ghost = ghostActive(ship);
@@ -2971,11 +3093,13 @@ function emitShipFx(s, dt) {
   }
   if (s.speed > 2) {
     s.wakeAcc += dt * 60 * (s.speed / 18);
+    // Chain shot's slow shows in her wake too: short and choppy while her rigging is torn.
+    const slowed = s.effects.slow > 0;
     while (s.wakeAcc >= 1) {
       s.wakeAcc -= 1;
       const bx = s.x - fx * s.type.len * 0.5;
       const bz = s.z - fz * s.type.len * 0.5;
-      spawnParticle('glow', foamColor, bx + rand(-1, 1), wy + 0.1, bz + rand(-1, 1), 0, 0.2, 0, 1.4, rand(0.5, 0.9), 0, true, true, true);
+      spawnParticle('glow', foamColor, bx + rand(-1, 1), wy + 0.1, bz + rand(-1, 1), 0, 0.2, 0, slowed ? 0.5 : 1.4, rand(0.5, 0.9) * (slowed ? 0.75 : 1), 0, true, true, true);
     }
   }
   if (s.speed > 6) {
@@ -3061,15 +3185,17 @@ function newAmmoTip() {
   const id = state.ammoTipDue & TIP.chain ? 'chain' : 'grape';
   state.ammoTipDue &= ~TIP[id];
   const key = id === 'chain' ? 2 : 3;
+  // (Each says what the new shot is for: chain slows ships down, grape knocks out their crews.)
+  const does = id === 'chain' ? 'It slows ships down.' : 'It knocks out their crew.';
   const ok = showTip(
     TIP[id],
-    id === 'chain' ? 'New: chain shot slows ships! <kbd>2</kbd> or <kbd>R</kbd>' : 'New: grape shot clears decks! <kbd>3</kbd>',
-    id === 'chain' ? 'New: chain shot! Tap <b>Ammo</b>' : 'New: grape shot! Tap <b>Ammo</b>',
+    id === 'chain' ? `New: chain shot! ${does} <kbd>2</kbd> or <kbd>R</kbd>` : `New: grape shot! ${does} <kbd>3</kbd>`,
+    `New: ${id} shot! ${does} Tap <b>Ammo</b>`,
     7
   );
   if (!ok) return;
   const touch = isTouch();
-  showBanner(`New ammo: ${AMMO_NAMES[id]} shot!<small>${touch ? 'Tap Ammo' : `Press <kbd>${key}</kbd>`}</small>`, 2.6);
+  showBanner(`New ammo: ${AMMO_NAMES[id]} shot!<small>${does}</small><small>${touch ? 'Tap Ammo' : `Press <kbd>${key}</kbd>`}</small>`, 2.6);
   // (Screen readers hear the tip: the hint bubble is a live region. Not read twice in other words.)
 }
 
@@ -3120,6 +3246,7 @@ function step(dt) {
     if (state.tip.bit === TIP.counter) state.tip.until = 0;
   }
   if (player) moveShip(player, dt);
+  serviceFireQueue(); // (the reloads just ticked down: a queued shot goes the moment its side is loaded)
   for (const e of enemies) moveShip(e, dt);
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
   separateShips(dt);
@@ -3234,8 +3361,15 @@ function setAmmo(id) {
     }
   }
   audio.play('click', { pitch: id === 'round' ? 0.85 : id === 'chain' ? 1 : 1.15 });
-  gameAnnounce(`${AMMO_NAMES[id]} shot loaded.`);
+  // What it is for, in the hint bubble ("Chain shot: slows her down"). The bubble is a live region, so
+  // screen readers hear it there; with no bubble (not in play) #game-live says it.
+  if (state.mode === 'playing' && player && !player.sinking) flashHint(ammoHint(id), 2.6);
+  else gameAnnounce(`${AMMO_NAMES[id]} shot loaded: it ${AMMO_DOES[id]}.`);
   return true;
+}
+// "(icon) Chain shot: slows her down".
+function ammoHint(id) {
+  return `<span class="hint-ammo" data-ammo="${id}"><span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[id]}</span>${AMMO_NAMES[id]} shot:</span> ${AMMO_DOES[id]}`;
 }
 // R / the touch Ammo pill: the next unlocked ammo.
 function cycleAmmo() {
@@ -3330,6 +3464,7 @@ function closeModal(el) {
 function pauseGame() {
   state.mode = 'paused';
   clearSteering();
+  clearFireQueue(); // a shot queued before the pause never goes off after it
   boarding.cutHold(false); // a held G (or Board) is let go too
   saveFeats();
   audio.stopAll(0.2);
@@ -3657,16 +3792,16 @@ window.addEventListener('keydown', (e) => {
   } else if (ammoKey) {
     if (!e.repeat) setAmmo(AMMO_IDS[Number(ammoKey[1]) - 1]);
   }
-  // Holding a fire key keeps firing whenever the guns reload.
-  else if (k === 'q' || k === 'j') playerFire(-1);
-  else if (k === 'e' || k === 'l') playerFire(1);
+  // Holding a fire key keeps firing whenever the guns reload; a press while they load is queued or says
+  // "Loading…" (fireInput).
+  else if (k === 'q' || k === 'j') fireInput(-1, e.repeat);
+  else if (k === 'e' || k === 'l') fireInput(1, e.repeat);
   else if (k === ' ') {
     // (No gun crew fires during a boarding; Space skips the brawl instead.)
     if (boarding.phase === 'brawl') {
       if (!e.repeat) boarding.skip();
     } else {
-      playerFire(-1);
-      playerFire(1);
+      fireBoth(e.repeat);
     }
   }
 });
@@ -3766,8 +3901,8 @@ for (const btn of holdButtons) {
 const TAP_ACTIONS = {
   sailUp: () => changeSail(1),
   sailDown: () => changeSail(-1),
-  firePort: () => playerFire(-1),
-  fireStar: () => playerFire(1),
+  firePort: () => fireInput(-1),
+  fireStar: () => fireInput(1),
   // The act pad: cycle the ammo; Board (grapple / heave / cut, wired with the boarding set-piece).
   ammo: () => {
     if (state.mode === 'playing') cycleAmmo();
@@ -5014,7 +5149,8 @@ function updateHud(force = false, dt = 0) {
     ui.ammoIcon.innerHTML = AMMO_ICONS[state.ammo];
     ui.touchAmmo.dataset.ammo = state.ammo;
     ui.touchAmmo.innerHTML = `<span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[state.ammo]}</span><span class="ammo-word">${name}</span>`;
-    ui.touchAmmo.setAttribute('aria-label', `Ammo: ${name.toLowerCase()} shot. Change ammo`);
+    ui.touchAmmo.setAttribute('aria-label', `Ammo: ${name.toLowerCase()} shot, ${AMMO_DOES[state.ammo]}. Change ammo`);
+    ui.gunAmmo.title = `${name} shot: ${AMMO_DOES[state.ammo]}`;
     if (shown.ammo !== undefined && shown.ammo !== null && !force) {
       retrigger(ui.gunAmmo, 'bump');
       retrigger(ui.touchAmmo, 'bump');
@@ -5436,6 +5572,9 @@ function syncShip(s, t) {
 // odds on the ship G would board (green tick / gold cutlasses / red "!"), the hook recharging after a boarding.
 function updateTagState(e) {
   e.crewShown = boarding.crewShown(e) ?? crewOf(e);
+  // chain shot's slow: the badge's timer shows the part still to run
+  const f = e.effects;
+  e.tagSlow = f.slow > 0 ? clamp(f.slow / Math.max(f.slowFull || 0, f.slow), 0, 1) : 0;
   e.strikeAt = combat.strikeAt(e.crew0);
   e.tagPulse = e.hp > 0 && e.hp / e.maxHp < STATES.wrecked;
   let icon = e.surrendered ? 'white' : null;
@@ -5478,40 +5617,723 @@ function snapCamera() {
   camera.lookAt(player.x + fwdX(player.h) * CHASE_AHEAD, 1.5, player.z + fwdZ(player.h) * CHASE_AHEAD);
   boom = 1;
   camSide = 0;
+  resetFraming();
 }
 
-// Shorten the boom from the ship to the camera so it never ends up inside land.
-function collideCamera(dt) {
-  const px = player.x;
-  const pz = player.z;
+// Shorten the boom from the ship to the camera (wanted at `want`) so it never ends up inside land.
+// How far along the boom from your ship (3 up) to `want` the camera can go before land is in the way (1: clear).
+// (`margin`: u of extra clearance; `px, pz`: the boom's foot, your ship by default.)
+function boomClear(want, margin = 0, px = player.x, pz = player.z) {
   const py = 3;
-  let hit = 1;
   const N = 24;
   for (let i = 1; i <= N; i++) {
     const f = i / N;
-    const x = px + (chasePos.x - px) * f;
-    const y = py + (chasePos.y - py) * f;
-    const z = pz + (chasePos.z - pz) * f;
-    let blocked = env.heightAt ? env.heightAt(x, z) + 1.5 > y : false;
+    const x = px + (want.x - px) * f;
+    const y = py + (want.y - py) * f;
+    const z = pz + (want.z - pz) * f;
+    let blocked = env.heightAt ? env.heightAt(x, z) + 1.5 + margin > y : false;
     if (!blocked) {
       for (const c of colliders) {
-        if (c.h > y - 0.5 && Math.hypot(x - c.x, z - c.z) < c.r + 1) {
+        if (c.h + margin > y - 0.5 && Math.hypot(x - c.x, z - c.z) < c.r + 1 + margin) {
           blocked = true;
           break;
         }
       }
     }
-    if (blocked) {
-      hit = f;
-      break;
-    }
+    if (blocked) return f;
   }
-  const len = Math.hypot(chasePos.x - px, chasePos.z - pz) || 1;
+  return 1;
+}
+function collideCamera(dt, want = chasePos) {
+  const px = player.x;
+  const pz = player.z;
+  const py = 3;
+  const hit = boomClear(want);
+  const len = Math.hypot(want.x - px, want.z - pz) || 1;
   const target = hit < 1 ? Math.max(5 / len, hit - 1 / len) : 1;
   boom = target < boom ? target : boom + (target - boom) * Math.min(1, dt * 2);
-  camFinal.set(px + (chasePos.x - px) * boom, py + (chasePos.y - py) * boom + (1 - boom) * 5, pz + (chasePos.z - pz) * boom);
+  camFinal.set(px + (want.x - px) * boom, py + (want.y - py) * boom + (1 - boom) * 5, pz + (want.z - pz) * boom);
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Broadside framing (a phone held upright). On a screen taller than it is wide the chase view is too narrow for
+// a broadside: a ship 15 paces off your beam sat off the side of the screen, with her name tag (hull bar, crew
+// pips, the chain badge) and the pops over her. While a ship is the target of a broadside (the one either side's
+// guns would aim at, the ship a volley is flying at, or the one you just hit) and the chase view would not show
+// her whole, with her tag and her pops clear of the HUD, the camera moves to a view that frames her and your
+// ship together: turned toward her (more for a ship abeam or behind the beam, less for one ahead or close by),
+// tilted down a little more, then panned and pulled back exactly as far as it takes (fitFraming), never further
+// than FRAME.far times the chase view's distance. Your ship stays wholly on screen above the controls. When no
+// such view exists, or land would stand between it and your ship, the chase view stays. Steering turns the
+// view with your ship. A screen as wide as it is tall or wider (a desktop window, a phone on its side) keeps
+// the chase view: nothing changes there.
+// Motion: the framing eases in and out on a 1.2 s S-curve and follows with springs (pulling back quickly, coming
+// in slowly). A target on the other side swings the view round only when that frames her clearly better.
+// Reduced motion (SPEC2 §13): it cuts in and out instead, holds still relative to your ship while framed, and
+// cuts again only when she slips out of the view.
+// ---------------------------------------------------------------------------------------------------------
+const FRAME = {
+  maxAspect: 1, // framing only on screens narrower than this (width / height)
+  ramp: 1.2, // s: the S-curve easing the framing in and out
+  pick: 0.5, // s a different ship must stay the one to frame before the view moves to her ...
+  drop: 1.0, // ... and s with no ship to frame before the view lets go
+  hold: 1.6, // s: the ship you fired at or hit stays framed this long after the shot (pops, the HIT mark)
+  need: 0.9, // s: once needed, the framing stays at least this long (no flicker at the edge of need)
+  reach: 30, // u: only a ship this close is framed (further off, the view would have to climb too high)
+  astern: 2.45, // rad: a ship further round toward your stern than this is not framed (no broadside bears)
+  give: 0.25, // s: no view fits her this long, so the framing gives up ...
+  rest: 1.2, // ... and waits this long before it tries again (also after land got in the way)
+  yawMax: 0.9, // rad: the most the view turns toward her (on a screen at most 0.6 as wide as tall)
+  yawGain: 0.62, // the turn as a share of her bearing off your bow (abeam: about yawMax)
+  yawNear: 10, // u: closer than yawFar the turn shrinks, to yawClose of it at yawNear (a boarding's view, from her
+  yawFar: 18, // far side, is then a shorter swing away)
+  yawClose: 0,
+  pitch: 0.48, // rad: the framing view's tilt (the chase view's is about 0.33)
+  near: 0.95, // the framing view's distance: at least this many times the chase view's ...
+  far: 2.5, // ... and at most this many
+  slack: 1.06, // pulled back this much more than the tightest fit (room for the springs)
+  pan: 0.35, // the look point pans at most this share of the ships' distance apart (+ 3 u) from between them
+  margin: 8, // px kept clear at the screen's sides and of the HUD
+  popRoom: 96, // px above a pop's anchor kept clear of the top HUD (the word and its rise)
+  popSide: 24, // px each side of a pop's anchor
+  turn: 1.1, // rad/s: the most the view's turn toward her changes
+  yawT: 0.35, // s: spring time constants: the turn, the pan, pulling back, coming in, the tilt
+  panT: 0.3,
+  outT: 0.2,
+  inT: 0.8,
+  pitchT: 0.3,
+  outRate: 0.8, // the most the distance grows (pulling back) a second, as a share of it ...
+  inRate: 0.4, // ... and shrinks (coming in)
+  snapW: 0.05, // easing in from a weight this small (or none), the view starts at the solution
+  swap: 0.8, // a target on the other side: swing round only if that view is this much closer (or the other fails)
+  landMargin: 3, // u: land this close under the framing view's line to your ship counts as in the way ...
+  landAhead: 0.8, // ... now or this many s ahead
+  rmGap: 1.5, // reduced motion: s between cuts at least
+  rmSlip: 0.25, // reduced motion: s she must stay outside the held view before it cuts again
+};
+const frameCam = new THREE.PerspectiveCamera(55, 1, 0.5, 900);
+const framing = {
+  shot: null, // the ship a volley is flying at, or you just hit ...
+  shotUntil: -Infinity, // ... until (simulated time)
+  focus: null, // the ship being framed (or about to be)
+  cand: null, // a different ship that is now the one to frame ...
+  candT: 0, // ... for this many s
+  sign: 1, // the side the view turns to (1: starboard)
+  need: 0, // s the framing stays needed
+  rest: 0, // s the framing stays given up (no view fits, land in the way)
+  bad: 0, // s no view has fitted her
+  want: false, // the framing view should be on
+  ok: false, // a framing view fits her this frame
+  u: 0, // 0..1, moving linearly toward 1 (wanted) or 0 at 1 / FRAME.ramp a second
+  w: 0, // u on an S-curve: how much of the framing view is used
+  on: false, // the view below holds a solution
+  // the view in use: the turn toward starboard of the chase view's heading, the tilt, the distance from the look
+  // point and the look point: (wx, wz) from your ship (the world's axes: a turn of yours doesn't swing it round
+  // her), or (lat, along) in the chase view's frame (reduced motion: the view held still relative to your ship); y
+  yaw: 0,
+  pitch: 0,
+  dist: 0,
+  wx: 0,
+  wz: 0,
+  lat: 0,
+  along: 0,
+  y: 0,
+  tYaw: 0, // the turn and tilt wanted now
+  tPitch: 0,
+  opt: 0, // which way round the hanging HUD (the minimap) her hull and tag go (solveFraming)
+  miss: 0, // how far the settled chase view misses her (NDC; 0: it shows her)
+  lastCut: -Infinity, // reduced motion: when the view last cut
+  slip: 0, // reduced motion: s she has been outside the held view
+  hud: null, // the HUD's bands (cached; resize and a timer refresh them)
+  hudAt: -Infinity,
+};
+// Keep `ship` framed while a volley flies at her (`flight` s) and her pops play.
+function frameShip(ship, flight = 0) {
+  if (!ship || ship.kind !== 'enemy') return;
+  if (framing.shot !== ship || framing.shotUntil < state.time + flight + FRAME.hold) {
+    framing.shot = ship;
+    framing.shotUntil = state.time + flight + FRAME.hold;
+  }
+}
+function resetFraming() {
+  framing.shot = null;
+  framing.shotUntil = -Infinity;
+  framing.focus = null;
+  framing.cand = null;
+  framing.candT = 0;
+  framing.need = 0;
+  framing.rest = 0;
+  framing.bad = 0;
+  framing.want = false;
+  framing.ok = false;
+  framing.u = 0;
+  framing.w = 0;
+  framing.on = false;
+  framing.miss = 0;
+  framing.slip = 0;
+  framing.lastCut = -Infinity;
+  framing.hud = null;
+}
+// How tall the screen is, 0..1: 0 for one at least as wide as tall (no framing), 1 at 0.6 as wide as tall or less.
+function framingTall() {
+  return camera.aspect < FRAME.maxAspect ? clamp((FRAME.maxAspect - camera.aspect) / 0.4, 0, 1) : 0;
+}
+// Is she still worth framing: afloat (or only just going down), not captured nor gone.
+function framingLive(e) {
+  return !!e && enemies.includes(e) && !e.escaped && !e.captured && (e.hp > 0 || e.sinking < 1.5);
+}
+// The ship to frame now, or null: the one you fired at / just hit (while she is still worth showing and in
+// reach), else the target either side would aim at, if in reach (the current one while she still is one; one
+// in a firing arc first, then the nearest).
+function framingFocus() {
+  if (!player || player.sinking || state.intro > 0 || boarding.active || state.mode === 'dock') return null;
+  const s = framing.shot;
+  if (s && state.time < framing.shotUntil && framingLive(s) && Math.hypot(s.x - player.x, s.z - player.z) < FRAME.reach) return s;
+  const port = aimTarget(-1);
+  const star = aimTarget(1);
+  const list = [port, star].filter((a) => a.target && Math.hypot(a.target.x - player.x, a.target.z - player.z) < FRAME.reach);
+  if (!list.length) return null;
+  const cur = list.find((a) => a.target === framing.focus);
+  if (cur) return cur.target;
+  list.sort((a, b) => (b.inArc ? 1 : 0) - (a.inArc ? 1 : 0) || Math.hypot(a.target.x - player.x, a.target.z - player.z) - Math.hypot(b.target.x - player.x, b.target.z - player.z));
+  return list[0].target;
+}
+// The HUD the framing keeps clear of, as bands (CSS px): `row` is the bottom of the top row of cards, `top` the
+// bottom of everything at the top (the minimap, the boss bar, the goal pill and the boarding strip hang below the
+// row), [xa, xb] the widest stretch under the row with nothing hanging there; `bottom` the top of the controls at
+// the bottom (the touch pads, the gun card). Margins included. Measured at most twice a second (resize() forgets
+// it). (The hint bubble is left out: it comes and goes, and pumping the view in and out with it would be worse.)
+function framingHud() {
+  const now = performance.now();
+  if (framing.hud && now - framing.hudAt < 500) return framing.hud;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const m = FRAME.margin;
+  const rows = [];
+  const hang = [];
+  const low = [];
+  const add = (el, list) => {
+    if (!el || (el.classList && el.classList.contains('hidden'))) return;
+    const r = el.getBoundingClientRect();
+    if (r.width < 1 || r.height < 1 || r.bottom <= 0 || r.top >= H) return;
+    const b = { l: r.left, r: r.right, t: r.top, b: r.bottom };
+    if (list) list.push(b);
+    else ((r.top + r.bottom) / 2 < H / 2 ? hang : low).push(b);
+  };
+  for (const el of document.querySelectorAll('#hud .hud-top > *')) add(el, rows);
+  for (const el of [ui.minimap, ui.boss, ui.objective, ui.boardingStrip]) add(el, null);
+  for (const el of document.querySelectorAll('#touch .pad')) add(el, null);
+  add(document.querySelector('#hud .hud-bottom .card.guns'), null);
+  let row = m;
+  for (const r of rows) row = Math.max(row, r.b + m);
+  let top = row;
+  for (const r of hang) top = Math.max(top, r.b + m);
+  let bottom = H - m;
+  for (const r of low) bottom = Math.min(bottom, r.t - m);
+  // the widest stretch of the screen under the row with nothing hanging below it
+  const cuts = hang.filter((r) => r.b + m > row).map((r) => [r.l - m, r.r + m]).sort((a, b) => a[0] - b[0]);
+  let xa = m;
+  let xb = m;
+  let x = m;
+  for (const [l, r] of cuts) {
+    if (Math.min(l, W - m) - x > xb - xa) {
+      xa = x;
+      xb = Math.min(l, W - m);
+    }
+    x = Math.max(x, r);
+  }
+  if (W - m - x > xb - xa) {
+    xa = x;
+    xb = W - m;
+  }
+  framing.hud = { W, H, row, top, bottom: Math.max(bottom, top + 1), xa, xb };
+  framing.hudAt = now;
+  return framing.hud;
+}
+
+// The points a framing view must keep on screen, in the view's frame about a look point L0 (x right, y up, z
+// ahead): her hull's corners (waterline and deck) [group 0], her tag's anchor [1], the spot her pops start from
+// [2] and your hull's corners [3]. Each gets the box (NDC) it must project into from framingBoxes. Her tag and
+// her pops keep a constant size on screen, so they are their anchor with the box shrunk by how far they reach.
+const FP = [];
+let fpN = 0;
+const _fb = { r: new THREE.Vector3(), u: new THREE.Vector3(), f: new THREE.Vector3() };
+let fpTag = null; // her tag's reach (CSS px each way from its anchor) while collected
+function fpAdd(x, y, z, g, L0, B) {
+  const p = FP[fpN] || (FP[fpN] = { x: 0, y: 0, z: 0, g: 0, xlo: 0, xhi: 0, ylo: 0, yhi: 0 });
+  const dx = x - L0.x;
+  const dy = y - L0.y;
+  const dz = z - L0.z;
+  p.x = dx * B.r.x + dy * B.r.y + dz * B.r.z;
+  p.y = dx * B.u.x + dy * B.u.y + dz * B.u.z;
+  p.z = dx * B.f.x + dy * B.f.y + dz * B.f.z;
+  p.g = g;
+  fpN++;
+}
+function fpHull(s, g, L0, B) {
+  const L = s.type.len / 2;
+  const W2 = s.type.wid / 2;
+  const fx = fwdX(s.h);
+  const fz = fwdZ(s.h);
+  const rx = rightX(s.h);
+  const rz = rightZ(s.h);
+  const y0 = s.mesh.position.y;
+  const deck = y0 + (s.mesh.userData.deckY ?? 1.4) + 0.4;
+  for (const a of [-L, L]) {
+    for (const c of [-W2, W2]) {
+      fpAdd(s.x + fx * a + rx * c, y0, s.z + fz * a + rz * c, g, L0, B);
+      fpAdd(s.x + fx * a + rx * c, deck, s.z + fz * a + rz * c, g, L0, B);
+    }
+  }
+}
+function framingCollect(e, L0, B) {
+  fpN = 0;
+  fpHull(e, 0, L0, B);
+  const f = tags.frame(e, camera);
+  fpTag = null;
+  if (f) {
+    const k = f.px * 1.08; // (a little more: off the view's axis a billboard looks a touch bigger)
+    fpTag = { l: -f.l * k, r: f.r * k, t: f.t * k, b: -f.b * k };
+    fpAdd(f.x, f.y, f.z, 1, L0, B);
+  }
+  fpAdd(e.x, popHeight(e), e.z, 2, L0, B);
+  fpHull(player, 3, L0, B);
+  return fpN;
+}
+// The boxes for one choice of where her hull (bit 1) and her tag and pops (bit 2) go: beside what hangs below
+// the top row (under the row, within [xa, xb]) or below it all (anywhere across).
+function framingBoxes(hud, opt) {
+  const { W, H } = hud;
+  const m = FRAME.margin;
+  const X = (px) => (2 * px) / W - 1;
+  const Y = (py) => 1 - (2 * py) / H;
+  for (let i = 0; i < fpN; i++) {
+    const p = FP[i];
+    const beside = p.g === 0 ? opt & 1 : p.g === 1 || p.g === 2 ? opt & 2 : 0;
+    const l = beside ? hud.xa : m;
+    const r = beside ? hud.xb : hud.W - m;
+    const t = beside ? hud.row : hud.top;
+    const b = hud.bottom;
+    if (p.g === 1 && fpTag) {
+      p.xlo = X(l + fpTag.l);
+      p.xhi = X(r - fpTag.r);
+      p.yhi = Y(t + fpTag.t);
+      p.ylo = Y(b - fpTag.b);
+    } else if (p.g === 2) {
+      p.xlo = X(l + FRAME.popSide);
+      p.xhi = X(r - FRAME.popSide);
+      p.yhi = Y(t + FRAME.popRoom);
+      p.ylo = Y(b);
+    } else {
+      p.xlo = X(l);
+      p.xhi = X(r);
+      p.yhi = Y(t);
+      p.ylo = Y(b);
+    }
+    if (p.xhi < p.xlo) p.xhi = p.xlo = (p.xlo + p.xhi) / 2;
+    if (p.yhi < p.ylo) p.yhi = p.ylo = (p.ylo + p.yhi) / 2;
+  }
+}
+// The closest framing view along the view's direction: the camera at L0 + a·right + b·up − D·ahead. With the pan
+// in the view's own plane every point keeps its depth (z + D), so each box is a pair of straight-line limits on
+// (a, D) or (b, D): the smallest D for which some pan fits every point comes out exactly from the points two by
+// two, the pan limits and staying in front of the camera. Fills out { D, a, b }; false if none fits by Dmax.
+function fitFraming(tH, tV, Dmin, Dmax, panMax, out) {
+  let D = Dmin;
+  for (let i = 0; i < fpN; i++) {
+    const p = FP[i];
+    D = Math.max(D, 2 - p.z);
+    if (p.xhi > 1e-6) D = Math.max(D, (p.x - panMax) / (p.xhi * tH) - p.z);
+    if (p.xlo < -1e-6) D = Math.max(D, (p.x + panMax) / (p.xlo * tH) - p.z);
+    if (p.yhi > 1e-6) D = Math.max(D, (p.y - panMax) / (p.yhi * tV) - p.z);
+    if (p.ylo < -1e-6) D = Math.max(D, (p.y + panMax) / (p.ylo * tV) - p.z);
+    for (let j = 0; j < fpN; j++) {
+      const q = FP[j];
+      // p's right limit against q's left limit (and up / down)
+      let den = p.xhi - q.xlo;
+      let num = (p.x - q.x) / tH - (p.xhi * p.z - q.xlo * q.z);
+      if (den > 1e-6) D = Math.max(D, num / den);
+      else if (num > 1e-6) return false;
+      den = p.yhi - q.ylo;
+      num = (p.y - q.y) / tV - (p.yhi * p.z - q.ylo * q.z);
+      if (den > 1e-6) D = Math.max(D, num / den);
+      else if (num > 1e-6) return false;
+    }
+  }
+  if (!(D <= Dmax)) return false;
+  D = Math.min(Dmax, D * FRAME.slack + 0.3);
+  let alo = -panMax;
+  let ahi = panMax;
+  let blo = -panMax;
+  let bhi = panMax;
+  for (let i = 0; i < fpN; i++) {
+    const p = FP[i];
+    const z = p.z + D;
+    alo = Math.max(alo, p.x - p.xhi * tH * z);
+    ahi = Math.min(ahi, p.x - p.xlo * tH * z);
+    blo = Math.max(blo, p.y - p.yhi * tV * z);
+    bhi = Math.min(bhi, p.y - p.ylo * tV * z);
+  }
+  // the pan: as near none as the middle of what fits allows (room both ways for the springs)
+  out.D = D;
+  out.a = clamp(0, alo + (ahi - alo) * 0.3, ahi - (ahi - alo) * 0.3);
+  out.b = clamp(0, blo + (bhi - blo) * 0.3, bhi - (bhi - blo) * 0.3);
+  return true;
+}
+// The view's frame for a world yaw and a tilt down.
+function framingBasis(yaw, pitch, B = _fb) {
+  const cp = Math.cos(pitch);
+  const sp = Math.sin(pitch);
+  B.f.set(Math.sin(yaw) * cp, -sp, Math.cos(yaw) * cp);
+  B.r.set(-Math.cos(yaw), 0, Math.sin(yaw));
+  B.u.set(sp * Math.sin(yaw), cp, sp * Math.cos(yaw));
+  return B;
+}
+// The framing view of ship e turned `yaw` toward starboard of the chase view (and tilted `pitch`): the closest
+// that fits, trying her hull and her tag on either side of what hangs under the top row (the current choice
+// unless another is clearly closer). Fills out { D, look (world), opt }; false if none fits.
+const _L0 = new THREE.Vector3();
+const _fit = { D: 0, a: 0, b: 0 };
+function solveFraming(e, yaw, pitch, out) {
+  const hud = framingHud();
+  const B = framingBasis(_base.yaw - yaw, pitch);
+  _L0.set((player.x + e.x) / 2, 2, (player.z + e.z) / 2);
+  framingCollect(e, _L0, B);
+  const tV = Math.tan((camera.fov * Math.PI) / 360);
+  const tH = tV * camera.aspect;
+  const Dmin = _base.dist * FRAME.near;
+  const Dmax = _base.dist * FRAME.far;
+  const panMax = FRAME.pan * Math.hypot(e.x - player.x, e.z - player.z) + 3;
+  let best = Infinity;
+  let bestOpt = -1;
+  let a = 0;
+  let b = 0;
+  for (const opt of [framing.opt, 0, 1, 2, 3]) {
+    if (opt !== framing.opt && bestOpt === framing.opt && best < Infinity) {
+      // (another choice must be clearly closer to win over the current one)
+      framingBoxes(hud, opt);
+      if (fitFraming(tH, tV, Dmin, Dmax, panMax, _fit) && _fit.D < best * 0.92) {
+        best = _fit.D;
+        bestOpt = opt;
+        a = _fit.a;
+        b = _fit.b;
+      }
+      continue;
+    }
+    framingBoxes(hud, opt);
+    if (fitFraming(tH, tV, Dmin, Dmax, panMax, _fit) && _fit.D < best) {
+      best = _fit.D;
+      bestOpt = opt;
+      a = _fit.a;
+      b = _fit.b;
+    }
+  }
+  if (bestOpt < 0) return false;
+  out.D = best;
+  out.opt = bestOpt;
+  out.look.copy(_L0).addScaledVector(B.r, a).addScaledVector(B.u, b);
+  return true;
+}
+// How far outside the free part of the screen ship e is (her hull, tag and pops; your hull too if `mine`) as
+// `cam` sees her: 0 when all fit (each group either side of what hangs under the top row), up to 1 when off.
+function framingMiss(e, cam, mine = false) {
+  const hud = framingHud();
+  cam.updateMatrixWorld(true);
+  _fb.r.setFromMatrixColumn(cam.matrixWorld, 0);
+  _fb.u.setFromMatrixColumn(cam.matrixWorld, 1);
+  _fb.f.setFromMatrixColumn(cam.matrixWorld, 2).negate();
+  framingCollect(e, cam.position, _fb);
+  const tV = Math.tan((cam.fov * Math.PI) / 360);
+  const tH = tV * cam.aspect;
+  const groups = mine ? 4 : 3;
+  let worst = 0;
+  for (let g = 0; g < groups; g++) {
+    let least = Infinity;
+    for (const opt of g === 3 ? [0] : [0, 3]) {
+      framingBoxes(hud, opt);
+      let miss = 0;
+      for (let i = 0; i < fpN; i++) {
+        const p = FP[i];
+        if (p.g !== g) continue;
+        if (p.z < 0.5) {
+          miss = 1;
+          break;
+        }
+        const X = p.x / (p.z * tH);
+        const Y = p.y / (p.z * tV);
+        miss = Math.max(miss, p.xlo - X, X - p.xhi, p.ylo - Y, Y - p.yhi);
+      }
+      least = Math.min(least, miss);
+    }
+    worst = Math.max(worst, Math.min(1, least));
+  }
+  return worst;
+}
+// Point the scratch camera from `look` back along (world yaw, pitch) by `dist`.
+function aimFrameCam(look, yaw, pitch, dist) {
+  const ch = Math.cos(pitch);
+  frameCam.position.set(look.x - Math.sin(yaw) * ch * dist, look.y + Math.sin(pitch) * dist, look.z - Math.cos(yaw) * ch * dist);
+  frameCam.lookAt(look);
+  frameCam.updateMatrixWorld(true);
+}
+// How far the framing view turns toward ship e (radians toward starboard, before the side's sign): a share of
+// her bearing off your bow, at most yawMax, less when she is close (a boarding's view starts near the chase
+// view's), scaled by how tall the screen is.
+function framingYaw(e, tall) {
+  const r = relative(player, e.x, e.z);
+  const near = clamp((r.dist - FRAME.yawNear) / (FRAME.yawFar - FRAME.yawNear), 0, 1);
+  return Math.min(FRAME.yawMax, Math.abs(Math.atan2(r.lat, r.along)) * FRAME.yawGain) * (FRAME.yawClose + (1 - FRAME.yawClose) * near) * tall;
+}
+// Where the framing view's camera stands (world), from a solution's look point and distance.
+function framingEye(yaw, pitch, dist, look, out) {
+  const wy = _base.yaw - yaw;
+  const ch = Math.cos(pitch);
+  return out.set(look.x - Math.sin(wy) * ch * dist, look.y + Math.sin(pitch) * dist, look.z - Math.cos(wy) * ch * dist);
+}
+// Is there land between your ship and ship e's framing view turned `yaw` (none fits: true as well)?
+const _alt = { D: 0, opt: 0, look: new THREE.Vector3() };
+function framingLandedAt(e, yaw, pitch) {
+  return !solveFraming(e, yaw, pitch, _alt) || framingLanded(framingEye(yaw, pitch, _alt.D, _alt.look, _eye));
+}
+// Land between your ship and a framing camera at `eye`, now or a moment ahead (with a margin): the view would
+// end up squeezed in at your rigging.
+const _eyeAhead = new THREE.Vector3();
+function framingLanded(eye) {
+  if (!env) return false;
+  if (boomClear(eye, FRAME.landMargin) < 0.97) return true;
+  const t = FRAME.landAhead;
+  const vx = fwdX(player.h) * player.speed * t;
+  const vz = fwdZ(player.h) * player.speed * t;
+  _eyeAhead.set(eye.x + vx, eye.y, eye.z + vz);
+  return boomClear(_eyeAhead, FRAME.landMargin, player.x + vx, player.z + vz) < 0.97;
+}
+
+const framed = { D: 0, opt: 0, look: new THREE.Vector3() };
+const _keep = { D: 0, opt: 0, look: new THREE.Vector3() };
+const _base = { yaw: 0, pitch: 0, dist: 0, look: new THREE.Vector3() };
+const camPos2 = new THREE.Vector3();
+const camLook2 = new THREE.Vector3();
+const _settledLook = new THREE.Vector3();
+const _eye = new THREE.Vector3();
+// The turn wanted for ship e (and which side): her own side's, unless the view already turns the other way and
+// her own side's view would not be clearly closer (two targets, one each side: the view doesn't swing to and
+// fro). Sets framing.tYaw / tPitch / sign; false if no view fits her.
+function framingAim(e, tall, fresh) {
+  const r = relative(player, e.x, e.z);
+  const own = Math.sign(r.lat) || framing.sign || 1;
+  framing.tPitch = _base.pitch + (FRAME.pitch - _base.pitch) * tall;
+  const ownYaw = own * framingYaw(e, tall);
+  if (fresh || own === framing.sign) {
+    framing.sign = own;
+    framing.tYaw = ownYaw;
+    return true;
+  }
+  const keep = solveFraming(e, framing.yaw, framing.tPitch, _keep);
+  const swing = solveFraming(e, ownYaw, framing.tPitch, framed);
+  if (swing && (!keep || framed.D < FRAME.swap * _keep.D)) {
+    framing.sign = own;
+    framing.tYaw = ownYaw;
+    return true;
+  }
+  framing.tYaw = framing.yaw;
+  return keep;
+}
+// Store a solution (world look point, distance) as the view in use.
+function framingSet(yaw, pitch, sol) {
+  const fx = Math.sin(_base.yaw);
+  const fz = Math.cos(_base.yaw);
+  const ox = sol.look.x - player.x;
+  const oz = sol.look.z - player.z;
+  framing.yaw = yaw;
+  framing.pitch = pitch;
+  framing.dist = sol.D;
+  framing.wx = ox;
+  framing.wz = oz;
+  framing.lat = -ox * fz + oz * fx;
+  framing.along = ox * fx + oz * fz;
+  framing.y = sol.look.y;
+  framing.opt = sol.opt;
+  framing.on = true;
+}
+// The view in use, rebuilt about your ship and the chase view's heading, into camPos2 / camLook2; with a weight
+// w < 1, part way from the chase view: the turn, tilt, distance and look point blended (an orbit, which keeps
+// your ship in view, not a straight line between the two cameras).
+function framingPose(w = 1) {
+  const fx = Math.sin(_base.yaw);
+  const fz = Math.cos(_base.yaw);
+  if (reducedMotion()) camLook2.set(player.x + fx * framing.along - fz * framing.lat, framing.y, player.z + fz * framing.along + fx * framing.lat);
+  else camLook2.set(player.x + framing.wx, framing.y, player.z + framing.wz);
+  if (w < 1) camLook2.lerpVectors(_base.look, camLook2, w);
+  const pitch = _base.pitch + (framing.pitch - _base.pitch) * w;
+  const dist = _base.dist + (framing.dist - _base.dist) * w;
+  framingEye(framing.yaw * w, pitch, dist, camLook2, camPos2);
+}
+
+// Each frame (not while paused): pick the ship, decide whether the chase view needs help, solve and move the view.
+// Returns the framing's weight (0: the chase view as it was) and writes the camera's pose with it into camPos2 /
+// camLook2.
+function updateFraming(dt, paused, chaseLook, side = camSide) {
+  if (!player) return 0;
+  // the chase view as a yaw, pitch and distance about its look point
+  const dx = chaseLook.x - chasePos.x;
+  const dy = chaseLook.y - chasePos.y;
+  const dz = chaseLook.z - chasePos.z;
+  const hd = Math.hypot(dx, dz) || 1;
+  _base.yaw = Math.atan2(dx, dz);
+  _base.pitch = Math.atan2(-dy, hd);
+  _base.dist = Math.hypot(hd, dy);
+  _base.look.copy(chaseLook);
+  const tall = framingTall();
+  if (tall <= 0) {
+    // a screen as wide as it is tall or wider: the chase view, always
+    if (framing.on || framing.w > 0 || framing.focus) resetFraming();
+    return 0;
+  }
+  if (!paused) stepFraming(dt, side, tall);
+  if (!framing.on || framing.w <= 0) return 0;
+  framingPose(framing.w);
+  return framing.w;
+}
+function stepFraming(dt, side, tall) {
+  const rm = reducedMotion();
+  // 1. The ship to frame. A different one must stay the one for FRAME.pick s first, unless nothing is framed,
+  // the framed one is gone, or you just fired at her.
+  const cand = framingFocus();
+  if (cand !== framing.focus) {
+    if (framing.cand !== cand) {
+      framing.cand = cand;
+      framing.candT = 0;
+    }
+    framing.candT += dt;
+    const now = !framing.focus || !framingLive(framing.focus) || framing.w <= 0 || (!!cand && cand === framing.shot && state.time < framing.shotUntil);
+    if (now || framing.candT >= (cand ? FRAME.pick : FRAME.drop)) {
+      framing.focus = cand;
+      framing.cand = null;
+      framing.candT = 0;
+      framing.bad = 0;
+    }
+  } else {
+    framing.cand = null;
+    framing.candT = 0;
+  }
+  const e = framing.focus;
+  // 2. Needed while the chase view, settled (its side-look eased all the way), would leave her hull, tag or
+  // pops off screen or under the HUD. A ship framed as she goes down stays framed while she sinks (her pops
+  // play out); a framing never starts on a ship already going down.
+  frameCam.fov = camera.fov;
+  frameCam.aspect = camera.aspect;
+  frameCam.updateProjectionMatrix();
+  framing.miss = 0;
+  const sinking = !!e && e.sinking > 0;
+  if (e && !sinking) {
+    const fx = fwdX(player.h);
+    const fz = fwdZ(player.h);
+    _settledLook.set(player.x + fx * CHASE_AHEAD + rightX(player.h) * side, 1.5, player.z + fz * CHASE_AHEAD + rightZ(player.h) * side);
+    const sdx = _settledLook.x - (player.x - fx * CHASE_BACK);
+    const sdz = _settledLook.z - (player.z - fz * CHASE_BACK);
+    const sdy = _settledLook.y - CHASE_UP;
+    const sh = Math.hypot(sdx, sdz) || 1;
+    aimFrameCam(_settledLook, Math.atan2(sdx, sdz), Math.atan2(-sdy, sh), Math.hypot(sh, sdy));
+    framing.miss = framingMiss(e, frameCam);
+    if (framing.miss > 0.004) framing.need = FRAME.need;
+  }
+  if (!sinking) framing.need = e ? Math.max(0, framing.need - dt) : 0;
+  framing.rest = Math.max(0, framing.rest - dt);
+  // 3. The framing view for her: which way it turns, then the closest view that fits, at the turn and tilt in
+  // use (so the pan and zoom always fit the view as it is shown).
+  const fresh = !framing.on || framing.w <= FRAME.snapW;
+  let ok = false;
+  if (e && (!sinking || framing.want) && framing.rest <= 0) {
+    // (round toward your stern, where no broadside bears, she is not framed)
+    const r = relative(player, e.x, e.z);
+    ok = Math.abs(Math.atan2(r.lat, r.along)) <= FRAME.astern && framingAim(e, tall, rm ? framing.w <= 0 : fresh);
+    // Land between the view wanted and your ship (an island off the other beam): the view not turned, or turned
+    // the other way round (her in front of your ship), if that one is clear.
+    if (ok && framingLandedAt(e, framing.tYaw, framing.tPitch)) {
+      ok = false;
+      for (const alt of [0, -framing.tYaw]) {
+        if (!framingLandedAt(e, alt, framing.tPitch)) {
+          framing.tYaw = alt;
+          ok = true;
+          break;
+        }
+      }
+    }
+    if (ok) {
+      if (!rm && !fresh) {
+        const turn = FRAME.turn * dt;
+        framing.yaw += clamp((framing.tYaw - framing.yaw) * (1 - Math.exp(-dt / FRAME.yawT)), -turn, turn);
+        framing.pitch += (framing.tPitch - framing.pitch) * (1 - Math.exp(-dt / FRAME.pitchT));
+        ok = solveFraming(e, framing.yaw, framing.pitch, framed);
+      } else {
+        ok = solveFraming(e, framing.tYaw, framing.tPitch, framed);
+      }
+    }
+    // (and the view as it is shown, part way there: land in its way and the framing gives up for a while)
+    if (ok && framingLanded(framingEye(rm || fresh ? framing.tYaw : framing.yaw, rm || fresh ? framing.tPitch : framing.pitch, framed.D, framed.look, _eye))) {
+      ok = false;
+      framing.rest = FRAME.rest;
+    }
+    framing.bad = ok ? 0 : framing.bad + dt;
+    if (framing.bad >= FRAME.give) {
+      framing.rest = FRAME.rest;
+      framing.bad = 0;
+    }
+  }
+  framing.ok = ok;
+  if (!e || framing.rest > 0) framing.want = false;
+  else if (ok) framing.want = framing.need > 0;
+  // (else: no view fitted her for a moment, or she is going down unframed: as it was)
+  // 4. Move the view.
+  if (rm) {
+    // Reduced motion: cut in, hold still relative to your ship, cut again only when she slips out, cut out.
+    const canCut = state.time - framing.lastCut >= FRAME.rmGap;
+    const cut = () => {
+      framingSet(framing.tYaw, framing.tPitch, framed);
+      framing.lastCut = state.time;
+      framing.slip = 0;
+    };
+    if (framing.want && framing.w < 1) {
+      if (ok && canCut) {
+        cut();
+        framing.u = framing.w = 1;
+      }
+    } else if (!framing.want && framing.w > 0) {
+      if (canCut) {
+        framing.u = framing.w = 0;
+        framing.lastCut = state.time;
+      }
+    } else if (framing.want && ok && e) {
+      framingPose();
+      frameCam.position.copy(camPos2);
+      frameCam.lookAt(camLook2);
+      framing.slip = framingMiss(e, frameCam, true) > 0.02 ? framing.slip + dt : 0;
+      if (framing.slip >= FRAME.rmSlip && canCut) cut();
+    }
+    return;
+  }
+  if (ok) {
+    if (fresh) {
+      framingSet(framing.tYaw, framing.tPitch, framed);
+    } else {
+      // springs: the pan (in the world's axes: your turning doesn't drag it), pulling back quickly, coming in slowly
+      const kp = 1 - Math.exp(-dt / FRAME.panT);
+      const kd = 1 - Math.exp(-dt / (framed.D > framing.dist ? FRAME.outT : FRAME.inT));
+      framing.wx += (framed.look.x - player.x - framing.wx) * kp;
+      framing.wz += (framed.look.z - player.z - framing.wz) * kp;
+      framing.y += (framed.look.y - framing.y) * kp;
+      const dd = (framed.D - framing.dist) * kd;
+      framing.dist += clamp(dd, -FRAME.inRate * framing.dist * dt, FRAME.outRate * framing.dist * dt);
+      framing.opt = framed.opt;
+    }
+  }
+  const step = dt / FRAME.ramp;
+  framing.u = framing.want && framing.on ? Math.min(1, framing.u + step) : Math.max(0, framing.u - step);
+  const u = framing.u;
+  framing.w = u * u * u * (u * (u * 6 - 15) + 10); // (smootherstep: it starts and ends at rest)
+}
+
+const camWant = new THREE.Vector3();
 function updateCamera(dt, paused) {
   if (player) {
     const fx = fwdX(player.h);
@@ -5520,8 +6342,6 @@ function updateCamera(dt, paused) {
     chasePos.x += (player.x - fx * CHASE_BACK - chasePos.x) * k;
     chasePos.z += (player.z - fz * CHASE_BACK - chasePos.z) * k;
     chasePos.y += (CHASE_UP - chasePos.y) * k;
-    collideCamera(dt);
-    camera.position.copy(camFinal);
 
     // Ease the view sideways toward the nearest pirate in range, so a broadside target stays on screen.
     let want = 0;
@@ -5540,6 +6360,16 @@ function updateCamera(dt, paused) {
       1.5,
       player.z + fz * CHASE_AHEAD + rightZ(player.h) * camSide
     );
+    // A broadside's target that the chase view would leave off screen (narrow screens): frame her and your
+    // ship together (updateFraming), blended in and out.
+    const fw = updateFraming(dt, paused, camLook, want);
+    camWant.copy(chasePos);
+    if (fw > 0) {
+      camWant.copy(camPos2);
+      camLook.copy(camLook2);
+    }
+    collideCamera(dt, camWant);
+    camera.position.copy(camFinal);
 
     if (state.intro > 0) {
       // Level fly-in: start high above and behind, looking out over the level, then swoop down.
@@ -5808,6 +6638,20 @@ window.__game = {
   },
   // Tags (tags.js): what a ship's tag shows, with the crew pips read back from the pip InstancedMesh.
   tagInfo: (ship) => tags.read(ship),
+  // Where a ship's tag is drawn on screen (CSS px { l, t, r, b }), or null while it is hidden.
+  tagRect: (ship) => tags.rect(ship, camera),
+  // The battle camera's broadside framing: the ship framed (or null), how much of the framing view is in use
+  // (0..1, eased), whether the chase view needs it now (and how far it misses her), whether a view fits her
+  // (ok) and is wanted, the side it turns to, the s it rests after giving up, and the view in use relative to
+  // your ship and the chase view's heading (pose: the turn toward starboard, tilt, distance, look point).
+  get framing() {
+    const f = framing;
+    return { focus: f.focus, w: f.w, need: f.need > 0, miss: f.miss || 0, ok: f.ok, want: f.want, on: f.on, dist: f.dist, yaw: f.yaw, sign: f.sign, rest: f.rest, pose: { yaw: f.yaw, pitch: f.pitch, dist: f.dist, wx: f.wx, wz: f.wz, lat: f.lat, along: f.along, y: f.y } };
+  },
+  // Shots queued by a Fire press while that side was loading (fired the moment it is loaded).
+  get fireQueue() {
+    return { port: !!fireQueue.port, star: !!fireQueue.star };
+  },
   get pops() {
     return { count: pops.count };
   },

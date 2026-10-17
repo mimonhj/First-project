@@ -1469,6 +1469,87 @@ body.docked.dragging #game { cursor: grabbing; }
   pointer-events: none;
 }
 
+/* A Fire press while that side is still loading (main.js fireInput): a long wait flashes "Loading…" on the
+   Fire button and over that side's reload bar (the bar's frame flashes too); a shot due within 0.6 s is queued
+   and the button and the bar show a white ring until it goes off. */
+.touch button.fire.queued { box-shadow: 0 0 0 4px #fff, 0 4px 0 4px var(--ink); }
+.gun.queued .bar { box-shadow: 0 0 0 3px #fff, 0 0 0 5px var(--ink); }
+/* the button itself turns ink with "Loading…" across it for a moment */
+.touch button.fire.loading::before {
+  content: "Loading…";
+  position: absolute;
+  inset: -3px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 12px;
+  letter-spacing: 0.02em;
+  color: var(--paper);
+  text-shadow: none;
+  background: var(--ink);
+  border: 3px solid var(--paper);
+  border-radius: 50%;
+  pointer-events: none;
+  opacity: 0;
+  animation: loading-cover 0.9s ease-out both;
+}
+@keyframes loading-cover {
+  0% { opacity: 0; }
+  10%, 75% { opacity: 1; }
+  100% { opacity: 0; }
+}
+/* smaller Fire buttons (62, 56 and 52 px): a smaller "Loading…", so the word fits inside the circle */
+@media (max-width: 380px) {
+  .touch button.fire.loading::before { font-size: 11px; letter-spacing: 0; }
+}
+@media (max-height: 500px) {
+  .touch button.fire.loading::before { font-size: 10.5px; letter-spacing: 0; }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .touch button.fire.loading::before { font-size: 10px; letter-spacing: -0.01em; }
+}
+.gun.loading::before {
+  content: "Loading…";
+  position: absolute;
+  left: 50%;
+  padding: 2px 7px 1px;
+  font-size: 12px;
+  line-height: 1.1;
+  letter-spacing: 0.03em;
+  color: var(--paper);
+  text-shadow: none;
+  background: var(--ink);
+  border: 2px solid var(--paper);
+  border-radius: 999px;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  animation: loading-say 0.9s ease-out both;
+}
+.gun.loading::before { top: -19px; z-index: 1; }
+.gun.loading .bar { animation: loading-bar 0.9s ease-out both; }
+.touch button.fire.loading { animation: loading-dull 0.9s ease-out both; }
+/* (a queued shot's ring wins over the last frames of a "Loading…" cue still playing on that bar) */
+.gun.queued .bar { animation: none; box-shadow: 0 0 0 3px #fff, 0 0 0 5px var(--ink); }
+@keyframes loading-say {
+  0% { opacity: 0; transform: translateX(-50%) translateY(4px); }
+  12%, 70% { opacity: 1; transform: translateX(-50%) translateY(0); }
+  100% { opacity: 0; transform: translateX(-50%) translateY(0); }
+}
+@keyframes loading-bar {
+  0%, 40% { box-shadow: 0 0 0 3px var(--ink), 0 0 0 5px var(--paper); }
+  20%, 60% { box-shadow: 0 0 0 3px var(--paper), 0 0 0 5px var(--ink); }
+  100% { box-shadow: none; }
+}
+/* the button sags and greys a moment: nothing fired */
+@keyframes loading-dull {
+  0% { filter: grayscale(0.7) brightness(0.85); transform: translateY(2px); }
+  100% { filter: none; transform: none; }
+}
+/* The hint when the ammo changes: "(icon) Chain shot: slows her down". */
+.hint-ammo { display: inline-flex; align-items: center; gap: 5px; font-weight: 900; color: var(--ink); white-space: nowrap; }
+.hint-ammo .ammo-ico { width: 20px; height: 20px; }
+
 /* Touch act pad: Ammo and Board pills, the size of the sail pills but never under 44px tall. */
 .pad.act button {
   width: 66px;
@@ -1550,6 +1631,9 @@ body.docked.dragging #game { cursor: grabbing; }
   .banner.popped { animation: none; }
   .crew-chip.bump, .gun.ammo.bump .ammo-val, #touch-ammo.bump .ammo-ico { animation: none; } /* (the bump runs on the icon / value) */
   .gun.target.ready.rake .fire-tag { animation: none; }
+  /* "Loading…" still shows, without moving */
+  .touch button.fire.loading, .gun.loading .bar { animation: none; }
+  .gun.loading::before { animation: loading-say-still 0.9s linear both; transform: translateX(-50%); }
   .dock-panel, .dock-chest.bump { animation: none; }
 }
 @keyframes hitmark-fade {
@@ -1877,4 +1961,8 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
 }
 @media (prefers-reduced-motion: reduce) {
   .dock-ashore.pulse { animation: none; box-shadow: 0 5px 0 var(--ink), 0 0 0 4px var(--gold); }
+}
+@keyframes loading-say-still {
+  0%, 75% { opacity: 1; }
+  100% { opacity: 0; }
 }

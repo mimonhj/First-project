@@ -10,6 +10,12 @@
 //   leaving the battle from the pause dialog in the middle of a raid
 // - the Stage 4 review's battle fixes (review4): no camera shake under reduced motion, the boarding sail fade
 //   keeps depth (no slate sails), the Phantom's boss bar leads with BOARD HER!, no three.js warnings from the bake
+// - a phone held upright (phone): the target of a broadside framed with her tag, also while you turn hard, with
+//   pirates on both beams (no swinging to and fro), past an island, into a boarding, and as cuts under reduced
+//   motion; a Fire tap while loading queued (fired along the beam with nobody in aim, its ring shown after a
+//   "Loading…" cue) or answered with "Loading…"; what each ammo is for (hints, tips), chain's badge and SLOWED!,
+//   grape's lost pips blinking red and dark, round shot's bigger hull pops; a desktop window and a phone on its
+//   side keep their chase view, even in a running fight
 // The simulation is frozen (the real-time loop is paused) and driven with G.step(1/120) like smoke.cjs;
 // crits are pinned with G.combat.seed() / forceCrit(). Run with `npm test` or `npm run test:battle`
 // (BATTLE_ONLY=damage,ammo,review4 runs some sections; BATTLE_ROOT serves another copy of the game).
@@ -171,14 +177,17 @@ function installHelpers() {
       };
     },
     // Real frames (calling `hold` every frame) until the chase camera stops turning: it eases toward the
-    // nearest pirate in range. Frozen again afterwards; returns the number of frames.
+    // nearest pirate in range, and on a narrow screen the battle camera eases in to frame her (its S-curve
+    // starts so gently that a frame or two can look still: wait while it is part way). Frozen again
+    // afterwards; returns the number of frames.
     async settle(hold, max = 400) {
       const d = G.camera.getWorldDirection(G.camera.position.clone());
       const was = d.clone();
       let still = 0;
       let n = 0;
+      const easing = () => !!G.framing && G.framing.w > 0 && G.framing.w < 1;
       G.state.mode = 'playing';
-      while (n < max && still < 3) {
+      while (n < max && (still < 3 || easing())) {
         await new Promise((r) => requestAnimationFrame(r));
         hold();
         n++;
@@ -188,6 +197,72 @@ function installHelpers() {
       }
       G.state.mode = 'paused';
       return n;
+    },
+    // Every real frame from now on (the loop running: G.state.mode = 'playing'), after the game's own update: game
+    // time, the battle camera's framing (weight, which of `ships` it frames: -1 none, -2 another; its pose), the
+    // camera (position, the yaw of its view), your heading and place, and on screen (CSS px) your hull's box and
+    // each of `ships`' hull and tag boxes. `each` runs first every frame (hold ships, keep their guns quiet).
+    // T.stop() ends the record and returns the frames.
+    record(ships = [], each = null) {
+      const V = G.camera.position.constructor;
+      const v = new V();
+      const d = new V();
+      const box = (s) => {
+        const L = s.type.len / 2;
+        const B = s.type.wid / 2;
+        const b = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity, behind: false };
+        for (const a of [-L, L]) {
+          for (const c of [-B, B]) {
+            for (const y of [0, (s.mesh.userData.deckY ?? 1.4) + 0.4]) {
+              v.set(s.x + fwdX(s.h) * a + rightX(s.h) * c, s.mesh.position.y + y, s.z + fwdZ(s.h) * a + rightZ(s.h) * c).project(G.camera);
+              if (v.z > 1) b.behind = true;
+              const x = (v.x * 0.5 + 0.5) * innerWidth;
+              const yy = (-v.y * 0.5 + 0.5) * innerHeight;
+              b.l = Math.min(b.l, x);
+              b.r = Math.max(b.r, x);
+              b.t = Math.min(b.t, yy);
+              b.b = Math.max(b.b, yy);
+            }
+          }
+        }
+        return b;
+      };
+      const gen = (T.recGen = (T.recGen || 0) + 1);
+      T.recFrames = [];
+      const loop = () => {
+        if (T.recGen !== gen) return;
+        if (each) each();
+        const f = G.framing;
+        G.camera.getWorldDirection(d);
+        T.recFrames.push({
+          t: G.state.time,
+          w: f.w,
+          focus: !f.focus ? -1 : ships.includes(f.focus) ? ships.indexOf(f.focus) : -2,
+          pose: { ...f.pose },
+          cam: G.camera.position.toArray(),
+          yaw: Math.atan2(d.x, d.z),
+          h: G.player.h,
+          px: G.player.x,
+          pz: G.player.z,
+          mine: box(G.player),
+          hulls: ships.map(box),
+          tags: ships.map((s) => G.tagRect(s)),
+          boarding: G.boarding.active,
+        });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    },
+    stop() {
+      T.recGen = (T.recGen || 0) + 1;
+      return T.recFrames || [];
+    },
+    // How much of a box is on screen, 0..1 (0 when it is behind the camera).
+    seen(b) {
+      if (!b || b.behind) return 0;
+      const W = innerWidth;
+      const H = innerHeight;
+      return (Math.max(0, Math.min(b.r, W) - Math.max(b.l, 0)) / Math.max(1e-6, b.r - b.l)) * (Math.max(0, Math.min(b.b, H) - Math.max(b.t, 0)) / Math.max(1e-6, b.b - b.t));
     },
     // What a real frame shows of the pops ('#pops .pop': text, shown, opacity, the box of the big line and of
     // the whole word) and the bottom of the top HUD row (boxes as { l, t, r, b } in CSS px).
@@ -2309,10 +2384,11 @@ function ev(page, fn, arg = null) {
     });
     check(glow.after === '"RAKE!"' && /255, 201, 60/.test(glow.shadow), `touch: the Fire button glows gold with RAKE! when her stern is open (${J(glow)})`);
 
-    // Pops on a portrait phone, the chase camera settled: a privateer beam-on at 18 u (the AI holds 18-26 u) lies
-    // off the right edge of the view, and the volley's damage pop still shows, at that edge (UX-8); a point-blank
-    // stern rake with a crit: its pops (STERN RAKE ×2!, CRIT! MAST DOWN!, POINT BLANK!, the damage) keep clear of
-    // each other and of the SUNK! mark and its stickers (UX-1) all their lives.
+    // Pops on a portrait phone, the camera settled on each ship: a privateer beam-on at 18 u (the AI holds 18-26 u)
+    // is framed on screen by the battle camera (phonefix; she used to lie off the right edge, her pop at that edge,
+    // UX-8), and the volley's damage pop shows; a point-blank stern rake with a crit: its pops (STERN RAKE ×2!,
+    // CRIT! MAST DOWN!, POINT BLANK!, the damage) keep clear of each other and of the SUNK! mark and its stickers
+    // (UX-1) all their lives.
     const phone = await ev(tp, async () => {
       const G = window.__game;
       const p = T.level(1);
@@ -2323,7 +2399,7 @@ function ev(page, fn, arg = null) {
         e.reload.port = e.reload.star = 99;
         const hold = T.pinner(p, e);
         hold();
-        if (!settle) settle = await T.settle(hold);
+        settle += await T.settle(hold); // (each ship: the battle camera frames her)
         const ndc = new G.camera.position.constructor(e.x, 1, e.z).project(G.camera);
         out[name] = await T.salvo(e, { side: 1, crit, seed: 1, hold });
         out[name].ndcX = Math.round(ndc.x * 100) / 100;
@@ -2336,8 +2412,8 @@ function ev(page, fn, arg = null) {
     });
     {
       const r = popReport(phone.abeam);
-      check(phone.abeam.fired && /^HIT ×3/.test(phone.abeam.mark) && phone.abeam.ndcX > 1 && r.seen.some((t) => /^\d+$/.test(t)) && r.offScreen.length === 0,
-        `pops 390x844: a privateer abeam at 18 u is off the right edge of the view (ndc x ${phone.abeam.ndcX}), and the volley's damage pop shows at that edge (seen ${J(r.seen)}${r.offScreen.length ? '; off screen: ' + r.offScreen.join(', ') : ''})`);
+      check(phone.abeam.fired && /^HIT ×3/.test(phone.abeam.mark) && Math.abs(phone.abeam.ndcX) < 0.9 && r.seen.some((t) => /^\d+$/.test(t)) && r.offScreen.length === 0,
+        `pops 390x844: a privateer abeam at 18 u is on screen, framed by the battle camera (ndc x ${phone.abeam.ndcX}), and the volley's damage pop shows (seen ${J(r.seen)}${r.offScreen.length ? '; off screen: ' + r.offScreen.join(', ') : ''})`);
       const k = popReport(phone.rake);
       check(phone.rake.fired && /^SUNK!/.test(phone.rake.mark) && k.seen.length >= 3 && k.popPop.length === 0 && k.onMark.length === 0 && k.offScreen.length === 0,
         `pops 390x844: a point-blank stern rake with a crit: its ${k.seen.length} pops (${k.seen.join(' / ')}) never cover each other or the "${phone.rake.mark}" mark (${k.frames} frames${k.popPop.length ? '; pop over pop: ' + k.popPop.join(', ') : ''}${k.onMark.length ? '; over the mark: ' + k.onMark.join(', ') : ''})`);
@@ -2822,6 +2898,797 @@ function ev(page, fn, arg = null) {
     await wp.ctx.close();
     const three = warns.filter((w) => /THREE|flatShading/.test(w));
     check(baked > 0 && three.length === 0, `POL-1: baking the enemy ships (${baked} baked meshes) logs no three.js warnings${three.length ? ': ' + J(three.slice(0, 3)) : ''}`);
+  });
+
+  // ------------------------------------------------ a phone held upright: ammo you can see working (phonefix)
+  // A player's report from a 390x844 portrait phone: "what does round, chain and grape do? in game it wasn't doing
+  // anything". The target of a broadside, 15 paces off the beam, sat off the side of the screen (her, her tag and
+  // the effect on her); a Fire tap while that side was loading (as right after a tap on Ammo) did nothing; nothing
+  // said what each ammo is for, and chain's slow and grape's lost sailors didn't show on her.
+  await section('phone', async () => {
+    // (Every tip seen but the two new-ammo ones, so only those show.)
+    const { ctx, page: pp } = await open({ width: 390, height: 844, touch: true, label: 'phone', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': String(255 & ~6) } });
+    // The first-time tips and banners say what the new ammo does.
+    const fresh = await ev(pp, async () => {
+      const G = window.__game;
+      const out = {};
+      for (const id of ['chain', 'grape']) {
+        T.level(1);
+        T.steps(1 / 120);
+        G.state.mode = 'paused';
+        await T.redraw();
+        out[id] = { hint: T.shown('hint') ? T.text('hint') : '', banner: T.text('banner') };
+        G.state.mode = 'playing';
+      }
+      return out;
+    });
+    check(fresh.chain.hint === 'New: chain shot! It slows ships down. Tap Ammo' && /^New ammo: Chain shot!It slows ships down/.test(fresh.chain.banner) &&
+      fresh.grape.hint === 'New: grape shot! It knocks out their crew. Tap Ammo' && /^New ammo: Grape shot!It knocks out their crew/.test(fresh.grape.banner),
+      `phone: the first-time tips and banners say what the new ammo does (${J(fresh)})`);
+
+    // Each tap on the Ammo pill says in the hint bubble what that shot is for, with its icon; the pill keeps its icon
+    // and its name says it too.
+    const hints = await ev(pp, async () => {
+      const G = window.__game;
+      T.level(1);
+      const pill = document.getElementById('touch-ammo');
+      const out = [];
+      for (let i = 0; i < 3; i++) {
+        pill.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 3, pointerType: 'touch', isPrimary: true }));
+        G.state.mode = 'paused';
+        await T.redraw();
+        const h = document.getElementById('hint');
+        out.push({ ammo: G.combat.ammo, hint: T.shown('hint') ? T.text('hint') : '', icon: !!h.querySelector('.hint-ammo .ammo-ico svg'), pillIcon: !!pill.querySelector('.ammo-ico svg'), aria: pill.getAttribute('aria-label') });
+        G.state.mode = 'playing';
+      }
+      return out;
+    });
+    const wantHints = { chain: 'Chain shot: slows her down', grape: 'Grape shot: knocks out her crew', round: 'Round shot: smashes her hull' };
+    check(hints.map((h) => h.ammo).join() === 'chain,grape,round' && hints.every((h) => h.hint === wantHints[h.ammo] && h.icon && h.pillIcon && h.aria.includes(wantHints[h.ammo].split(': ')[1])),
+      `phone: each tap on Ammo says what the shot does, with its icon ("${hints.map((h) => h.hint).join('" / "')}"; ${J(hints.map((h) => h.aria))})`);
+
+    // The target of a broadside is framed: a privateer 15 paces off the starboard beam, a real tap on Fire ▶. Within
+    // 1.5 s of play (from the shot) her hull and her name tag are wholly on screen and clear of the HUD (top cards,
+    // minimap, pads, gun card), and stay so while the volley's pops play; the camera eases there (no jump cut).
+    await ev(pp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      p.reload.port = p.reload.star = 0;
+      G.state.bannerTimer = 0.001; // (the level banner goes)
+      const hold = T.pinner(p, e);
+      hold();
+      const V = G.camera.position.constructor;
+      const R = (el) => {
+        const r = el.getBoundingClientRect();
+        return r.width > 0 && r.height > 0 && !el.classList.contains('hidden') ? { l: r.left, t: r.top, r: r.right, b: r.bottom } : null;
+      };
+      const hud = () => [...document.querySelectorAll('#hud .hud-top > *'), document.getElementById('minimap'), ...document.querySelectorAll('#touch .pad'), document.querySelector('#hud .card.guns')].map(R).filter(Boolean);
+      // her hull on screen: the corners of her hull (waterline and deck) projected
+      const hullBox = () => {
+        const L = e.type.len / 2;
+        const B = e.type.wid / 2;
+        const box = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity };
+        for (const a of [-L, L]) for (const c of [-B, B]) for (const y of [0, (e.mesh.userData.deckY ?? 1.4) + 0.4]) {
+          const v = new V(e.x + Math.sin(e.h) * a - Math.cos(e.h) * c, e.mesh.position.y + y, e.z + Math.cos(e.h) * a + Math.sin(e.h) * c).project(G.camera);
+          const x = (v.x * 0.5 + 0.5) * innerWidth;
+          const yy = (-v.y * 0.5 + 0.5) * innerHeight;
+          box.l = Math.min(box.l, x);
+          box.r = Math.max(box.r, x);
+          box.t = Math.min(box.t, yy);
+          box.b = Math.max(box.b, yy);
+        }
+        return box;
+      };
+      window.__e = e;
+      window.__hold = true;
+      window.__frames = [];
+      const loop = () => {
+        if (!window.__hold) return;
+        hold();
+        window.__frames.push({ t: G.state.time, cam: G.camera.position.toArray(), w: (G.framing ? G.framing.w : 0), focus: (G.framing ? G.framing.focus : null) === e, hull: hullBox(), tag: (G.tagRect ? G.tagRect(e) : null), hud: hud() });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    });
+    await pp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await pp.tap('[data-tap="fireStar"]');
+    const fired = await pp.evaluate(() => {
+      const p = window.__game.player;
+      window.__tf = window.__game.state.time - (p.reloadMax.star - p.reload.star); // when the guns went off
+      return p.reload.star > 0;
+    });
+    await pp.waitForFunction(() => window.__game.state.time >= window.__tf + 2.2, null, { timeout: 120000, polling: 50 });
+    const view = await pp.evaluate(() => {
+      const G = window.__game;
+      window.__hold = false;
+      G.state.mode = 'paused';
+      const W = innerWidth;
+      const H = innerHeight;
+      const ov = (a, b) => Math.max(0, Math.min(a.r, b.r) - Math.max(a.l, b.l)) * Math.max(0, Math.min(a.b, b.b) - Math.max(a.t, b.t));
+      const clear = (box, hud) => box && box.l >= 0 && box.t >= 0 && box.r <= W && box.b <= H && hud.every((h) => ov(box, h) < 1);
+      const fs = window.__frames.filter((f) => f.t >= window.__tf);
+      const at = fs.find((f) => f.t >= window.__tf + 1.5);
+      const after = fs.filter((f) => f.t >= window.__tf + 1.5);
+      let speed = 0;
+      for (let i = 1; i < window.__frames.length; i++) {
+        const a = window.__frames[i - 1];
+        const b = window.__frames[i];
+        const dt = b.t - a.t;
+        if (dt > 1e-4) speed = Math.max(speed, Math.hypot(b.cam[0] - a.cam[0], b.cam[1] - a.cam[1], b.cam[2] - a.cam[2]) / dt);
+      }
+      const r = (b) => (b ? Object.fromEntries(Object.entries(b).map(([k, v]) => [k, Math.round(v)])) : null);
+      return {
+        frames: fs.length,
+        t: at ? Math.round((at.t - window.__tf) * 100) / 100 : null,
+        hull: at && r(at.hull),
+        tag: at && r(at.tag),
+        w: at && Math.round(at.w * 100) / 100,
+        focus: at && at.focus,
+        ok: !!at && clear(at.hull, at.hud) && clear(at.tag, at.hud),
+        stays: after.length > 0 && after.every((f) => clear(f.hull, f.hud) && clear(f.tag, f.hud)),
+        speed: Math.round(speed * 10) / 10,
+        hp: Math.round(window.__e.hp),
+      };
+    });
+    check(fired && view.ok && view.stays && view.focus && view.hp < 80,
+      `phone 390x844: a privateer 15 paces off the beam that you fire at (a tap on Fire ▶) is wholly on screen with her tag, clear of the HUD, ${view.t} s after the shot and after (hull ${J(view.hull)}, tag ${J(view.tag)}, framing ${view.w}; ${view.frames} frames)`);
+    check(view.speed > 0 && view.speed < 45, `phone 390x844: the camera eases to that view, no jump cut (fastest ${view.speed} u/s)`);
+    await snap(pp, 'phone-framed.png');
+    // ... and eases back to the chase view once nobody is in reach.
+    const back = await ev(pp, async () => {
+      const G = window.__game;
+      G.capture.escape(window.__e);
+      G.state.mode = 'playing';
+      const t0 = G.state.time;
+      while (G.state.time - t0 < 3.2 && (G.framing ? G.framing.w : 0) > 0) await new Promise((res) => requestAnimationFrame(res));
+      return { w: (G.framing ? G.framing.w : 0), focus: (G.framing ? G.framing.focus : null), t: Math.round((G.state.time - t0) * 100) / 100 };
+    });
+    check(back.w === 0 && back.focus === null, `phone 390x844: with nobody in reach the camera goes back to the chase view (${J(back)})`);
+
+    // While you turn hard with her framed (the skeptic's A2): a privateer 16 paces off the starboard beam sailing a
+    // straight course beside you; a real tap on Fire ▶, then hard to starboard (D held) for 2.7 s and hard to port
+    // (A held) for 3 s. Your ship stays at least 80 % on screen in every frame and about its size (0.5-1.6 times
+    // what the chase view shows: the zoom doesn't pump in and out), and while she is framed 1-2 s after the shot
+    // her hull and her tag are wholly on screen.
+    const chaseH = await ev(pp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.state.bannerTimer = 0.001;
+      const hold = T.pinner(p);
+      await T.settle(hold);
+      T.record([], hold);
+      G.state.mode = 'playing';
+      for (let i = 0; i < 4; i++) await new Promise((r) => requestAnimationFrame(r));
+      G.state.mode = 'paused';
+      const fs = T.stop();
+      return fs.reduce((a, f) => a + (f.mine.b - f.mine.t), 0) / Math.max(1, fs.length); // your hull's height, chase view
+    });
+    await ev(pp, () => {
+      const G = window.__game;
+      const p = G.player;
+      const e = T.spawn('privateer', 16, 0, 0);
+      const h = e.h;
+      p.reload.port = p.reload.star = 0;
+      window.__turnE = e;
+      T.record([e], () => {
+        p.speed = 8;
+        e.speed = 8;
+        e.h = h;
+        e.reload.port = e.reload.star = 99;
+      });
+    });
+    await pp.evaluate(() => { window.__game.state.mode = 'playing'; }); // (ev freezes the loop again: run it)
+    await pp.tap('[data-tap="fireStar"]');
+    const tTurn = await pp.evaluate(() => window.__game.state.time);
+    const afterTurn = (dt) => pp.waitForFunction((t) => window.__game.state.time >= t, tTurn + dt, { timeout: 120000, polling: 20 });
+    await afterTurn(0.3);
+    await pp.keyboard.down('d');
+    await afterTurn(3.0);
+    await pp.keyboard.up('d');
+    await pp.keyboard.down('a');
+    await afterTurn(6.0);
+    await pp.keyboard.up('a');
+    const turn = await pp.evaluate(({ t0, chaseH }) => {
+      const G = window.__game;
+      G.state.mode = 'paused';
+      const fs = T.stop();
+      const r2 = (x) => Math.round(x * 100) / 100;
+      const zoom = fs.map((f) => (f.mine.b - f.mine.t) / chaseH);
+      const her = fs.filter((f) => f.t >= t0 + 1 && f.t <= t0 + 2 && f.w >= 0.999 && f.focus === 0);
+      const herOk = her.filter((f) => T.seen(f.hulls[0]) >= 0.999 && f.tags[0] && T.seen(f.tags[0]) >= 0.999);
+      let turned = 0;
+      for (let i = 1; i < fs.length; i++) turned += Math.abs(T.wrap(fs[i].h - fs[i - 1].h));
+      G.capture.escape(window.__turnE);
+      return { frames: fs.length, mine: r2(Math.min(...fs.map((f) => T.seen(f.mine)))), zoom: [r2(Math.min(...zoom)), r2(Math.max(...zoom))], her: her.length, herOk: herOk.length, turned: r2(turned), chaseH: Math.round(chaseH) };
+    }, { t0: tTurn, chaseH });
+    check(turn.frames >= 30 && turn.turned > 2 && turn.mine >= 0.8 && turn.zoom[0] >= 0.5 && turn.zoom[1] <= 1.6 && turn.her >= 3 && turn.herOk === turn.her,
+      `phone 390x844, turning hard with her framed (Fire ▶, then D 2.7 s and A 3 s): your ship stays at least 80 % on screen (${turn.mine}) at ${turn.zoom.join('-')} x its chase-view size, and her hull and tag are wholly on screen while she is framed 1-2 s after the shot (${turn.herOk} of ${turn.her} frames) (${J(turn)})`);
+
+    // Targets on both beams (A5): pirates 15 paces off each beam, held; real taps on Fire ▶, ◀ Fire and Fire ▶ 2 s
+    // apart. The view doesn't swing to and fro between them (once the framing is in, the view turns less than
+    // 0.6 rad in all about your ship), and 1.5 s after each shot the ship it was fired at is wholly on screen.
+    const twoBeams = async (page) => {
+      await ev(page, () => {
+        const G = window.__game;
+        const p = T.level(1);
+        G.state.bannerTimer = 0.001;
+        const a = T.spawn('privateer', 15, 0, 0);
+        const b = T.spawn('privateer', -15, 0, 0);
+        a.maxHp = a.hp = b.maxHp = b.hp = 999;
+        p.reload.port = p.reload.star = 0;
+        window.__two = [a, b];
+        T.record([a, b], T.pinner(p, a, b));
+      });
+      await page.evaluate(() => { window.__game.state.mode = 'playing'; });
+      const shots = [];
+      for (const [sel, idx] of [['fireStar', 0], ['firePort', 1], ['fireStar', 0]]) {
+        await page.tap(`[data-tap="${sel}"]`);
+        const t = await page.evaluate(() => window.__game.state.time);
+        shots.push({ t, idx });
+        await page.waitForFunction((tt) => window.__game.state.time >= tt, t + 2, { timeout: 120000, polling: 20 });
+      }
+      return page.evaluate((shots) => {
+        const G = window.__game;
+        G.state.mode = 'paused';
+        const fs = T.stop();
+        // how far the view turns about your (still) ship once the framing is first fully in
+        let travel = 0;
+        const in0 = fs.findIndex((f) => f.w >= 0.999);
+        for (let i = Math.max(1, in0 + 1); in0 >= 0 && i < fs.length; i++) travel += Math.abs(T.wrap(fs[i].yaw - fs[i].h - (fs[i - 1].yaw - fs[i - 1].h)));
+        const seen = shots.map((s) => {
+          const f = fs.find((x) => x.t >= s.t + 1.5);
+          return f ? Math.round(T.seen(f.hulls[s.idx]) * 100) / 100 : null;
+        });
+        // reduced motion: the weight is 0 or 1, and the view moves (relative to your ship) only in cuts
+        const weights = [...new Set(fs.map((f) => Math.round(f.w * 1000) / 1000))];
+        const cuts = [];
+        for (let i = 1; i < fs.length; i++) {
+          const a = fs[i - 1];
+          const b = fs[i];
+          const moved = b.w > 0 && Object.keys(b.pose).some((k) => Math.abs(b.pose[k] - a.pose[k]) > 1e-9);
+          if (b.w !== a.w || moved) cuts.push(b.t);
+        }
+        const gaps = cuts.slice(1).map((t, k) => Math.round((t - cuts[k]) * 100) / 100);
+        for (const s of window.__two) G.capture.escape(s);
+        return { frames: fs.length, framed: fs.filter((f) => f.w >= 0.999).length, travel: Math.round(travel * 100) / 100, seen, weights: weights.slice(0, 8), cuts: cuts.length, gaps };
+      }, shots);
+    };
+    const two = await twoBeams(pp);
+    check(two.framed > 10 && two.travel < 0.6 && two.seen.every((x) => x === 1),
+      `phone 390x844, pirates on both beams fired at in turn: the view doesn't swing between them (its turn changes ${two.travel} rad in all) and each ship fired at is on screen 1.5 s after the shot (${J(two.seen)}) (${J(two)})`);
+
+    // Boarding from the framed view (A6): a privateer 11 paces off the starboard beam, framed after a real tap on
+    // Fire ▶, then a tap on Board. Close by the framing hardly turns, so the hand-over to the boarding view swings
+    // about as far as from the chase view: at most 2.4 rad in its first 1.2 s and never faster than 5 rad/s.
+    await ev(pp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.state.bannerTimer = 0.001;
+      const e = T.spawn('privateer', 11, 0, 0);
+      G.combat.setCrew('player', 12);
+      p.reload.port = p.reload.star = 0;
+      window.__boardE = e;
+      const hold = T.pinner(p, e);
+      T.record([e], () => {
+        if (!G.boarding.active) hold();
+      });
+    });
+    await pp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await pp.tap('[data-tap="fireStar"]');
+    const tFired = await pp.evaluate(() => window.__game.state.time);
+    await pp.waitForFunction((t) => window.__game.state.time >= t, tFired + 1.4, { timeout: 120000, polling: 20 });
+    await pp.tap('#touch-board');
+    await pp.waitForFunction(() => window.__game.boarding.active, null, { timeout: 60000, polling: 20 });
+    const tBoard = await pp.evaluate(() => window.__game.state.time);
+    await pp.waitForFunction((t) => window.__game.state.time >= t, tBoard + 1.3, { timeout: 120000, polling: 20 });
+    const hand = await pp.evaluate(() => {
+      const G = window.__game;
+      const fs = T.stop();
+      G.state.mode = 'paused';
+      const i0 = fs.findIndex((f) => f.boarding);
+      let sweep = 0;
+      let peak = 0;
+      for (let i = Math.max(1, i0); i0 >= 0 && i < fs.length && fs[i].t <= fs[i0].t + 1.2; i++) {
+        const dt = fs[i].t - fs[i - 1].t;
+        if (dt < 1e-3) continue;
+        const d = Math.abs(T.wrap(fs[i].yaw - fs[i - 1].yaw));
+        sweep += d;
+        peak = Math.max(peak, d / dt);
+      }
+      const framedAt = i0 > 0 ? fs[i0 - 1].w : null;
+      G.boarding.cancel('test');
+      G.capture.escape(window.__boardE);
+      return { framedAt: framedAt === null ? null : Math.round(framedAt * 100) / 100, sweep: Math.round(sweep * 100) / 100, peak: Math.round(peak * 100) / 100 };
+    });
+    check(hand.framedAt === 1 && hand.sweep <= 2.4 && hand.peak <= 5,
+      `phone 390x844: boarding a ship the camera frames 11 paces off the beam, the hand-over to the boarding view swings ${hand.sweep} rad in its first 1.2 s, at most ${hand.peak} rad/s (${J(hand)})`);
+
+    // Land between the framing view and your ship (A4): sailing past an island that lies 9 paces off your port side
+    // with a privateer 15 paces off the starboard beam, a real tap on Fire ▶. The framing doesn't swing over the island
+    // (it is not turned, or not used, while the island is in the way), so the camera never dives in at your rigging:
+    // it stays at least 12 paces behind your ship, your ship wholly on screen.
+    const isle = await ev(pp, () => {
+      const G = window.__game;
+      G.state.tutorialDone = true;
+      G.newGame(2);
+      G.state.intro = 0;
+      G.state.bannerTimer = 0.001;
+      G.state.combatTime = 30;
+      const p = G.player;
+      G.enemies.forEach((e, k) => T.park(e, k));
+      const cols = G.colliders;
+      const wet = (x, z, pad = 2) => cols.every((c) => Math.hypot(x - c.x, z - c.z) > c.r + pad) && (!G.env.heightAt || G.env.heightAt(x, z) < -0.5);
+      const ps = G.env.playerStart;
+      let best = null;
+      const isles = cols.filter((c) => c.r >= 5 && c.h >= 4).sort((a, b) => Math.hypot(a.x - ps.x, a.z - ps.z) - Math.hypot(b.x - ps.x, b.z - ps.z));
+      for (const c of isles) {
+        for (let b = 0; b < Math.PI * 2 && !best; b += 0.15) {
+          const px = c.x + Math.cos(b) * (c.r + 9);
+          const pz = c.z + Math.sin(b) * (c.r + 9);
+          // heading along the shore with the island to port (port, (cos h, -sin h), points at it)
+          const h = Math.atan2(-(c.z - pz), c.x - px);
+          let ok = wet(px, pz, 3);
+          for (let k = 0; k <= 45 && ok; k += 3) ok = wet(px - Math.cos(h) * k, pz + Math.sin(h) * k);
+          for (let k = -14; k <= 30 && ok; k += 3) ok = wet(px + Math.sin(h) * k, pz + Math.cos(h) * k) && wet(px + Math.sin(h) * k - Math.cos(h) * 15, pz + Math.cos(h) * k + Math.sin(h) * 15);
+          if (ok) best = { x: px - Math.sin(h) * 12, z: pz - Math.cos(h) * 12, h };
+        }
+        if (best) break;
+      }
+      if (!best) return null;
+      G.place(p, best.x, best.z, best.h);
+      p.speed = 0;
+      window.__isle = best;
+      return best;
+    });
+    let land = null;
+    if (isle) {
+      await ev(pp, async () => {
+        const G = window.__game;
+        const p = G.player;
+        const b = window.__isle;
+        const hold = () => {
+          p.h = b.h;
+          p.speed = 0;
+        };
+        await T.settle(hold); // (the camera settles behind your ship, nobody about)
+        const e = T.spawn('privateer', 15, 0, 0);
+        p.reload.port = p.reload.star = 0;
+        window.__isleE = e;
+        T.record([e], () => {
+          p.h = e.h = b.h;
+          p.speed = e.speed = 6;
+          e.reload.port = e.reload.star = 99;
+        });
+      });
+      await pp.evaluate(() => { window.__game.state.mode = 'playing'; });
+      await pp.tap('[data-tap="fireStar"]');
+      const tIsle = await pp.evaluate(() => window.__game.state.time);
+      await pp.waitForFunction((t) => window.__game.state.time >= t, tIsle + 4, { timeout: 120000, polling: 20 });
+      land = await pp.evaluate(() => {
+        const G = window.__game;
+        G.state.mode = 'paused';
+        const fs = T.stop();
+        G.capture.escape(window.__isleE);
+        return {
+          frames: fs.length,
+          near: Math.round(Math.min(...fs.map((f) => Math.hypot(f.cam[0] - f.px, f.cam[2] - f.pz))) * 10) / 10,
+          mine: Math.round(Math.min(...fs.map((f) => T.seen(f.mine))) * 100) / 100,
+          framed: fs.filter((f) => f.w >= 0.999).length,
+        };
+      });
+    }
+    check(!!land && land.frames >= 20 && land.near >= 12 && land.mine === 1,
+      `phone 390x844, an island 9 paces off your port side and her off the starboard beam: the camera never dives in at your rigging (it stays ${land && land.near} paces from your ship, your ship ${land && land.mine} on screen) (${J({ isle, land })})`);
+
+    // Ammo then Fire straight away (taps as events, the simulation stepped): the Fire tap during the half-second swap
+    // queues one shot, which goes off the moment the new shot is in, with the new ammo, exactly once.
+    const queue = await ev(pp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      p.reload.port = p.reload.star = 0;
+      const hold = T.pinner(p, e);
+      hold();
+      const tap = (sel) => document.querySelector(sel).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 4, pointerType: 'touch', isPrimary: true }));
+      const seen = new Map(); // volley id -> { at, n, ammo }
+      const t0 = G.state.time;
+      const watch = () => {
+        for (const b of G.balls) {
+          if (b.owner !== 'player') continue;
+          const v = seen.get(b.volley) || { at: Math.round((G.state.time - t0) * 1000) / 1000, n: 0, ammo: b.ammo, balls: new Set() };
+          v.balls.add(b);
+          seen.set(b.volley, v);
+        }
+      };
+      tap('#touch-ammo');
+      tap('[data-tap="fireStar"]');
+      const btn = document.querySelector('[data-tap="fireStar"]');
+      const now = { ammo: G.combat.ammo, queued: (G.fireQueue ? G.fireQueue.star : false), balls: G.balls.filter((b) => b.owner === 'player').length, ring: btn.classList.contains('queued') && document.getElementById('gun-star').classList.contains('queued') };
+      T.steps(3, () => { hold(); watch(); });
+      const vs = [...seen.values()].map((v) => ({ at: v.at, n: v.balls.size, ammo: v.ammo }));
+      return { now, vs, guns: p.type.guns, swap: G.combat.rules.AMMO_SWAP, left: (G.fireQueue ? G.fireQueue.star : false), ring: btn.classList.contains('queued') };
+    });
+    check(queue.now.ammo === 'chain' && queue.now.queued && queue.now.ring && queue.now.balls === 0 && queue.vs.length === 1 && Math.abs(queue.vs[0].at - queue.swap) <= SUB + 1e-6 && queue.vs[0].n === queue.guns && queue.vs[0].ammo === 'chain' && !queue.left && !queue.ring,
+      `phone: Ammo then Fire straight away queues the shot (the button shows it) and fires it once, with chain shot, the moment the ${queue.swap} s swap ends (${J(queue)})`);
+
+    // The same with real taps while the game runs: one volley of the new shot, about half a second later.
+    await ev(pp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('chain'); // (the next tap goes to grape)
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      p.reload.port = p.reload.star = 0;
+      const hold = T.pinner(p, e);
+      hold();
+      window.__vols = new Map();
+      // when each button was pressed (game time)
+      window.__tapT = {};
+      for (const [id, sel] of [['ammo', '#touch-ammo'], ['fire', '[data-tap="fireStar"]']]) {
+        document.querySelector(sel).addEventListener('pointerdown', () => { if (window.__tapT[id] == null) window.__tapT[id] = G.state.time; }, { capture: true });
+      }
+      window.__hold = true;
+      const loop = () => {
+        if (!window.__hold) return;
+        hold();
+        for (const b of G.balls) if (b.owner === 'player' && !window.__vols.has(b.volley)) window.__vols.set(b.volley, { t: G.state.time, ammo: b.ammo });
+        requestAnimationFrame(loop);
+      };
+      requestAnimationFrame(loop);
+    });
+    await pp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await pp.tap('#touch-ammo');
+    await pp.tap('[data-tap="fireStar"]');
+    await pp.waitForFunction(() => window.__tapT.fire != null && window.__game.state.time >= window.__tapT.fire + 1.5, null, { timeout: 120000, polling: 50 });
+    const realTaps = await pp.evaluate(() => {
+      const G = window.__game;
+      window.__hold = false;
+      G.state.mode = 'paused';
+      const t = window.__tapT;
+      // (the shot is due when the swap ends, or at once if the Fire tap came after that)
+      const due = Math.max(t.ammo + G.combat.rules.AMMO_SWAP, t.fire);
+      return { ammo: G.combat.ammo, fireTap: Math.round((t.fire - t.ammo) * 1000) / 1000, vols: [...window.__vols.values()].map((v) => ({ after: Math.round((v.t - t.ammo) * 1000) / 1000, late: Math.round((v.t - due) * 1000) / 1000, ammo: v.ammo })) };
+    });
+    check(realTaps.ammo === 'grape' && realTaps.vols.length === 1 && realTaps.vols[0].ammo === 'grape' && realTaps.vols[0].after >= 0.5 - SUB - 1e-6 && realTaps.vols[0].late <= 0.12,
+      `phone: real taps on Ammo then Fire ▶ fire one volley of the new shot as soon as it is in (${J(realTaps)})`);
+
+    // A queued shot is dropped when the ammo changes again, when the game pauses, and when that side has nobody to shoot.
+    const dropped = await ev(pp, () => {
+      const G = window.__game;
+      const tap = (sel) => document.querySelector(sel).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 6, pointerType: 'touch', isPrimary: true }));
+      const out = {};
+      for (const how of ['ammo', 'pause']) {
+        const p = T.level(1);
+        const e = T.spawn('privateer', 15, 0, 0);
+        e.reload.port = e.reload.star = 99;
+        p.reload.port = p.reload.star = 0.3;
+        const hold = T.pinner(p, e);
+        hold();
+        tap('[data-tap="fireStar"]');
+        const queued = (G.fireQueue ? G.fireQueue.star : false);
+        if (how === 'ammo') tap('#touch-ammo');
+        if (how === 'pause') {
+          G.togglePause();
+          G.togglePause();
+        }
+        let shots = 0;
+        T.steps(1.5, () => {
+          hold();
+          shots += G.balls.filter((b) => b.owner === 'player').length;
+        });
+        out[how] = { queued, shots, left: (G.fireQueue ? G.fireQueue.star : false), mode: G.state.mode };
+      }
+      return out;
+    });
+    check(Object.values(dropped).every((d) => d.queued && d.shots === 0 && !d.left && d.mode === 'playing'),
+      `phone: a queued shot never goes off after the ammo changes again or a pause (${J(dropped)})`);
+    // With nobody in that side's aim the queued shot still goes off the moment the guns are loaded, along the beam,
+    // just as a tap then would (B2: it used to vanish without a word): nobody about at all, and a pirate 22 paces
+    // ahead and 7 to starboard, outside that side's arc.
+    const noAim = await ev(pp, () => {
+      const G = window.__game;
+      const tap = (sel) => document.querySelector(sel).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 7, pointerType: 'touch', isPrimary: true }));
+      const out = {};
+      for (const how of ['nobody', 'ahead']) {
+        const p = T.level(1);
+        const e = how === 'ahead' ? T.spawn('privateer', 7, 22, 0) : null;
+        if (e) e.reload.port = e.reload.star = 99;
+        p.reload.port = 0;
+        p.reload.star = 0.3;
+        const hold = e ? T.pinner(p, e) : T.pinner(p);
+        hold();
+        tap('[data-tap="fireStar"]');
+        const queued = G.fireQueue.star;
+        const vols = new Map();
+        T.steps(1.5, () => {
+          hold();
+          for (const b of G.balls) if (b.owner === 'player' && !vols.has(b.volley)) vols.set(b.volley, Math.round(G.state.time * 1000) / 1000);
+        });
+        out[how] = { queued, volleys: vols.size, left: G.fireQueue.star };
+        if (e) G.capture.escape(e);
+      }
+      return out;
+    });
+    check(Object.values(noAim).every((d) => d.queued && d.volleys === 1 && !d.left),
+      `phone: a Fire tap queued with nobody in that side's aim still fires once the guns are loaded, along the beam (${J(noAim)})`);
+
+    // A tap with a long reload left fires nothing, now or later, and says so: the button and that side's reload bar
+    // flash "Loading…" (screen readers hear it once, not on every tap).
+    const long = await ev(pp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      const hold = T.pinner(p, e);
+      hold();
+      p.reload.port = 0;
+      p.reload.star = 1.5;
+      p.reloadMax.star = 1.6;
+      T.watchLive();
+      await T.liveQuiet();
+      G.state.mode = 'playing';
+      const tap = (sel) => document.querySelector(sel).dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 8, pointerType: 'touch', isPrimary: true }));
+      tap('[data-tap="fireStar"]');
+      const btn = document.querySelector('[data-tap="fireStar"]');
+      const gun = document.getElementById('gun-star');
+      const out = {
+        queued: (G.fireQueue ? G.fireQueue.star : false),
+        balls: G.balls.filter((b) => b.owner === 'player').length,
+        btn: btn.classList.contains('loading') && getComputedStyle(btn, '::before').content,
+        bar: gun.classList.contains('loading') && getComputedStyle(gun, '::before').content,
+      };
+      T.steps(0.3, hold);
+      tap('[data-tap="fireStar"]'); // again: shown again, not read out again
+      let shots = 0;
+      T.steps(1.5, () => {
+        hold();
+        shots += G.balls.filter((b) => b.owner === 'player').length;
+      });
+      out.shots = shots;
+      out.star = Math.round(p.reload.star * 1000) / 1000;
+      await T.liveQuiet();
+      out.live = T.liveLog();
+      return out;
+    });
+    check(!long.queued && long.balls === 0 && long.shots === 0 && long.btn === '"Loading…"' && long.bar === '"Loading…"' && long.live.filter((t) => t === 'Starboard guns still loading.').length === 1,
+      `phone: a Fire tap with 1.5 s of reload left fires nothing, now or later, flashes "Loading…" on the button and the reload bar and is read out once (${J(long)})`);
+
+    // After a "Loading…" cue the class goes again once its 0.9 s have played, and a later tap that queues the shot
+    // shows the white ring on that side's reload bar (B1: the cue's last frame used to hide it for good).
+    const ring = await ev(pp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      const hold = T.pinner(p, e);
+      hold();
+      const tap = () => document.querySelector('[data-tap="fireStar"]').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true, cancelable: true, pointerId: 9, pointerType: 'touch', isPrimary: true }));
+      const btn = document.querySelector('[data-tap="fireStar"]');
+      const gun = document.getElementById('gun-star');
+      const bar = gun.querySelector('.bar');
+      p.reload.port = 0;
+      p.reload.star = 2;
+      p.reloadMax.star = 2;
+      G.state.mode = 'playing';
+      tap();
+      G.state.mode = 'paused';
+      const cue = gun.classList.contains('loading') && btn.classList.contains('loading');
+      await new Promise((r) => setTimeout(r, 1200));
+      const gone = !gun.classList.contains('loading') && !btn.classList.contains('loading');
+      p.reload.star = 0.5;
+      G.state.mode = 'playing';
+      tap();
+      G.state.mode = 'paused';
+      await T.redraw();
+      const out = { cue, gone, queued: G.fireQueue.star, barShadow: getComputedStyle(bar).boxShadow, btnShadow: getComputedStyle(btn).boxShadow };
+      G.state.mode = 'playing';
+      T.steps(0.7, hold);
+      G.state.mode = 'paused';
+      return out;
+    });
+    check(ring.cue && ring.gone && ring.queued && /rgb\(255, 255, 255\)/.test(ring.barShadow) && /rgb\(255, 255, 255\)/.test(ring.btnShadow),
+      `phone: after a "Loading…" cue a queued tap still shows the white ring on the reload bar and the Fire button (${J(ring)})`);
+
+    // Chain shot shows on her: the first slowing hit pops SLOWED! and her tag gets the chain badge, whose timer bar
+    // shrinks as the slow wears off; a hit while she is slowed only adds time (SAILS SHREDDED!); the badge goes when
+    // the slow does.
+    const chain = await ev(pp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('chain');
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      const hold = T.pinner(p, e);
+      hold();
+      const before = G.tagInfo(e);
+      const s1 = await T.salvo(e, { side: 1, crit: 'none', seed: 3, seconds: 1, hold });
+      const tag1 = G.tagInfo(e);
+      const left1 = G.combat.effects(e).slow;
+      const full1 = G.combat.effects(e).slowFull;
+      G.state.mode = 'playing';
+      T.steps(2, hold);
+      G.state.mode = 'paused';
+      await T.redraw();
+      const tag2 = G.tagInfo(e);
+      // (the first volley's words play out first: frozen steps don't age them)
+      G.state.mode = 'playing';
+      for (let i = 0; i < 200 && G.pops.count > 0; i++) {
+        await new Promise((res) => requestAnimationFrame(res));
+        hold();
+      }
+      G.state.mode = 'paused';
+      const s2 = await T.salvo(e, { side: 1, crit: 'none', seed: 4, seconds: 1, hold });
+      const tag3 = G.tagInfo(e);
+      G.state.mode = 'playing';
+      T.steps(11, hold);
+      G.state.mode = 'paused';
+      await T.redraw();
+      const tag4 = G.tagInfo(e);
+      const seen = (r) => [...new Set(r.frames.flatMap((f) => f.pops.filter((q) => q.shown && q.o > 0.3).map((q) => q.text)))];
+      return { before: before.slow, s1: seen(s1), slow1: tag1.slow, left1: Math.round(left1 * 1000) / 1000, full1, slow2: tag2.slow, s2: seen(s2), slow3: tag3.slow, slow4: tag4.slow, speed4: G.combat.effects(e).speedMul };
+    });
+    check(chain.before === null && chain.s1.includes('SLOWED!') && !chain.s1.includes('SAILS SHREDDED!') && chain.slow1 > 0.7 && chain.slow1 <= 1 && near(chain.slow1, chain.left1 / chain.full1, 0.01) && chain.slow2 < chain.slow1 - 0.15,
+      `chain shot (phone): the first slowing volley pops SLOWED! and her tag shows the chain badge, its timer shrinking as the slow wears off (${J(chain)})`);
+    check(chain.s2.includes('SAILS SHREDDED!') && !chain.s2.includes('SLOWED!') && chain.slow3 > chain.slow2 && chain.slow4 === null && chain.speed4 === 1,
+      `chain shot (phone): a volley on a ship already slowed says SAILS SHREDDED! and refills the timer; the badge goes with the slow (${J({ s2: chain.s2, slow3: chain.slow3, slow4: chain.slow4 })})`);
+
+    // Grape shot shows on her: the pips of the sailors just lost flash on her tag (for about 1.4 s) and "−3 CREW" pops.
+    const grape = await ev(pp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('grape');
+      G.combat.forceCrit('none');
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      const hold = T.pinner(p, e);
+      hold();
+      p.reload.star = 0;
+      const crew0 = G.combat.crewOf(e);
+      G.playerFire(1);
+      T.steps(0.9, hold);
+      G.combat.forceCrit(null);
+      const crew1 = G.combat.crewOf(e);
+      const pops = [...document.querySelectorAll('#pops .pop')].filter((s) => s.style.display !== 'none').map((s) => s.textContent);
+      G.state.mode = 'paused';
+      await T.redraw();
+      const t1 = G.tagInfo(e);
+      G.state.mode = 'playing';
+      const t0 = G.state.time;
+      const lostColors = new Set(); // the colours the lost pips (the last three) show while they flash
+      while (G.state.time - t0 < 1.6) {
+        await new Promise((res) => requestAnimationFrame(res));
+        hold();
+        const ti = G.tagInfo(e);
+        if (ti.flash > 0 && ti.colors) for (const c of ti.colors.slice(7)) lostColors.add(c);
+      }
+      G.state.mode = 'paused';
+      const t2 = G.tagInfo(e);
+      return { crew0, crew1, pops, flash1: t1.flash, pips1: t1.pips, flash2: t2.flash, pips2: t2.pips, lostColors: [...lostColors] };
+    });
+    check(grape.crew0 - grape.crew1 === 3 && grape.flash1 === 3 && grape.pips1 === 7.5 && grape.flash2 === 0 && grape.pips2 === 7.5 && grape.pops.some((t) => /−3 CREW/.test(t)),
+      `grape shot (phone): her tag flashes the 3 pips of the sailors just lost, then shows them gone, and "−3 CREW" pops (${J(grape)})`);
+    // (C1) They blink red and the dark of a lost pip, both "gone": never white or the cream of a sailor aboard.
+    check(grape.lostColors.includes('ff3b2f') && grape.lostColors.includes('4a3b5c') && grape.lostColors.every((c) => c === 'ff3b2f' || c === '4a3b5c'),
+      `grape shot (phone): the lost pips blink red and dark, never white or cream (${J(grape.lostColors)})`);
+
+    // Round shot is the hull smasher: its damage pops bigger than chain or grape shot's.
+    const sizes = await ev(pp, () => {
+      const G = window.__game;
+      const out = {};
+      for (const id of ['round', 'chain']) {
+        const p = T.level(1);
+        G.combat.setAmmo(id);
+        G.combat.forceCrit('none');
+        const e = T.spawn('privateer', 15, 0, 0);
+        e.reload.port = e.reload.star = 99;
+        const hold = T.pinner(p, e);
+        hold();
+        p.reload.star = 0;
+        G.playerFire(1);
+        const hm = document.getElementById('hitmark');
+        hm.classList.remove('popped');
+        T.steps(1.2, () => {
+          hold();
+          return !hm.classList.contains('popped');
+        });
+        G.combat.forceCrit(null);
+        const pop = [...document.querySelectorAll('#pops .pop.pop-dmg')].find((s) => s.style.display !== 'none');
+        out[id] = pop ? { cls: pop.className, size: parseFloat(getComputedStyle(pop).fontSize), text: pop.querySelector('.pop-main').textContent } : null;
+      }
+      return out;
+    });
+    check(sizes.round && sizes.chain && /pop-round/.test(sizes.round.cls) && !/pop-round/.test(sizes.chain.cls) && sizes.round.size > sizes.chain.size * 1.15,
+      `round shot (phone): its hull damage pops bigger than chain shot's (${J(sizes)})`);
+    await ctx.close();
+
+    // Reduced motion (A3, SPEC2 §13: camera cuts instead of swoops or eases): the same pirates on both beams fired at
+    // in turn. The framing's weight is only ever 0 or 1, the framing view holds still relative to your ship between
+    // cuts, and cuts come at least 1.5 s apart.
+    const { ctx: rctx, page: rp } = await open({ width: 390, height: 844, touch: true, label: 'phone-rm', reducedMotion: 'reduce', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+    const rm = await twoBeams(rp);
+    check(rm.framed > 10 && rm.weights.every((w) => w === 0 || w === 1) && rm.cuts >= 1 && rm.gaps.every((g) => g >= 1.5 - 0.01) && rm.seen.every((x) => x === 1),
+      `phone 390x844, reduced motion: the camera cuts to and from the framing view (weights ${J(rm.weights)}), holds still between cuts, ${rm.cuts} cut(s) at least 1.5 s apart (${J(rm.gaps)}), and each ship fired at is on screen 1.5 s after the shot (${J(rm.seen)})`);
+    await rctx.close();
+
+    // Wide screens keep the chase view, even in a running fight (A1): a desktop window (1280x720) and a phone on its
+    // side (844x390), a privateer sailing 16 paces off your port beam (where the framing used to take over), you
+    // firing both broadsides by key and turning hard to port and back. The framing never comes in (its weight is 0
+    // in every frame) and your ship stays wholly on screen.
+    const wideFight = async (page) => {
+      await ev(page, () => {
+        const G = window.__game;
+        const p = T.level(1);
+        G.state.bannerTimer = 0.001;
+        const e = T.spawn('privateer', -16, 0, 0);
+        const h = e.h;
+        p.reload.port = p.reload.star = 0;
+        window.__wideE = e;
+        T.record([e], () => {
+          p.speed = 8;
+          e.speed = 8;
+          e.h = h;
+          e.reload.port = e.reload.star = 99;
+        });
+      });
+      const t0 = await page.evaluate(() => {
+        window.__game.state.mode = 'playing';
+        return window.__game.state.time;
+      });
+      const until = (dt) => page.waitForFunction((t) => window.__game.state.time >= t, t0 + dt, { timeout: 120000, polling: 20 });
+      await page.keyboard.press('q');
+      await until(0.3);
+      await page.keyboard.down('a');
+      await until(2.5);
+      await page.keyboard.up('a');
+      await page.keyboard.press('e');
+      await page.keyboard.down('d');
+      await until(5);
+      await page.keyboard.up('d');
+      return page.evaluate(() => {
+        const G = window.__game;
+        G.state.mode = 'paused';
+        const fs = T.stop();
+        let turned = 0;
+        for (let i = 1; i < fs.length; i++) turned += Math.abs(T.wrap(fs[i].h - fs[i - 1].h));
+        G.capture.escape(window.__wideE);
+        return { frames: fs.length, w: Math.max(...fs.map((f) => f.w)), focus: fs.some((f) => f.focus !== -1), mine: Math.round(Math.min(...fs.map((f) => T.seen(f.mine))) * 100) / 100, turned: Math.round(turned * 100) / 100 };
+      });
+    };
+
+    // A desktop window (1280x720) keeps its chase view: it shows the same privateer already, and the battle camera
+    // never frames on a wide screen; R / 1-3 say what the shot does in the hint bubble too.
+    const { ctx: dctx, page: dp } = await open({ label: 'phone-desk', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+    const desk = await ev(dp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      const e = T.spawn('privateer', 15, 0, 0);
+      e.reload.port = e.reload.star = 99;
+      const hold = T.pinner(p, e);
+      hold();
+      const frames = await T.settle(hold);
+      const tag = (G.tagRect ? G.tagRect(e) : null);
+      const out = { frames, w: (G.framing ? G.framing.w : 0), focus: (G.framing ? G.framing.focus : null) === e, need: (G.framing ? G.framing.need : null), tag: tag && Object.fromEntries(Object.entries(tag).map(([k, v]) => [k, Math.round(v)])) };
+      G.state.mode = 'playing';
+      T.key('2', 'Digit2');
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.hint = T.shown('hint') ? T.text('hint') : '';
+      return out;
+    });
+    check(!desk.focus && desk.w === 0 && !desk.need && desk.tag && desk.tag.l >= 0 && desk.tag.r <= 1280 && desk.tag.t >= 0 && desk.hint === 'Chain shot: slows her down',
+      `desktop 1280x720: the chase view already shows a privateer 15 paces off the beam with her tag, and the camera stays as it was (nothing framed); 2 says "${desk.hint}" (${J(desk)})`);
+    const deskFight = await wideFight(dp);
+    await dctx.close();
+    const { ctx: lctx, page: lp } = await open({ width: 844, height: 390, touch: true, label: 'phone-side', store: { 'pirates-ahoy-unlocked': '3', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+    const sideFight = await wideFight(lp);
+    await lctx.close();
+    for (const [where, r] of [['desktop 1280x720', deskFight], ['phone on its side 844x390', sideFight]]) {
+      check(r.frames >= 20 && r.turned > 1.5 && r.w === 0 && !r.focus && r.mine === 1,
+        `${where}, a running fight with her 16 paces off the port beam and hard turns both ways: the camera keeps its chase view (framing weight ${r.w} at most) and your ship stays wholly on screen (${r.mine}) (${J(r)})`);
+    }
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

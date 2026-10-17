@@ -93,7 +93,19 @@ Press `M` (or the speaker button) to mute.
 
 `R` cycles through the ammo you have; `1`, `2` and `3` pick Round, Chain or Grape (by key position, so they
 work on any keyboard layout). On touch, the **Ammo** button cycles. A locked ammo says what unlocks it. Changing
-ammo takes the gun crews half a second. Every level starts with round shot; pirates always fire round shot.
+ammo takes the gun crews half a second, and the hint bubble says what the new shot is for ("Round shot: smashes her
+hull", "Chain shot: slows her down", "Grape shot: knocks out her crew"). Every level starts with round shot;
+pirates always fire round shot.
+
+You can see each shot work on the ship you hit: round shot's damage number is the biggest; a chain-slowed ship shows
+"SLOWED!", a chain badge on her name tag with a timer bar that shrinks as the slow wears off, and a short, choppy wake;
+the crew pips that grape shot knocks out blink before they go.
+
+Firing while a side is still loading is never lost: tapped within 0.6 s of being ready, the shot goes off the moment
+the guns are loaded (the Fire button and that side's reload bar show a white ring meanwhile); tapped earlier, the
+button says "Loading…" with a soft click. On a phone held upright, the camera swings to show the ship you are firing
+at beside your own, with her name tag on screen, and eases back when nobody is in reach (with reduced motion it cuts
+instead of swinging).
 
 ### Crew and surrender
 

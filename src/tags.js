@@ -3,25 +3,42 @@ import { noOutline } from './style.js';
 
 // Floating name tags above enemy ships (SPEC2 §5.4, §9.1): the ship's name, a hull bar whose pale
 // "ghost" segment lingers 0.45 s after each hit (so you see how big the hit was), a row of 10 crew
-// pips with the gold surrender notch, and a status icon (boarding odds, white flag, too hot).
+// pips with the gold surrender notch, and a status icon (boarding odds, white flag, too hot). While
+// chain shot slows her, a chain-shot badge on the left with a timer bar under it that shrinks as the
+// slow wears off; sailors just lost (grape shot) make their pips flash red for a moment.
 //
-//     ( PRIVATEER BRIG )            the name on an ink tab on top of the card
-//   [████████▒▒▒░░░░░░░]  (icon)    hull: red fill over the ghost over the ink background
-//   [▮▮▮▮▮▮▮░│░░       ]            crew: cream = aboard, dark = lost, the last one partly filled
+//                ( PRIVATEER BRIG )            the name on an ink tab on top of the card
+//   (chain)  [████████▒▒▒░░░░░░░]  (icon)    hull: red fill over the ghost over the ink background
+//   [====]   [▮▮▮▮▮▮▮░│░░       ]            crew: cream = aboard, dark = lost, the last one partly filled
 //
 // Draw calls: per tag the background, the ghost (only while it lags behind the fill), the fill and the
-// name sprite (4), plus the icon sprite when one shows. Every pip and notch of every tag is ONE
-// InstancedMesh, rewritten each frame from the tags' world matrices: 1 draw call for the whole fleet.
+// name sprite (4), plus the icon sprite when one shows and the chain badge while she is slowed. Every pip
+// and notch of every tag, and the chain badges' timer bars, are ONE InstancedMesh, rewritten each frame
+// from the tags' world matrices: 1 draw call for the whole fleet.
+// On a small screen (a phone) the tags are drawn bigger, so the pips and badges read: at least MIN_PX
+// CSS px wide (up to MAX_GROW times the size they would have).
 // Everything is flat and unlit (MeshBasicMaterial / sprites, noOutline): the outline pass skips it.
 //
-// createTags(scene) → {
+// createTags(scene, { reducedMotion }) → {
 //   add(ship) → tag | null (bosses get no tag: they have the DOM boss bar), remove(ship),
-//   update(ships, camera, t, dt),   // per frame: billboard, scale, hull fill + ghost, pips + notch, icon
-//   read(ship) → { visible, hull, ghost, pips, notch, icon } | null   // test hook: pips/notch read back
-//                                    from the pip InstancedMesh (colours and matrices), in pip units
+//   update(ships, camera, t, dt),   // per frame: billboard, scale, hull fill + ghost, pips + notch, icon,
+//                                   // the chain badge and its timer, lost pips flashing
+//   read(ship) → { visible, hull, ghost, pips, notch, icon, slow, flash, colors } | null   // test hook:
+//                                    pips/notch read back from the pip InstancedMesh (colours and matrices),
+//                                    in pip units; slow: the chain timer's fill (0..1) when the badge shows,
+//                                    else null; flash: how many pips are flashing; colors: the 10 pips' colours
+//                                    ('rrggbb', left to right) while the tag shows
+//   rect(ship, camera) → { l, t, r, b } | null   // the drawn tag on screen (CSS px), while it shows
+//   frame(ship, camera) → { x, y, z, size, px, l, r, t, b } | null   // for framing: the tag's anchor
+//                                    (world), world units per tag unit at the camera's distance, CSS px per
+//                                    tag unit on screen (where a tag keeps its size, 18-78 u away), and its
+//                                    extent in tag units (badges included)
 //   get count, get pips /* the InstancedMesh */, dispose()
 // }
-// Reads per ship: hp, maxHp, crewShown (may be fractional during a brawl), crew0, strikeAt, tagIcon
+// reducedMotion: a boolean or a function returning one: lost pips turn red without flashing.
+// Reads per ship: hp, maxHp, crewShown (may be fractional during a brawl), crew0, strikeAt, tagSlow
+// (0..1: the part of chain shot's slow still to run; 0 = not slowed), crewLost ({ n, from }: n counts
+// the losses, `from` is the crew before the latest; a new n flashes the pips lost since `from`), tagIcon
 // ('capture' | 'fight' | 'risky' | 'white' | 'hot' | 'cooldown' | null; 'cooldown' draws the hook
 // greyed with a recharge ring from tagCool, the fraction of the cooldown still to go), tagPulse (the
 // hull bar throbs: "wrecked"), flash (a hit swells the tag), tagHidden (boarding.js: hidden while the boarding
@@ -66,11 +83,34 @@ const Z_PIP = 0.012;
 const Z_PART = 0.024;
 const Z_NOTCH_INK = 0.03;
 const Z_NOTCH = 0.036;
-// Instances per tag: 10 pips, the partly filled overlay, the notch's dark backing and the gold notch.
-const PER_TAG = PIPS + 3;
+// The chain badge (left of the card, mirroring the status icon) and its timer bar under it.
+const SLOW_X = -ICON_X;
+const SLOW_Y = BG_Y + LIFT;
+const TIMER_W = ICON * 0.9;
+const TIMER_H = 0.22;
+const TIMER_Y = SLOW_Y - ICON / 2 - 0.12 - TIMER_H / 2;
+const TIMER_INK = 0.1; // the ink frame round the timer bar
+// What a tag covers, in tag units (for framing it on screen): both badges, the name tab, the timer.
+// (The name tab fills the lower 56 px of its 80 px label canvas: its top is 0.2 of the label's height above
+// the label's centre.)
+const TAB_TOP = LABEL_Y + LIFT + LABEL_H * 0.2;
+const TAB_BOTTOM = LABEL_Y + LIFT - LABEL_H / 2;
+const EXTENT = { l: -(ICON_X + ICON / 2), r: ICON_X + ICON / 2, t: TAB_TOP, b: TIMER_Y - TIMER_H / 2 - TIMER_INK };
+// Instances per tag: 10 pips, the partly filled overlay, the notch's dark backing and the gold notch, the
+// chain timer's ink frame and its fill.
+const PER_TAG = PIPS + 5;
 const I_PART = PIPS;
 const I_NOTCH_INK = PIPS + 1;
 const I_NOTCH = PIPS + 2;
+const I_TIMER_INK = PIPS + 3;
+const I_TIMER = PIPS + 4;
+// Small screens: a tag is drawn at least MIN_PX CSS px wide (its card), at most MAX_GROW times bigger.
+const MIN_PX = 92;
+const MAX_GROW = 1.7;
+// Sailors just lost: their pips flash red (and stand a little taller) for FLASH_TIME s, BLINK times a second.
+const FLASH_TIME = 1.4;
+const BLINK = 2.5;
+const FLASH_TALL = 1.45;
 
 const INK = 0x1d1330;
 const RED = 0xe63946;
@@ -79,6 +119,9 @@ const GHOST = 0xfff3c4; // the HUD's ghost colour
 const PIP_FULL = 0xfff4d6;
 const PIP_EMPTY = 0x4a3b5c;
 const NOTCH = 0xffc93c;
+const LOST_A = 0xff3b2f; // a lost pip, flashing red ...
+const LOST_B = PIP_EMPTY; // ... and the dark of a lost pip (both read "gone": never the cream of a pip aboard)
+const TIMER = 0x8fd8ff; // the chain timer's fill (sky blue, like the badge)
 const GHOST_HOLD = 0.45; // seconds the ghost waits after a hit before it slides down
 const GHOST_RATE = 4; // then closes the gap at this rate (1/s), like the HUD's hull bar
 
@@ -88,6 +131,7 @@ const ATLAS_N = 4;
 const ICONS = { capture: 0, fight: 1, risky: 2, white: 3, hot: 4 };
 const COOL_FIRST = 5;
 const COOL_STEPS = 8;
+const CHAIN_CELL = COOL_FIRST + COOL_STEPS; // 13: the chain-shot badge
 
 // ---------------------------------------------------------------------------
 // Icon art (canvas paths only, so it never waits for a web font)
@@ -282,6 +326,44 @@ function cooldown(g, done) {
   }
 }
 
+// The chain-shot badge: chain shot as the Ammo button draws it (two half-balls on a chain) on a sky-blue disc.
+function chainShot(g) {
+  disc(g, 50, '#58b4ea', 10);
+  g.save();
+  g.rotate(-0.35);
+  // the chain between the halves: ink, then steel links
+  g.lineCap = 'round';
+  g.beginPath();
+  g.moveTo(-14, 0);
+  g.lineTo(14, 0);
+  g.strokeStyle = INK_CSS;
+  g.lineWidth = 15;
+  g.stroke();
+  g.strokeStyle = '#d7d2e2';
+  g.lineWidth = 6;
+  g.setLineDash([7, 5]);
+  g.stroke();
+  g.setLineDash([]);
+  // the two half-balls, flat sides inward
+  for (const sd of [-1, 1]) {
+    g.beginPath();
+    g.arc(sd * 14, 0, 21, sd > 0 ? -Math.PI / 2 : Math.PI / 2, sd > 0 ? Math.PI / 2 : (Math.PI * 3) / 2);
+    g.closePath();
+    g.fillStyle = '#3a3443';
+    g.fill();
+    g.lineWidth = 6;
+    g.strokeStyle = INK_CSS;
+    g.lineJoin = 'round';
+    g.stroke();
+    // a glint
+    g.beginPath();
+    g.arc(sd * 14 + sd * 8, -8, 4, 0, Math.PI * 2);
+    g.fillStyle = 'rgba(255, 255, 255, 0.7)';
+    g.fill();
+  }
+  g.restore();
+}
+
 function drawAtlas() {
   const canvas = document.createElement('canvas');
   canvas.width = canvas.height = CELL * ATLAS_N;
@@ -298,6 +380,7 @@ function drawAtlas() {
   cell(ICONS.white, whiteFlag);
   cell(ICONS.hot, flame);
   for (let k = 0; k < COOL_STEPS; k++) cell(COOL_FIRST + k, (c) => cooldown(c, (k + 1) / (COOL_STEPS + 1)));
+  cell(CHAIN_CELL, chainShot);
   return canvas;
 }
 
@@ -336,6 +419,7 @@ function drawLabel(canvas, text) {
   ctx.strokeText(text, W / 2, y0 + TAB_H / 2 + 2);
   ctx.fillStyle = '#fff4d6';
   ctx.fillText(text, W / 2, y0 + TAB_H / 2 + 2);
+  return tw;
 }
 
 // A rounded rectangle (the tag's ink card).
@@ -368,8 +452,13 @@ const COLOR_NOTCH = new THREE.Color(NOTCH);
 const COLOR_INK = new THREE.Color(INK);
 const COLOR_RED = new THREE.Color(RED);
 const COLOR_PULSE = new THREE.Color(PULSE);
+const COLOR_LOST_A = new THREE.Color(LOST_A);
+const COLOR_LOST_B = new THREE.Color(LOST_B);
+const COLOR_TIMER = new THREE.Color(TIMER);
+const _v = new THREE.Vector3();
 
-export function createTags(scene) {
+export function createTags(scene, { reducedMotion = false } = {}) {
+  const rm = typeof reducedMotion === 'function' ? () => !!reducedMotion() : () => !!reducedMotion;
   const byShip = new Map(); // ship -> tag
   const tags = new Set();
   let frame = 0;
@@ -392,20 +481,20 @@ export function createTags(scene) {
       const canvas = document.createElement('canvas');
       canvas.width = 512;
       canvas.height = 80;
-      drawLabel(canvas, text);
+      const tw = drawLabel(canvas, text);
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 4;
       // Only the glyph pixels write depth, so the outline pass can't smear ink over the name.
       const mat = new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: true, alphaTest: 0.4 });
-      e = { canvas, tex, mat, text };
+      e = { canvas, tex, mat, text, tw };
       labels.set(text, e);
     }
     return e.mat;
   }
   const redrawLabels = () => {
     for (const e of labels.values()) {
-      drawLabel(e.canvas, e.text);
+      e.tw = drawLabel(e.canvas, e.text);
       e.tex.needsUpdate = true;
     }
   };
@@ -473,6 +562,24 @@ export function createTags(scene) {
   }
   const ZERO = new THREE.Matrix4().makeScale(0, 0, 0);
 
+  // How much bigger tags are drawn on this screen: a card at least MIN_PX CSS px wide (at the distances where
+  // a tag keeps its size on screen, d / 30), at most MAX_GROW times bigger. 1 on a desktop window.
+  function growFor(camera) {
+    return clamp(MIN_PX / (BG_W * unitPx(camera)), 1, MAX_GROW);
+  }
+  // CSS px a tag unit spans on screen at scale 1 per 30 u of distance (where tags keep their size: d / 30).
+  function unitPx(camera) {
+    const H = typeof window !== 'undefined' && window.innerHeight > 0 ? window.innerHeight : 720;
+    const tanV = Math.tan((num(camera.fov, 55) * Math.PI) / 360) / Math.max(1e-6, num(camera.zoom, 1));
+    return H / (60 * tanV);
+  }
+  // The name tab's width in tag units.
+  function tabWidth(ship) {
+    const name = (ship.type && ship.type.name) || String(ship.typeName || '');
+    const e = labels.get(name);
+    return e ? (num(e.tw, 512) / 512) * LABEL_W : LABEL_W;
+  }
+
   function crewOf(ship) {
     const crew0 = Math.max(0, num(ship.crew0, num(ship.type && ship.type.crew, 0)));
     const shown = clamp(num(ship.crewShown, crew0), 0, crew0);
@@ -502,7 +609,12 @@ export function createTags(scene) {
       icon.scale.set(ICON, ICON, 1);
       icon.position.set(ICON_X, BG_Y + LIFT, Z_FILL);
       icon.visible = false;
-      g.add(bg, ghost, fill, label, icon);
+      // the chain-shot badge (while chain shot slows her)
+      const slow = new THREE.Sprite(iconMaterial(CHAIN_CELL));
+      slow.scale.set(ICON, ICON, 1);
+      slow.position.set(SLOW_X, SLOW_Y, Z_FILL);
+      slow.visible = false;
+      g.add(bg, ghost, fill, label, icon, slow);
       g.visible = false;
       const ratio = clamp(num(ship.hp, 1) / Math.max(1e-6, num(ship.maxHp, 1)), 0, 1);
       g.userData = {
@@ -512,6 +624,13 @@ export function createTags(scene) {
         fill,
         label,
         icon,
+        slow,
+        slowLeft: 0, // the chain timer's fill (0..1)
+        lostN: 0, // the ship's crewLost.n last seen
+        lostFrom: 0, // pips (from the left) the flashing run reaches
+        flashT: 0, // seconds of flashing left
+        flashing: 0, // pips flashing this frame
+        grow: 1, // the small-screen size factor this frame
         fillMat: null, // own material while pulsing
         ratio,
         ghostRatio: ratio,
@@ -547,6 +666,8 @@ export function createTags(scene) {
       if (want * PER_TAG > pips.instanceMatrix.count) makePips(Math.max(want, Math.ceil((pips.instanceMatrix.count / PER_TAG) * 2)));
       const mats = pips.instanceMatrix.array;
       const cols = pips.instanceColor.array;
+      const grow = growFor(camera);
+      const still = rm();
 
       for (const ship of list) {
         const g = byShip.get(ship);
@@ -572,7 +693,8 @@ export function createTags(scene) {
         if (!g.visible) continue;
 
         const pulse = ship.flash > 0 ? 1 + ship.flash : 1;
-        g.scale.setScalar(clamp(d / 30, 0.6, 2.6) * pulse);
+        u.grow = grow;
+        g.scale.setScalar(clamp(d / 30, 0.6, 2.6) * grow * pulse);
         g.quaternion.copy(camera.quaternion);
 
         // hull fill and ghost
@@ -601,6 +723,9 @@ export function createTags(scene) {
           if (cell >= 0) u.icon.material = iconMaterial(cell);
         }
         u.icon.visible = cell >= 0;
+        // the chain badge: shows while chain shot slows her, its timer bar shrinking as the slow wears off
+        u.slowLeft = clamp(num(ship.tagSlow, 0), 0, 1);
+        u.slow.visible = u.slowLeft > 0;
 
         g.updateMatrixWorld(true);
 
@@ -613,7 +738,28 @@ export function createTags(scene) {
         const part = filled - full;
         const base = n * PER_TAG;
         const mw = g.matrixWorld;
+        // sailors just lost: the pips between what she has now and what she had flash red for a moment
+        const lost = ship.crewLost;
+        if (lost && typeof lost === 'object' && num(lost.n, 0) !== u.lostN) {
+          const from = clamp((PIPS * num(lost.from, 0)) / crew0, 0, PIPS);
+          u.lostFrom = u.flashT > 0 ? Math.max(u.lostFrom, from) : from;
+          u.lostN = num(lost.n, 0);
+          u.flashT = FLASH_TIME;
+        }
+        if (u.flashT > 0) u.flashT = Math.max(0, u.flashT - step);
+        const lo = full;
+        const hi = u.flashT > 0 ? Math.min(PIPS, Math.ceil(u.lostFrom - 1e-6)) : 0;
+        u.flashing = Math.max(0, hi - lo);
+        const blinkOn = still || Math.floor((FLASH_TIME - u.flashT) * BLINK * 2) % 2 === 0;
         for (let i = 0; i < PIPS; i++) {
+          if (i >= lo && i < hi) {
+            // a lost pip: taller (unless motion is reduced) and flashing red / dark (steady red if reduced)
+            _local.copy(slotLocal[i]);
+            if (!still) _local.elements[5] *= FLASH_TALL;
+            _m.multiplyMatrices(mw, _local).toArray(mats, (base + i) * 16);
+            (blinkOn ? COLOR_LOST_A : COLOR_LOST_B).toArray(cols, (base + i) * 3);
+            continue;
+          }
           _m.multiplyMatrices(mw, slotLocal[i]).toArray(mats, (base + i) * 16);
           (i < full ? COLOR_FULL : COLOR_EMPTY).toArray(cols, (base + i) * 3);
         }
@@ -636,6 +782,19 @@ export function createTags(scene) {
         _local.compose(_pos.set(nx, PIP_Y + LIFT, Z_NOTCH), _q.identity(), _scl.set(NOTCH_W, NOTCH_H, 1));
         _m.multiplyMatrices(mw, _local).toArray(mats, (base + I_NOTCH) * 16);
         COLOR_NOTCH.toArray(cols, (base + I_NOTCH) * 3);
+        // the chain timer under the badge: an ink frame and the sky-blue part of the slow still to run
+        if (u.slowLeft > 0) {
+          _local.compose(_pos.set(SLOW_X, TIMER_Y, Z_PIP), _q.identity(), _scl.set(TIMER_W + 2 * TIMER_INK, TIMER_H + 2 * TIMER_INK, 1));
+          _m.multiplyMatrices(mw, _local).toArray(mats, (base + I_TIMER_INK) * 16);
+          const w = Math.max(0.02, TIMER_W * u.slowLeft);
+          _local.compose(_pos.set(SLOW_X - TIMER_W / 2 + w / 2, TIMER_Y, Z_PART), _q.identity(), _scl.set(w, TIMER_H, 1));
+          _m.multiplyMatrices(mw, _local).toArray(mats, (base + I_TIMER) * 16);
+        } else {
+          ZERO.toArray(mats, (base + I_TIMER_INK) * 16);
+          ZERO.toArray(mats, (base + I_TIMER) * 16);
+        }
+        COLOR_INK.toArray(cols, (base + I_TIMER_INK) * 3);
+        COLOR_TIMER.toArray(cols, (base + I_TIMER) * 3);
         n++;
       }
       // tags of ships that were not passed this frame hide
@@ -669,13 +828,17 @@ export function createTags(scene) {
         pips: null,
         notch: null,
         icon: u.icon.visible ? iconName(u.cell) : null,
+        slow: g.visible && u.slow.visible ? Math.round(u.slowLeft * 1000) / 1000 : null,
+        flash: g.visible ? u.flashing : 0,
       };
       if (u.block < 0 || !g.visible) return out;
       _inv.copy(g.matrixWorld).invert();
       const base = u.block * PER_TAG;
       let filled = 0;
+      out.colors = [];
       for (let i = 0; i < PIPS; i++) {
         pips.getColorAt(base + i, _c);
+        out.colors.push(_c.getHexString());
         if (Math.abs(_c.r - COLOR_FULL.r) + Math.abs(_c.g - COLOR_FULL.g) + Math.abs(_c.b - COLOR_FULL.b) < 1e-3) filled++;
       }
       pips.getMatrixAt(base + I_PART, _m);
@@ -686,6 +849,53 @@ export function createTags(scene) {
       out.pips = Math.round(filled * 1000) / 1000;
       out.notch = Math.round(notchAt(_pos.x) * 1000) / 1000;
       return out;
+    },
+
+    // The drawn tag on screen, in CSS px ({ l, t, r, b }): the card, the name tab and the badges showing.
+    // null while it is hidden.
+    rect(ship, camera) {
+      const g = byShip.get(ship);
+      if (!g || !g.visible || !camera || typeof window === 'undefined') return null;
+      const u = g.userData;
+      g.updateMatrixWorld(true);
+      const W = window.innerWidth;
+      const H = window.innerHeight;
+      const box = { l: Infinity, t: Infinity, r: -Infinity, b: -Infinity };
+      const add = (x0, x1, y0, y1) => {
+        for (const x of [x0, x1]) {
+          for (const y of [y0, y1]) {
+            _v.set(x, y, 0).applyMatrix4(g.matrixWorld).project(camera);
+            const px = (_v.x * 0.5 + 0.5) * W;
+            const py = (-_v.y * 0.5 + 0.5) * H;
+            box.l = Math.min(box.l, px);
+            box.r = Math.max(box.r, px);
+            box.t = Math.min(box.t, py);
+            box.b = Math.max(box.b, py);
+          }
+        }
+      };
+      add(-BG_W / 2, BG_W / 2, BG_BOTTOM + LIFT, BG_TOP + LIFT);
+      const tw = tabWidth(u.ship) / 2;
+      add(-tw, tw, TAB_BOTTOM, TAB_TOP);
+      if (u.icon.visible) add(ICON_X - ICON / 2, ICON_X + ICON / 2, BG_Y + LIFT - ICON / 2, BG_Y + LIFT + ICON / 2);
+      if (u.slow.visible) add(SLOW_X - ICON / 2, SLOW_X + ICON / 2, EXTENT.b, SLOW_Y + ICON / 2);
+      return box;
+    },
+
+    // For framing a ship's tag on screen (main's battle camera): where its anchor is (world), how many world
+    // units a tag unit is at `camera`'s distance (its size on screen, both badges counted) and what it covers in
+    // tag units (badges, name tab and timer included: the tag at its biggest). null if the ship has no tag.
+    frame(ship, camera) {
+      const g = byShip.get(ship);
+      if (!g || !camera) return null;
+      const wy = ship.mesh ? ship.mesh.position.y : 0;
+      const x = num(ship.x, 0);
+      const y = wy + num(ship.tagY, 0);
+      const z = num(ship.z, 0);
+      const d = Math.hypot(x - camera.position.x, y - camera.position.y, z - camera.position.z);
+      const tw = tabWidth(ship) / 2;
+      const grow = growFor(camera);
+      return { x, y, z, size: clamp(d / 30, 0.6, 2.6) * grow, px: grow * unitPx(camera), l: Math.min(EXTENT.l, -tw), r: Math.max(EXTENT.r, tw), t: EXTENT.t, b: EXTENT.b };
     },
 
     get count() {
