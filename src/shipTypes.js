@@ -91,6 +91,54 @@ export const SHIP_TYPES = {
     gold: 30, engage: 24, spread: 0.07, crew: 24, grit: 1.5,
     ghost: true,
   },
+
+  // Voyage III · The Kraken Seas (SPEC3 §4.1). Their behaviours follow these flags on any level
+  // (mechanics3.js): ram (the Shark Raider charges), mortar (the Bomb Ketch lobs shells), armour (beam
+  // hits × armour, combat.js armourMul), fireship (sails at you and explodes; frost makes her strike),
+  // flagship (the Inkheart: ink pots; when she falls her crew flee and the Kraken rises).
+  // Level 7: The Turtle Atolls
+  shark: {
+    name: 'Shark Raider',
+    hp: 40, len: 8, wid: 2.6, maxSpeed: 13, accel: 4.5, turn: 1.7, reload: 3.0, guns: 1, dmg: 4,
+    gold: 4, engage: 18, spread: 0.12, crew: 8, grit: 1.0,
+    ram: true,
+  },
+  bombketch: {
+    name: 'Bomb Ketch',
+    hp: 70, len: 9, wid: 3.0, maxSpeed: 6.5, accel: 2.2, turn: 0.8, reload: 3.5, guns: 1, dmg: 3,
+    gold: 7, engage: 42, spread: 0.12, crew: 10, grit: 0.9,
+    mortar: true,
+  },
+
+  // Level 8: The Cape of Storms
+  ironclad: {
+    name: 'Iron Turtle',
+    hp: 150, len: 11, wid: 4.2, maxSpeed: 6, accel: 1.8, turn: 0.7, reload: 2.8, guns: 3, dmg: 6,
+    gold: 12, engage: 20, spread: 0.09, crew: 16, grit: 1.3,
+    armour: 0.5,
+  },
+  fireship: {
+    name: 'Fire Ship',
+    hp: 30, len: 7.5, wid: 2.6, maxSpeed: 11.5, accel: 4, turn: 1.4, reload: 99, guns: 0, dmg: 0,
+    gold: 3, engage: 0, spread: 0, crew: 4, grit: 0.8,
+    fireship: true,
+  },
+
+  // Level 9: The Kraken's Deep
+  skiff: {
+    name: 'Squid Skiff',
+    hp: 40, len: 8, wid: 2.6, maxSpeed: 13, accel: 4.5, turn: 1.7, reload: 3.0, guns: 1, dmg: 4,
+    gold: 5, engage: 9, spread: 0.12, crew: 10, grit: 1.1,
+    boarder: true,
+    shallow: true,
+  },
+  inkheart: {
+    name: 'The Inkheart',
+    boss: true,
+    hp: 360, len: 17, wid: 5.6, maxSpeed: 7, accel: 2, turn: 0.65, reload: 2.4, guns: 6, dmg: 6,
+    gold: 35, engage: 24, spread: 0.07, crew: 26, grit: 1.6,
+    flagship: true,
+  },
 };
 
 /** z position (along the hull, bow = +z) of gun i on a ship type. */

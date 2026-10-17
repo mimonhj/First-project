@@ -6,7 +6,20 @@ import { toon, noOutline, gradientMap } from './style.js';
 import { createAudio } from './audio.js';
 import { buildPerson, animatePerson, disposePerson, releaseSharedPeople } from './people.js';
 import * as sparrow from './env/sparrow.js';
-import { LEVELS } from './levels.js';
+// The voyage's levels: Voyages I and II (levels.js), then Voyage III, The Kraken Seas, once it sails (voyage.js).
+import { LEVELS, WITH_KRAKEN } from './voyage.js';
+// "The Kraken Seas" (SPEC3): special ammo, Voyage III's rules, the Kraken (its simulation and its model), the
+// statuses drawn on ships, the island's buildings, the quiz and the player's settings. Imported whole (each
+// module's own names are read where they are used), so a module that is still being built never stops the game
+// from loading. Stage 0 only lays the seams: no status, no hazard, no Kraken yet.
+import * as specials from './specials.js';
+import * as mechanics3 from './mechanics3.js';
+import * as krakenRules from './kraken.js';
+import * as krakenView from './krakenView.js';
+import * as statusFx from './statusfx.js';
+import * as islandRules from './island.js';
+import * as quizRules from './quiz.js';
+import * as settingsRules from './settings.js';
 // "Boarders Away!" (SPEC2): the combat rules, the tavern upgrades, the looks and feats records, the enemy
 // name tags, the pop words and the sailors that go overboard.
 import * as combat from './combat.js';
@@ -660,6 +673,11 @@ let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
 let lookSeen = readRaw(LOOK_KEY); // the look record as this tab last read or wrote it (see syncLook)
 let armoryCfg = loadRecord(ARMORY_KEY, parseArmoryConfig, serializeArmoryConfig); // the tavern's crew upgrades
 let tips = loadInt(TIPS_KEY, 0, 255, 0); // one-time tips already shown (SPEC2 §5.5)
+// "The Kraken Seas" records (SPEC3 §10.1). Stage 0: the defaults, in memory only (nothing reads or writes
+// pirates-ahoy-settings, -island or -quiz yet; Stages 2 and 3 load them with loadRecord).
+let settings = settingsRules.defaultSettings(); // how the ship steers on a touch screen
+let islandCfg = islandRules.defaultIsland(); // the island's buildings
+let quizRec = quizRules.defaultQuiz(); // the Riddle Bell's stars
 // Gameplay dice for hits (crits), reseeded at every level start so a level plays out the same way.
 let combatRng = mulberry32(1 * 7919 + 13);
 let forcedCrit = null; // tests: null | 'none' | 'crit' | 'rudder' | 'mast' | 'keg' | 'routed'
@@ -718,11 +736,17 @@ const state = {
   lastBossCaptured: '',
   waveHorn: null, // { at, pitch }: the reinforcements' horn, waiting for a capture fanfare to end
   counterBanner: false, // the "Counter-board!" banner is up (it goes when the window closes)
+  // "The Kraken Seas" (SPEC3; Stage 0: placeholders that nothing changes yet)
+  loads: { fire: 0, frost: 0, stink: 0 }, // special loads left this level (§2.5)
+  powder: specials.defaultPowder(), // the recipes owned (§10.1)
+  grabbed: false, // a Kraken tentacle holds your ship (§5.7.3)
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
 seen[SHIP_KEY] = readRaw(SHIP_KEY);
 
-const input = { left: false, right: false };
+// steer: an analogue turn, −1..1 (positive = left, like updatePlayer's turn), from a thumb sliding on the
+// steering pad or the ship's wheel (SPEC3 §3.2); null: the buttons and keys decide (left / right stay booleans).
+const input = { left: false, right: false, steer: null };
 let player = null;
 let env = null; // the current level environment (see src/env/*.js)
 let foamColor = 0xffffff;
@@ -734,6 +758,10 @@ const reefs = []; // [{x, z, r}]
 const bombs = [];
 const volleys = new Map(); // player broadsides in flight: id -> {side, hits, sunk, left}
 let volleyId = 0;
+// The Kraken of level 9 (kraken.js, SPEC3 §5.7: Stage 2 raises it; null on every other level) and the
+// checkpoint taken at its rise (session memory only, §5.7.6).
+let kraken = null;
+let krakenCheckpoint = null;
 
 // ---------------------------------------------------------------------------
 // Particles: two instanced pools (lit puffs and unlit glows/foam), no outlines.
@@ -862,7 +890,7 @@ function releaseBattlePeople() {
   overboard = createOverboard(scene, overboardCtx);
   boarding.release();
   mechanics.dispose(); // the level's twist ends with the level
-  mechanics = createMechanics([], {});
+  mechanics = noMechanics();
   releaseSharedPeople(); // their shared geometry too, once nobody wears that look any more
   lastLevelStarted = 0;
 }
@@ -944,6 +972,7 @@ function createShip(typeName, kind, x, z, h) {
     list: 0, // eased list angle (radians, + = toward starboard)
     rise: 0, // > 0: rising from the deep (the Phantom), the hull sits lower
     captain: null, // the player's captain at the helm (people.js)
+    status: specials.newStatus(), // a special shot's status (SPEC3 §2.2): id null = none (tags.js reads it too)
   };
   scene.add(mesh);
   if (isPlayer) addHelmCaptain(ship);
@@ -1065,10 +1094,11 @@ function loadEnvironment(n) {
   setEnvironment(LEVELS[n - 1].env, n * 7919 + 13);
 }
 
-// Build an environment module (a level, or Sparrow's Floating Island for the shipyard).
-function setEnvironment(mod, seed) {
+// Build an environment module (a level, or Sparrow's Floating Island for the shipyard). `extra`: more of the
+// build ctx for that module.
+function setEnvironment(mod, seed, extra = null) {
   if (env) env.dispose();
-  env = mod.build(scene, { rng: mulberry32(seed), reducedMotion: reducedMotion() });
+  env = mod.build(scene, { rng: mulberry32(seed), reducedMotion: reducedMotion(), ...extra });
   colliders.length = 0;
   for (const c of env.colliders) colliders.push({ h: 3, ...c });
   reefs.length = 0;
@@ -1270,9 +1300,11 @@ function startLevel(n, { retry = false } = {}) {
   const ps = env.playerStart;
   player = createShip('player', 'player', ps.x, ps.z, ps.h);
   state.nextBomb = def.bombs ? def.grace + rand(...def.bombs.every) : Infinity;
-  // The level's mechanics exist before its first wave, so wave 0 meets onSpawn (SPEC2 §6.3).
+  // The level's mechanics exist before its first wave, so wave 0 meets onSpawn (SPEC2 §6.3). Act II's and
+  // Voyage III's, each factory keeping the ids it knows from def.mechanics, joined into one (SPEC3 §11.1).
   mechanics.dispose();
-  mechanics = createMechanics(def.mechanics || [], {
+  const ids = def.mechanics || [];
+  const ctx = {
     env: () => env,
     player: () => player,
     enemies,
@@ -1289,7 +1321,21 @@ function startLevel(n, { retry = false } = {}) {
     time: () => state.time,
     def,
     types: SHIP_TYPES,
-  });
+  };
+  // Voyage III's rules also launch bombs, send ships fleeing, blow up fire ships, read and douse statuses, lead
+  // your turn and read the Lighthouse's warning bonus (SPEC3 §11.1). Stage 0: the seams; Stage 2 fills them in.
+  const ctx3 = {
+    ...ctx,
+    launchBomb: (spec) => (spec && typeof spec === 'object' ? launchBomb(spec) : null),
+    flee: () => {},
+    explode: () => {},
+    status: (e) => (e && e.status) || null,
+    douse: () => {},
+    playerTurn,
+    warnBonus,
+    surrender: () => {},
+  };
+  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), mechanics3.createMechanics3(ids, ctx3)]);
   spawnWave(0);
   mechanics.init();
   // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
@@ -1534,9 +1580,14 @@ const boarding = createBoarding({
   overboard: () => overboard, // main rebuilds the pool in releaseBattlePeople()
   time: () => state.time,
 });
-// The level's twist (Act II: the treasure convoy, drifting floes, the maelstrom), see mechanics.js.
-// A level without mechanics gets an instance that does nothing.
-let mechanics = createMechanics([], {});
+// The level's twists: Act II's (the treasure convoy, drifting floes, the maelstrom: mechanics.js) and Voyage
+// III's (the new ships' behaviours, waterspouts, rogue waves, the Inkheart's fall: mechanics3.js), joined by
+// mechanics3.composeMechanics into one set of hooks (SPEC3 §11.1). A level without mechanics gets instances
+// that do nothing.
+let mechanics = noMechanics();
+function noMechanics() {
+  return mechanics3.composeMechanics([createMechanics([], {}), mechanics3.createMechanics3([], {})]);
+}
 // Raider pacing lives in combat.js RAIDERS: gap (after any boarding, the breather before the next raider throws
 // its hooks, on top of its own cooldown) and sheer (a beaten-off raider circles wide until its own boarding
 // cooldown is down to this, then closes in again).
@@ -1836,20 +1887,22 @@ function ghostActive(s) {
 
 
 // Effects of chain shot and crits (SPEC2 §2.3). They don't add up: the smallest active multiplier wins,
-// for speed (chain 0.55, mast down 0.5) and for turning (chain 0.7, rudder smashed 0.25).
+// for speed (chain 0.55, mast down 0.5) and for turning (chain 0.7, rudder smashed 0.25). A special shot's
+// status joins the same rule (SPEC3 §2.2: frost 0.5 / 0.6, stink 0); the level's hazards (an ink slick, a
+// rogue wave's wobble: mechanics.shipMods) multiply on top.
 function speedMul(s) {
   const f = s.effects;
   let m = 1;
   if (f.slow > 0) m = Math.min(m, EFFECTS.chain.speed);
   if (f.mast > 0) m = Math.min(m, EFFECTS.mast.speed);
-  return m;
+  return Math.min(m, specials.statusMuls(s.status).speed);
 }
 function turnMul(s) {
   const f = s.effects;
   let m = 1;
   if (f.slowTurn > 0) m = Math.min(m, EFFECTS.chain.turn);
   if (f.rudder > 0) m = Math.min(m, EFFECTS.rudder.turn);
-  return m;
+  return Math.min(m, specials.statusMuls(s.status).turn) * mechanics.shipMods(s).turnMul;
 }
 
 // Is `e` inside the firing arc on `side` of `ship` (within `range`), taking its motion into account?
@@ -1873,6 +1926,7 @@ function inArc(ship, e, side, range = MAX_RANGE) {
 function mayFire(ship) {
   if (ship.kind === 'player') return !boarding.active || (boarding.kind === 'defend' && boarding.phase === 'threat');
   if (ship.surrendered || ship.captured || ship.escaped || boarding.truce || boarding.target === ship) return false;
+  if (specials.statusMuls(ship.status).noFire) return false; // a stinky ship can't shoot (SPEC3 §2.2)
   return !mechanics.holdFire(ship); // e.g. a treasure galleon only fires at a player abeam and close
 }
 
@@ -1963,6 +2017,13 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
   return true;
 }
 
+// What your broadsides may aim at (SPEC3 §5.8): the enemy ships, and once the Kraken has risen its raised parts
+// as pseudo-targets (Stage 2). aimTarget, playerFire, rakeCue, the FIRE! light, the tutorial, the minimap, the
+// chase camera and the portrait framing all read this one list. side: −1 port, +1 starboard, 0 either.
+function targetsFor(side = 0) {
+  return enemies;
+}
+
 // What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
 // firing arc (inArc: true), failing that the nearest one roughly abeam.
 function aimTarget(side) {
@@ -1971,7 +2032,7 @@ function aimTarget(side) {
   let bestDist = Infinity;
   let fallback = null;
   let fallbackDist = Infinity;
-  for (const e of enemies) {
+  for (const e of targetsFor(side)) {
     if (!fighting(e)) continue;
     const r = relative(player, e.x, e.z);
     if (inArc(player, e, side, range)) {
@@ -2085,7 +2146,7 @@ function serviceFireQueue() {
 function rakeCue(side) {
   if (!player) return null;
   const { target, inArc: aimed } = aimTarget(side);
-  if (!target || !aimed) return null;
+  if (!target || !aimed || target.pseudo) return null; // (the Kraken shows no stern or bow to rake)
   const c = rightX(player.h) * side * fwdX(target.h) + rightZ(player.h) * side * fwdZ(target.h);
   if (Math.abs(c) < combat.RAKE.cos) return null;
   return c > 0 ? 'stern' : 'bow'; // the shot would fly the way she faces: in over her stern
@@ -2412,10 +2473,37 @@ function splinters(hx, hz, n = 7) {
   }
 }
 
+// A hit on one of the Kraken's raised parts (a pseudo-target, SPEC3 §5.8): kraken.js decides what it does to its
+// bar ({ dmg, word }); the word pops and the damage counts in the volley's pops and HIT mark. Nothing else of
+// damage() applies: no hole (no hull mesh), no feats, no hit flash, no 'hit' sound, no surrender.
+// (Stage 0: no Kraken rises yet, so this is never reached.)
+function damagePseudo(t, amount, x, z, info) {
+  const r = kraken ? kraken.hit(t.part, info || { dmg: amount }) : null;
+  if (!r) return;
+  const hx = x ?? t.x;
+  const hz = z ?? t.z;
+  const py = (info && info.y) || 3;
+  if (r.word) pops.pop(r.word, hx, py + 2.4, hz, 'kraken');
+  const v = info && info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
+  const dmg = Math.max(0, Number(r.dmg) || 0);
+  if (v) {
+    const T = volleyTarget(v, t);
+    T.dmg += dmg;
+    T.ammo = info.ammo;
+    T.x = hx;
+    T.y = py + 1.6;
+    T.z = hz;
+    for (const tag of info.tags || []) v.tags.add(tag);
+  } else if (dmg > 0) {
+    pops.pop(String(Math.round(dmg)), hx, py + 1.6, hz, 'dmg');
+  }
+}
+
 // Hurt a ship. Tests call damage(e, 9999). `info` (a shot's result from combat.js, see ballHit) adds what
 // the shot did: crew lost, a crit's effect, chain shot's slow, a hole, the pops. source 'fire' is a
 // powder keg burning (quiet: no splinters, no sound).
 function damage(ship, amount, x, z, source = 'other', info = null) {
+  if (ship.pseudo) return damagePseudo(ship, amount, x, z, info);
   if (ship.hp <= 0) return;
   if (ship.kind === 'player' && state.clearTimer > 0) return; // the level is already won
   const hx = x ?? ship.x;
@@ -2523,17 +2611,28 @@ function bombSpec(def) {
   const warn = Array.isArray(B.warn) && B.warn.length === 2 ? B.warn : [2.4, 3.2];
   return { kind, radius: B.radius ?? BOMB_RADIUS, damage: B.damage ?? BOMB_DAMAGE, warn, spread: B.spread ?? 9 };
 }
-function launchBomb() {
-  if (!player || player.sinking || !env) return;
+// The bombs launchBomb(spec) knows (SPEC3 §11.2): the level bombs of today, and Voyage III's geysers, mortar
+// shells, ink pots and the Kraken's slams. A kind with a `from` point is lobbed from there (lava from the
+// volcano by default); the others strike out of the sea or the sky after their warning.
+const BOMB_KINDS = ['lava', 'lightning', 'geyser', 'shell', 'ink', 'slam'];
+// Every hazard warning gets the Lighthouse's extra seconds (SPEC3 §8.1). Stage 0: none yet.
+function warnBonus() {
+  return 0;
+}
+// launchBomb(): the level's own bombs (def.bombs, aimed where you will be). launchBomb(spec): a bomb of any kind
+// at a given spot: { kind, from: { x, y, z } | null, tx, tz, radius, damage, warn: s | [a, b] }. Returns the bomb
+// (null if none was launched).
+function launchBomb(spec = null) {
+  if (!player || player.sinking || !env) return null;
+  if (spec && typeof spec === 'object') return placeBomb(spec);
   const def = LEVELS[state.level - 1];
-  if (!def.bombs) return;
-  const spec = bombSpec(def);
+  if (!def.bombs) return null;
+  const B = bombSpec(def);
   const v = env.volcano;
-  if (spec.kind === 'lava' && !v) return;
-  const T = rand(...spec.warn);
+  if (B.kind === 'lava' && !v) return null;
+  const T = rand(...B.warn) + warnBonus();
   // Aim where the player will be, following the current turn, with some scatter so you can dodge.
-  const turn = (input.left ? 1 : 0) - (input.right ? 1 : 0);
-  const w = turn * player.type.turn * (0.35 + 0.65 * Math.min(1, player.speed / player.type.maxSpeed));
+  const w = playerTurn() * turnRate(player);
   const tt = T * rand(0.6, 1.0);
   let px;
   let pz;
@@ -2546,27 +2645,44 @@ function launchBomb() {
     pz = player.z + (player.speed / w) * (Math.sin(player.h + w * tt) - Math.sin(player.h));
   }
   const a = Math.random() * Math.PI * 2;
-  const d = Math.random() * spec.spread;
+  const d = Math.random() * B.spread;
   const tx = px + Math.cos(a) * d;
   const tz = pz + Math.sin(a) * d;
-  const zone = buildZone(spec.kind, spec.radius);
+  const bomb = placeBomb({ kind: B.kind, tx, tz, radius: B.radius, damage: B.damage, T });
+  if (!state.bombWarned) {
+    state.bombWarned = true;
+    if (B.kind === 'lightning') showBanner('Lightning!<small>Steer out of the white circle</small>', 2.5);
+    else showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
+  }
+  return bomb;
+}
+// Put a bomb's warning zone on the sea (and its projectile in the air, when it is lobbed). `T`: the warning's
+// length as decided by launchBomb (else from `warn`, plus the Lighthouse's bonus).
+function placeBomb(spec) {
+  const kind = BOMB_KINDS.includes(spec.kind) ? spec.kind : 'lava';
+  const num = (v, d) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  const warn = Array.isArray(spec.warn) && spec.warn.length === 2 ? rand(...spec.warn) : num(spec.warn, 2.4);
+  const T = Math.max(0.1, num(spec.T, warn + warnBonus()));
+  const tx = num(spec.tx, player.x);
+  const tz = num(spec.tz, player.z);
+  const radius = num(spec.radius, BOMB_RADIUS);
+  const damage = num(spec.damage, BOMB_DAMAGE);
+  const v = env.volcano;
+  const src = spec.from && Number.isFinite(spec.from.x) && Number.isFinite(spec.from.z) ? spec.from : kind === 'lava' && v ? { x: v.x, y: v.craterY, z: v.z } : null;
+  const zone = buildZone(kind, radius);
   scene.add(zone);
-  if (spec.kind === 'lightning') {
-    bombs.push({ kind: 'lightning', mesh: null, zone, tx, tz, t: 0, T, radius: spec.radius, damage: spec.damage, whistle: null });
-    if (!state.bombWarned) {
-      state.bombWarned = true;
-      showBanner('Lightning!<small>Steer out of the white circle</small>', 2.5);
-    }
-    return;
+  if (!src) {
+    const bomb = { kind, mesh: null, zone, tx, tz, t: 0, T, radius, damage, whistle: null };
+    bombs.push(bomb);
+    return bomb;
   }
   const mesh = new THREE.Mesh(bombGeo, bombMat);
   scene.add(mesh);
   const whistle = audio.play('bombWhistle', sfxAt(tx, tz, { duration: T }));
-  bombs.push({ kind: 'lava', mesh, zone, sx: v.x, sy: v.craterY, sz: v.z, tx, tz, t: 0, T, H: 30 + Math.random() * 15, radius: spec.radius, damage: spec.damage, whistle });
-  if (!state.bombWarned) {
-    state.bombWarned = true;
-    showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
-  }
+  const H = kind === 'lava' ? 30 + Math.random() * 15 : num(spec.H, 12);
+  const bomb = { kind, mesh, zone, sx: src.x, sy: num(src.y, 2), sz: src.z, tx, tz, t: 0, T, H, radius, damage, whistle };
+  bombs.push(bomb);
+  return bomb;
 }
 
 function bombPos(b, u) {
@@ -2603,18 +2719,23 @@ function updateBombs(dt, frozen = false) {
     // Impact.
     const radius = b.radius ?? BOMB_RADIUS;
     const dmg = b.damage ?? BOMB_DAMAGE;
-    const source = b.kind === 'lightning' ? 'lightning' : 'lava';
+    const source = BOMB_KINDS.includes(b.kind) ? b.kind : 'lava'; // ('lava', 'lightning', or Voyage III's kinds)
     if (b.kind === 'lightning') {
       if (env && env.flash) env.flash(b.tx, b.tz); // the bolt and the sky flash (photosensitivity caps in the env)
       audio.play('thunder', sfxAt(b.tx, b.tz));
       foam(b.tx, 0.5, b.tz, 14, 7, 10, 0.6, 0.9);
       puff(b.tx, 1, b.tz, 12, 0xe8f6ff, 7, 9, 0.5, 0.5, GRAVITY, false, 'glow');
-    } else {
-      b.whistle.stop(0.03);
+    } else if (b.kind === 'lava') {
+      if (b.whistle) b.whistle.stop(0.03); // (a lava bomb with no volcano to lob it falls out of the sky)
       audio.play('bombBoom', sfxAt(b.tx, b.tz));
       foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
       puff(b.tx, 1, b.tz, 10, 0xff7b1c, 7, 9, 0.6, 0.7, GRAVITY, false, 'glow');
       puff(b.tx, 1, b.tz, 6, foamColor, 5, 4, 0.9, 1.4, 2, true, 'glow'); // steam
+    } else {
+      // Voyage III's kinds (Stage 2 gives each its own look and sound): a splash for now.
+      if (b.whistle) b.whistle.stop(0.03);
+      audio.play('splash', sfxAt(b.tx, b.tz));
+      foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
     }
     const ships = player ? [player, ...enemies] : enemies;
     for (const s of ships) {
@@ -2632,28 +2753,46 @@ function updateBombs(dt, frozen = false) {
 // ---------------------------------------------------------------------------
 // Simulation
 // ---------------------------------------------------------------------------
-function steerToward(ship, desired, dt, fullRate = false) {
+// How fast a ship turns now (rad/s), the one turn formula (SPEC3 §3.1): her full rate at speed, down to `low` of
+// it at a standstill (the player's from the shipyard's Big rudder & wheel, every other ship's the stock rudder's),
+// or the full rate whatever her speed (`full`: a ship escaping from land, a prize sailing off); then her chain,
+// rudder and status effects (turnMul), and for the player the boarding's lock.
+const TURN_LOW = 0.35; // the stock rudder: the share of the full turn rate at a standstill (Stage 2: RUDDER.values[0])
+function turnRate(ship, { full = false } = {}) {
   const t = ship.type;
-  const rate = (fullRate ? t.turn : t.turn * (0.35 + 0.65 * Math.min(1, ship.speed / t.maxSpeed))) * turnMul(ship);
+  const low = t.turnLow ?? TURN_LOW;
+  const rate = (full ? t.turn : t.turn * (low + (1 - low) * Math.min(1, ship.speed / t.maxSpeed))) * turnMul(ship);
+  return ship === player ? rate * boarding.turnScale : rate;
+}
+// The player's turn input, −1..1 (positive = left): none while the ships are glued in a boarding (SPEC2 §3.4) or
+// a tentacle holds you; else the thumb slide or the wheel (input.steer), else the buttons and keys.
+function playerTurn() {
+  if (boarding.locked || state.grabbed) return 0;
+  return input.steer ?? ((input.left ? 1 : 0) - (input.right ? 1 : 0));
+}
+
+function steerToward(ship, desired, dt, fullRate = false) {
+  const rate = turnRate(ship, { full: fullRate });
   const diff = wrapAngle(desired - ship.h);
   ship.h = wrapAngle(ship.h + clamp(diff, -rate * dt, rate * dt));
 }
 
-// Top speed now: reefs slow deep hulls (ice slows every hull), then chain shot and a dropped mast.
+// Top speed now: reefs slow deep hulls (ice slows every hull), then chain shot, a dropped mast and a status;
+// the level's hazards (mechanics.shipMods: a surf's bonus, an ink slick) on top.
 function speedCap(s) {
   let cap = s.type.maxSpeed;
   if (s.onReef && s.reefIce) cap *= ICE_SLOW;
   else if (s.onReef && !s.type.shallow) cap *= REEF_SLOW;
-  return cap * speedMul(s);
+  const mods = mechanics.shipMods(s);
+  return (cap + mods.capAdd) * speedMul(s) * mods.speedMul;
 }
 
 function updatePlayer(dt) {
   const p = player;
   if (p.sinking) return;
   const t = p.type;
-  // No steering while the ships are glued together in a boarding (SPEC2 §3.4).
-  const turn = boarding.locked ? 0 : (input.left ? 1 : 0) - (input.right ? 1 : 0);
-  const rate = t.turn * (0.35 + 0.65 * Math.min(1, p.speed / t.maxSpeed)) * turnMul(p) * boarding.turnScale;
+  const turn = playerTurn();
+  const rate = turnRate(p);
   p.h = wrapAngle(p.h + turn * rate * dt);
   const target = Math.min(SAIL_LEVELS[state.sail] * speedCap(p), boarding.speedCap);
   p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
@@ -2933,6 +3072,8 @@ function separateShips(dt) {
 // Does ball b hit ship s? Each ammo has its own reach (chain shot also tears through the sails, AMMO.top);
 // balls pass through ships that are out of the fight (struck, captured, escaped).
 function hitsShip(b, s) {
+  // One of the Kraken's raised parts (a pseudo-target, SPEC3 §5.8): kraken.js knows its shape.
+  if (s.pseudo) return !!kraken && kraken.hits(s.part, b.x, b.y, b.z);
   if (s.hp <= 0 || s.captured || s.surrendered || s.escaped || s.rise > 0) return false;
   const A = AMMO[b.ammo] || AMMO.round;
   if (b.y > A.top) return false;
@@ -2960,7 +3101,7 @@ function updateBalls(dt) {
     b.z += b.vz * dt;
     let gone = false;
 
-    const targets = b.owner === 'player' ? enemies : player ? [player] : [];
+    const targets = b.owner === 'player' ? targetsFor() : player ? [player] : [];
     for (const s of targets) {
       if (hitsShip(b, s)) {
         const info = ballHit(b, s);
@@ -3143,9 +3284,9 @@ function tutorialHint(dt) {
       h.step = 2;
       h.t = 0;
     } else {
-      const port = enemies.some((e) => inArc(player, e, -1, range));
-      const star = enemies.some((e) => inArc(player, e, 1, range));
-      const near = enemies.some((e) => fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) < range);
+      const port = targetsFor(-1).some((e) => inArc(player, e, -1, range));
+      const star = targetsFor(1).some((e) => inArc(player, e, 1, range));
+      const near = targetsFor().some((e) => fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) < range);
       h.offBeam = near && !port && !star ? h.offBeam + dt : 0;
       if (port || star) {
         const side = port ? 'port (left)' : 'starboard (right)';
@@ -3404,6 +3545,7 @@ function clearSteering() {
   steerSources.left.clear();
   steerSources.right.clear();
   input.left = input.right = false;
+  input.steer = null; // (a thumb slide or the wheel lets go too)
   syncHoldButtons();
 }
 // An on-screen steering button looks pressed while one of its own sources is active.
@@ -3777,8 +3919,9 @@ window.addEventListener('keydown', (e) => {
   }
   if (state.mode !== 'playing') return;
   skipIntro();
-  // Ammo: R cycles, 1 / 2 / 3 pick (by physical key, so AZERTY works).
-  const ammoKey = /^(?:Digit|Numpad)([123])$/.exec(e.code || '');
+  // Ammo: R cycles, 1 / 2 / 3 pick (by physical key, so AZERTY works). 4 / 5 / 6 are Fire, Frost and Stink
+  // shot (SPEC3 §6.1): taken here so they never do anything else, and picked from Stage 2 on.
+  const ammoKey = /^(?:Digit|Numpad)([1-6])$/.exec(e.code || '');
   if (KEYMAP[k]) steerPress(KEYMAP[k], keySource(e));
   else if (!e.repeat && (k === 'w' || k === 'arrowup')) changeSail(1);
   else if (!e.repeat && (k === 's' || k === 'arrowdown')) changeSail(-1);
@@ -3790,7 +3933,8 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) boardPress();
     boarding.cutHold(true);
   } else if (ammoKey) {
-    if (!e.repeat) setAmmo(AMMO_IDS[Number(ammoKey[1]) - 1]);
+    const n = Number(ammoKey[1]);
+    if (!e.repeat && n <= AMMO_IDS.length) setAmmo(AMMO_IDS[n - 1]);
   }
   // Holding a fire key keeps firing whenever the guns reload; a press while they load is queued or says
   // "Loading…" (fireInput).
@@ -3910,11 +4054,13 @@ const TAP_ACTIONS = {
   board: () => {
     if (state.mode === 'playing') boardPress();
   },
+  // A button of the touch ammo tray (#ammo-tray, button[data-ammo], SPEC3 §6.2): picks that ammo from Stage 2 on.
+  tray: () => {},
 };
 for (const btn of document.querySelectorAll('[data-tap]')) {
   const act = () => {
     skipIntro();
-    TAP_ACTIONS[btn.dataset.tap]();
+    TAP_ACTIONS[btn.dataset.tap](btn);
   };
   let pointerActed = false;
   let pointerUpAt = -Infinity;
@@ -4047,7 +4193,7 @@ function titleClickTooSoon(e) {
 // Level select cards on the title screen, one group per act (SPEC2 §5.6): a heading spanning the grid, then
 // that act's cards. Each card: number, name, difficulty word and skull pips ("Difficulty 4 of 6"), and Play
 // or why it is locked ("Beat the Molten Maw"). With a single act there are no headings.
-const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas' };
+const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas', 3: 'Voyage III · The Kraken Seas' };
 const SKULL_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.6C4.6 1.6 2.2 3.9 2.2 6.9c0 1.8.8 3.2 2.1 4v1.9c0 .8.6 1.4 1.4 1.4h4.6c.8 0 1.4-.6 1.4-1.4v-1.9c1.3-.8 2.1-2.2 2.1-4 0-3-2.4-5.3-5.8-5.3z"/>' +
   '<circle class="eye" cx="5.8" cy="7.3" r="1.55"/><circle class="eye" cx="10.2" cy="7.3" r="1.55"/><path class="eye" d="M7.2 10.4h1.6l-.8-1.3z"/></svg>';
@@ -4310,7 +4456,9 @@ function openDock(from) {
   dock.open = true;
   pausedDrawn = false;
 
-  setEnvironment(sparrow, 77);
+  // (kraken: the island's new places, builders and villagers come with the Kraken Seas, SPEC3 §8; until they
+  // sail, the town is exactly today's)
+  setEnvironment(sparrow, 77, { kraken: WITH_KRAKEN });
   // The prize ships moored off the town are built here, behind the "Rowing to…" transition, not in the frame the
   // first Go ashore swoops in (sparrow keeps them hidden until the town view; ashore keeps ships of the same kind).
   if (env.setPrizes) env.setPrizes(prizeShips());
@@ -5090,8 +5238,8 @@ function updateHud(force = false, dt = 0) {
   // (Your gun crews are on the ropes during a boarding: no FIRE! light then, SPEC2 §3.4.)
   const live = !player.sinking && state.mode === 'playing' && mayFire(player);
   const range = AMMO[state.ammo].range;
-  const portIn = live && enemies.some((e) => inArc(player, e, -1, range));
-  const starIn = live && enemies.some((e) => inArc(player, e, 1, range));
+  const portIn = live && targetsFor(-1).some((e) => inArc(player, e, -1, range));
+  const starIn = live && targetsFor(1).some((e) => inArc(player, e, 1, range));
   setClass(ui.gunPort, 'gp', 'ready', live && player.reload.port === 0, force);
   setClass(ui.gunStar, 'gs', 'ready', live && player.reload.star === 0, force);
   setClass(ui.gunPort, 'gp', 'target', portIn, force);
@@ -5482,7 +5630,7 @@ function drawMinimap() {
     const [x, y] = toMap(co.x, co.z);
     mm.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
-  for (const e of enemies) {
+  for (const e of targetsFor()) {
     // Ships still fighting (red, the boss orange) and struck ones (white: board them to take them).
     const struck = e.surrendered && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
     if (!fighting(e) && !struck) continue;
@@ -5780,7 +5928,7 @@ function framingTall() {
 }
 // Is she still worth framing: afloat (or only just going down), not captured nor gone.
 function framingLive(e) {
-  return !!e && enemies.includes(e) && !e.escaped && !e.captured && (e.hp > 0 || e.sinking < 1.5);
+  return !!e && targetsFor().includes(e) && !e.escaped && !e.captured && (e.hp > 0 || e.sinking < 1.5);
 }
 // The ship to frame now, or null: the one you fired at / just hit (while she is still worth showing and in
 // reach), else the target either side would aim at, if in reach (the current one while she still is one; one
@@ -6346,7 +6494,7 @@ function updateCamera(dt, paused) {
     // Ease the view sideways toward the nearest pirate in range, so a broadside target stays on screen.
     let want = 0;
     let best = MAX_RANGE + 10;
-    for (const e of enemies) {
+    for (const e of targetsFor()) {
       if (!fighting(e)) continue;
       const r = relative(player, e.x, e.z);
       if (r.dist < best) {
@@ -6766,6 +6914,95 @@ window.__game = {
     minimap: () => mechanics.minimap(),
     summary: () => mechanics.summary(),
     bonus: () => mechanics.bonus(),
+  },
+  // ---- "The Kraken Seas" test API (SPEC3 §11.3). Stage 0: placeholders with safe answers (nothing is owned, no
+  // hazard runs, no Kraken rises, nothing is saved); Stages 2 and 3 give them their full behaviour.
+  specials: {
+    // Special loads left this level ({ fire, frost, stink }); setLoads(o) sets them (plain integers ≥ 0).
+    get loads() {
+      return { ...state.loads };
+    },
+    setLoads(o) {
+      const n = (v) => (Number.isSafeInteger(v) && v >= 0 ? v : 0);
+      if (o && typeof o === 'object') state.loads = { fire: n(o.fire), frost: n(o.frost), stink: n(o.stink) };
+      return { ...state.loads };
+    },
+    // The recipes owned (the powder record); setPowder(p) validates it (Stage 2 saves it too).
+    get powder() {
+      return JSON.parse(specials.serializePowder(state.powder));
+    },
+    setPowder(p) {
+      state.powder = specials.parsePowder(p);
+      return JSON.parse(specials.serializePowder(state.powder));
+    },
+    status: (ship) => (ship && ship.status ? { ...ship.status } : null),
+    crate: () => null, // pick up powder crate i (Voyage III levels)
+  },
+  // A thumb slide on the steering pad: x −1..1 (positive = left) sets input.steer; null lets go.
+  steer(x) {
+    input.steer = x === null || x === undefined ? null : clamp(Number(x) || 0, -1, 1);
+    return input.steer;
+  },
+  settings: {
+    get: () => ({ ...settings }),
+    set(s) {
+      settings = settingsRules.parseSettings(s);
+      return { ...settings };
+    },
+  },
+  mechanics3: {
+    get state() {
+      return mechanics.state.m3;
+    },
+    wave: () => null, // a rogue wave now, from `angle`
+    spout: () => null, // a waterspout forming at (x, z)
+  },
+  kraken: {
+    get state() {
+      return kraken ? kraken.state : null;
+    },
+    rise: () => false,
+    setHp: () => null,
+    phase: () => null,
+    get targets() {
+      return kraken ? kraken.targets() : [];
+    },
+    cut: () => false,
+    cutHold: () => {},
+    get checkpoint() {
+      return krakenCheckpoint;
+    },
+  },
+  island: {
+    get config() {
+      return JSON.parse(islandRules.serializeIsland(islandCfg));
+    },
+    set(cfg) {
+      islandCfg = islandRules.parseIsland(cfg);
+      return JSON.parse(islandRules.serializeIsland(islandCfg));
+    },
+    build: () => ({ ok: false, reason: 'closed' }),
+  },
+  quiz: {
+    get record() {
+      return JSON.parse(quizRules.serializeQuiz(quizRec));
+    },
+    set(rec) {
+      quizRec = quizRules.parseQuiz(rec);
+      return JSON.parse(quizRules.serializeQuiz(quizRec));
+    },
+    start: () => null,
+    answer: () => null,
+    hint: () => null,
+    next: () => null,
+    get round() {
+      return null;
+    },
+  },
+  voyage: {
+    get WITH_KRAKEN() {
+      return WITH_KRAKEN;
+    },
   },
   armory: {
     get config() {

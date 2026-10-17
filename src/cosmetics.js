@@ -88,7 +88,7 @@ export const SLOT_NAMES = Object.freeze({
 
 export const FEAT_IDS = Object.freeze(['captures', 'boardings', 'rakes', 'crits', 'legend']);
 /** Enemy ship types whose captures are counted in feats.prizes (SHIP_TYPES minus the player). */
-export const FEAT_PRIZE_TYPES = Object.freeze(['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom']);
+export const FEAT_PRIZE_TYPES = Object.freeze(['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom', 'shark', 'bombketch', 'ironclad', 'fireship', 'skiff', 'inkheart']);
 
 // ---------------------------------------------------------------------------
 // The catalogue

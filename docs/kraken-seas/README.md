@@ -13,5 +13,6 @@ Crew's ship, quiz levels ashore, and building up the island with villagers, hous
 ## Progress
 
 - Design and spec check: done.
-- Stage 0 (scaffolding, no behaviour change) to Stage 4 (review, README): to do. Voyage III and the new town
+- Stage 0 (scaffolding, no behaviour change): done (stage0-report.md).
+- Stage 1 (foundations) to Stage 4 (review, README): to do. Voyage III and the new town
   features stay behind `?kraken=1` until Stage 3.

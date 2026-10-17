@@ -52,13 +52,20 @@
     <!-- The level's goal, e.g. "Galleons: 1 taken · 0 escaped · 1 to go" (a pill under the hull card). -->
     <div id="objective" class="objective hidden"></div>
     <div id="boss" class="boss hidden">
+      <!-- (SPEC3 §6.3) The boss's status badge (shape + word: "FROZEN"), left of the name, and the Kraken's two
+           notch marks on the bar (66.7 % and 33.3 %). -->
+      <span id="boss-status" class="boss-status hidden"></span>
       <div id="boss-name" class="boss-name">Boss</div>
-      <div class="bar boss-bar"><div id="boss-fill" class="fill"></div></div>
+      <div class="bar boss-bar"><div id="boss-fill" class="fill"></div><div id="boss-notches" class="boss-notches hidden" aria-hidden="true"><i></i><i></i></div></div>
       <!-- The boss's crew pips and surrender notch. -->
       <div id="boss-crew" class="boss-crew hidden" aria-hidden="true"><div id="boss-crew-fill" class="boss-crew-fill"></div></div>
     </div>
     <!-- During a boarding: "12 vs 9" with cutlass and skull icons, the tug-of-war bar and the heave pips. -->
     <div id="boarding-strip" class="boarding-strip hidden" aria-hidden="true"></div>
+    <!-- (SPEC3 §6.3) A Kraken grab: "GRABBED! Hold G to cut it loose" and its release bar (under the boss bar);
+         a rogue wave's warning: a teal arrow with "WAVE!" at the screen edge it comes from. -->
+    <div id="grab-strip" class="grab-strip hidden" aria-hidden="true"></div>
+    <div id="edge-arrow" class="edge-arrow hidden" aria-hidden="true"></div>
     <canvas id="minimap" width="150" height="150" aria-label="Minimap"></canvas>
     <div id="hitmark" class="hitmark" aria-hidden="true"></div>
     <!-- Pop words over the 3D view (pops.js). -->
@@ -83,7 +90,7 @@
         </div>
         <div id="gun-ammo" class="gun ammo hidden" data-ammo="round">
           <span class="label"><span class="ammo-word">Ammo </span><kbd>R</kbd></span>
-          <div class="ammo-val"><span class="ammo-ico" aria-hidden="true"></span><span id="ammo-name" class="ammo-name">Round</span></div>
+          <div class="ammo-val"><span class="ammo-ico" aria-hidden="true"></span><span id="ammo-name" class="ammo-name">Round</span><span id="ammo-count" class="ammo-count hidden"></span></div>
         </div>
         <div id="gun-board" class="gun board hidden">
           <span class="label"><span class="board-label">Board </span><kbd>G</kbd></span>
@@ -100,6 +107,10 @@
       <div class="pad left">
         <button type="button" data-hold="left" aria-label="Turn left">&#9664;</button>
         <button type="button" data-hold="right" aria-label="Turn right">&#9654;</button>
+        <!-- (SPEC3 §3.2) The rudder needle of a thumb slide, and the ship's wheel that replaces the arrows when
+             it is chosen (Pause: Steering). The arrows stay the accessible default. -->
+        <div id="steer-needle" class="steer-needle hidden" aria-hidden="true"></div>
+        <div id="touch-wheel" class="touch-wheel hidden" aria-hidden="true"></div>
       </div>
       <div class="pad mid">
         <button type="button" data-tap="sailUp" aria-label="More sail">+ Sail</button>
@@ -113,6 +124,15 @@
       <div class="pad act hidden">
         <button type="button" id="touch-ammo" class="hidden" data-tap="ammo" data-ammo="round" aria-label="Ammo: round shot, smashes her hull. Change ammo">Round</button>
         <button type="button" id="touch-board" class="hidden" data-tap="board" aria-label="Board" aria-disabled="true">Board</button>
+      </div>
+      <!-- (SPEC3 §6.2) The ammo tray: a tap on Ammo opens it once a special shot's recipe is owned (above the act pad). -->
+      <div id="ammo-tray" class="ammo-tray hidden" role="group" aria-label="Choose ammo">
+        <button type="button" data-tap="tray" data-ammo="round">Round</button>
+        <button type="button" data-tap="tray" data-ammo="chain">Chain</button>
+        <button type="button" data-tap="tray" data-ammo="grape">Grape</button>
+        <button type="button" data-tap="tray" data-ammo="fire">Fire</button>
+        <button type="button" data-tap="tray" data-ammo="frost">Frost</button>
+        <button type="button" data-tap="tray" data-ammo="stink">Stink</button>
       </div>
     </div>
   </div>
@@ -192,6 +212,8 @@
           <li><b>&#9875; Board</b> &middot; <b>Ammo</b> change shot</li>
         </ul>
         <p class="tip">Cannons fire sideways, so turn your broadside to the enemy!</p>
+        <!-- (SPEC3 §3.2) Steering on a touch screen: the arrows or the ship's wheel (shown once the Kraken Seas sail). -->
+        <button id="steer-mode-btn" class="btn alt steer-mode touch-only hidden" type="button" aria-pressed="false">Steering: &#9664; &#9654; buttons</button>
       </div>
       <div id="pause-confirm" class="pause-confirm hidden">
         <p id="leave-prompt" class="leave-prompt" tabindex="-1">
@@ -223,6 +245,8 @@
     <div class="panel">
       <h2>Shipwrecked!</h2>
       <p id="over-summary"></p>
+      <!-- (SPEC3 §5.7.6) After the Kraken's rise: try again from there. -->
+      <button id="kraken-retry-btn" class="btn hidden" type="button">Try again from the Kraken</button>
       <button id="retry-btn" class="btn" type="button">Try again</button>
       <div class="more-actions">
         <button id="over-dock-btn" class="btn alt" type="button">Visit the dock</button>
@@ -315,6 +339,9 @@
       <button type="button" data-place="shipyard">Shipyard</button>
       <button type="button" data-place="tailor">Tailor</button>
       <button type="button" data-place="tavern">Tavern</button>
+      <!-- (SPEC3 §7.1, §8.3: shown once the Kraken Seas sail) -->
+      <button type="button" data-place="quiz" class="hidden">Quiz</button>
+      <button type="button" data-place="builder" class="hidden">Build</button>
       <button type="button" data-place="ship">Set sail</button>
     </nav>
     <button id="town-action" class="town-action" type="button" aria-disabled="true">Go in</button>
@@ -357,6 +384,8 @@
       </header>
       <div class="dock-body">
         <ul id="tavern-up-list" class="up-list" aria-label="Crew upgrades"></ul>
+        <!-- (SPEC3 §2.5) The Powder room: Fire, Frost and Stink shot recipes (shown once the Kraken Seas sail). -->
+        <ul id="tavern-powder-list" class="up-list powder-list hidden" aria-label="Powder room"></ul>
         <section id="tavern-rumour" class="tavern-rumour" aria-label="Rumour board"></section>
         <section id="tavern-log" class="tavern-log" aria-label="Captain's log"></section>
       </div>
@@ -376,6 +405,9 @@
         <button id="harbour-shipyard-btn" class="btn alt" type="button">Shipyard</button>
         <button id="harbour-tailor-btn" class="btn alt" type="button">Tailor</button>
         <button id="harbour-tavern-btn" class="btn alt" type="button">Tavern</button>
+        <!-- (SPEC3 §7.1, §8.3: shown once the Kraken Seas sail) -->
+        <button id="harbour-quiz-btn" class="btn alt hidden" type="button">Quiz</button>
+        <button id="harbour-build-btn" class="btn alt hidden" type="button">Build</button>
       </div>
       <div id="harbour-exits" class="more-actions"></div>
     </div>
@@ -392,6 +424,56 @@
 
   <!-- "Rowing to Sparrow's Floating Island…" while the shipyard is being built (empty, and so invisible, otherwise). -->
   <div id="dock-toast" class="dock-toast" role="status" aria-live="polite" aria-atomic="true"></div>
+
+  <!-- Professor Barnacle's Riddle Bell (SPEC3 §7.3): the quiz map, a question and its answers, the results.
+       quizPanel.js fills it (styles in town.css); like the tavern it lets pointer events through to the town.
+       Before #recover-screen, so the graphics-recovery dialog paints above it. -->
+  <section id="quiz-screen" class="overlay town quiz hidden" aria-labelledby="quiz-title">
+    <div id="quiz-panel" class="panel dock-panel town-panel">
+      <header class="dock-head">
+        <p class="dock-kicker">Quiz</p>
+        <h2 id="quiz-title">Professor Barnacle's Riddle Bell</h2>
+        <p id="quiz-chest" class="dock-chest" aria-live="polite" aria-atomic="true"></p>
+      </header>
+      <div class="dock-body">
+        <div id="quiz-map" class="quiz-map"></div>
+        <div id="quiz-question" class="quiz-question hidden"></div>
+        <div id="quiz-answers" class="quiz-answers hidden"></div>
+        <button id="quiz-lifebuoy" class="btn alt quiz-lifebuoy hidden" type="button">Lifebuoy</button>
+        <div id="quiz-results" class="quiz-results hidden"></div>
+      </div>
+      <div class="dock-exits">
+        <button id="quiz-next-btn" class="btn hidden" type="button">Next &#9654;</button>
+        <button id="quiz-leave-btn" class="btn alt hidden" type="button">Leave quiz</button>
+        <button id="quiz-back-btn" class="btn" type="button">Back to town</button>
+      </div>
+      <p id="quiz-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- Builder Bess (SPEC3 §8.3): build homes and amenities on the island's plots. buildPanel.js fills it (styles
+       in town.css); like the tavern it lets pointer events through to the town. Before #recover-screen too. -->
+  <section id="build-screen" class="overlay town build hidden" aria-labelledby="build-title">
+    <div id="build-panel" class="panel dock-panel town-panel">
+      <header class="dock-head">
+        <p class="dock-kicker">Builder Bess</p>
+        <h2 id="build-title">Build the island</h2>
+        <p id="build-chest" class="dock-chest" aria-live="polite" aria-atomic="true"></p>
+      </header>
+      <div class="dock-tabs" role="tablist" aria-label="Build">
+        <button id="build-tab-homes" type="button" role="tab" aria-selected="true" aria-controls="build-homes">Homes</button>
+        <button id="build-tab-amenities" type="button" role="tab" aria-selected="false" aria-controls="build-amenities" tabindex="-1">Amenities</button>
+      </div>
+      <div class="dock-body">
+        <ul id="build-homes" class="up-list" role="tabpanel" aria-labelledby="build-tab-homes"></ul>
+        <ul id="build-amenities" class="up-list" role="tabpanel" aria-labelledby="build-tab-amenities" hidden></ul>
+      </div>
+      <div class="dock-exits">
+        <button id="build-back-btn" class="btn" type="button">Back to town</button>
+      </div>
+      <p id="build-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
 
   <!-- Shown when the browser loses the 3D (WebGL) context; main.js pauses the game until the player continues.
        It comes after the other game overlays so it paints on top of an end screen that is already showing. -->

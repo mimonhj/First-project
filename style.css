@@ -1966,3 +1966,18 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
   0%, 75% { opacity: 1; }
   100% { opacity: 0; }
 }
+
+/* ---------- The Kraken Seas (SPEC3): scaffolding ---------- */
+/* Controls only a touch screen shows (the pause dialog's Steering setting): hidden wherever isTouch() is false. */
+@media (hover: hover), (pointer: fine), (pointer: none) {
+  .touch-only { display: none !important; }
+}
+/* Voyage III on the title (only with the Kraken Seas): the three seas' cards and their heading (#2f2a6e, ≥ 7:1 on
+   the parchment). */
+.level-cards .act-head.act-3 { color: #2f2a6e; }
+.lvl-7 { background: linear-gradient(180deg, #5bbcff 0%, #8ad6f0 45%, #3fd3c4 46%, #0f7f9a 100%); }
+.lvl-8 { background: linear-gradient(180deg, #4b3a8f 0%, #ff9f7a 45%, #3fa7c9 46%, #1b4c7c 100%); }
+.lvl-9 { background: linear-gradient(180deg, #0f1638 0%, #3a3f7a 45%, #1f6f8a 46%, #0b2340 100%); }
+.lvl-7 .lvl-diff { background: #c9f6ee; }
+.lvl-8 .lvl-diff { background: #ffd6c4; }
+.lvl-9 .lvl-diff { background: #d6e0ff; }
