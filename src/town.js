@@ -139,6 +139,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     cyc: 0, // walk/run cycles done (foot phase)
     plant: 0,
     blocked: 0,
+    stuck: 0, // seconds walking by hand into someone without getting anywhere
+    pass: 0, // seconds left squeezing past them (people don't block him meanwhile)
     cheerUntil: -Infinity,
     mesh: null,
     opts: null,
@@ -571,7 +573,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const vz = Math.cos(cap.move) * cap.speed;
     let moved = 0;
     if (cap.speed > 0) {
-      const passing = auto && auto.pass > 0;
+      const passing = auto ? auto.pass > 0 : cap.pass > 0;
       const dyn = passing ? [] : folkNow;
       const from = { x: cap.x, z: cap.z, y: cap.y };
       let res = walk.move(from, vx * dt, vz * dt, RADIUS, dyn);
@@ -594,6 +596,22 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
             else cancelAuto();
           } else cancelAuto();
           if (auto) auto.stuck = 0;
+        }
+      } else if (cap.pass > 0) {
+        cap.pass -= dt;
+      } else {
+        // walking by hand into someone (a porter on a narrow rope bridge waits for him, so neither would
+        // ever move): after a moment he squeezes past them, as an auto-walk does; once he is by, they go on
+        if (moved < cap.speed * dt * 0.3) cap.stuck += dt;
+        else cap.stuck = Math.max(0, cap.stuck - dt);
+        if (cap.stuck > 0.25) {
+          const free = walk.move(from, vx * dt, vz * dt, RADIUS, []);
+          if (Math.hypot(free.x - cap.x, free.z - cap.z) > moved + 1e-4) {
+            cap.pass = 0.8;
+            res = free;
+            moved = Math.hypot(res.x - cap.x, res.z - cap.z);
+          }
+          cap.stuck = 0;
         }
       }
       cap.x = res.x;

@@ -1572,6 +1572,60 @@ function installHelpers() {
     check(walkers.every((w) => w.moved < 0.2 && w.closest.d > 0.5),
       `LOOK-2: standing on a townsperson's round for a minute, nobody walks through the captain (closest ${walkers.map((w) => `${w.name} ${w.closest.d} u`).join(', ')}; bodies touch at 0.65) (${J(walkers)})`);
 
+    // ...but walking into someone never walls him in: the porter carries his crate over the rope bridge from the
+    // pier to the stalls, and waits for a captain in his way; the captain, walking the other way by hand (W held),
+    // squeezes past him after a moment instead of standing nose to nose with him for ever. Started at many points of
+    // the porter's round, so some runs meet him head-on on the bridge.
+    const meet = await wp.evaluate(async () => {
+      const G = window.__game;
+      const env = G.env;
+      let t = null;
+      const upd = env.update;
+      env.update = function (tt, ...rest) {
+        t = tt;
+        return upd.call(this, tt, ...rest);
+      };
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      env.update = upd;
+      if (!Number.isFinite(t)) t = 100;
+      const step = (dt, inp) => {
+        G.town.simulate(dt, inp);
+        t += dt;
+        env.update(t, dt, { simTime: G.state.time, camera: G.camera });
+      };
+      // the porter's round, stalls end to pier end (sparrow.js); the captain walks it the other way
+      const A = { x: 0.4, z: -10.9 };
+      const B = { x: 1.8, z: -5.2 };
+      const h = Math.atan2(B.x - A.x, B.z - A.z);
+      const runs = [];
+      for (let k = 0; k < 10; k++) {
+        for (let i = 0; i < 30; i++) step(1 / 30, { x: 0, z: 0 });
+        // (as in the bridge crossings above: placed, the camera recentred behind him, and off at once, so the
+        // held W goes the way he faces rather than wherever an idle camera swings to)
+        const tw = T.town();
+        const st = tw.walk.snap(A.x, A.z, 0.5) || A;
+        tw.enter({ x: st.x, z: st.z, h });
+        tw.recenter();
+        const p0 = T.pos();
+        let close = 9;
+        let reached = null;
+        for (let i = 0; i < 9 * 30 && reached === null; i++) {
+          step(1 / 30, { x: 0, z: 1 });
+          const c = T.pos();
+          for (const q of env.folk()) close = Math.min(close, Math.hypot(q.x - c.x, q.z - c.z));
+          if (Math.hypot(c.x - B.x, c.z - B.z) < 1.2) reached = +(i / 30).toFixed(1);
+        }
+        const p1 = T.pos();
+        runs.push({ from: [+p0.x.toFixed(2), +p0.z.toFixed(2)], to: [+p1.x.toFixed(2), +p1.z.toFixed(2)], reached, close: +close.toFixed(2) });
+        // a different moment of the porter's round for the next run
+        for (let i = 0; i < 37; i++) step(1 / 30, { x: 0, z: 0 });
+      }
+      return runs;
+    });
+    const stuck = meet.filter((r) => r.reached === null);
+    check(meet.length === 10 && stuck.length === 0 && meet.some((r) => r.close < 0.9),
+      `walking into a townsperson on a narrow rope bridge never walls the captain in: W held from the stalls to the pier, ${meet.length - stuck.length} of ${meet.length} runs get across (slowest ${Math.max(...meet.map((r) => r.reached ?? 99))} s), and some met the porter head-on (closest ${Math.min(...meet.map((r) => r.close))} u) (${J(stuck.length ? stuck : meet.slice(0, 3))})`);
+
     // LOOK-4: the places-bar walks to the tavern (from the spawn, Polly's and the shipyard) at 1280x720: the fruit
     // stall's awning by the tavern door (it filled the lower right quarter as he reached the door) stays under 18% of
     // the view and over 15% for at most 0.2 s; no market awning ever fills a fifth of it. (The townsfolk set aside, as
