@@ -1,6 +1,7 @@
-/* Battle feedback styles (SPEC2 §2.5, §5.3, §5.4). Loaded after style.css.
+/* Battle feedback styles (SPEC2 §2.5, §5.3, §5.4; SPEC3 §2.7, §5.7). Loaded after style.css.
    - #pops: the pop words over the 3D view (pops.js positions, scales and fades each one inline).
-   - .hm-tags: the stickers after the hitmark's HIT! / SUNK! text ("RAKE ×2", "CRIT!", ...). */
+   - .hm-tags: the stickers after the hitmark's HIT! / SUNK! text ("RAKE ×2", "CRIT!", ...).
+   - #boss-status: a boss's special-shot status badge on its bar (shape + word, a ring of time dots). */
 
 /* ---------------------------------------------------------------------------------------------
    Pop words. Light text, at least 24 px, with a 3 px ink outline (the stroke is drawn under the
@@ -68,6 +69,17 @@
 .pop-gold { --pop-size: clamp(28px, 4.4vmin, 38px); color: var(--gold); }
 /* Driven back! −4 crew, −30 gold */
 .pop-bad { --pop-size: clamp(26px, 4.2vmin, 36px); color: #ff8f85; }
+/* Special shot (SPEC3 §2.7): ON FIRE! / KA-BOOM! (fire), FROZEN! / FIRE OUT! SSSS! (frost), STINKY! /
+   Clothes-pegs! (stink): light tints of the effect's colour, the word itself says which */
+.pop-fire { --pop-size: clamp(32px, 5.6vmin, 46px); color: #ffc46b; }
+.pop-fire.pop-kaboom { --pop-size: clamp(40px, 7.6vmin, 64px); color: #ffe14d; text-shadow: 0 5px 0 var(--ink); }
+.pop-frost { --pop-size: clamp(32px, 5.6vmin, 46px); color: #c9f1ff; }
+.pop-stink { --pop-size: clamp(32px, 5.6vmin, 46px); color: #c6f27a; }
+.pop-fire .pop-sub, .pop-frost .pop-sub, .pop-stink .pop-sub { color: #ffffff; font-size: max(24px, 0.62em); }
+/* The Kraken (SPEC3 §5.7): SLAM!, OUCH!, ACHOO!, TENTACLE! in a pale violet; BULLSEYE! (its eye) in amber */
+.pop-kraken { --pop-size: clamp(34px, 6vmin, 50px); color: #efc4ff; }
+.pop-kraken.pop-eye { --pop-size: clamp(38px, 7vmin, 58px); color: #ffd166; }
+.pop-kraken .pop-sub { color: #ffffff; }
 
 /* A short landscape phone (568×320, 640×360) has room for few words between the top cards and the
    touch pads: every pop at the 24 px floor, a crit still about 1.3× a damage pop. */
@@ -80,6 +92,10 @@
   .pop-capture { --pop-size: 34px; }
   .pop-capture .pop-sub { font-size: 24px; }
   .pop-gold { --pop-size: 26px; }
+  .pop-fire, .pop-frost, .pop-stink { --pop-size: 28px; }
+  .pop-fire.pop-kaboom { --pop-size: 34px; }
+  .pop-kraken { --pop-size: 30px; }
+  .pop-kraken.pop-eye { --pop-size: 33px; }
 }
 
 /* ---------------------------------------------------------------------------------------------
@@ -119,4 +135,97 @@
 
 @media (prefers-reduced-motion: reduce) {
   .hm-tag, .hm-tag:nth-child(2n) { transform: none; }
+}
+
+/* ---------------------------------------------------------------------------------------------
+   A boss's status badge (SPEC3 §6.3: #boss-status, inside #boss, left of the name). main.js shows it with
+   data-status="fire" | "frost" | "stink", the word as its text (WORDS3.badge: ON FIRE / FROZEN / STINKY)
+   and --left (0..1, the time still to run) for its ring of 8 time dots. Shape + word, never colour alone:
+   the same flame, snowflake and stink cloud as the ships' tag badges. It sits on the left end of the bar
+   like a sticker, so it never widens the boss strip.
+   --------------------------------------------------------------------------------------------- */
+.boss > .boss-status {
+  grid-area: 1 / 1;
+  justify-self: start;
+  align-self: center;
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-left: -12px;
+  padding: 3px 10px 3px 3px;
+  font-family: var(--head);
+  font-size: 14px;
+  line-height: 1;
+  letter-spacing: 0.04em;
+  color: var(--paper);
+  background: var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 3px 0 rgba(0, 0, 0, 0.35);
+  white-space: nowrap;
+  --disc: #7a1f2b;
+  --dot: #ffc23a;
+  --badge: none;
+}
+/* the shape on its disc */
+.boss > .boss-status::before {
+  content: "";
+  flex: none;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--badge) center / 20px 20px no-repeat, var(--disc);
+}
+/* the ring of 8 time dots round it: lit for the part still to run, clockwise from the top */
+.boss > .boss-status::after {
+  content: "";
+  position: absolute;
+  left: -1px;
+  top: 50%;
+  width: 34px;
+  height: 34px;
+  margin-top: -17px;
+  border-radius: 50%;
+  background: conic-gradient(var(--dot) calc(var(--left, 1) * 360deg), #4a3b5c 0);
+  -webkit-mask: radial-gradient(farthest-side, #0000 calc(100% - 4px), #000 calc(100% - 3.5px)), repeating-conic-gradient(from -18deg, #000 0 36deg, #0000 36deg 45deg);
+  -webkit-mask-composite: source-in;
+  mask: radial-gradient(farthest-side, #0000 calc(100% - 4px), #000 calc(100% - 3.5px)), repeating-conic-gradient(from -18deg, #000 0 36deg, #0000 36deg 45deg);
+  mask-composite: intersect;
+}
+.boss > .boss-status[data-status="fire"] {
+  --disc: #7a1f2b;
+  --dot: #ffc23a;
+  --badge: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-32 -36 64 72'%3E%3Cpath d='M0-32C10-14 26-6 22 12C19 28 6 32 0 32S-19 28-22 12C-25-2-10-6-6-16C-2-8 2-12 0-32Z' fill='%23ff7a1a' stroke='%231d1330' stroke-width='6' stroke-linejoin='round'/%3E%3Cpath d='M0 2C8 10 10 16 8 22C5 28-5 28-8 22C-10 16-4 10 0 2Z' fill='%23ffd23f'/%3E%3C/svg%3E");
+}
+.boss > .boss-status[data-status="frost"] {
+  --disc: #2f78d8;
+  --dot: #d6f4ff;
+  --badge: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-36 -36 72 72'%3E%3Cg stroke-linecap='round'%3E%3Cpath id='a' d='M0 0V-30M0-17L-8-24M0-17L8-24' fill='none' stroke='%231d1330' stroke-width='12'/%3E%3Cuse href='%23a' transform='rotate(60)'/%3E%3Cuse href='%23a' transform='rotate(120)'/%3E%3Cuse href='%23a' transform='rotate(180)'/%3E%3Cuse href='%23a' transform='rotate(240)'/%3E%3Cuse href='%23a' transform='rotate(300)'/%3E%3Cpath id='b' d='M0 0V-30M0-17L-8-24M0-17L8-24' fill='none' stroke='%23fff' stroke-width='5'/%3E%3Cuse href='%23b' transform='rotate(60)'/%3E%3Cuse href='%23b' transform='rotate(120)'/%3E%3Cuse href='%23b' transform='rotate(180)'/%3E%3Cuse href='%23b' transform='rotate(240)'/%3E%3Cuse href='%23b' transform='rotate(300)'/%3E%3C/g%3E%3C/svg%3E");
+}
+.boss > .boss-status[data-status="stink"] {
+  --disc: #5b3592;
+  --dot: #c6f27a;
+  --badge: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='-34 -38 68 72'%3E%3Cg fill='%238bc34a' stroke='%231d1330' stroke-width='6'%3E%3Ccircle cx='-14' cy='14' r='13'/%3E%3Ccircle cx='13' cy='13' r='14'/%3E%3Ccircle cx='0' cy='4' r='15'/%3E%3C/g%3E%3Cg fill='%238bc34a'%3E%3Ccircle cx='-14' cy='14' r='10'/%3E%3Ccircle cx='13' cy='13' r='11'/%3E%3Ccircle cx='0' cy='4' r='12'/%3E%3Ccircle cx='0' cy='16' r='12'/%3E%3C/g%3E%3Cpath d='M-10-8q-5-6 0-12t0-12M10-8q5-6 0-12t0-12' fill='none' stroke='%231d1330' stroke-width='9' stroke-linecap='round'/%3E%3Cpath d='M-10-8q-5-6 0-12t0-12M10-8q5-6 0-12t0-12' fill='none' stroke='%23c6f27a' stroke-width='4' stroke-linecap='round'/%3E%3C/svg%3E");
+}
+@media (max-height: 420px), (max-width: 520px) {
+  .boss > .boss-status { font-size: 12px; gap: 4px; margin-left: -4px; padding: 2px 8px 2px 2px; }
+  .boss > .boss-status::before { width: 22px; height: 22px; background-size: 17px 17px, auto; }
+  .boss > .boss-status::after { width: 28px; height: 28px; margin-top: -14px; }
+}
+/* The boss's name keeps clear of the badge: the same room on both sides, so it stays centred and doesn't
+   move when a status comes or goes. */
+.boss:has(> .boss-status:not(.hidden)) > .boss-name { padding-left: 88px; padding-right: 88px; }
+/* Phones in portrait: the bar is narrow (it ends left of the minimap), so the badge is its shape in its ring
+   of time dots (the word stays in the page for screen readers, and the pop over the boss says it) and the
+   name has the rest of the bar. */
+@media (max-width: 520px) {
+  .boss > .boss-status { font-size: 0; gap: 0; padding-right: 2px; letter-spacing: 0; }
+  .boss:has(> .boss-status:not(.hidden)) > .boss-name { padding-left: 30px; padding-right: 8px; letter-spacing: 0; }
+}
+/* Phones in landscape: there is room left of the centred bar, so the badge, word and all, hooks onto the
+   bar's left end from outside and the name keeps the whole bar. */
+@media (max-height: 500px) and (orientation: landscape) and (hover: none) and (pointer: coarse) {
+  .boss > .boss-status { margin-left: 0; transform: translateX(calc(-100% + 12px)); }
+  .boss:has(> .boss-status:not(.hidden)) > .boss-name { padding-left: 14px; padding-right: 10px; }
 }

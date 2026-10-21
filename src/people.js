@@ -30,6 +30,14 @@ import { toon, gradientMap, setOutline, ensureIndex } from './style.js';
 // shoulder (pet bones), the tools 'cutlass', 'tape' and 'scissors', and share: true (geometry
 // shared by every person with the same resolved look, see releaseSharedPeople). The captain
 // (outfit 'pirate') is built at mid detail, which keeps every outfit under 12k triangles.
+//
+// The Kraken Seas add three more, under the same rule (none of them draws a random number, so every
+// call without them builds exactly as before): the hat 'mortarboard' (Professor Barnacle's, and the
+// quiz trophy; its tassel hangs from a 'tassel' bone and swings), the pet 'octopus' (the baby kraken,
+// a tiny purple octopus on the pet bones: it bobs, waves two tentacles when cheering and rides on top
+// of the hat while the left arm is up or busy in front, see OCTO_UP) and the tool 'pointer' (the
+// professor's: he taps his palm with it, shoulders it to walk and points with it). glasses: true /
+// false puts the spectacles on or off.
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -53,6 +61,7 @@ export const WALL_Z = 0.45;
 const BRUSH_H = 0.15; // hand height when the brush's suds touch the deck
 const MOP_LEN = 1.3; // mop handle length (long, so it shows above a ship's rail while mopping)
 const ROD_TIP = 1.43; // rod tip distance from the lower grip
+const POINTER_LEN = 0.74; // the professor's pointer: tip distance from the fist
 
 /** 'steer': the wheel's centre (height, distance in front of the feet) and the radius the hands hold,
  *  in person units. At scale 1.1 it matches the Sea Biscuit's wheel seen from the helm spot. */
@@ -66,8 +75,8 @@ const RUN_F = 1.45; // 'run' cycles per second at tempo 1
 const RUN_STANCE = 0.36; // fraction of a cycle each foot is planted (the rest is a flight)
 
 const KINDS = ['pirate', 'man', 'woman', 'kid', 'old'];
-export const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned'];
-export const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors'];
+export const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard'];
+export const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors', 'pointer'];
 export const BEARDS = ['full', 'goatee', 'stubble', 'braids', 'handlebar', 'none'];
 export const HAIR_STYLES = ['crop', 'long', 'ponytail', 'bald'];
 
@@ -120,6 +129,9 @@ const GOLD = 0xffcc3a;
 const BRASS = 0xe0a93a;
 const WOOD = 0xb67b45;
 const IRON = 0x3b3a44;
+const MORTAR = 0x2c2f4a; // the mortarboard's academic navy (hatColor overrides it)
+// the baby kraken: purple with pink spots and pale pink suckers (petColor body / head / wing override them)
+const OCTO_COL = Object.freeze({ body: 0x8a5bd6, wing: 0xffc2e0, head: 0xff8fc8 });
 
 function mix(a, b, t) {
   const ch = (c, s) => (c >> s) & 255;
@@ -326,6 +338,7 @@ function resolveLook(opts) {
   if (Number.isFinite(opts.hatColor)) L.hatColor = opts.hatColor;
   else if (L.hat === 'crown') L.hatColor = GOLD;
   else if (L.hat === 'horned') L.hatColor = 0x9aa3b5;
+  else if (L.hat === 'mortarboard') L.hatColor = MORTAR;
   if (opts.hatBadge === 'skull') L.hatBadge = 'skull';
   if (typeof opts.beard === 'string' && BEARDS.includes(opts.beard)) {
     const b = opts.beard;
@@ -347,9 +360,15 @@ function resolveLook(opts) {
     const pc = opts.petColor && typeof opts.petColor === 'object' ? opts.petColor : {};
     L.pet = 'parrot';
     L.petColor = { body: hex(pc.body, 0xe2383d), wing: hex(pc.wing, 0x2f86ea), head: hex(pc.head, 0xe2383d) };
+  } else if (opts.pet === 'octopus') {
+    // the baby kraken: body = mantle and tentacles, wing = suckers, head = spots
+    const pc = opts.petColor && typeof opts.petColor === 'object' ? opts.petColor : {};
+    L.pet = 'octopus';
+    L.petColor = { body: hex(pc.body, OCTO_COL.body), wing: hex(pc.wing, OCTO_COL.wing), head: hex(pc.head, OCTO_COL.head) };
   }
   if (typeof opts.eyepatch === 'boolean') L.eyepatch = opts.eyepatch;
   if (typeof opts.pegLeg === 'boolean') L.pegLeg = opts.pegLeg;
+  if (typeof opts.glasses === 'boolean') L.glasses = opts.glasses;
   if (L.kind === 'kid') L.beard = null;
   if (L.kind === 'kid' || L.skirt) L.pegLeg = false; // the peg needs a trouser leg
   L.tool = TOOLS.includes(opts.tool) ? opts.tool : 'none';
@@ -809,7 +828,7 @@ function buildHair(K, head, L, P) {
   const C = P.C;
   const hair = L.hair;
   const hat = L.hat;
-  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap' || hat === 'plumed' || hat === 'bicorne' || hat === 'horned';
+  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap' || hat === 'plumed' || hat === 'bicorne' || hat === 'horned' || hat === 'mortarboard';
   if (L.bald) {
     // fringe around the back and sides only
     K.put(head, SPH(), hair, INK, [0, C - R * 0.1, -R * 0.42], null, [R * 0.92, R * 0.55, R * 0.62]);
@@ -1077,6 +1096,17 @@ function buildHat(K, head, L, P) {
     K.putM(head, CAP_SEG(PI * 0.5), col, INK, m);
     K.put(head, SPH(), mix(col, DARK, 0.25), INK, [0, C + R * 0.42, R * 0.92], [-0.25, 0, 0], [R * 0.62, R * 0.08, R * 0.45]);
     K.put(head, SPH_LO(), mix(col, WHITE, 0.4), THIN, [0, C + R * 0.98, 0.0], null, R * 0.09);
+  } else if (hat === 'mortarboard') {
+    // Professor Barnacle's mortarboard: a snug skullcap set high (the brows stay free), a flat square
+    // board on top turned corner-forward, a gold button and a gold cord to the left corner, where the
+    // tassel hangs from its own bone and swings (buildTassel)
+    const qc = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.3, 0, 0));
+    K.putM(head, CAP_SEG(PI * 0.5), col, INK, new THREE.Matrix4().compose(V3(0, C + R * 0.28, -R * 0.04), qc, V3(R * 1.08, R * 0.84, R * 1.08)));
+    const mb = mortarFrame(P);
+    K.putM(head, rbox(mb.side, mb.th, mb.side, R * 0.05), col, INK, new THREE.Matrix4().compose(mb.centre, mb.q, V3(1, 1, 1)));
+    const btn = mb.centre.clone().addScaledVector(mb.up, mb.th / 2 + R * 0.02);
+    K.putM(head, SPH(), L.hatTrim, THIN, new THREE.Matrix4().compose(btn, mb.q, V3(R * 0.11, R * 0.06, R * 0.11)));
+    K.rod(head, L.hatTrim, THIN, btn, mb.corner.clone().addScaledVector(mb.up, R * 0.025), R * 0.03, 5);
   } else if (hat === 'straw') {
     const band = L.kind === 'woman' || L.girl ? L.accent : 0x8a3b3b;
     const brimR = R * 1.75;
@@ -1087,6 +1117,31 @@ function buildHat(K, head, L, P) {
       new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.14, 0, 0.06)), V3(1, 1, 1));
     K.putM(head, g, null, INK, m);
   }
+}
+
+/** The mortarboard's board (head space): its centre, turn (a corner forward, the front tipped up a
+ *  little), up direction, side and thickness, and the top of its left corner, where the tassel hangs. */
+function mortarFrame(P) {
+  const R = P.R;
+  const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.1, PI / 4, 0));
+  const centre = V3(0, P.C + R * 1.1, -R * 0.14);
+  const side = R * 2.4;
+  const th = R * 0.15;
+  const up = V3(0, 1, 0).applyQuaternion(q);
+  const corner = V3(side * 0.46, th / 2, side * 0.46).applyQuaternion(q).add(centre);
+  return { q, centre, up, side, th, corner };
+}
+
+/** The mortarboard's tassel on its own bone (origin at the board's left corner): a gold cord, a knot and
+ *  a fringe with a darker wrap, hanging along -y (animatePerson keeps it hanging and swinging). */
+function buildTassel(K, bone, L, P) {
+  const R = P.R;
+  const gold = L.hatTrim;
+  const wrap = mix(gold, 0x8a4a10, 0.4);
+  K.rod(bone, gold, THIN, V3(0, R * 0.01, 0), V3(0, -R * 0.3, 0), R * 0.03, 5);
+  K.put(bone, SPH(), gold, THIN, [0, -R * 0.33, 0], null, R * 0.075);
+  const prof = [[0, -R * 0.7], [R * 0.1, -R * 0.695], [R * 0.135, -R * 0.66], [R * 0.105, -R * 0.5], [R * 0.07, -R * 0.4], [0, -R * 0.37]];
+  K.putM(bone, paintLathe(prof, 8, 12, (row, y) => (y > -R * 0.45 ? wrap : gold)), null, INK, new THREE.Matrix4());
 }
 
 /** The torso lathe's profile (torso space, bottom to top). */
@@ -1517,6 +1572,14 @@ function buildTool(K, tool, toolB, L, P) {
       K.put(bone, torus(0.02, 0.006, 12, 4), 0x3a3440, THIN, [sd * 0.03, -0.055, 0]);
     }
     K.put(tool, SPH_LO(), BRASS, FLAT, [0, 0, 0.006], null, [0.008, 0.008, 0.004]);
+  } else if (kind === 'pointer') {
+    // the professor's pointer: origin in the fist, a leather grip with a brass end and ferrule, then a
+    // long tapering wooden stick along +y to a red rubber tip (POINTER_LEN)
+    K.rod(tool, 0x4a2e1e, INK, V3(0, -0.055, 0), V3(0, 0.06, 0), 0.016, 7);
+    K.put(tool, SPH(), BRASS, THIN, [0, -0.07, 0], null, [0.019, 0.016, 0.019]);
+    K.put(tool, cyl(0.0135, 0.017, 0.03, 10), BRASS, THIN, [0, 0.075, 0]);
+    K.put(tool, cyl(0.0055, 0.0115, POINTER_LEN - 0.1, 8), 0xc8894f, INK, [0, 0.09 + (POINTER_LEN - 0.1) / 2, 0]);
+    K.put(tool, SPH(), 0xe2383d, THIN, [0, POINTER_LEN - 0.005, 0], null, [0.0105, 0.015, 0.0105]);
   }
 }
 
@@ -1604,6 +1667,186 @@ function buildPet(K, pet, head, wingL, wingR, L) {
 }
 
 // ---------------------------------------------------------------------------
+// The baby kraken (pet 'octopus'), on the same four pet bones as the parrot: the tentacle skirt on
+// 'pet' (perched on the left shoulder), the round mantle with its big eyes on 'petHead' (it bobs) and
+// the two front tentacles on 'petWingL' / 'petWingR' (they wave)
+// ---------------------------------------------------------------------------
+const OCTO_Z = 1.25; // the baby kraken's size (1 = the size its numbers below are written for)
+const OCTO = Object.freeze({
+  head: [0, 0.004 * OCTO_Z, 0], // the mantle's pivot (pet space)
+  ring: 0.022 * OCTO_Z, // the tentacles' roots: radius and height of their ring under the mantle
+  ringY: 0.014 * OCTO_Z,
+  front: 0.39, // the two waving tentacles: angle either side of the front at rest...
+  wave: 1.2, // ... and while they wave (out to the sides, so they never cross its face)
+  mantle: [0.046 * OCTO_Z, 0.05 * OCTO_Z, 0.045 * OCTO_Z], // the mantle's radii (centre mantle[1] - 0.004 Z above the pivot)
+});
+
+/**
+ * A tube swept along a centre line in the yz plane, painted per quad like paintLathe (vertices split
+ * only along colour edges, analytic smooth normals, so the ink outline stays closed); the root is capped
+ * and the tip rounded off. pts: [[y, z], ...] from the root out; radii: one per point; paint(i, a) ->
+ * hex with i the segment along the tube and a the angle round it (-PI..PI, 0 = the tube's upper side).
+ */
+function paintTube(pts, radii, segs, paint) {
+  const n = pts.length;
+  const T = [];
+  const N = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[Math.max(0, i - 1)];
+    const b = pts[Math.min(n - 1, i + 1)];
+    const l = Math.hypot(b[0] - a[0], b[1] - a[1]) || 1;
+    const ty = (b[0] - a[0]) / l;
+    const tz = (b[1] - a[1]) / l;
+    T.push([ty, tz]);
+    N.push([tz, -ty]); // heading (0, sin f, cos f): up is (0, cos f, -sin f); round the tube: N cos a + X sin a
+  }
+  const pos = [];
+  const nor = [];
+  const col = [];
+  const idx = [];
+  const map = new Map();
+  const c = new THREE.Color();
+  const push = (x, y, z, nx, ny, nz, hex) => {
+    c.setHex(hex);
+    pos.push(x, y, z);
+    nor.push(nx, ny, nz);
+    col.push(c.r, c.g, c.b);
+    return pos.length / 3 - 1;
+  };
+  const vert = (i, j, hex) => {
+    const key = (i * (segs + 1) + j) * 16777216 + hex;
+    let v = map.get(key);
+    if (v !== undefined) return v;
+    const a = (j / segs) * TAU;
+    const ox = Math.sin(a);
+    const oy = N[i][0] * Math.cos(a);
+    const oz = N[i][1] * Math.cos(a);
+    const r = radii[i];
+    v = push(ox * r, pts[i][0] + oy * r, pts[i][1] + oz * r, ox, oy, oz, hex);
+    map.set(key, v);
+    return v;
+  };
+  const angle = (j) => {
+    const a = ((j + 0.5) / segs) * TAU;
+    return a > PI ? a - TAU : a;
+  };
+  for (let i = 0; i < n - 1; i++) {
+    for (let j = 0; j < segs; j++) {
+      const hex = paint(i, angle(j)) & 0xffffff;
+      const a = vert(i, j, hex);
+      const b = vert(i + 1, j, hex);
+      const cc = vert(i + 1, j + 1, hex);
+      const d = vert(i, j + 1, hex);
+      idx.push(a, cc, d, a, b, cc);
+    }
+  }
+  // root cap (facing back along the tube) and a rounded tip
+  const tip = n - 1;
+  const rt = radii[tip];
+  for (let j = 0; j < segs; j++) {
+    const h0 = paint(0, angle(j)) & 0xffffff;
+    const r0 = push(0, pts[0][0], pts[0][1], 0, -T[0][0], -T[0][1], h0);
+    idx.push(r0, vert(0, j, h0), vert(0, j + 1, h0));
+    const h1 = paint(n - 2, angle(j)) & 0xffffff;
+    const e = push(0, pts[tip][0] + T[tip][0] * rt * 0.8, pts[tip][1] + T[tip][1] * rt * 0.8, 0, T[tip][0], T[tip][1], h1);
+    idx.push(e, vert(tip, j + 1, h1), vert(tip, j, h1));
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.Float32BufferAttribute(nor, 3));
+  g.setAttribute('color', new THREE.Float32BufferAttribute(col, 3));
+  g.setIndex(idx);
+  return g;
+}
+
+/** One of the baby kraken's tentacles (pet space, root at the origin): it reaches out along +z and
+ *  droops, then curls its tip up and back, a row of pale suckers along its underside. */
+function tentacleGeo(body, sucker) {
+  return cached(`tent${body},${sucker},${tier()}`, () => {
+    const n = LOW ? 6 : MID ? 7 : 10;
+    const segs = LOW ? 5 : MID ? 6 : 7;
+    const len = 0.074 * OCTO_Z;
+    const r0 = 0.0125 * OCTO_Z;
+    const pts = [[0, 0]];
+    const radii = [r0];
+    let y = 0;
+    let z = 0;
+    for (let i = 1; i < n; i++) {
+      const s = (i - 0.5) / (n - 1);
+      const f = -0.8 + 3.2 * s ** 2.2; // heading: out and down, then curling up and back over
+      y += Math.sin(f) * (len / (n - 1));
+      z += Math.cos(f) * (len / (n - 1));
+      pts.push([y, z]);
+      const u = i / (n - 1);
+      radii.push(r0 * Math.max(0.2, 1 - 0.82 * u ** 0.85));
+    }
+    const pale = mix(sucker, WHITE, 0.45);
+    return paintTube(pts, radii, segs, (i, a) => (Math.abs(a) > 1.95 && i > 0 ? (i % 2 ? sucker : pale) : body));
+  });
+}
+
+function buildOctopus(K, pet, head, armL, armR, L) {
+  const c = L.petColor;
+  const Z = OCTO_Z;
+  const tent = tentacleGeo(c.body, c.wing);
+  // eight tentacles in a ring under the mantle, draped over the shoulder; the front two are on the arm
+  // bones so they can wave (their roots are the arm bones' rest positions)
+  for (let k = 1; k < 7; k++) {
+    const a = ((k + 0.5) / 8) * TAU;
+    const s = 0.94 + 0.06 * (k % 3);
+    const m = new THREE.Matrix4().compose(V3(Math.sin(a) * OCTO.ring, OCTO.ringY, Math.cos(a) * OCTO.ring),
+      new THREE.Quaternion().setFromAxisAngle(V3(0, 1, 0), a), V3(s, s, s));
+    K.putM(pet, tent, null, INK, m);
+  }
+  for (const [bone, sd] of [[armL, 1], [armR, -1]]) K.putM(bone, tent, null, INK, new THREE.Matrix4().makeRotationY(sd * OCTO.front));
+  // the mantle: a big round head, pink spots on the back
+  const [mx, my, mz] = OCTO.mantle;
+  const cy = my - 0.004 * Z;
+  K.put(head, SPH_HI(), c.body, INK, [0, cy, 0], null, [mx, my, mz]);
+  // a point on the mantle (az from the front towards +x, el up from its equator) and its normal
+  const on = (az, el, lift = 0) => {
+    const d = V3(Math.sin(az) * Math.cos(el), Math.sin(el), Math.cos(az) * Math.cos(el));
+    const n = V3(d.x / mx, d.y / my, d.z / mz).normalize();
+    const p = V3(d.x * mx, cy + d.y * my, d.z * mz).addScaledVector(n, lift * Z);
+    return { p, n, q: new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), n) };
+  };
+  for (const [az, el, r] of [[2.4, 0.4, 0.0105], [-2.6, 0.25, 0.009], [PI + 0.15, 0.85, 0.0095], [1.25, 0.95, 0.0075]]) {
+    const s = on(az, el, -0.0012);
+    K.putM(head, SPH_LO(), c.head, FLAT, new THREE.Matrix4().compose(s.p, s.q, V3(r * Z, r * Z, 0.003 * Z)));
+  }
+  // big cartoon eyes low on the front, pupils looking out and a little down, a tiny smile and pink cheeks
+  for (const sd of SIDES) {
+    const e = on(sd * 0.4, -0.12, -0.002);
+    K.putM(head, SPH_MID(), WHITE, THIN, new THREE.Matrix4().compose(e.p, e.q, V3(0.0125 * Z, 0.0155 * Z, 0.0068 * Z)));
+    const pp = e.p.clone().add(V3(-sd * 0.0018 * Z, -0.0016 * Z, 0)).addScaledVector(e.n, 0.0046 * Z);
+    K.putM(head, SPH_LO(), DARK, FLAT, new THREE.Matrix4().compose(pp, e.q, V3(0.0074 * Z, 0.0092 * Z, 0.003 * Z)));
+    const gl = pp.clone().add(V3(sd * 0.0022 * Z, 0.0034 * Z, 0)).addScaledVector(e.n, 0.0016 * Z);
+    K.putM(head, SPH_LO(), 0xffffff, FLAT, new THREE.Matrix4().compose(gl, e.q, V3(0.0026 * Z, 0.0026 * Z, 0.0012 * Z)));
+    const b = on(sd * 0.82, -0.42, -0.0006);
+    K.putM(head, SPH_LO(), mix(c.body, 0xff6f9a, 0.55), FLAT, new THREE.Matrix4().compose(b.p, b.q, V3(0.0075 * Z, 0.0048 * Z, 0.0022 * Z)));
+  }
+  const m = on(0, -0.5, -0.0005);
+  const arc = PI * 0.62;
+  const q = m.q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), -PI / 2 - arc / 2));
+  K.putM(head, torus(0.0062 * Z, 0.0015 * Z, 10, 4, arc), DARK, FLAT, new THREE.Matrix4().compose(m.p.clone().add(V3(0, 0.0038 * Z, 0)), q, V3(1, 1, 1)));
+}
+
+/** Height (head space, over the middle) of the top of a hat or the hair: where the baby kraken sits
+ *  while the left arm is up. */
+function headTop(L, P) {
+  const R = P.R;
+  const top = {
+    bandana: 1.1, kerchief: 1.08, cap: 1.04, straw: 1.22, tricorn: 1.34, plumed: 1.34, bicorne: 1.6, crown: 1.46,
+    horned: 1.14,
+  };
+  if (L.hat === 'mortarboard') {
+    const mb = mortarFrame(P);
+    return mb.centre.y + mb.th / 2;
+  }
+  return P.C + R * (top[L.hat] ?? (L.bald ? 0.96 : 1.12));
+}
+
+// ---------------------------------------------------------------------------
 // Bake: one SkinnedMesh with rigid skinning
 // ---------------------------------------------------------------------------
 function bake(K) {
@@ -1660,7 +1903,8 @@ function bake(K) {
  * Build a cartoon person. Returns a THREE.Group (origin at the feet, facing +z).
  * group.userData = { kind, look, parts: { hips, torso, head, armL, armR, legL, legR, tool,
  *   foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB (+ pet, petHead, petWingL, petWingR with a
- *   parrot) }, mesh, skeleton, keep: true (+ shared: the cache entry of a share: true person) }.
+ *   parrot or an octopus, + tassel with a mortarboard) }, mesh, skeleton, keep: true (+ shared: the
+ *   cache entry of a share: true person) }.
  * The pivots are THREE.Bone objects. Materials are shared (see disposePerson).
  * opts.share = true takes the geometry from a cache keyed by the resolved look (boarding parties,
  * overboard tumblers): only the bones and Skeleton are new; see releaseSharedPeople.
@@ -1706,11 +1950,16 @@ function build(opts) {
   const skirt = K.bone('skirt', hips, 0, 0, 0);
   const tool = K.bone('tool', null, 0, 0, 0);
   const toolB = K.bone('toolB', null, 0, 0, 0);
-  // the parrot perches on the left shoulder (its bones exist only when it does)
+  // the parrot perches on the left shoulder (its bones exist only when it does); the baby kraken uses
+  // the same four bones: its tentacles, its mantle and its two waving tentacles
+  const octo = L.pet === 'octopus';
   const pet = L.pet ? K.bone('pet', torso, P.shX + 0.03, P.shY + P.armR * 1.2, -0.02) : null;
-  const petHead = pet ? K.bone('petHead', pet, 0, 0.148, 0.008) : null;
-  const petWingL = pet ? K.bone('petWingL', pet, 0.042, 0.122, -0.006) : null;
-  const petWingR = pet ? K.bone('petWingR', pet, -0.042, 0.122, -0.006) : null;
+  const petHead = !pet ? null : octo ? K.bone('petHead', pet, ...OCTO.head) : K.bone('petHead', pet, 0, 0.148, 0.008);
+  const wing = (sd) => (octo ? [sd * Math.sin(OCTO.front) * OCTO.ring, OCTO.ringY, Math.cos(OCTO.front) * OCTO.ring] : [sd * 0.042, 0.122, -0.006]);
+  const petWingL = pet ? K.bone('petWingL', pet, ...wing(1)) : null;
+  const petWingR = pet ? K.bone('petWingR', pet, ...wing(-1)) : null;
+  // the mortarboard's tassel hangs from the board's left corner
+  const tassel = L.hat === 'mortarboard' ? K.bone('tassel', head, ...mortarFrame(P).corner.toArray()) : null;
   group.add(hips, tool, toolB);
   group.updateMatrixWorld(true);
 
@@ -1728,7 +1977,9 @@ function build(opts) {
     buildLeg(K, legL, shinL, 1, L, P);
     buildLeg(K, legR, shinR, -1, L, P);
     buildTool(K, tool, toolB, L, P);
-    if (pet) buildPet(K, pet, petHead, petWingL, petWingR, L);
+    if (pet && octo) buildOctopus(K, pet, petHead, petWingL, petWingR, L);
+    else if (pet) buildPet(K, pet, petHead, petWingL, petWingR, L);
+    if (tassel) buildTassel(K, tassel, L, P);
     ({ geometry, mats } = bake(K));
   }
   const entry = shared || (key !== null ? { key, geometry, mats, refs: 1, orphan: false } : null);
@@ -1736,7 +1987,7 @@ function build(opts) {
   const mesh = new THREE.SkinnedMesh(geometry, mats.length === 1 ? mats[0] : mats);
   mesh.name = 'person-body';
   // generous fixed bounds (the pose changes; skinned bounds would cost a pass over every vertex)
-  const reach = L.tool === 'rod' ? 2.0 : L.tool === 'mop' ? 1.45 : 1.15;
+  const reach = L.tool === 'rod' ? 2.0 : L.tool === 'mop' || L.tool === 'pointer' ? 1.45 : 1.15;
   mesh.boundingSphere = new THREE.Sphere(V3(0, 0.62, 0.15), reach);
   mesh.boundingBox = new THREE.Box3(V3(-reach, -0.2, -reach), V3(reach, 1.9, reach));
   geometry.boundingSphere = mesh.boundingSphere.clone();
@@ -1749,6 +2000,7 @@ function build(opts) {
 
   const parts = { hips, torso, head, armL, armR, legL, legR, tool, foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB };
   if (pet) Object.assign(parts, { pet, petHead, petWingL, petWingR });
+  if (tassel) parts.tassel = tassel;
   group.userData = {
     kind: L.kind,
     look: L,
@@ -1874,6 +2126,8 @@ function makeRig(parts, L, P) {
     s: Array.from({ length: 8 }, () => new THREE.Vector3()), // pose scratch (helpers never touch these)
     armsL: [parts.armL, parts.foreL],
     armsR: [parts.armR, parts.foreR],
+    top: L.pet === 'octopus' ? headTop(L, P) : 0, // where the baby kraken hops to (head space)
+    action: 'idle', // the action being posed (animatePerson sets it)
   };
 }
 // Left (+1) then right (-1): the animation loops over the sides every frame, without a new array each time.
@@ -2184,6 +2438,32 @@ function toolRest(R, t, walking = 0, swing = 0) {
     toolInHand(R, -1, PI / 2 - 0.35, 0, 0);
     return true;
   }
+  if (k === 'pointer') {
+    if (!walking && R.action === 'idle') {
+      // the lecturer: grip in the right hand by the waist, the stick slanting up across the chest and
+      // out past the left forearm (clear of the face), tapping the open left palm twice every few seconds
+      const q = frac(t / 2.9);
+      const tap = (u) => (u > 0 && u < 0.11 ? Math.sin((u / 0.11) * PI) : 0);
+      const lift = 0.14 * (tap(q - 0.02) + tap(q - 0.17));
+      reachT(R, -1, -0.13, 0.05 - 0.01 * lift, 0.16, -0.8, -0.6, -0.3);
+      handP(R, -1, A);
+      B.set(0.8, 0.4, 0.32).normalize(); // the stick at rest on the palm (torso space)
+      C.crossVectors(B, UPV).normalize();
+      // the left hand stays put on the palm point; the stick lifts off it and comes down again
+      const P0 = _v1.copy(A).applyMatrix4(R.mhti);
+      const palm = _v2.copy(P0).addScaledVector(B, 0.3);
+      reachT(R, 1, palm.x + 0.02, palm.y - 0.035, palm.z + 0.01, 0.9, -0.7, -0.1);
+      B.applyAxisAngle(C, lift).applyQuaternion(R.qht);
+      toolAlong(R, A, C.copy(A).add(B));
+      return 'both';
+    }
+    // shouldered: the stick sloped up over the right shoulder, like the rod
+    armE(R, -1, -0.5 + 0.15 * walking * Math.sin(swing), 0.12, 0.95);
+    handP(R, -1, A);
+    B.set(-0.22, 1, -0.38).applyAxisAngle(UPV, torsoYaw(R)).add(A);
+    toolAlong(R, A, B);
+    return true;
+  }
   return false;
 }
 
@@ -2269,6 +2549,81 @@ function petPose(R, t, action) {
   }
 }
 
+// The actions the baby kraken rides out on top of the hat: the left arm goes up past it (cheering,
+// hands up, swinging, tumbling) or reaches forward across it (leaning on a rail, steering, fiddling,
+// hauling); waving, it does when the left hand waves (POSES.wave). It can't fly, so it is either on the
+// shoulder or on the hat, never in between, except for the hop up as a tumble starts ('fall' + since).
+const OCTO_UP = new Set(['cheer', 'surrender', 'swing', 'fall', 'lean', 'steer', 'fiddle', 'haul']);
+/** How far the baby kraken has hopped from the shoulder (0) to the top of the hat (1). */
+function octoUp(R, action) {
+  if (action === 'fall' && R.elapsed !== null) return smooth(R.elapsed / 0.3);
+  if (OCTO_UP.has(action)) return 1;
+  return action === 'wave' && waveSide(R) > 0 ? 1 : 0;
+}
+
+/**
+ * The baby kraken: on the shoulder its mantle bobs slowly (a squash and stretch), looks about and its
+ * two front tentacles curl and uncurl; running, they flutter. On the hat (OCTO_UP) it follows the head
+ * and holds on with its tentacles wiggling; cheering, it bounces and waves both front tentacles in the air.
+ */
+function octoPose(R, t, action) {
+  const up = octoUp(R, action);
+  const cheer = action === 'cheer';
+  // the slow bob (2.6 s)
+  const b = Math.sin((t * TAU) / 2.6);
+  const ph = R.petHead;
+  ph.position.y += 0.0025 * OCTO_Z * b;
+  ph.scale.set(1 + 0.035 * b, 1 - 0.05 * b, 1 + 0.035 * b);
+  ph.rotation.set(0.05 * Math.sin(t * 0.7), (0.3 * Math.sin(t * 0.37) + 0.12 * Math.sin(t * 1.1 + 1)) * (1 - up), 0.05 * Math.sin(t * 0.8));
+  R.pet.rotation.set(0, 0.25 * (1 - up), 0);
+  let lift = 0.12 + 0.12 * Math.sin(t * 1.3);
+  let lift2 = 0.12 + 0.12 * Math.sin(t * 1.3 + 2);
+  if (action === 'run') {
+    lift = 0.45 + 0.3 * Math.sin(t * TAU * 3);
+    lift2 = 0.45 + 0.3 * Math.sin(t * TAU * 3 + 2);
+  }
+  if (up > 0) {
+    // the top of the hat (torso space), following the head; on the way it arcs up and out over the shoulder
+    const rest = R.pet.userData.rest;
+    _v2.set(0, R.top, 0).applyQuaternion(R.head.quaternion).add(R.head.position);
+    const arc = Math.sin(PI * up);
+    R.pet.position.set(lerp(rest.x, _v2.x, up) + 0.13 * arc, lerp(rest.y, _v2.y, up) + 0.09 * arc, lerp(rest.z, _v2.z, up));
+    R.pet.quaternion.slerp(R.head.quaternion, up);
+    if (cheer) {
+      // bouncing on the hat in time with the hops, both front tentacles waving
+      const w = t * TAU * 1.25;
+      R.pet.position.y += 0.035 * up * Math.abs(Math.sin(w + 0.9));
+      ph.scale.y *= 1 + 0.08 * Math.sin(2 * w);
+      lift = lerp(lift, 0.45 + 0.45 * Math.sin(t * TAU * 1.6), up);
+      lift2 = lerp(lift2, 0.45 + 0.45 * Math.sin(t * TAU * 1.6 + PI), up);
+    } else {
+      // holding on tight, tentacles wiggling
+      lift = lerp(lift, 0.5 + 0.25 * Math.sin(t * TAU * 2.2), up);
+      lift2 = lerp(lift2, 0.5 + 0.25 * Math.sin(t * TAU * 2.2 + 2), up);
+      ph.scale.y *= 1 - 0.06 * up;
+    }
+  }
+  // a front tentacle lifts about the level axis across it (it reaches out at +-OCTO.front). Waving on
+  // the hat, the two swing out to the sides (OCTO.wave) and turn over (a half roll about their own
+  // length), so they rise up and out like arms with the tips curling outwards, never across its face
+  const wave = cheer ? up : 0;
+  const yaw = lerp(OCTO.front, OCTO.wave, wave);
+  for (const [bone, sd, a] of [[R.petWingL, 1, lift], [R.petWingR, -1, lift2]]) {
+    _v3.set(Math.cos(yaw), 0, -sd * Math.sin(yaw));
+    bone.quaternion.setFromAxisAngle(_v3, -a).multiply(_q2.setFromAxisAngle(UPV, sd * (yaw - OCTO.front)));
+    if (wave > 0) bone.quaternion.multiply(_q2.setFromAxisAngle(_v3.set(sd * Math.sin(OCTO.front), 0, Math.cos(OCTO.front)), PI * wave));
+  }
+}
+
+/** The mortarboard's tassel hangs straight down whatever the head does, swinging a little (more when
+ *  running, cheering or tumbling). */
+function hangTassel(R, t, action) {
+  _q1.copy(R.hips.quaternion).multiply(R.torso.quaternion).multiply(R.head.quaternion).invert();
+  const k = action === 'run' || action === 'cheer' || action === 'fall' || action === 'swing' || action === 'fight' ? 1 : 0.3;
+  _e.set(0.3 * k * Math.sin(t * 2.4 + 1), 0, 0.35 * k * Math.sin(t * 1.9));
+  R.tassel.quaternion.copy(_q1).multiply(_q2.setFromEuler(_e));
+}
+
 /** Put a crate, bucket or lantern down on the floor beside the right foot; hide anything else. */
 function setDown(R) {
   const k = R.tk;
@@ -2298,6 +2653,11 @@ function holdCrate(R, y, z) {
 // ---------------------------------------------------------------------------
 // The actions
 // ---------------------------------------------------------------------------
+/** The hand that waves: the right (-1), or the left (+1) when the right holds something. */
+function waveSide(R) {
+  return R.tk === 'none' || R.tk === 'crate' || R.tk === 'tape' ? -1 : 1;
+}
+
 const POSES = {
   idle(R, t) {
     R.hips.position.x = 0.012 * Math.sin(t * 0.5);
@@ -2437,7 +2797,7 @@ const POSES = {
     legsStand(R, 0.05);
     R.hips.position.y += 0.012 * Math.abs(s);
     // wave with the free hand: the left one when the right holds something
-    const sd = R.tk === 'none' || R.tk === 'crate' || R.tk === 'tape' ? -1 : 1;
+    const sd = waveSide(R);
     R.torso.rotation.set(R.P.hunch * 0.6 - 0.04, 0.0, -sd * 0.12);
     R.head.rotation.set(-0.1, sd * 0.12, sd * 0.14 + 0.05 * s);
     bodyDone(R);
@@ -2545,7 +2905,7 @@ const POSES = {
       toolHang(R, -1, 0.25 * Math.sin(w), torsoYaw(R));
     } else if (k === 'crate' || k === 'bucket') {
       setDown(R);
-    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle' || k === 'cutlass' || k === 'scissors') {
+    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle' || k === 'cutlass' || k === 'scissors' || k === 'pointer') {
       handP(R, -1, A);
       B.copy(A).add(_v1.set(-0.1, 1, 0.1));
       toolAlong(R, k === 'brush' || k === 'fiddle' ? B : A, k === 'brush' || k === 'fiddle' ? A : B);
@@ -2705,12 +3065,12 @@ const POSES = {
     bodyDone(R);
     reachP(R, -1, -0.1, P.hipY + P.torsoY + P.shY + 0.16 + 0.02 * jab, 0.55, -0.6, -0.6, -0.3);
     handOnHip(R, 1);
-    if (R.tk === 'cutlass') {
-      // pointing with the blade, along the arm and a little up
+    if (R.tk === 'cutlass' || R.tk === 'pointer') {
+      // pointing with the blade (or the pointer), along the arm and a little up
       handP(R, -1, A);
       B.set(-P.shX, P.shY, 0).applyMatrix4(R.mht);
       B.subVectors(A, B).normalize();
-      B.y += 0.25;
+      B.y += R.tk === 'pointer' ? 0.15 : 0.25;
       toolAlong(R, A, B.normalize().add(A), PI / 2);
     } else setDown(R);
     R.mouth.scale.set(1, 1, 1);
@@ -2970,6 +3330,7 @@ export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   R.elapsed = action === 'fall' && Number.isFinite(o.since) && Number.isFinite(t) ? Math.max(0, t - o.since) * speed : null;
   // (own keys only: an action named like an Object.prototype member falls back to idle too)
   const own = Object.prototype.hasOwnProperty.call(POSES, action);
+  R.action = own ? action : 'idle';
   const pose = own ? POSES[action] : POSES.idle;
   pose(R, tt, o);
   // worn things: a spare cutlass in the sash, the tape round the neck, the shears' second half,
@@ -2981,7 +3342,9 @@ export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
     if (action !== 'measure' || !own) hideTool(R, R.toolB);
   } else if (k === 'scissors') shears(R);
   if (R.L.coat !== undefined && !R.L.skirt) fitTails(R, own ? action : 'idle');
-  if (R.pet) petPose(R, tt, own ? action : 'idle');
+  if (R.pet && R.L.pet === 'octopus') octoPose(R, tt, own ? action : 'idle');
+  else if (R.pet) petPose(R, tt, own ? action : 'idle');
+  if (R.tassel) hangTassel(R, tt, own ? action : 'idle');
   // tools that the action didn't place stay hidden
   if (R.tk === 'none') {
     hideTool(R);

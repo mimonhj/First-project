@@ -359,6 +359,202 @@ const show = (v) => {
     check(junkText.every((t) => t === JSON.stringify(DEFAULT)), 'serializeShipConfig of junk writes the defaults');
   }
 
+  // ================================================================== appended: SPEC3 §3.1 / §10.1, the Big rudder & wheel
+  // RUDDER and SHIPYARD (UPGRADES stays the six rows above), the sparse up.rudder (absent at tier 0, written
+  // from tier 1, junk clamped or dropped; today's records stay canonical byte for byte), playerType's turn and
+  // turnLow at every rudder tier with every sails tier, statText('rudder', t), and the shipyard's prices.
+  {
+    const { RUDDER, SHIPYARD } = U;
+    const RUD = { id: 'rudder', name: 'Big rudder & wheel', stat: 'Turning when slow', values: [0.35, 0.5, 0.65, 0.8], turnMul: [1, 1.05, 1.1, 1.15], costs: [120, 300, 550] };
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const rising = (a) => a.every((v, i) => i === 0 || v > a[i - 1]);
+    // parse() above with the sparse rudder allowed: the six tiers, then up.rudder only as 1..3
+    const parse = (raw) => {
+      let c;
+      try {
+        c = U.parseShipConfig(raw);
+      } catch (e) {
+        return { error: `threw ${e && e.message}` };
+      }
+      const has = !!c && !!c.up && Object.prototype.hasOwnProperty.call(c.up, 'rudder');
+      const r = has ? c.up.rudder : undefined;
+      if (has && !(Number.isInteger(r) && r >= 1 && r <= 3)) return { error: `invalid result (rudder ${show(r)})` };
+      const six = has ? { ...c, up: Object.fromEntries(Object.entries(c.up).filter(([k]) => k !== 'rudder')) } : c;
+      const bad = invalid(six) || (has && Object.keys(c.up).pop() !== 'rudder' ? 'rudder is not written last' : '');
+      return bad ? { error: `invalid result (${bad})` } : { c };
+    };
+
+    // ---- the table
+    const okTable = !!RUDDER && RUDDER.id === RUD.id && RUDDER.name === RUD.name && RUDDER.stat === RUD.stat &&
+      typeof RUDDER.blurb === 'string' && RUDDER.blurb.trim().length > 0 && same(RUDDER.values, RUD.values) &&
+      same(RUDDER.turnMul, RUD.turnMul) && same(RUDDER.costs, RUD.costs) && RUDDER.costs.length === RUDDER.values.length - 1 &&
+      RUDDER.turnMul.length === RUDDER.values.length && RUDDER.costs.every((c) => Number.isInteger(c) && c > 0);
+    check(okTable, `RUDDER: "${RUDDER && RUDDER.name}", turning when slow ${show(RUDDER && RUDDER.values)}, at speed ×${show(RUDDER && RUDDER.turnMul)}, costs ${show(RUDDER && RUDDER.costs)}, with a blurb and a stat label`);
+    check(okTable && RUDDER.values[0] === 0.35 && RUDDER.turnMul[0] === 1 && rising(RUDDER.values) && rising(RUDDER.turnMul) && RUDDER.values.every((v) => v > 0 && v < 1),
+      'RUDDER tier 0 is the stock rudder (35% of the turn at a standstill, ×1 at speed: every enemy keeps it); each tier turns better, never past the full rate');
+    const rudderGold = okTable ? sum(RUDDER.costs) : NaN;
+    const yardGold = Array.isArray(SHIPYARD) ? sum(SHIPYARD.map((u) => sum(u.costs))) : NaN;
+    check(rudderGold === 970 && yardGold === 6240, `the rudder costs ${rudderGold} gold (970) and the whole shipyard ${yardGold} (5,270 + 970 = 6,240)`);
+    check(Array.isArray(SHIPYARD) && SHIPYARD.length === 7 && UPGRADES.every((u, i) => SHIPYARD[i] === u) && SHIPYARD[6] === RUDDER && UPGRADES.length === 6 && !UPGRADES.includes(RUDDER),
+      `SHIPYARD is [...UPGRADES, RUDDER] (${Array.isArray(SHIPYARD) ? SHIPYARD.map((u) => u.id).join(', ') : show(SHIPYARD)}); UPGRADES keeps its six rows`);
+
+    // ---- maxTier / nextCost know 'rudder', reading the sparse field
+    {
+      const bad = [];
+      if (U.maxTier('rudder') !== 3) bad.push(`maxTier ${U.maxTier('rudder')}`);
+      const at = (t) => {
+        const cfg = U.defaultShipConfig();
+        if (t !== undefined) cfg.up.rudder = t;
+        return cfg;
+      };
+      const want = [[undefined, 120], [0, 120], [1, 300], [2, 550], [3, null]];
+      for (const [t, cost] of want) {
+        const got = [U.nextCost(at(t), 'rudder'), U.nextCost(JSON.stringify(at(t)), 'rudder')];
+        if (got[0] !== cost || got[1] !== cost) bad.push(`tier ${t}: ${got} (want ${cost})`);
+      }
+      if (U.nextCost(null, 'rudder') !== 120 || U.nextCost('garbage', 'rudder') !== 120 || U.nextCost('{"up":{"rudder":"9"}}', 'rudder') !== null) bad.push('missing / broken / clamped configs');
+      // the shipyard's buy: (up[id] ?? 0) + 1 up to maxTier, paying nextCost each time (SPEC3 §10.2)
+      let cfg = U.defaultShipConfig();
+      let paid = 0;
+      const tiers = [];
+      for (let k = 0; k < 5; k++) {
+        const cost = U.nextCost(cfg, 'rudder');
+        if (cost === null) break;
+        paid += cost;
+        cfg.up.rudder = Math.min(U.maxTier('rudder'), (cfg.up.rudder ?? 0) + 1);
+        cfg = U.parseShipConfig(U.serializeShipConfig(cfg));
+        tiers.push(cfg.up.rudder);
+      }
+      if (paid !== 970 || tiers.join() !== '1,2,3') bad.push(`buying every tier: paid ${paid}, tiers ${tiers}`);
+      check(bad.length === 0, `maxTier('rudder') 3; nextCost 120 / 300 / 550 / null with up.rudder missing, 0, 1, 2, 3 (objects and stored text); buying tier by tier pays 970${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    }
+
+    // ---- the sparse field: absent at 0, written from 1, junk dropped or clamped
+    {
+      check(!('rudder' in U.defaultShipConfig().up) && Object.keys(U.defaultShipConfig().up).join() === IDS.join(), 'defaultShipConfig has no up.rudder (tier 0 is the missing field)');
+      let sourceText = false;
+      JSON.parse('1', (k, v, ctx) => { sourceText = !!(ctx && typeof ctx.source === 'string'); return v; });
+      const NONE = 'absent';
+      const cases = [
+        ['1', 1], ['2', 2], ['3', 3], ['0', NONE], ['-0', NONE], ['4', 3], ['99999', 3], ['-2', NONE], ['"2"', 2], ['" 1 "', 1], ['"0"', NONE],
+        ['"1e1"', NONE], ['"2.5"', NONE], ['"+1"', NONE], ['""', NONE], ['2.5', NONE], ['0.5', NONE], ['1e400', NONE], ['123456789012345678901', NONE],
+        ['null', NONE], ['true', NONE], ['false', NONE], ['[2]', NONE], ['{"tier":2}', NONE], ['"big"', NONE],
+        ...(sourceText ? [['1e0', NONE], ['2.0', NONE], ['3E0', NONE]] : []),
+      ];
+      const bad = [];
+      for (const [lit, want] of cases) {
+        const r = parse(`{"up":{"guns":1,"rudder":${lit},"sails":2},"look":{"hull":"royal"}}`);
+        if (r.error) {
+          bad.push(`${lit}: ${r.error}`);
+          continue;
+        }
+        const has = Object.prototype.hasOwnProperty.call(r.c.up, 'rudder');
+        const got = has ? r.c.up.rudder : NONE;
+        const keys = Object.keys(r.c.up).join();
+        const wantKeys = want === NONE ? IDS.join() : [...IDS, 'rudder'].join();
+        if (got !== want || keys !== wantKeys || r.c.up.guns !== 1 || r.c.up.sails !== 2 || r.c.look.hull !== 'royal') bad.push(`${lit} -> ${show(r.c.up)}`);
+      }
+      const hostileUp = { guns: 1 };
+      Object.defineProperty(hostileUp, 'rudder', { enumerable: true, get() { throw new Error('getter'); } });
+      const objCases = [
+        [{ guns: 1, rudder: 2 }, 2], [{ guns: 1, rudder: 3 }, 3], [{ guns: 1, rudder: 7 }, 3], [{ guns: 1, rudder: -0 }, NONE], [{ guns: 1, rudder: 0 }, NONE],
+        [{ guns: 1, rudder: NaN }, NONE], [{ guns: 1, rudder: Infinity }, NONE], [{ guns: 1, rudder: 1.5 }, NONE], [{ guns: 1, rudder: 2n }, NONE],
+        [{ guns: 1, rudder: new Number(2) }, NONE], [{ guns: 1, rudder: { valueOf: () => 2 } }, NONE], [Object.assign(Object.create({ rudder: 2 }), { guns: 1 }), NONE], [hostileUp, NONE],
+      ];
+      for (const [up, want] of objCases) {
+        const r = parse({ up, look: { hull: 'royal' } });
+        const got = r.error ? r.error : Object.prototype.hasOwnProperty.call(r.c.up, 'rudder') ? r.c.up.rudder : NONE;
+        if (got !== want || (!r.error && r.c.up.guns !== 1)) bad.push(`${show(up)} -> ${got}`);
+      }
+      const proto = parse('{"up":{"guns":1,"__proto__":{"rudder":2}},"__proto__":{"up":{"rudder":3}}}');
+      if (proto.error || 'rudder' in proto.c.up || ({}).rudder !== undefined) bad.push(`__proto__ -> ${show(proto.c || proto.error)}`);
+      check(bad.length === 0, `parseShipConfig: up.rudder is kept only as a plain integer 1..3 (above 3 clamped to 3), written after the six tiers; 0, junk and inherited values leave it out, the other fields kept (${cases.length + objCases.length + 1} cases)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    }
+
+    // ---- today's records stay canonical byte for byte; rudder records are written exactly once
+    {
+      const TODAY = [
+        JSON.stringify(DEFAULT),
+        '{"up":{"guns":2,"shot":3,"crew":3,"hull":3,"sails":2,"carpenter":2},"look":{"hull":"plum","sails":"midnight","flag":"jolly"}}',
+        '{"up":{"guns":1,"shot":0,"crew":2,"hull":0,"sails":1,"carpenter":0},"look":{"hull":"royal","sails":"snow","flag":"gold"}}',
+      ];
+      const kept = TODAY.filter((t) => U.serializeShipConfig(U.parseShipConfig(t)) !== t);
+      check(kept.length === 0, `today's ship records (no rudder) are already canonical, so loading never rewrites them${kept.length ? ' -> ' + kept.join('; ') : ''}`);
+      const withRudder = '{"up":{"guns":0,"shot":0,"crew":0,"hull":0,"sails":0,"carpenter":0,"rudder":2},"look":{"hull":"honey","sails":"cream","flag":"pennant"}}';
+      const fixes = [
+        [withRudder, withRudder],
+        [withRudder.replace('"rudder":2', '"rudder":0'), JSON.stringify(DEFAULT)],
+        [withRudder.replace('"rudder":2', '"rudder":9'), withRudder.replace('"rudder":2', '"rudder":3')],
+        [withRudder.replace('"rudder":2', '"rudder":"2"'), withRudder],
+        [withRudder.replace('{"guns":0', '{"rudder":1,"guns":0').replace(',"rudder":2', ''), withRudder.replace('"rudder":2', '"rudder":1')],
+      ];
+      const bad = fixes.filter(([raw, want]) => U.serializeShipConfig(U.parseShipConfig(raw)) !== want).map(([raw]) => `${raw} -> ${U.serializeShipConfig(U.parseShipConfig(raw))}`);
+      check(bad.length === 0, `serializeShipConfig writes up.rudder last and only from tier 1 (a stored 0 is dropped, 9 becomes 3, "2" becomes 2, a rudder written first moves last)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+
+      let n = 0;
+      const badTrip = [];
+      const lists = IDS.map((id) => TABLE[id].values.length);
+      const combos = lists.reduce((a, b) => a * b, 1);
+      for (let k = 0; k < combos; k++) {
+        for (let r = 0; r <= 3; r++) {
+          const cfg = U.defaultShipConfig();
+          let rest = k;
+          IDS.forEach((id, i) => { cfg.up[id] = rest % lists[i]; rest = Math.floor(rest / lists[i]); });
+          if (r) cfg.up.rudder = r;
+          cfg.look = { hull: LOOK_IDS.hull[(k + r) % 6], sails: LOOK_IDS.sails[k % 6], flag: LOOK_IDS.flag[r] };
+          const text = U.serializeShipConfig(cfg);
+          const back = parse(text);
+          n++;
+          if (back.error || !same(back.c, cfg) || U.serializeShipConfig(back.c) !== text || text.includes('"rudder"') !== r > 0) badTrip.push(`${text} -> ${show(back.c || back.error)}`);
+        }
+      }
+      check(badTrip.length === 0, `serialize -> parse round trips every tier combination with each rudder tier (${n} configs)${badTrip.length ? ' -> ' + badTrip.slice(0, 3).join('; ') : ''}`);
+    }
+
+    // ---- playerType: the rudder sets turnLow and multiplies the sails' turn
+    {
+      const MUL = RUD.turnMul;
+      const LOW = RUD.values;
+      const bad = [];
+      const baseFor = (s) => U.playerType(stock, { up: { sails: s } });
+      for (let s = 0; s < TURN.length; s++) {
+        const ref = baseFor(s);
+        if (ref.turn !== TURN[s] || ref.turnLow !== 0.35) bad.push(`sails ${s} without a rudder: turn ${ref.turn}, turnLow ${ref.turnLow}`);
+        for (let r = 0; r < LOW.length; r++) {
+          for (const cfg of [{ up: { sails: s, rudder: r } }, JSON.stringify({ up: { sails: s, rudder: r } })]) {
+            const p = U.playerType(stock, cfg);
+            const want = TURN[s] * MUL[r];
+            if (!(Math.abs(p.turn - want) < 1e-9) || Number(p.turn.toFixed(6)) !== p.turn) bad.push(`sails ${s} rudder ${r}: turn ${p.turn} (want ${want})`);
+            if (p.turnLow !== LOW[r]) bad.push(`sails ${s} rudder ${r}: turnLow ${p.turnLow}`);
+            const other = Object.keys(ref).filter((k) => k !== 'turn' && k !== 'turnLow' && p[k] !== ref[k]);
+            if (other.length) bad.push(`sails ${s} rudder ${r} changed ${other}`);
+          }
+        }
+      }
+      check(bad.length === 0, `playerType: turn = racing sails' turn × the rudder's turnMul and turnLow = its value at every rudder tier with every sails tier (${TURN.length * LOW.length} pairs); nothing else changes${bad.length ? ' -> ' + bad.slice(0, 6).join('; ') : ''}`);
+      // main's turnRate (SPEC3 §3.1): the full rate times (low + (1 - low) × speed share)
+      const rate = (p, speed) => p.turn * (p.turnLow + (1 - p.turnLow) * Math.min(1, speed / p.maxSpeed));
+      const stock0 = U.playerType(stock, U.defaultShipConfig());
+      const r3 = U.playerType(stock, { up: { rudder: 3 } });
+      const best = U.playerType(stock, { up: { sails: 2, rudder: 3 } });
+      const nums = [rate(stock0, 0), rate(r3, 0), rate(best, best.maxSpeed), rate(U.playerType(stock, { up: { sails: 2 } }), 14)];
+      check(Math.abs(nums[0] - 0.49) < 1e-9 && nums[1].toFixed(2) === '1.29' && Math.abs(nums[2] - 1.84) < 1e-9 && Math.abs(nums[3] - 1.6) < 1e-9 && rate(stock0, stock0.maxSpeed) === stock.turn,
+        `the turn rates of §3.1: a stock ship at a standstill ${nums[0].toFixed(2)} rad/s (0.49), tier 3 ${nums[1].toFixed(3)} (1.29); the best ship at full speed ${nums[2].toFixed(2)} (1.84, today ${nums[3].toFixed(2)})`);
+      const junk = ['{"up":{"rudder":"lots"}}', '{"up":{"rudder":2.5}}', '{"up":{"rudder":-1}}', { up: { rudder: NaN } }, { up: Object.create({ rudder: 3 }) }].map((c) => U.playerType(stock, c));
+      const clamped = U.playerType(stock, '{"up":{"rudder":99}}');
+      check(junk.every((p) => p.turn === stock.turn && p.turnLow === 0.35) && clamped.turnLow === 0.8 && Math.abs(clamped.turn - 1.4 * 1.15) < 1e-9,
+        'playerType with a junk rudder tier gives the stock rudder; a tier above 3 counts as tier 3');
+      check(JSON.stringify(stock) === JSON.stringify({ ...SHIP_TYPES.player }) && !('turnLow' in stock), 'playerType never adds turnLow (or anything) to SHIP_TYPES.player itself');
+    }
+
+    // ---- statText('rudder', t)
+    {
+      const want = [[0, '35% turn when slow'], [1, '50% turn when slow'], [2, '65% turn when slow'], [3, '80% turn when slow'], [9, '80% turn when slow'], [-1, '35% turn when slow'], [NaN, '35% turn when slow'], [1.4, '50% turn when slow'], [Infinity, '35% turn when slow']];
+      const bad = want.filter(([t, s]) => U.statText('rudder', t) !== s).map(([t, s]) => `${t}: "${U.statText('rudder', t)}" (want "${s}")`);
+      check(bad.length === 0, `statText('rudder', t): "50% turn when slow"..., clamped to the real tiers${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    }
+  }
+
   console.log(failures ? `\n${failures} check(s) failed` : `\nAll upgrade checks passed (${passes})`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

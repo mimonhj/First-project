@@ -21,7 +21,7 @@
 //   optional: toggleMute(), prizes() → [{ type, flag }], restyleCrew() (dress the cleaning crew on the
 //   docked ship in the saved uniform; townMode's own env.setCrewStyle call otherwise) }
 import { createTown } from './town.js';
-import { ITEMS, SLOTS, SLOT_NAMES, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
+import { ITEMS, SLOTS, SLOT_NAMES, KRAKEN_ITEMS, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
 import { ARMORY, armoryMaxTier, armoryNextCost, armoryStatText, parseArmoryConfig } from './armory.js';
 
 const PLACES = ['shipyard', 'tailor', 'tavern', 'ship'];
@@ -252,6 +252,8 @@ export function createTownMode(ctx = {}) {
 
   // ----- wardrobe -----
   const itemBtns = new Map(); // id -> button
+  // the Kraken Seas trophies stay out of the wardrobe and the log until that voyage is in the game
+  const hiddenItem = (id) => !C.withKraken && KRAKEN_ITEMS.includes(id);
   const groupEls = new Map(); // slot -> { group, buyWrap, buyBtn, why }
   let paintBtn = null;
   function buildWardrobe() {
@@ -287,7 +289,7 @@ export function createTownMode(ctx = {}) {
           itemBtns.set('shirt.paint', paintBtn);
         }
         for (const it of Object.values(ITEMS)) {
-          if (it.slot !== slot || it.id === 'shirt.paint') continue;
+          if (it.slot !== slot || it.id === 'shirt.paint' || hiddenItem(it.id)) continue;
           const b = document.createElement('button');
           b.type = 'button';
           b.className = 'ward-item';
@@ -1169,7 +1171,7 @@ export function createTownMode(ctx = {}) {
       ['Raking shots', n('rakes')],
       ['Critical hits', n('crits')],
     ];
-    const trophies = Object.values(ITEMS).filter((it) => it.trophy);
+    const trophies = Object.values(ITEMS).filter((it) => it.trophy && !hiddenItem(it.id));
     const extra = call(C.log);
     el.tLog.innerHTML =
       '<h3 class="tav-h">Captain\'s log</h3>' +

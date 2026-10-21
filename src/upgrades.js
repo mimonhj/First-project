@@ -3,6 +3,9 @@
 //
 // A ship config is { up: { <upgrade id>: tier, ... }, look: { hull, sails, flag } }:
 // - tiers are integers 0..maxTier(id); tier 0 is the stock ship
+// - the Big rudder & wheel (RUDDER, the shipyard's 7th row) is a SPARSE field: up.rudder is there only
+//   at tier 1 or more, and a config without it is at tier 0, so every record written before it
+//   existed is still read and written byte for byte (SPEC3 §3.1, §10.1)
 // - looks are ids from LOOKS (paint is free)
 // It is stored as JSON (serializeShipConfig) and read back with parseShipConfig, which
 // accepts anything (missing, blocked or tampered storage) and never throws.
@@ -61,6 +64,28 @@ export const UPGRADES = [
     costs: [100, 300],
   },
 ];
+
+/**
+ * The Big rudder & wheel (SPEC3 §3.1), the shipyard's 7th row: values[tier] is the share of the full turn
+ * rate the ship keeps at a standstill (turnLow), turnMul[tier] multiplies the full rate (at speed).
+ * values[0] (0.35) is the stock rudder's, which every enemy ship keeps too. Not in UPGRADES, which stays
+ * the six rows it always was; the shipyard lists SHIPYARD.
+ */
+export const RUDDER = {
+  id: 'rudder',
+  name: 'Big rudder & wheel',
+  blurb: 'A bigger rudder and wheel: spin round when slow, turn quicker at full sail.',
+  stat: 'Turning when slow',
+  values: [0.35, 0.5, 0.65, 0.8],
+  turnMul: [1, 1.05, 1.1, 1.15],
+  costs: [120, 300, 550],
+};
+
+/** Every shipyard row in display order: the six upgrades, then the rudder. */
+export const SHIPYARD = [...UPGRADES, RUDDER];
+
+// Rows stored only from tier 1 up (a missing field reads as tier 0).
+const SPARSE = new Set([RUDDER.id]);
 
 // Extra stats that ride along with an upgrade's tier.
 const SAIL_ACCEL = [4, 4.5, 5];
@@ -145,7 +170,7 @@ const own = (o, k) => o !== null && typeof o === 'object' && Object.prototype.ha
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
 
 function upgrade(id) {
-  for (const u of UPGRADES) if (u.id === id) return u;
+  for (const u of SHIPYARD) if (u.id === id) return u;
   return null;
 }
 
@@ -161,7 +186,7 @@ function isLook(part, id) {
   return typeof id === 'string' && LOOKS[part].some((l) => l.id === id);
 }
 
-/** A fresh stock config: no upgrades, the default paint. */
+/** A fresh stock config: no upgrades (the sparse rudder is left out at tier 0), the default paint. */
 export function defaultShipConfig() {
   const up = {};
   for (const u of UPGRADES) up[u.id] = 0;
@@ -209,9 +234,9 @@ function clean(obj) {
   if (!isRecord(obj)) return cfg;
   const up = field(obj, 'up');
   if (isRecord(up)) {
-    for (const u of UPGRADES) {
+    for (const u of SHIPYARD) {
       const t = readTier(field(up, u.id), u.values.length - 1);
-      if (t !== null) cfg.up[u.id] = t;
+      if (t !== null && (t > 0 || !SPARSE.has(u.id))) cfg.up[u.id] = t; // a sparse row only from tier 1
     }
   }
   const look = field(obj, 'look');
@@ -247,14 +272,16 @@ export function parseShipConfig(raw) {
   }
 }
 
-/** JSON for storage (validated first, so only known fields are written). */
+/** JSON for storage (validated first, so only known fields are written; up.rudder only from tier 1). */
 export function serializeShipConfig(config) {
   const c = parseShipConfig(config);
   return JSON.stringify({ up: c.up, look: c.look });
 }
 
-// Tier of an upgrade in a (validated) config.
+// Tier of an upgrade in a (validated) config (a sparse row that is missing is at tier 0).
 const tierOf = (c, id) => c.up[id] ?? 0;
+// A product of two table numbers, without the float dust (1.4 × 1.05 is 1.47, not 1.4700000000000002).
+const tidy = (x) => Math.round(x * 1e6) / 1e6;
 
 /** Gold needed for the next tier of an upgrade, or null when it is maxed (or unknown). */
 export function nextCost(config, id) {
@@ -266,7 +293,9 @@ export function nextCost(config, id) {
 
 /**
  * Gameplay stats of the player's ship with these upgrades: a NEW object based on
- * baseType (SHIP_TYPES.player); baseType itself is never changed.
+ * baseType (SHIP_TYPES.player); baseType itself is never changed. turn is the full turn rate (the racing
+ * sails' times the rudder's turnMul) and turnLow the share of it kept at a standstill (the rudder's
+ * values; main's turnRate() blends the two by speed, SPEC3 §3.1).
  */
 export function playerType(baseType, config) {
   const c = parseShipConfig(config);
@@ -277,7 +306,8 @@ export function playerType(baseType, config) {
     hp: v('hull'),
     maxSpeed: v('sails'),
     accel: SAIL_ACCEL[t('sails')],
-    turn: SAIL_TURN[t('sails')],
+    turn: tidy(SAIL_TURN[t('sails')] * RUDDER.turnMul[t('rudder')]),
+    turnLow: v('rudder'),
     reload: v('crew'),
     guns: v('guns'),
     dmg: v('shot'),
@@ -286,7 +316,7 @@ export function playerType(baseType, config) {
   };
 }
 
-/** Short UI text for an upgrade's stat at a tier, e.g. "4 guns", "1.35 s", "140 hp". */
+/** Short UI text for an upgrade's stat at a tier, e.g. "4 guns", "1.35 s", "140 hp", "50% turn when slow". */
 export function statText(id, tier) {
   const u = upgrade(id);
   if (!u) return '';
@@ -306,6 +336,8 @@ export function statText(id, tier) {
       return `${val} knots`;
     case 'carpenter':
       return `${val} hp/s`;
+    case 'rudder':
+      return `${Math.round(val * 100)}% turn when slow`;
     default:
       return String(val);
   }

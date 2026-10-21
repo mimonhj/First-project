@@ -732,6 +732,77 @@ const isInt = (v) => Number.isInteger(v) && !Object.is(v, -0);
     check(!threw, `inputs are only read, never written (frozen inputs work)${threw ? ' -> ' + threw : ''}`);
   }
 
+  // ------------------------------------------------------------------ "The Kraken Seas" (SPEC3 §4.1, §4.2, §13.1)
+  // Appended checks: armourMul, and the six new ship types against the per-type rules above.
+  {
+    const A = C.armourMul;
+    const cases = [
+      [null, 0.5, undefined, 0.5], ['stern', 0.5, undefined, 1], ['bow', 0.5, undefined, 1],
+      [null, undefined, undefined, 1], ['stern', undefined, undefined, 1], ['bow', undefined, false, 1],
+      [null, 0.5, true, 1], ['stern', 0.5, true, 1], [null, 0.5, false, 0.5], [null, 0.5, 'yes', 0.5], [null, 0.5, 1, 0.5],
+      [null, 1, undefined, 1], [null, 0, undefined, 0], [null, 0.25, undefined, 0.25],
+    ];
+    const bad = cases.filter(([aspect, armour, crit, want]) => A(aspect, armour, crit) !== want).map(([a, r, c]) => `(${show(a)}, ${show(r)}, ${show(c)}) → ${A(a, r, c)}`);
+    check(typeof A === 'function' && bad.length === 0,
+      `armourMul: a beam hit on armour 0.5 → ×0.5, a stern or bow rake ×1, no armour ×1, a crit (crit === true) ×1 (§4.2)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    const armoured = Object.keys(SHIP_TYPES).filter((k) => SHIP_TYPES[k].armour !== undefined);
+    check(same(armoured, ['ironclad']) && SHIP_TYPES.ironclad.armour === 0.5 && !('ARMOUR' in C),
+      `the armour number lives only on the ship type (ironclad.armour ${SHIP_TYPES.ironclad.armour}); combat.js has no ARMOUR table`);
+    // On real shots at an Iron Turtle (heading 0.3, length 11): her beam, the rake boundary, a beam crit.
+    const iron = SHIP_TYPES.ironclad;
+    const at = (deg, extra = {}) => {
+      const h = 0.3;
+      const info = C.shotResult({
+        ammo: 'round', base: 12, dist: 18, vx: Math.sin(h + deg * DEG) * 30, vz: Math.cos(h + deg * DEG) * 30,
+        target: { h, len: iron.len, ghost: false, boss: false }, along: 0, shooter: { player: true, critBase: 0.06 }, force: 'none', ...extra,
+      });
+      return Math.round(info.dmg * A(info.aspect, iron.armour, info.crit) * 1e9) / 1e9;
+    };
+    const got = { beam: at(90), stern: at(0), edge: at(36), past: at(37.5), bow: at(180), beamCrit: at(90, { force: 'crit' }) };
+    check(got.beam === 6 && got.stern === 24 && got.edge === 24 && got.past === 6 && got.bow === 18 && got.beamCrit === 21,
+      `on an Iron Turtle, 12 per ball: beam ${got.beam} (CLANG!), stern rake ${got.stern}, 36° ${got.edge}, 37.5° ${got.past}, bow rake ${got.bow}, a beam crit ${got.beamCrit} (full)`);
+    const hostile = new Proxy({}, { get() { throw new Error('proxy'); } });
+    const junk = [undefined, null, NaN, Infinity, -Infinity, -0.5, 1.5, 2, '0.5', '', 'mid', 'beam', true, {}, [], () => 1, Symbol('x'), 10n, hostile];
+    const badJ = [];
+    for (const j of junk) {
+      try {
+        const vals = [A(j, j, j), A(null, j), A(j, 0.5), A('stern', j, j), A(null, 0.5, j)];
+        if (!vals.every((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0 && v <= 1)) badJ.push(`${show(j)}: ${vals.join(',')}`);
+        if (A(null, j) !== (typeof j === 'number' && j >= 0 && j <= 1 ? j : 1)) badJ.push(`armour ${show(j)} → ${A(null, j)}`);
+      } catch (e) {
+        badJ.push(`${show(j)}: threw ${e.message}`);
+      }
+    }
+    check(badJ.length === 0, `armourMul takes junk: an armour that is not a number in [0, 1] counts as none (×1); never throws, always 0..1${badJ.length ? ' -> ' + badJ.slice(0, 4).join('; ') : ''}`);
+  }
+  {
+    // §4.1: the six new types pass every per-type rule above (crew, notch, hull zones, capture gold, boarding).
+    const NEW = { shark: [40, 105], bombketch: [70, 165], ironclad: [120, 265], fireship: [30, 85], skiff: [50, 125], inkheart: [350, 725] };
+    const bad = [];
+    const rows = [];
+    for (const [key, [sunk, captured]] of Object.entries(NEW)) {
+      const t = SHIP_TYPES[key];
+      if (!t) {
+        bad.push(`${key}: missing`);
+        continue;
+      }
+      const why = [];
+      if (!(isInt(t.crew) && t.crew >= 1)) why.push(`crew ${t.crew}`);
+      if (!(typeof t.grit === 'number' && t.grit > 0)) why.push(`grit ${t.grit}`);
+      if (t.gold * 10 !== sunk || C.captureGold(t.gold) !== captured || C.captureGold(t.gold) !== t.gold * 20 + 25) why.push(`gold ${t.gold * 10} / ${C.captureGold(t.gold)}`);
+      if (!(C.captureGold(t.gold) > 2 * t.gold * 10)) why.push('capture pays no more than twice sinking');
+      if (C.crewNow({ crew0: t.crew, hpLow: 0, maxHp: t.hp, killed: 0 }) <= C.strikeAt(t.crew)) why.push('hull alone reaches the notch');
+      if (t.crew - C.crewNow({ crew0: t.crew, hpLow: -t.hp, maxHp: t.hp, killed: 0 }) > Math.floor(t.crew / 2)) why.push('hull takes more than half the crew');
+      const e = t.len / 6;
+      if (C.hitZone(e + 1e-6, t.len) !== 'bow' || C.hitZone(-e - 1e-6, t.len) !== 'stern' || C.hitZone(0, t.len) !== 'mid') why.push('hit zones');
+      const res = C.resolveBoarding({ crew: 12, crew0: 12, blade: 1, hpFrac: 1 }, { crew: t.crew, crew0: t.crew, grit: t.grit, hpFrac: 0.5 }, {});
+      if (!(Number.isFinite(res.R) && res.R > 0 && isInt(res.defLoss) && isInt(res.attLoss) && res.attLeft >= 1)) why.push(`boarding ${show(res)}`);
+      if (why.length) bad.push(`${key}: ${why.join(', ')}`);
+      rows.push(`${t.name} ${sunk}/${captured}`);
+    }
+    check(bad.length === 0, `the six new types (§4.1): whole crews ≥ 1, hull alone never reaches the notch, three hull zones, gold ×10 sunk / ×20 + 25 captured (${rows.join(', ')}), sane boarding odds${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+  }
+
   console.log(failures ? `\n${failures} check(s) failed` : `\nAll combat checks passed (${passes})`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

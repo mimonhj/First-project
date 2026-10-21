@@ -8,6 +8,12 @@
 //   camera-only volumes (the signs' boards on their posts and the like) are there, clear of the
 //   camera's target wherever the captain stops, and ignored by the walking; the rope bridges have no lip at
 //   their posts, and a jog held from each land end, straight or a little off the line, gets across
+// - the Kraken Seas (SPEC3 §7.1, §8; the fixture is dumped with the build ctx's kraken on): the two new places,
+//   Professor Barnacle's Riddle Bell and Builder Bess, reachable from the spawn and from each other; no new
+//   walkable area or bridge, no plot walkable, every plot's tallest building a camera-only box from tier 0;
+//   Bess and the professor clear of every walker's path and villager's loop (1 u), of the bridge mouths and the
+//   doorways (2 u) and of the other places, leaving no passage narrower than 1.6 u of deck; the villagers' loops
+//   on the walk, clear of everything, at most two on any bridge
 // - small made-up towns: an L of two rects, a turned rect, a round mound, a sagging bridge (its
 //   height followed along the planks), two islands (no path between them)
 // - junk data and junk arguments never throw
@@ -82,7 +88,7 @@ function pathProblems(W, p, from, to) {
     check(['plazaS1', 'plazaYard', 'plazaGarden', 'tavernTower'].every((id) => links.includes(id)), `the rope bridges onto them: ${links.join(', ')}`);
     check(ids.filter((id) => id.includes('-')).length >= 3, `the gaps between decks are crossed by portals (${ids.filter((id) => id.includes('-')).join(', ')})`);
     const places = data.places.map((p) => p.id);
-    check(JSON.stringify(places) === JSON.stringify(['ship', 'shipyard', 'tailor', 'tavern']), `the places, in order: ${places.join(', ')}`);
+    check(JSON.stringify(places) === JSON.stringify(['ship', 'shipyard', 'tailor', 'tavern', 'quiz', 'builder']), `the places, in order: ${places.join(', ')}`);
     const tailor = data.places.find((p) => p.id === 'tailor');
     check(!!tailor && tailor.name === "Polly's Plumes & Trims" && tailor.podium && Number.isFinite(tailor.podium.y) && Array.isArray(tailor.lineup) && tailor.lineup.length === 3 && tailor.cam && tailor.cam.pos.length === 3 && tailor.cam.target.length === 3, "Polly's has its podium, a line-up of three and a fitting camera");
     const tavern = data.places.find((p) => p.id === 'tavern');
@@ -372,6 +378,213 @@ function pathProblems(W, p, from, to) {
     const away = D.move({ x: 0, z: 0, y: 1 }, -0.3, 0, R, folk);
     const into = D.move({ x: 0, z: 0, y: 1 }, 0.3, 0, R, folk);
     check(away.moved && away.x < 0 && !into.moved, 'pushed against a townsperson: stepping away works, stepping further in does not');
+  }
+
+  // ---- the Kraken Seas: the new places, the plots, Bess and the professor, the villagers ----
+  {
+    // the plots of SPEC3 §8.1: island.js's PLOTS, the one table sparrow.js builds them from ({ id, platform, x, z,
+    // height }; its x / z must be the platform's, where sparrow stands each plot, and its height the envelope's)
+    const fin = (...v) => v.every(Number.isFinite);
+    const PLOTS = (await load('src/island.js')).PLOTS;
+    check(PLOTS.length === 10 && PLOTS.every((p) => /^s\d+$/.test(p.platform) && fin(p.x, p.z, p.height) && p.height > 0) && new Set(PLOTS.map((p) => p.platform)).size === PLOTS.length,
+      `island.js gives every plot a platform of its own, a place and a tier-3 height (${PLOTS.map((p) => `${p.id} ${p.platform} ${p.height}`).join(', ')})`);
+    const quiz = data.places.find((p) => p.id === 'quiz');
+    const builder = data.places.find((p) => p.id === 'builder');
+    for (const p of [quiz, builder]) {
+      check(!!p && fin(p.x, p.z, p.r, p.face) && p.cam && p.cam.pos.length === 3 && p.cam.target.length === 3 && W.inside(p.x, p.z) && !W.blocked(p.x, p.z, R), `${p ? p.name : 'a new place'} stands on the walk, clear, with a facing and a panel camera`);
+    }
+    check(!!quiz && quiz.name === "Professor Barnacle's Riddle Bell" && Math.abs(W.heightAt(quiz.x, quiz.z) - 1.3) < 0.01 && Math.hypot(quiz.x + 18.2, quiz.z + 25.4) < 3.6, `the Riddle Bell is on the lookout tower's raft (${f2(quiz && quiz.x)}, ${f2(quiz && quiz.z)})`);
+    check(!!builder && builder.name === 'Builder Bess' && builder.x > -8.5 && builder.x < 8.5 && builder.z < -5.7 && builder.z > -14.8, `Builder Bess's place is on the plaza (${f2(builder && builder.x)}, ${f2(builder && builder.z)})`);
+    // (the reachability loop above already walks from the spawn to every place and between every two places)
+    for (const p of [quiz, builder]) {
+      const a = W.path(data.spawn, p);
+      const b = W.path(p, data.places.find((q) => q.id === 'ship'));
+      check(pathProblems(W, a, data.spawn, p).length === 0 && pathProblems(W, b, p, data.places[0]).length === 0, `${p.id}: reached from the spawn (${a.length} points) and back to the ship (${b.length} points)`);
+    }
+    // the walk changed only by the two places and their props: today's decks, portals and bridges, nothing more
+    const areaIds = data.areas.map((a) => a.id).sort().join(',');
+    const linkIds = data.links.map((l) => l.id).sort().join(',');
+    check(areaIds === 'garden,pier,pier-plaza-1,pier-plaza-2,plaza,plaza-tavern,s1,tavern,tower,yard' && linkIds === 'plazaGarden,plazaS1,plazaYard,tavernTower', `no new walkable area or bridge (areas ${areaIds}; bridges ${linkIds})`);
+    // every plot: none walkable, and its tallest building (its platform's footprint x its height) a camera-only box from tier 0
+    const envs = (data.camBlockers || []).filter((b) => typeof b.plot === 'string');
+    const plotIds = PLOTS.map((p) => p.id);
+    check(envs.length === PLOTS.length && plotIds.every((id) => envs.filter((b) => b.plot === id).length === 1), `every plot has one camera envelope (${envs.map((b) => b.plot).join(', ')})`);
+    for (const p of PLOTS) {
+      const b = envs.find((q) => q.plot === p.id);
+      if (!b) continue;
+      let onWalk = 0;
+      const c = Math.cos(b.ry);
+      const sn = Math.sin(b.ry);
+      for (let i = 0; i <= 10; i++) {
+        for (let j = 0; j <= 10; j++) {
+          const lx = (i / 10 - 0.5) * b.w;
+          const lz = (j / 10 - 0.5) * b.d;
+          if (W.inside(b.x + lx * c + lz * sn, b.z - lx * sn + lz * c)) onWalk++;
+        }
+      }
+      const deckY = b.y0 + 0.3;
+      check(Math.hypot(b.x - p.x, b.z - p.z) < 0.05 && b.w >= 4.9 && b.d >= 4.9 && Math.abs(b.y1 - deckY - p.height) < 1e-6 && b.y0 <= deckY && onWalk === 0,
+        `plot ${p.id} (${p.platform}): not walkable (${onWalk} of 121 points on the walk), a camera box ${f2(b.w)} x ${f2(b.d)} from its deck up to ${f2(b.y1 - deckY)} (the tallest building ${p.height})`);
+    }
+    // Bess and the professor: blockers, clear of the walkers' paths and villagers' loops, the bridge mouths, the
+    // doorways, the other places; and no passage beside them narrower than 1.6 u of deck
+    const npcs = data.npcs || [];
+    // (they are townsfolk like any other: folk() gives each a blocker of r 0.35, which the captain squeezes past
+    // after a moment; the walk data gives them none, which he couldn't)
+    check(npcs.length === 2 && ['barnacle', 'bess'].every((id) => npcs.some((n) => n.id === id)) && npcs.every((n) => n.r === 0.35 && W.inside(n.x, n.z) && !data.blockers.some((b) => Math.hypot(b.x - n.x, b.z - n.z) < 0.05)), `Bess and the professor stand on the walk as townsfolk (r ${npcs.map((n) => n.r).join(', ')}), with no blocker of their own in the walk data`);
+    const segD = (px, pz, a, b) => {
+      const dx = b[0] - a[0];
+      const dz = b[2] - a[2];
+      const L2 = dx * dx + dz * dz || 1;
+      const u = Math.max(0, Math.min(1, ((px - a[0]) * dx + (pz - a[2]) * dz) / L2));
+      return Math.hypot(px - a[0] - dx * u, pz - a[2] - dz * u);
+    };
+    const pathD = (px, pz, pts) => {
+      let d = Infinity;
+      for (let i = 0; i + 1 < pts.length; i++) d = Math.min(d, segD(px, pz, pts[i], pts[i + 1]));
+      return d;
+    };
+    const paths = data.paths || [];
+    const mouths = data.links.flatMap((l) => [l.pts[1], l.pts[l.pts.length - 2]]);
+    const doors = data.doors || [];
+    check(paths.filter((q) => q.kind === 'walker').length === 6 && paths.filter((q) => q.kind === 'villager').length === 8 && doors.length >= 3, `the walk data lists the townsfolk's ${paths.filter((q) => q.kind === 'walker').length} paths, the villagers' ${paths.filter((q) => q.kind === 'villager').length} loops and ${doors.length} doorways`);
+    const own = { barnacle: 'quiz', bess: 'builder' };
+    for (const n of npcs) {
+      const near = Math.min(...paths.map((q) => pathD(n.x, n.z, q.pts)));
+      const mouth = Math.min(...mouths.map((m) => Math.hypot(n.x - m[0], n.z - m[2])));
+      const door = doors.length ? Math.min(...doors.map((d) => Math.hypot(n.x - d.x, n.z - d.z))) : Infinity;
+      const inside = data.places.filter((p) => p.id !== own[n.id] && Math.hypot(p.x - n.x, p.z - n.z) < p.r).map((p) => p.id);
+      const plank = Math.hypot(n.x - data.spawn.x, n.z - data.spawn.z);
+      check(near >= 1 && mouth >= 2 && door >= 2 && plank >= 2 && inside.length === 0, `${n.id}: ${f2(near)} u from the nearest walker's path or villager's loop (>= 1), ${f2(mouth)} u from a bridge mouth, ${f2(door)} u from a doorway and ${f2(plank)} u from the gangplank's foot (>= 2), in no other place's circle${inside.length ? ' (in ' + inside.join(', ') + ')' : ''}`);
+    }
+    // Their blockers (r 0.35, as folk() gives them) never narrow a deck below 1.6 u and plug no gap (so the captain
+    // never has to squeeze past them to get anywhere): on a 0.1 grid over the whole walk,
+    // (a) every spot the captain reaches from the spawn without the two of them, he still reaches with them in the
+    //     way (but for the spots right beside them), and
+    // (b) a walker as wide as 1.6 u of deck (r 0.8, his middle 0.15 inside the walk's edge, which keeps 0.65 from
+    //     the deck's edge) who can get from one spot to another without them still can with them (no pinch below
+    //     1.6 u where there was room before)
+    {
+      const W0 = W;
+      const W1 = createWalk({ ...data, blockers: [...data.blockers, ...npcs.map((n) => ({ x: n.x, z: n.z, r: n.r, h: 1.6 }))] });
+      let x0 = Infinity;
+      let x1 = -Infinity;
+      let z0 = Infinity;
+      let z1 = -Infinity;
+      for (const a of data.areas) {
+        const e = a.kind === 'circle' ? a.r : Math.hypot(a.w, a.d) / 2;
+        x0 = Math.min(x0, a.x - e);
+        x1 = Math.max(x1, a.x + e);
+        z0 = Math.min(z0, a.z - e);
+        z1 = Math.max(z1, a.z + e);
+      }
+      const S = 0.1;
+      const NX = Math.ceil((x1 - x0) / S) + 1;
+      const NZ = Math.ceil((z1 - z0) / S) + 1;
+      const ring = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [Math.cos((k * Math.PI) / 4), Math.sin((k * Math.PI) / 4)]);
+      const grid = (Wx, rad, margin) => {
+        const free = new Uint8Array(NX * NZ);
+        for (let j = 0; j < NZ; j++) {
+          for (let i = 0; i < NX; i++) {
+            const x = x0 + i * S;
+            const z = z0 + j * S;
+            if (!Wx.inside(x, z) || Wx.blocked(x, z, rad)) continue;
+            if (margin && !ring.every(([cx, cz]) => Wx.inside(x + cx * margin, z + cz * margin))) continue;
+            free[j * NX + i] = 1;
+          }
+        }
+        // label the 4-connected pieces
+        const lab = new Int32Array(NX * NZ).fill(-1);
+        let n = 0;
+        const st = [];
+        for (let k = 0; k < NX * NZ; k++) {
+          if (!free[k] || lab[k] >= 0) continue;
+          lab[k] = n;
+          st.push(k);
+          while (st.length) {
+            const u = st.pop();
+            const i = u % NX;
+            for (const v of [i > 0 ? u - 1 : -1, i < NX - 1 ? u + 1 : -1, u - NX, u + NX]) {
+              if (v >= 0 && v < NX * NZ && free[v] && lab[v] < 0) {
+                lab[v] = n;
+                st.push(v);
+              }
+            }
+          }
+          n++;
+        }
+        return { lab, n };
+      };
+      const besideNpc = (k, reach) => {
+        const x = x0 + (k % NX) * S;
+        const z = z0 + Math.floor(k / NX) * S;
+        return npcs.some((q) => Math.hypot(x - q.x, z - q.z) < q.r + reach + 0.15);
+      };
+      const cell = (x, z) => Math.round((z - z0) / S) * NX + Math.round((x - x0) / S);
+      // (a) the captain
+      const A0 = grid(W0, R, 0);
+      const A1 = grid(W1, R, 0);
+      const sp = W0.snap(data.spawn.x, data.spawn.z, 1);
+      let spk = cell(sp.x, sp.z);
+      if (A0.lab[spk] < 0 || A1.lab[spk] < 0) for (let d = 1; d < 5 && (A0.lab[spk] < 0 || A1.lab[spk] < 0); d++) spk = cell(sp.x + d * S, sp.z);
+      let reached = 0;
+      let lost = 0;
+      for (let k = 0; k < NX * NZ; k++) {
+        if (A0.lab[k] < 0 || A0.lab[k] !== A0.lab[spk]) continue;
+        reached++;
+        if (A1.lab[k] !== A1.lab[spk] && !besideNpc(k, R)) lost++;
+      }
+      check(reached > 5000 && lost === 0, `Bess and the professor shut the captain out of nowhere: ${reached} spots (0.1 apart) reached from the spawn without them, ${lost} lost with them`);
+      // (b) a walker 1.6 u wide
+      const F = 0.8;
+      const B0 = grid(W0, F, F - 0.65);
+      const B1 = grid(W1, F, F - 0.65);
+      const pieces = new Map(); // a piece without them -> the pieces its spots fall in with them
+      let roomy = 0;
+      for (let k = 0; k < NX * NZ; k++) {
+        if (B0.lab[k] < 0) continue;
+        roomy++;
+        if (besideNpc(k, F)) continue;
+        if (!pieces.has(B0.lab[k])) pieces.set(B0.lab[k], new Set());
+        pieces.get(B0.lab[k]).add(B1.lab[k]);
+      }
+      const split = [...pieces.values()].filter((v) => v.size > 1 || v.has(-1)).length;
+      check(roomy > 2000 && split === 0, `... nor narrow a deck below 1.6 u: ${pieces.size} roomy stretches of deck (${roomy} spots a 1.6 u wide walker fits), ${split} cut or pinched by them`);
+    }
+    // the villagers' loops: closed loops (a walker on a loop never pauses), on the walk at its height all the way, clear
+    // of the obstacles, the other paths and loops, the places' circles; at most two loops over any bridge
+    const loops = paths.filter((q) => q.kind === 'villager');
+    const bad = [];
+    const perBridge = {};
+    for (const l of loops) {
+      const P0 = l.pts[0];
+      const P1 = l.pts[l.pts.length - 1];
+      if (!l.loop || Math.hypot(P0[0] - P1[0], P0[2] - P1[2]) > 1e-6) bad.push(`${l.id} is not closed`);
+      let minObs = Infinity;
+      let minOther = Infinity;
+      for (let i = 0; i + 1 < l.pts.length; i++) {
+        const [ax, ay, az] = l.pts[i];
+        const [bx, by, bz] = l.pts[i + 1];
+        const n = Math.max(1, Math.ceil(Math.hypot(bx - ax, bz - az) / 0.1));
+        for (let k = 0; k < n; k++) {
+          const x = ax + ((bx - ax) * k) / n;
+          const y = ay + ((by - ay) * k) / n;
+          const z = az + ((bz - az) * k) / n;
+          const h = W.heightAt(x, z, y);
+          if (h === null || Math.abs(h - y) > 0.08) bad.push(`${l.id} off the walk at ${f2(x)},${f2(z)}`);
+          minObs = Math.min(minObs, W.blocked(x, z, 0.3) ? -1 : Infinity);
+          for (const q of paths) if (q !== l) minOther = Math.min(minOther, pathD(x, z, q.pts));
+          for (const p of data.places) if (Math.hypot(p.x - x, p.z - z) < p.r + 0.5) bad.push(`${l.id} through the ${p.id} circle`);
+        }
+      }
+      if (minObs < 0) bad.push(`${l.id} into an obstacle`);
+      if (minOther < 0.7) bad.push(`${l.id} ${f2(minOther)} from another walker`);
+      for (const k of data.links) {
+        const mid = k.pts[Math.floor(k.pts.length / 2)];
+        if (pathD(mid[0], mid[2], l.pts) < 0.05) perBridge[k.id] = (perBridge[k.id] || 0) + 1;
+      }
+    }
+    check(loops.length === 8 && bad.length === 0 && Object.values(perBridge).every((v) => v <= 2), `the villagers' 8 loops are closed, on the walk, clear of obstacles (0.3), of the other paths and loops (0.7) and of the places' circles; loops per bridge ${JSON.stringify(perBridge)}${bad.length ? ': ' + [...new Set(bad)].slice(0, 5).join('; ') : ''}`);
   }
 
   // ---- junk ----

@@ -1,7 +1,7 @@
 import * as THREE from 'three';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { mergeGeometries } from 'three/addons/utils/BufferGeometryUtils.js';
-import { toon, mergeStatic, ensureIndex, gradientMap, noOutline } from './style.js';
+import { toon, mergeStatic, ensureIndex, gradientMap, noOutline, setOutline } from './style.js';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
 import { findLook, maxTier } from './upgrades.js';
 
@@ -23,7 +23,11 @@ import { findLook, maxTier } from './upgrades.js';
 // lights a deck fire, lets one sail droop and drops the top sail on MAST DOWN (a sail
 // merged into its mast's mesh is split off by index range, sharing the buffers), and
 // hoistFlag() strikes her colours for a white flag or your own. projectileMesh() makes
-// the round, chain and grape shot.
+// the round, chain and grape shot, and the Kraken Seas' Fire, Frost and Stink shot (SPEC3 §2.7).
+//
+// The Kraken Seas (SPEC3 §4.3): the Shark Raider, the Bomb Ketch, the Iron Turtle, the Fire Ship,
+// the Squid Skiff and the Inkheart; on the player's ship the Big rudder & wheel tiers and the keg
+// rack of special shot; and on every ship userData.statusAnchors, where statusfx.js draws a status.
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -1180,6 +1184,7 @@ function sternCastle(S, hull, o) {
   const d = z1 - z0;
   const zc = (z0 + z1) / 2;
   const w = o.w ?? (hull.widthAt(zc, hull.D + 0.3) * 2 + (o.over ?? 0.05));
+  S.castle = Math.max(S.castle ?? -Infinity, z1); // (the waist starts here: statusAnchors)
   add(g, rbox(w, y1 - y0, d, o.r ?? 0.22), mat(o.color), [0, (y0 + y1) / 2, zc]);
   if (o.cap) add(g, rbox(w + 0.14, 0.24, d + 0.14, 0.1), mat(o.cap), [0, y1 - 0.1, zc]);
   if (o.top) add(g, rbox(w - 0.12, 0.1, d - 0.12, 0.04), mat(o.top), [0, y1 + 0.03, zc]);
@@ -1472,9 +1477,43 @@ function playerSetup(opts) {
     paint: findLook('hull', look.hull),
     sails: findLook('sails', look.sails),
     flag: findLook('flag', look.flag),
-    up: { guns: tier('guns'), shot: tier('shot'), crew: tier('crew'), hull: tier('hull'), sails: tier('sails'), carpenter: tier('carpenter') },
+    up: { guns: tier('guns'), shot: tier('shot'), crew: tier('crew'), hull: tier('hull'), sails: tier('sails'), carpenter: tier('carpenter'), rudder: rudderTier(up) },
     grapple: Number.isInteger(armory.grapple) ? clamp(armory.grapple, 0, GRAPPLE_COILS.length - 1) : 0,
+    powder: ownedPowder(o.powder),
   };
+}
+
+// Big rudder & wheel (upgrades.js RUDDER, SPEC3 §3.1): tiers 0..3. Clamped here, so the model never
+// depends on whether upgrades.js knows the row yet.
+const RUDDER_MAX = 3;
+function rudderTier(up) {
+  let v;
+  try {
+    v = Object.prototype.hasOwnProperty.call(up, 'rudder') ? up.rudder : 0;
+  } catch {
+    v = 0;
+  }
+  return Number.isInteger(v) ? clamp(v, 0, RUDDER_MAX) : 0;
+}
+
+// The three special shots (SPEC3 §2.1) in key order: their keg, ball and icon colours.
+const SPECIAL_IDS = ['fire', 'frost', 'stink'];
+const SPECIAL_COLOR = { fire: 0xf05a1e, frost: 0x7cc6ee, stink: 0x8bc34a };
+
+/** The recipes owned, from the powder record ({ v, own: { fire, frost, stink } }, 1 = owned) or a bare { fire, ... }. */
+function ownedPowder(p) {
+  const out = { fire: false, frost: false, stink: false };
+  try {
+    if (!p || typeof p !== 'object') return out;
+    const own = Object.prototype.hasOwnProperty.call(p, 'own') && p.own && typeof p.own === 'object' ? p.own : p;
+    for (const id of SPECIAL_IDS) {
+      const v = Object.prototype.hasOwnProperty.call(own, id) ? own[id] : 0;
+      out[id] = v === 1 || v === true;
+    }
+  } catch {
+    return { fire: false, frost: false, stink: false };
+  }
+  return out;
 }
 
 /** Exact point on a hull's outer skin at (u, y) on one side, with its outward normal. */
@@ -1740,9 +1779,182 @@ function grappleCoil(S, x, yRail, z) {
   add(S.group, sphere(), iron, foot.toArray(), null, 0.055);
 }
 
+// ---------------------------------------------------------------------------
+// The player's Kraken Seas props (SPEC3 §3.1, §2.7): Big rudder & wheel tiers and the kegs of special shot.
+// They are built with ordinary toon parts into a kit group, then baked into ONE vertex-coloured mesh
+// kept out of mergeStatic, so every tier and recipe together costs at most one mesh (2 draw calls).
+// ---------------------------------------------------------------------------
+
+let kitMaterial = null;
+/** The shared vertex-colour toon material of baked prop kits (outlined, never disposed). */
+function kitMat() {
+  if (!kitMaterial) {
+    kitMaterial = setOutline(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradientMap(3) }), true);
+    kitMaterial.name = 'ship-kit';
+  }
+  return kitMaterial;
+}
+
+/** Bake every mesh under `kit` (a group in S.group) into one vertex-coloured mesh that replaces it. */
+function bakeKit(S, kit, name = 'ship-kit') {
+  kit.updateMatrixWorld(true);
+  const inv = new THREE.Matrix4().copy(S.group.matrixWorld).invert();
+  const geos = [];
+  kit.traverse((o) => {
+    if (!o.isMesh || !o.material || !o.material.color) return;
+    const src = o.geometry;
+    const g = src.index && !src.attributes.normal ? src.toNonIndexed() : new THREE.BufferGeometry().copy(src);
+    for (const n of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(n)) g.deleteAttribute(n);
+    g.morphAttributes = {};
+    if (!g.attributes.normal) g.computeVertexNormals();
+    if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+    ensureIndex(g);
+    g.applyMatrix4(new THREE.Matrix4().multiplyMatrices(inv, o.matrixWorld));
+    const c = o.material.color; // (linear, as vertex colours are)
+    const col = new Float32Array(g.attributes.position.count * 3);
+    for (let i = 0; i < col.length; i += 3) col.set([c.r, c.g, c.b], i);
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    geos.push(g);
+  });
+  if (kit.parent) kit.parent.remove(kit);
+  if (!geos.length) return null;
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  if (!merged) return null;
+  const mesh = new THREE.Mesh(merged, kitMat());
+  mesh.name = name;
+  mesh.userData.keep = true;
+  S.group.add(mesh);
+  return mesh;
+}
+
+const BRASS = 0xe0a83a; // the brass wheel and binnacle hood
+
+/** A bigger ship's wheel on its post, facing aft; its centre is where the stock wheel's is (the captain's hands). */
+function bigWheel(parent, x, y, z, s, c) {
+  add(parent, rbox(0.2 * s, 0.75 * s, 0.2 * s, 0.06), mat(c.post), [x, y + 0.37 * s, z]);
+  const g = new THREE.Group();
+  g.position.set(x, y + 0.85 * s, z - 0.12 * s);
+  parent.add(g);
+  const rimM = mat(c.rim);
+  const spokeM = mat(c.spoke);
+  add(g, torus(0.44 * s, 0.062 * s, 24, 6), rimM);
+  if (c.trim != null) {
+    // gold trim: a band on the rim's aft face and an inner ring round the hub
+    add(g, torus(0.44 * s, 0.03 * s, 24, 5), mat(c.trim), [0, 0, -0.052 * s]);
+    add(g, torus(0.17 * s, 0.026 * s, 16, 5), mat(c.trim), [0, 0, -0.02 * s]);
+  }
+  add(g, sphere(), mat(c.hub), [0, 0, 0], null, 0.11 * s);
+  const knob = mat(c.handle);
+  for (let k = 0; k < 8; k++) {
+    const a = (k / 8) * TAU;
+    const d = V3(Math.cos(a), Math.sin(a), 0);
+    rod(g, spokeM, d.clone().multiplyScalar(0.06 * s), d.clone().multiplyScalar(0.6 * s), 0.034 * s, 6);
+    add(g, sphere(), knob, d.clone().multiplyScalar(0.64 * s).toArray(), null, [0.055 * s, 0.055 * s, 0.055 * s]);
+  }
+}
+
+/** A compass binnacle: a turned wooden pedestal under a brass hood with a glass window facing aft. */
+function binnacle(parent, x, y, z, wood) {
+  const brass = mat(BRASS);
+  add(parent, lathe('binnPost', [[0.0001, 0], [0.21, 0], [0.21, 0.06], [0.13, 0.13], [0.105, 0.5], [0.17, 0.58], [0.17, 0.62], [0.0001, 0.62]], 12), mat(wood), [x, y, z]);
+  add(parent, lathe('binnHood', [[0.0001, 0], [0.2, 0], [0.21, 0.08], [0.18, 0.21], [0.1, 0.3], [0.0001, 0.32]], 14), brass, [x, y + 0.62, z]);
+  add(parent, sphere(), brass, [x, y + 0.96, z], null, 0.05);
+  // the glass (pale blue) with the compass needle showing through, on the side the helmsman sees
+  add(parent, cyl(0.09, 0.09, 0.04, 14), mat(0xa8e0f0), [x, y + 0.74, z - 0.18], [PI / 2 - 0.25, 0, 0]);
+  add(parent, rbox(0.03, 0.12, 0.02, 0.01), mat(PROP_RED), [x, y + 0.745, z - 0.205], [-0.25, 0, 0.6]);
+  // the two corrector balls, red to port and green to starboard
+  add(parent, sphere(), mat(PROP_RED), [x + 0.26, y + 0.68, z], null, 0.075);
+  add(parent, sphere(), mat(0x3f9a5c), [x - 0.26, y + 0.68, z], null, 0.075);
+  for (const sd of [-1, 1]) rod(parent, brass, V3(x + sd * 0.12, y + 0.66, z), V3(x + sd * 0.2, y + 0.68, z), 0.022, 5);
+}
+
+/** The big rudder: a broad blade hung on the stern post with iron straps, its head under the stern windows. */
+function rudderBlade(parent, hull, trim) {
+  const k = hull.zAt(0, 0) - hull.zAt(0, 1); // the post leans aft by k per unit of height
+  const n = Math.hypot(1, k);
+  const tilt = -Math.atan(k);
+  const aft = V3(0, -k / n, -1 / n); // square off the post, aft
+  const post = (y) => V3(0, y, hull.zAt(0, y));
+  const wood = mat(WOOD);
+  const iron = mat(BAND_IRON);
+  const rm = mat(STEEL, { outline: THIN });
+  const yBot = -0.6;
+  const yTop = 0.97;
+  const chord = 0.66;
+  const ym = (yBot + yTop) / 2;
+  const blade = add(parent, rbox(0.15, yTop - yBot, chord, 0.06), wood, post(ym).addScaledVector(aft, chord / 2 + 0.04).toArray());
+  blade.rotation.x = tilt;
+  // a rounded cap on the rudder head, in the hull's trim
+  const cap = add(parent, rbox(0.19, 0.08, chord + 0.06, 0.035), mat(trim), post(yTop).addScaledVector(aft, chord / 2 + 0.04).toArray());
+  cap.rotation.x = tilt;
+  // iron straps (pintles) wrapping the blade's leading edge onto the post, two rivets a side each
+  for (const y of [0.02, 0.45, 0.82]) {
+    const c = post(y).addScaledVector(aft, chord * 0.3 - 0.02);
+    const st = add(parent, rbox(0.2, 0.075, chord * 0.62 + 0.12, 0.03), iron, c.toArray());
+    st.rotation.x = tilt;
+    for (const sd of [-1, 1]) {
+      for (const f of [0.12, 0.42]) {
+        const p = post(y).addScaledVector(aft, chord * f + 0.04);
+        rivet(parent, rm, V3(sd * 0.105, p.y, p.z), V3(sd, 0, 0), 0.035);
+      }
+    }
+  }
+}
+
+/**
+ * Three small kegs of special shot on a tray beside the main hatch, one per recipe owned, standing in key
+ * order (fire aft, then frost, then stink), each with a white icon on its lid (read from the chase camera).
+ */
+function kegRack(parent, D, x0, z0, owned) {
+  add(parent, rbox(0.44, 0.07, 1.18, 0.03), mat(WOOD), [x0, D + 0.035, z0]);
+  const hoop = mat(0x3a2a24);
+  const white = mat(0xffffff, { outline: THIN });
+  const icons = { fire: flameShapes(), frost: snowflakeShapes(), stink: stinkShapes() };
+  const s = 0.55; // the stock barrel at about half size: 0.33 tall, 0.165 round
+  SPECIAL_IDS.forEach((id, i) => {
+    if (!owned[id]) return;
+    const z = z0 + (i - 1) * 0.37;
+    const y = D + 0.07;
+    add(parent, lathe('barrel', [[0.0001, 0], [0.24, 0], [0.29, 0.18], [0.3, 0.3], [0.29, 0.42], [0.24, 0.6], [0.0001, 0.6]], 12), mat(SPECIAL_COLOR[id]), [x0, y, z], null, s);
+    for (const f of [0.17, 0.43]) add(parent, torus(0.295, 0.03, 16, 6), hoop, [x0, y + f * s, z], [PI / 2, 0, 0], [s, s, s]);
+    // the icon lies on the lid, its top towards the bow (upright as seen from astern)
+    const g = extrude(icons[id], 0.04 / 0.22, 8);
+    g.scale(0.22, 0.22, 0.22);
+    g.rotateZ(PI);
+    g.rotateX(-PI / 2);
+    add(parent, g, white, [x0, y + 0.6 * s + 0.012, z]);
+  });
+}
+
+/** The visible Big rudder & wheel tiers and the keg rack (none of them at tier 0 with no recipes: today's ship). */
+function playerKit(S, hull, cab, yq, P, rudder, powder) {
+  const owned = powder || {};
+  const any = SPECIAL_IDS.some((id) => owned[id]);
+  if (rudder < 1 && !any) return;
+  const kit = new THREE.Group();
+  kit.name = 'kit';
+  S.group.add(kit);
+  if (rudder >= 1) rudderBlade(kit, hull, P.trim);
+  if (rudder >= 2) {
+    // tier 2: a bigger, gold-trimmed wheel; tier 3: a brass wheel with wooden grips, and a compass binnacle
+    const c = rudder >= 3
+      ? { post: P.rim, rim: BRASS, spoke: BRASS, hub: GOLD, handle: P.rim, trim: null }
+      : { post: P.rim, rim: P.rim, spoke: P.rim, hub: GOLD, handle: GOLD, trim: GOLD };
+    bigWheel(kit, 0, yq, cab.z1 - 0.55, 0.9, c);
+  }
+  if (rudder >= 3) binnacle(kit, 0.66, yq, cab.z1 - 0.58, P.rim);
+  if (any) {
+    // on the free deck to starboard of the main hatch (clear of every upgrade's props and the deck spots)
+    kegRack(kit, hull.D, -1.0, 0.74, owned);
+    S.blockers.push({ x: -1.0, z: 0.74, hx: 0.24, hz: 0.6 });
+  }
+  bakeKit(S, kit);
+}
+
 function buildPlayer(S, T, opts) {
   S.brace = 0.32;
-  const { paint: P, sails: SL, flag: FL, up: UP, grapple } = playerSetup(opts);
+  const { paint: P, sails: SL, flag: FL, up: UP, grapple, powder } = playerSetup(opts);
   const C = {
     deck: 0xe2b77c,
     plank: 0xbf8a52,
@@ -1805,7 +2017,7 @@ function buildPlayer(S, T, opts) {
     lantern(S, S.group, sd * (cab.w / 2 + 0.14), yq + 0.72, cab.z0 + 0.05, { s: 1.0 });
   }
   rail(S, V3(-(cab.w / 2 - 0.12), yq, cab.z0 + 0.15), V3(cab.w / 2 - 0.12, yq, cab.z0 + 0.15), 0.42, P.rim, 4);
-  wheel(S, 0, yq, cab.z1 - 0.55, P.rim, 0.9);
+  if (UP.rudder < 2) wheel(S, 0, yq, cab.z1 - 0.55, P.rim, 0.9); // (Big rudder & wheel tiers 2-3 fit a bigger one: playerKit)
   // the captain's place at the helm: on the quarterdeck planks behind the wheel, facing the bow
   S.helm = { x: 0, y: r3(cab.y1), z: r3(cab.z1 - 1.0), h: 0 };
 
@@ -1995,6 +2207,8 @@ function buildPlayer(S, T, opts) {
   // long grapples (tavern): coiled grapnels hung on the quarterdeck rails
   for (const z of GRAPPLE_COILS[grapple]) for (const sd of [-1, 1]) grappleCoil(S, sd * (cab.w / 2 - 0.12), yq + 0.42, z);
   S.coils = GRAPPLE_COILS[grapple].length * 2;
+  // Big rudder & wheel and the keg rack of special shot (SPEC3 §3.1, §2.7): one vertex-coloured mesh
+  playerKit(S, hull, cab, yq, P, UP.rudder, powder);
 
   // Free standing spots for deck hands (ship-local; y = deck height; h = facing yaw) and
   // hull spots for a scrubber at the waterline. Kept clear of every prop above.
@@ -3242,12 +3456,13 @@ function buildGalleon(S, T) {
   S.fireSpots = [[-0.15, D, 3.1, 0.9], [0.35, D, -2.55, 0.8]];
 }
 
-function buildRaider(S, T) {
+/** The Frost Raider's longship in a look (RAIDER_LOOK, SKIFF_LOOK). */
+function raiderBoat(S, T, V) {
   S.brace = 0.22;
-  const C = { blue: 0x2f6db5, oak: 0xb57d45, oakDark: 0x8a5a32, tar: 0x2e2420, deck: 0xc49a66, plank: 0x9c7346, rim: 0x5a3a22, white: 0xf5f1e6, red: 0xd2402f, yellow: 0xf2c23a, spar: 0x6b4428, navy: 0x1e2f5a };
+  const C = V.C;
   const hull = makeHull({
     L: T.len - 0.8,
-    W: 2.45,
+    W: V.W,
     rail: 1.4,
     deck: 1.0,
     keel: -0.55,
@@ -3278,7 +3493,7 @@ function buildRaider(S, T) {
   const D = hull.D;
   deckPlanks(S, hull, C.plank, -2.9, 2.9, 4);
   // clinker laps: a dark line along the lower edge of every strake
-  const lap = toon(0x3a2616, { outline: false });
+  const lap = toon(V.lap, { outline: false });
   for (const rel of [-0.24, -0.36, -0.5, -0.64]) {
     for (const sd of [-1, 1]) {
       const pts = [];
@@ -3291,44 +3506,10 @@ function buildRaider(S, T) {
       if (pts.length > 3) add(S.group, taperTube(pts, () => 0.022, 48, 4), lap);
     }
   }
-  // serpent prow and a curled tail
-  const serpent = blue;
-  const stemTop = V3(0, hull.rail(1) - 0.06, hull.zAt(1, hull.rail(1)) - 0.04);
-  const neck = [stemTop.clone().add(V3(0, -0.5, -0.12)), stemTop.clone(), stemTop.clone().add(V3(0, 0.42, 0.2)), stemTop.clone().add(V3(0, 0.78, 0.16)), stemTop.clone().add(V3(0, 1.02, 0.36))];
-  add(S.group, taperTube(neck, (t) => 0.19 - 0.06 * t, 28, 10), serpent);
-  const hg = new THREE.Group();
-  hg.position.copy(neck.at(-1));
-  hg.rotation.x = 0.28;
-  S.group.add(hg);
+  // the prow and the stern's curl: the raider's serpent, the skiff's squid
   const yellow = mat(C.yellow);
   const red = mat(C.red);
-  add(hg, sphere(), serpent, [0, 0.02, 0.1], null, [0.23, 0.22, 0.34]);
-  add(hg, sphere(), serpent, [0, -0.02, 0.42], null, [0.15, 0.12, 0.25]);
-  add(hg, sphere(), serpent, [0, -0.17, 0.33], [0.32, 0, 0], [0.12, 0.05, 0.22]);
-  add(hg, sphere(), red, [0, -0.11, 0.38], [0.15, 0, 0], [0.11, 0.045, 0.2]);
-  for (const sd of [-1, 1]) {
-    add(hg, sphere(), mat(C.white, { outline: THIN }), [sd * 0.15, 0.1, 0.27], null, [0.075, 0.085, 0.06]);
-    add(hg, sphere(), toon(0x120e14, { outline: false }), [sd * 0.18, 0.1, 0.31], null, [0.035, 0.05, 0.03]);
-    add(hg, taperTube([V3(sd * 0.12, 0.17, 0.02), V3(sd * 0.2, 0.36, -0.14), V3(sd * 0.22, 0.42, -0.38)], (t) => 0.06 * (1 - t * 0.85), 10, 6), yellow);
-    add(hg, cone(0.025, 0.14, 6), red, [sd * 0.035, -0.12, 0.66], [PI / 2, sd * 0.35, 0]);
-  }
-  for (let k = 0; k < 4; k++) {
-    const p = new THREE.CatmullRomCurve3(neck).getPointAt(0.25 + k * 0.2);
-    add(S.group, cone(0.07, 0.2, 6), yellow, [p.x, p.y + 0.02, p.z - 0.16], [-0.9, 0, 0]);
-  }
-  const sternTop = V3(0, hull.rail(0) - 0.06, hull.zAt(0, hull.rail(0)) + 0.04);
-  const r0 = 0.46;
-  const cz = sternTop.z - 0.02 - r0;
-  const cy = sternTop.y + 0.55;
-  const tail = [sternTop.clone().add(V3(0, -0.5, 0.12)), sternTop.clone(), V3(0, cy - 0.05, sternTop.z - 0.08)];
-  for (let i = 0; i <= 20; i++) {
-    const t = i / 20;
-    const ang = t * TAU * 1.2;
-    const r = r0 * (1 - 0.7 * t);
-    tail.push(V3(0, cy + Math.sin(ang) * r, cz + Math.cos(ang) * r));
-  }
-  add(S.group, taperTube(tail, (t) => 0.17 * (1 - 0.62 * t), 40, 10), serpent);
-  add(S.group, sphere(), yellow, tail.at(-1).toArray(), null, 0.07);
+  V.prow(S, hull, C, { blue, yellow, red });
 
   // round painted shields along both rails, oars out between them, a swivel gun amidships
   const rim = mat(C.rim);
@@ -3338,6 +3519,7 @@ function buildRaider(S, T) {
   const quarterMats = [toon(C.white, { outline: false }), toon(C.red, { outline: false })];
   const quarter = cached('shieldq', () => mergeGeometries([new THREE.CircleGeometry(0.36, 6, 0, PI / 2), new THREE.CircleGeometry(0.36, 6, PI, PI / 2)], false));
   const zs = [-2.45, -1.62, -0.78, 0.78, 1.62, 2.45];
+  const oarM = V.oar == null ? oak : mat(V.oar);
   for (const sd of [-1, 1]) {
     zs.forEach((z, i) => {
       const y = hull.railAt(z) - 0.2;
@@ -3356,8 +3538,8 @@ function buildRaider(S, T) {
       // (the blades end inside the boarding slot beside a ship it grapples)
       const a = V3(sd * 0.72, D + 0.42, z);
       const b = V3(sd * 2.02, 0.34, z + 0.3);
-      rod(S.group, oak, a, b, 0.045, 6);
-      const blade = add(S.group, sphere(), oak, b.toArray(), null, [0.07, 0.3, 0.13]);
+      rod(S.group, oarM, a, b, 0.045, 6);
+      const blade = add(S.group, sphere(), oarM, b.toArray(), null, [0.07, 0.3, 0.13]);
       blade.quaternion.setFromUnitVectors(UP, V3().subVectors(b, a).normalize());
     }
     const gx = hull.widthAt(0, 1.2) * sd;
@@ -3365,22 +3547,24 @@ function buildRaider(S, T) {
     add(S.group, cannonGeo(0.55, 0.1), boss, [gx * 0.78, D + 0.68, 0], [PI / 2 - 0.1, (sd * PI) / 2, 0, 'YXZ']);
   }
   // sea chests (rowing benches) down both sides, a rope coil
+  const chests = V.chests ? V.chests.map((c) => mat(c)) : [oak, oakDark];
   for (const sd of [-1, 1]) {
-    zs.forEach((z, i) => add(S.group, rbox(0.42, 0.3, 0.46, 0.06), (i + (sd > 0 ? 1 : 0)) % 2 ? oak : oakDark, [sd * 0.62, D + 0.15, z]));
+    zs.forEach((z, i) => add(S.group, rbox(0.42, 0.3, 0.46, 0.06), (i + (sd > 0 ? 1 : 0)) % 2 ? chests[0] : chests[1], [sd * 0.62, D + 0.15, z]));
   }
   add(S.group, torus(0.24, 0.08, 16, 8), mat(ROPE), [0.0, D + 0.08, -2.75], [PI / 2, 0, 0]);
 
   // one mast, one big striped square sail
-  const m = mast(S, 0.15, D, 7.4, 0.15, C.spar);
-  shrouds(S, hull, 0.15, 6.8, { n: 2, spread: 0.55 });
-  squareRig(S, m, [{ y: 6.65, h: 3.5, wt: 3.7, wb: 4.3, belly: 0.75, mat: mat(C.white), stripes: { n: 7, mat: blue } }], { spar: C.spar, yardR: 0.11 });
+  const R = V.rig;
+  const m = mast(S, 0.15, D, R.mastH, 0.15, C.spar);
+  shrouds(S, hull, 0.15, R.shroudTop, { n: 2, spread: 0.55 });
+  squareRig(S, m, [{ y: R.y, h: R.h, wt: R.wt, wb: R.wb, belly: 0.75, mat: mat(C.white), stripes: { n: 7, mat: blue } }], { spar: C.spar, yardR: 0.11 });
   flagMesh(S, {
-    p: V3(0, 7.7, 0.15),
+    p: V3(0, R.flagY, 0.15),
     len: 1.7,
     h: 0.95,
     shape: 'swallow',
     mat: mat(C.navy),
-    decal: { shapes: snowflakeShapes(), size: 0.62, cx: 0.38, cy: 0, mat: mat(C.white, { outline: false }) },
+    decal: { shapes: V.flag(), size: 0.62, cx: 0.38, cy: 0, mat: mat(C.white, { outline: false }) },
     yaw: -0.2,
     staff: C.spar,
     finial: C.yellow,
@@ -3393,6 +3577,15 @@ function buildRaider(S, T) {
     { x: 0, y: D, z: -2.05, h: PI / 2 },
   ];
   S.fireSpots = [[0, D, -0.55, 0.6]];
+}
+
+/** The Squid Skiff: the raider's longship, narrower, in the Kraken Crew's purple with a squid prow. */
+function buildSkiff(S, T) {
+  raiderBoat(S, T, SKIFF_LOOK);
+}
+
+function buildRaider(S, T) {
+  raiderBoat(S, T, RAIDER_LOOK);
 }
 
 /** Per-ship ghostly cloth: pale, glowing, see-through; pulses slowly with the glows. */
@@ -3583,6 +3776,1177 @@ function buildPhantom(S, T) {
   S.fireColors = [0x52f0b0, 0xd4ffee];
 }
 
+// ---------------------------------------------------------------------------
+// Kraken Seas emblems (unit size, centred): icons for the special shot, flags and sail paintings
+// ---------------------------------------------------------------------------
+
+/** A smooth closed outline through points (cartoon curves). */
+function smoothShape(pts) {
+  const s = new THREE.Shape();
+  const v = pts.map(([x, y]) => new THREE.Vector2(x, y));
+  s.moveTo(v[0].x, v[0].y);
+  s.splineThru([...v.slice(1), v[0]]);
+  return s;
+}
+
+/** A thin wavy ribbon (stink lines, tentacles): along x0 + amp·sin(...) from y0 up to y1, w wide. */
+function ribbonShape(x0, y0, y1, amp, w, waves = 1.2, curl = 0) {
+  const N = 14;
+  const L = [];
+  const R = [];
+  for (let i = 0; i <= N; i++) {
+    const t = i / N;
+    const y = lerp(y0, y1, t);
+    const x = x0 + amp * Math.sin(t * waves * TAU) + curl * t * t;
+    const ww = w * (1 - 0.55 * t);
+    L.push([x - ww / 2, y]);
+    R.push([x + ww / 2, y]);
+  }
+  return polyShape([...L, ...R.reverse()]);
+}
+
+/** Cartoon flame: a teardrop with two side licks and a hollow core, ~1 unit tall. */
+function flameShapes() {
+  const s = smoothShape([[0, -0.47], [0.3, -0.38], [0.38, -0.12], [0.3, 0.1], [0.36, 0.3], [0.17, 0.16], [0.11, 0.32], [0.01, 0.52], [-0.11, 0.3], [-0.18, 0.18], [-0.34, 0.26], [-0.36, 0.02], [-0.38, -0.18], [-0.28, -0.4]]);
+  s.holes.push(new THREE.Path(smoothShape([[0, -0.33], [0.14, -0.24], [0.14, -0.06], [0.04, 0.12], [-0.04, 0.04], [-0.14, -0.08], [-0.14, -0.25]]).getPoints(6)));
+  return [s];
+}
+
+/** A puffy stink cloud with three wavy stink lines rising from it, ~1 unit across. */
+function stinkShapes() {
+  const out = [];
+  for (const [x, y, r] of [[-0.24, -0.22, 0.19], [0.0, -0.13, 0.25], [0.25, -0.22, 0.18], [-0.08, -0.3, 0.2], [0.12, -0.3, 0.2]]) out.push(circlePath(x, y, r, THREE.Shape));
+  for (const x of [-0.22, 0.02, 0.24]) out.push(ribbonShape(x, 0.12, 0.52, 0.05, 0.075, 1.1));
+  return out;
+}
+
+/** A shark's open jaw: a ring of gum with white teeth pointing in (the Shark Raider's colours). */
+function jawShapes() {
+  const ring = new THREE.Shape();
+  ring.absellipse(0, 0, 0.5, 0.38, 0, TAU, false, 0);
+  const hole = new THREE.Path();
+  hole.absellipse(0, 0, 0.36, 0.24, 0, TAU, true, 0);
+  ring.holes.push(hole);
+  const out = [ring];
+  for (const sy of [1, -1]) {
+    for (let k = 0; k < 5; k++) {
+      const a = lerp(0.42, PI - 0.42, k / 4);
+      const c = Math.cos(a);
+      const sn = Math.sin(a);
+      const bx = c * 0.37;
+      const by = sy * sn * 0.25;
+      const tx = c * 0.2;
+      const ty = sy * sn * 0.07;
+      const px = -sn * 0.06;
+      const py = sy * c * 0.04;
+      out.push(polyShape([[bx + px, by + py], [tx, ty], [bx - px, by - py]]));
+    }
+  }
+  return out;
+}
+
+/** A round black bomb with a fuse and a spark (the Bomb Ketch's colours): [bomb + fuse, spark]. */
+function bombShapes() {
+  const ball = new THREE.Shape();
+  ball.absarc(-0.06, -0.1, 0.34, 0, TAU, false);
+  // a shine crescent cut out of the ball (the cloth shows through)
+  const shine = new THREE.Path();
+  shine.absarc(-0.18, 0.02, 0.12, PI * 0.55, PI * 1.25, false);
+  shine.absarc(-0.13, -0.02, 0.1, PI * 1.25, PI * 0.55, true);
+  shine.closePath();
+  ball.holes.push(shine);
+  const neck = roundRectShape(0.16, 0.14, 0.04, 0.17, 0.22);
+  const fuse = ribbonShape(0.22, 0.26, 0.42, 0.03, 0.05, 0.6, 0.06);
+  const star = [];
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * TAU;
+    const r = k % 2 ? 0.06 : 0.15;
+    star.push([0.32 + Math.cos(a) * r, 0.48 + Math.sin(a) * r]);
+  }
+  return { bomb: [ball, neck, fuse], spark: [polyShape(star)] };
+}
+
+/** A sea turtle from above: shell with plate holes, head and four flippers (the Iron Turtle's colours). */
+function turtleShapes() {
+  const shell = new THREE.Shape();
+  shell.absellipse(0, -0.02, 0.3, 0.36, 0, TAU, false, 0);
+  const hex = (cx, cy, r) => {
+    const p = new THREE.Path();
+    for (let k = 0; k <= 6; k++) {
+      const a = (k / 6) * TAU + PI / 6;
+      if (k === 0) p.moveTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+      else p.lineTo(cx + Math.cos(a) * r, cy + Math.sin(a) * r);
+    }
+    return p;
+  };
+  shell.holes.push(hex(0, 0.12, 0.08), hex(0, -0.06, 0.08), hex(0, -0.23, 0.065), hex(-0.15, 0.03, 0.06), hex(0.15, 0.03, 0.06), hex(-0.14, -0.15, 0.055), hex(0.14, -0.15, 0.055));
+  const out = [shell];
+  const head = new THREE.Shape();
+  head.absellipse(0, 0.44, 0.1, 0.12, 0, TAU, false, 0);
+  out.push(head);
+  for (const sx of [-1, 1]) {
+    out.push(smoothShape([[sx * 0.22, 0.18], [sx * 0.46, 0.3], [sx * 0.5, 0.2], [sx * 0.28, 0.06]]));
+    out.push(smoothShape([[sx * 0.2, -0.26], [sx * 0.34, -0.42], [sx * 0.24, -0.44], [sx * 0.12, -0.33]]));
+  }
+  out.push(polyShape([[-0.04, -0.37], [0.04, -0.37], [0, -0.5]]));
+  return out;
+}
+
+/** A squid: a pointed mantle with fins and two eye holes over five wavy tentacles (the Kraken Crew's colours). */
+function squidShapes() {
+  const mantle = smoothShape([[0, 0.55], [0.12, 0.42], [0.25, 0.4], [0.2, 0.3], [0.19, 0.05], [0.16, -0.06], [0, -0.09], [-0.16, -0.06], [-0.19, 0.05], [-0.2, 0.3], [-0.25, 0.4], [-0.12, 0.42]]);
+  mantle.holes.push(circlePath(-0.08, 0.06, 0.05), circlePath(0.08, 0.06, 0.05));
+  const out = [mantle];
+  [-0.2, -0.1, 0, 0.1, 0.2].forEach((x, i) => out.push(ribbonShape(x * 0.8, -0.04, -0.52 + Math.abs(x) * 0.4, 0.05, 0.08, 1.0, (i - 2) * 0.07)));
+  return out;
+}
+
+/** A giant painted eye: an almond rim and an iris ring with a slit hole ([rim + iris], [pupil]). */
+function eyeShapes() {
+  const almond = (w, h) => {
+    const s = new THREE.Shape();
+    s.moveTo(-w, 0);
+    s.quadraticCurveTo(0, h * 2, w, 0);
+    s.quadraticCurveTo(0, -h * 2, -w, 0);
+    return s;
+  };
+  const rim = almond(0.5, 0.3);
+  const inner = almond(0.42, 0.24);
+  rim.holes.push(new THREE.Path(inner.getPoints(12).reverse()));
+  const iris = new THREE.Shape();
+  iris.absarc(0, 0, 0.2, 0, TAU, false);
+  const slit = new THREE.Path();
+  slit.absellipse(0, 0, 0.055, 0.17, 0, TAU, true, 0);
+  iris.holes.push(slit);
+  const pupil = new THREE.Shape();
+  pupil.absellipse(0, 0, 0.05, 0.165, 0, TAU, false, 0);
+  return { rim: [rim, iris], pupil: [pupil] };
+}
+
+/** Rows of overlapping gold scales (U-shaped scallops), w × h units, `cols` to a row (odd rows offset by half). */
+function scaleShapes(w, h, cols, rows) {
+  const out = [];
+  const R = w / cols / 2;
+  const band = R * 0.34;
+  const dy = rows > 1 ? (h - R) / (rows - 1) : 0;
+  for (let r = 0; r < rows; r++) {
+    const y = h / 2 - r * dy;
+    const odd = r % 2 === 1;
+    for (let c = 0; c < cols - (odd ? 1 : 0); c++) {
+      const x = -w / 2 + (odd ? 2 * R : R) + 2 * R * c;
+      const s = new THREE.Shape();
+      s.absarc(x, y, R, PI, TAU, false);
+      s.absarc(x, y, R - band, TAU, PI, true);
+      s.closePath();
+      out.push(s);
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// Voyage III ships (SPEC3 §4.3): the Shark Raider, the Bomb Ketch, the Iron Turtle, the Fire Ship,
+// the Squid Skiff (a raider variant) and the Inkheart
+// ---------------------------------------------------------------------------
+
+/** A rotation that lays a part on a surface: local +z out along n, local +y along `up` (in the surface). */
+function surfaceQuat(n, up = UP) {
+  const y = up.clone().addScaledVector(n, -up.dot(n)).normalize();
+  const x = y.clone().cross(n);
+  return new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(x, y, n));
+}
+
+/** A thin rope line (no outline) between two points. */
+function ropeLine(parent, a, b, r = 0.03, color = 0x3b2a22) {
+  const d = V3().subVectors(b, a);
+  const m = add(parent, cyl(r, r, d.length(), 5, true), toon(color, { outline: false }));
+  m.position.copy(a).addScaledVector(d, 0.5);
+  m.quaternion.setFromUnitVectors(UP, d.normalize());
+  return m;
+}
+
+/** Quadratic Bézier point in the (z, y) plane: [z, y] pairs. */
+const bez2 = (p0, p1, p2, t) => [(1 - t) * (1 - t) * p0[0] + 2 * (1 - t) * t * p1[0] + t * t * p2[0], (1 - t) * (1 - t) * p0[1] + 2 * (1 - t) * t * p1[1] + t * t * p2[1]];
+
+/** Merged flame tongues (the brazier's lathe) as one mesh with an outer and a core material. */
+function flameTongues(outerM, coreM, list) {
+  const fl = lathe('flame', [[0.0001, 0], [0.3, 0.1], [0.36, 0.3], [0.24, 0.62], [0.08, 0.95], [0.0001, 1.15]], 12);
+  const parts = [];
+  for (const [x, y, z, s, rz = 0, rx = 0, core = true] of list) {
+    const m = new THREE.Matrix4().compose(V3(x, y, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, 0, rz)), V3(s, s * 1.35, s));
+    parts.push({ geo: fl.clone().applyMatrix4(m), material: outerM });
+    if (core) {
+      const mc = new THREE.Matrix4().compose(V3(x, y + 0.02 * s, z), new THREE.Quaternion().setFromEuler(new THREE.Euler(rx, 0, rz)), V3(s * 0.55, s * 0.85, s * 0.55));
+      parts.push({ geo: fl.clone().applyMatrix4(mc), material: coreM });
+    }
+  }
+  const merged = mergeByMaterial(parts);
+  return new THREE.Mesh(merged.geometry, merged.materials);
+}
+
+function buildShark(S, T) {
+  const C = { top: 0x5a7b95, belly: 0xeef2ee, rim: 0x2d3b49, wall: 0x45607a, deck: 0xb8946a, plank: 0x8c6a45, mouth: 0x5e1428, tooth: 0xffffff, gill: 0x2b3a4a, finTip: 0x34495e, spar: 0x4a3426, flag: 0x24364a, ink: 0x141018 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid - 0.15,
+    rail: 1.45,
+    deck: 1.05,
+    keel: -0.6,
+    bw: 0.16,
+    yc: 0.62,
+    n: 2.2,
+    tumble: 0.05,
+    sternLen: 0.16,
+    sternP: 2.0,
+    bowStart: 0.42,
+    bowP: 1.45,
+    bowQ: 1.2,
+    bowRise: 0.32,
+    sternRise: 0.2,
+    bowLift: 0.7,
+    sternLift: 0.75,
+    bowRake: 0.95,
+    sternRake: 0.25,
+    midPinch: 0.06,
+    breaks: [{ abs: 0.56 }], // blue-grey above, a white belly below, like a shark
+  });
+  const top = mat(C.top);
+  addHull(S, hull, { bands: [top, mat(C.belly)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -2.7, 2.5, 4);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.82, sd, { style: 'round', frame: C.rim, scale: 0.9 });
+
+  // the painted grin on both bow cheeks: a dark crescent mouth with white teeth, an eye with a cheeky
+  // brow, and three gill slits
+  const mouthM = mat(C.mouth, { outline: THIN });
+  const white = mat(C.tooth, { outline: THIN });
+  const ink = toon(C.ink, { outline: false });
+  const uAt = (s) => lerp(0.715, 0.975, s);
+  const mid = (s) => lerp(0.76, 0.5, s);
+  const yU = (s) => mid(s) + 0.05 * Math.sin(PI * s);
+  const yL = (s) => mid(s) - 0.26 * Math.pow(Math.sin(PI * s), 0.85);
+  const tooth = cone(0.065, 0.17, 4);
+  for (const sd of [-1, 1]) {
+    const NU = 14;
+    const NY = 4;
+    const pts = [];
+    for (let i = 0; i <= NU; i++) {
+      const s = i / NU;
+      for (let j = 0; j <= NY; j++) pts.push(hullPoint(hull, uAt(s), lerp(yU(s), yL(s), j / NY), sd, 0.022).p);
+    }
+    add(S.group, gridGeometry(pts, NU + 1, NY + 1, (p) => V3(p.x, 0, 0.2)), mouthM);
+    // teeth along both lips, the biggest where the mouth is widest
+    for (const [lip, k0, n, dir] of [[yU, 0.14, 6, -1], [yL, 0.2, 5, 1]]) {
+      for (let k = 0; k < n; k++) {
+        const s = lerp(k0, 1 - k0 * 0.7, k / (n - 1));
+        const open = Math.sin(PI * s);
+        const { p, n: nn } = hullPoint(hull, uAt(s), lip(s) + dir * 0.015, sd, 0.03);
+        const q = surfaceQuat(nn, V3(0, dir, 0));
+        const sc = 0.7 + 0.5 * open;
+        const t = add(S.group, tooth, white);
+        t.quaternion.copy(q);
+        t.scale.set(sc, sc, sc * 0.45);
+        t.position.copy(p).addScaledVector(V3(0, 1, 0).applyQuaternion(q), 0.085 * sc * 0.9);
+      }
+    }
+    // the eye: white, a pupil looking ahead, a slanted brow
+    const e = hullPoint(hull, 0.73, 1.0, sd, 0.03);
+    const eq = surfaceQuat(e.n);
+    const fwd = V3(0, 0, 1).addScaledVector(e.n, -e.n.z).normalize();
+    const eye = add(S.group, sphere(), white, e.p.toArray(), null, [0.17, 0.19, 0.06]);
+    eye.quaternion.copy(eq);
+    const pu = add(S.group, sphere(), ink, e.p.clone().addScaledVector(e.n, 0.05).addScaledVector(fwd, 0.05).toArray(), null, [0.07, 0.1, 0.035]);
+    pu.quaternion.copy(eq);
+    const brow = add(S.group, rbox(0.42, 0.085, 0.07, 0.035), mat(C.rim), e.p.clone().addScaledVector(V3(0, 1, 0), 0.22).addScaledVector(e.n, 0.03).toArray());
+    brow.quaternion.copy(eq).multiply(new THREE.Quaternion().setFromAxisAngle(FWD, 0.32 * sd));
+    // gill slits, bowing aft
+    for (const u0 of [0.6, 0.635, 0.67]) {
+      const g = [];
+      for (let i = 0; i <= 6; i++) {
+        const t = i / 6;
+        g.push(hullPoint(hull, u0 - 0.014 * Math.sin(PI * t), lerp(1.06, 0.66, t), sd, 0.018).p);
+      }
+      add(S.group, taperTube(g, (t) => 0.034 * (0.55 + 0.45 * Math.sin(PI * t)), 10, 6), mat(C.gill));
+    }
+  }
+  // the iron ram at the forefoot, with a riveted collar
+  const iron = mat(IRON);
+  const yr = 0.16;
+  const zr = hull.zAt(1, yr);
+  add(S.group, lathe('ram', [[0.0001, -0.12], [0.21, -0.06], [0.25, 0.16], [0.21, 0.55], [0.12, 0.95], [0.0001, 1.2]], 12), iron, [0, yr, zr - 0.45], [PI / 2, 0, 0], [1, 1, 0.8]);
+  add(S.group, torus(0.24, 0.05, 16, 6), mat(BAND_IRON), [0, yr, zr - 0.33]);
+  const rm = mat(STEEL, { outline: THIN });
+  for (let k = 0; k < 4; k++) {
+    const a = (k / 4) * TAU + PI / 4;
+    const n = V3(Math.cos(a), Math.sin(a), 0);
+    rivet(S.group, rm, V3(Math.cos(a) * 0.28, yr + Math.sin(a) * 0.28, zr - 0.33), n, 0.045);
+  }
+  cutwater(S, hull, C.top, 0.09);
+  // the tail: a crescent fin on the stern post (the upper lobe up and aft, the lower one down)
+  const zs = hull.zAt(0, 0.9);
+  blob(S.group, top, V3(0, 0.95, zs + 0.05), V3(0, 2.3, zs - 0.85), 0.08, 0.27);
+  blob(S.group, top, V3(0, 0.75, zs + 0.05), V3(0, -0.15, zs - 0.55), 0.07, 0.2);
+
+  // the fin sail: a curved mast like a dorsal fin's leading edge, the sail between it and the boom
+  const zF = 0.55;
+  const yb = 1.78;
+  const apex = [-1.85, 7.15];
+  const cL = [0.45, 5.6];
+  const cR = [-1.35, 3.7];
+  const foot = [zF, yb];
+  const rear = [-2.45, yb];
+  const def = {
+    nu: 12,
+    nv: 14,
+    thick: 0.08,
+    p: 6,
+    map: (a, b) => {
+      const L = bez2(apex, cL, foot, b);
+      const R = bez2(apex, cR, rear, b);
+      return [-lerp(L[0], R[0], a), lerp(L[1], R[1], a)];
+    },
+    belly: (a, b) => 0.3 * Math.sin(PI * a) * Math.sin(PI * Math.min(1, b * 0.95)),
+  };
+  const fin = foreAftSail(S, S.group, def, (d) => [
+    { geo: pillowGeometry(d, 0, 1, 0, 0.2), material: mat(C.finTip) },
+    { geo: pillowGeometry(d, 0, 1, 0.2, 1), material: mat(C.top) },
+  ], { p: V3() });
+  const sparM = mat(C.spar);
+  const mastPts = [V3(0, D, zF + 0.05)];
+  for (let i = 0; i <= 14; i++) {
+    const [z, y] = bez2(foot, cL, apex, i / 14);
+    mastPts.push(V3(0, y, z + 0.06 * (1 - i / 14)));
+  }
+  add(S.group, taperTube(mastPts, (t) => 0.12 - 0.065 * t, 32, 10), sparM);
+  rod(S.group, sparM, V3(0, yb - 0.02, zF), V3(0, yb + 0.04, rear[0] - 0.1), 0.075, 8); // boom
+  // spreaders and shrouds (the boarders' rope anchors)
+  let bs = 0;
+  for (let i = 0; i < 30; i++) bs = bez2(foot, cL, apex, i / 30)[1] < 4.4 ? i / 30 : bs;
+  const [zsp, ysp] = bez2(foot, cL, apex, bs);
+  rod(S.group, sparM, V3(-0.95, ysp, zsp), V3(0.95, ysp, zsp), 0.045, 6);
+  for (const sd of [-1, 1]) {
+    for (const dz of [0.35, -0.5]) {
+      const z = zsp + dz;
+      ropeLine(S.group, V3(sd * (hull.widthAt(z, D) - 0.06), hull.railAt(z), z), V3(sd * 0.93, ysp, zsp), 0.028);
+    }
+    ropeLine(S.group, V3(sd * 0.93, ysp, zsp), V3(0, ysp + 1.35, bez2(foot, cL, apex, Math.min(1, bs + 0.25))[0]), 0.026);
+  }
+  S.dropSail = { mesh: fin, kind: 'foreaft', yb };
+  S.droopSail = S.dropSail;
+  S.yardTips = { port: { x: 0.95, y: r3(ysp), z: r3(zsp) }, star: { x: -0.95, y: r3(ysp), z: r3(zsp) } };
+  // her colours at the fin's tip: a white shark's jaw on navy
+  flagMesh(S, {
+    p: V3(0, apex[1] + 0.42, apex[0] - 0.02),
+    len: 1.55,
+    h: 0.88,
+    shape: 'swallow',
+    mat: mat(C.flag),
+    decal: { shapes: jawShapes(), size: 0.62, cx: 0.4, cy: 0, mat: mat(0xffffff, { outline: false }) },
+    yaw: -0.2,
+    staff: C.spar,
+    staffDown: 0.4,
+  });
+  // deck: a hatch, a water barrel and a rope coil aft
+  add(S.group, rbox(0.8, 0.22, 0.62, 0.08), mat(C.rim), [0, D + 0.1, 1.25]);
+  barrel(S, 0.45, D, -2.75, 0x9a6233, 0x3a2a24, 0.7);
+  add(S.group, torus(0.22, 0.075, 16, 8), mat(ROPE), [-0.42, D + 0.07, -2.7], [PI / 2, 0, 0]);
+
+  S.deckSpots = [
+    { x: 0.55, y: D, z: -0.75, h: PI / 2 },
+    { x: -0.55, y: D, z: -0.75, h: -PI / 2 },
+    { x: 0.5, y: D, z: -1.95, h: PI / 2 },
+    { x: -0.5, y: D, z: -1.95, h: -PI / 2 },
+    { x: 0, y: D, z: 2.0, h: PI },
+  ];
+  S.fireSpots = [[0, D, -1.3, 0.6]];
+}
+
+/** A puff ring (smoke ring) of lumpy spheres round the z axis, radius ~0.34. */
+const smokeRingGeo = () =>
+  cached('smokeRing', () => {
+    const parts = [];
+    for (let k = 0; k < 9; k++) {
+      const a = (k / 9) * TAU;
+      const r = 0.15 + 0.03 * tri(k * 0.37);
+      parts.push(new THREE.SphereGeometry(r, 10, 7).translate(Math.cos(a) * 0.34, Math.sin(a) * 0.34, (k % 2) * 0.04 - 0.02));
+    }
+    return mergeGeometries(parts, false);
+  });
+
+/**
+ * A squat mortar on a round bed, the barrel tilted forward on its trunnions (kept apart so it can jump),
+ * with a smoke ring it blows when it fires (S.mortar; buildShip makes userData.mortar).
+ */
+function mortarPiece(S, x, y, z, o = {}) {
+  const s = o.s ?? 1;
+  const bedM = mat(o.bed ?? WOOD);
+  add(S.group, cyl(0.7 * s, 0.78 * s, 0.36 * s, 18), bedM, [x, y + 0.18 * s, z]);
+  add(S.group, torus(0.7 * s, 0.05 * s, 22, 6), mat(BAND_IRON), [x, y + 0.36 * s, z], [PI / 2, 0, 0]);
+  for (const sd of [-1, 1]) add(S.group, rbox(0.18 * s, 0.56 * s, 0.56 * s, 0.06), bedM, [x + sd * 0.64 * s, y + 0.6 * s, z]);
+  const group = new THREE.Group();
+  group.name = 'mortar';
+  group.position.set(x, y + 0.66 * s, z);
+  group.userData.keep = true;
+  S.group.add(group);
+  const tilt = new THREE.Group();
+  tilt.rotation.x = o.tilt ?? 0.32;
+  tilt.scale.setScalar(s);
+  group.add(tilt);
+  const metal = mat(o.metal ?? BRONZE);
+  // a short, thick barrel with a heavy muzzle band and a deep dark bore (seen from above)
+  const body = lathe('mortar', [[0.0001, -0.34], [0.36, -0.33], [0.46, -0.24], [0.5, -0.08], [0.5, 0.3], [0.47, 0.4], [0.56, 0.45], [0.57, 0.62], [0.51, 0.67], [0.37, 0.67], [0.34, 0.58], [0.0001, 0.52]], 18);
+  const ring = torus(0.51, 0.05, 20, 6).clone().rotateX(PI / 2).translate(0, -0.02, 0);
+  const trun = capsule(0.11, 1.0, 8).clone().rotateZ(PI / 2);
+  const merged = mergeByMaterial([{ geo: body, material: metal }, { geo: ring, material: metal }, { geo: trun, material: metal }]);
+  tilt.add(new THREE.Mesh(merged.geometry, merged.materials));
+  add(tilt, cyl(0.34, 0.34, 0.02, 16), toon(0x120e14, { outline: false }), [0, 0.6, 0]);
+  const puff = new THREE.Mesh(smokeRingGeo(), toon(o.smoke ?? 0xece6da, { outline: false })); // (soft: no ink, one draw call)
+  puff.name = 'smoke-ring';
+  puff.visible = false;
+  puff.userData.keep = true;
+  S.group.add(puff);
+  S.mortar = { group, tilt, ring: puff, base: group.position.clone(), s };
+}
+
+function buildBombKetch(S, T) {
+  S.brace = 0.3;
+  const C = { mustard: 0xe3ae32, mustardDark: 0xc08e22, brown: 0x6e4020, tar: 0x3c2b21, rim: 0x5b371b, wall: 0x7c4b24, deck: 0xcaa16b, plank: 0x9e7648, sail: 0xf3e7c6, black: 0x1f1b22, spark: 0xff8c1f, spar: 0x6b4226, bed: 0x7a4a28 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 1.8,
+    deck: 1.2,
+    bw: 0.22,
+    yc: 0.82,
+    n: 2.3,
+    tumble: 0.14,
+    sternLen: 0.15,
+    sternP: 2.2,
+    bowStart: 0.5,
+    bowP: 1.7,
+    bowQ: 0.85,
+    bowRise: 0.38,
+    sternRise: 0.32,
+    bowLift: 0.95,
+    sternLift: 0.75,
+    bowRake: 0.38,
+    sternRake: 0.22,
+    midPinch: 0.04,
+    breaks: [{ rel: -0.18 }, { rel: -0.32 }, { abs: 0.32 }],
+  });
+  addHull(S, hull, { bands: [mat(C.mustard), mat(C.brown), mat(C.mustardDark), mat(C.tar)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -2.6, 3.0, 5);
+  cutwater(S, hull, C.rim, 0.11);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.8, sd, { frame: C.brown, scale: 0.95 });
+  // a snug stern cabin
+  const cab = sternCastle(S, hull, { z1: -2.85, y0: 1.0, y1: 2.35, color: C.mustard, cap: C.brown, top: C.deck, r: 0.24, over: 0.1 });
+  windows(S, S.group, [-0.62, 0.62], 1.4, cab.z0, -1, { w: 0.4, h: 0.55, frame: C.brown, glow: 0xffc65a });
+  add(S.group, rbox(0.62, 0.9, 0.12, 0.09), mat(C.brown), [0, 1.58, cab.z1 + 0.02]);
+  lantern(S, S.group, 0, cab.y1 + 0.38, cab.z0 + 0.2, { s: 0.8, color: 0xffc65a, intensity: 1 }); // (the windows' glow)
+
+  // the fat bronze mortar amidships
+  mortarPiece(S, 0, D, 0.12, { bed: C.bed, tilt: 0.3 });
+
+  // two short masts: square sails forward (a black bomb on the course), a gaff sail aft
+  const sail = mat(C.sail);
+  const B = bombShapes();
+  const fore = mast(S, 2.0, D, 7.3, 0.16, C.spar);
+  shrouds(S, hull, 2.0, 6.6, { n: 2 });
+  squareRig(S, fore, [
+    { y: 6.85, h: 1.5, wt: 2.3, wb: 2.85, belly: 0.4, mat: sail },
+    { y: 5.2, h: 2.45, wt: 2.95, wb: 3.55, belly: 0.62, mat: sail, decals: [{ shapes: B.bomb, size: 1.35, cy: -1.25, mat: mat(C.black, { outline: THIN }) }, { shapes: B.spark, size: 1.35, cy: -1.25, mat: mat(C.spark, { outline: THIN }) }] },
+  ], { spar: C.spar, brace: 0.3 });
+  const mz = -1.75;
+  mast(S, mz, D, 6.5, 0.15, C.spar);
+  shrouds(S, hull, mz, 5.9, { n: 2, spread: 0.4 });
+  const gaffDef = quadDef([mz - 0.22, 5.95], [mz - 2.55, 6.75], [mz - 2.75, 2.78], [mz - 0.22, 2.62], 0.42, { nu: 14, nv: 12, leechBow: 0.25 });
+  const gaffSail = foreAftSail(S, S.group, gaffDef, (d) => {
+    const parts = [];
+    const n = 5;
+    for (let k = 0; k < n; k++) parts.push({ geo: pillowGeometry(d, 0, 1, k / n, (k + 1) / n), material: k % 2 ? mat(C.mustard) : sail });
+    return parts;
+  }, { p: V3() });
+  const sparM = mat(C.spar);
+  rod(S.group, sparM, V3(0, 5.97, mz - 0.1), V3(0, 6.78, mz - 2.65), 0.075, 8); // gaff
+  rod(S.group, sparM, V3(0, 2.58, mz - 0.1), V3(0, 2.68, mz - 2.88), 0.085, 8); // boom
+  const tip = bowsprit(S, hull, 1.9, 0.25, C.spar, 0.11);
+  jibSail(S, [2.05, 6.55], tip, [2.3, 2.55], 0.3, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: 0x5a3a26 });
+  S.droopSail = { mesh: gaffSail, kind: 'foreaft', yb: 2.62 };
+  scrollHead(S, hull, C.mustard, 0.45);
+  // her colours: a mustard bomb on black
+  flagMesh(S, {
+    p: V3(0, 7.85, 2.0),
+    len: 1.8,
+    h: 1.1,
+    mat: mat(C.black),
+    decal: { shapes: [...B.bomb, ...B.spark], size: 0.62, cx: 0.45, cy: -0.02, mat: mat(C.mustard, { outline: false }) },
+    yaw: -0.18,
+    staff: C.spar,
+  });
+  // shells and powder for the mortar
+  shotPyramid(S, 0.85, D, -2.3, 0.2);
+  powderKeg(S, -0.88, D, -2.25, 0.66);
+  powderKeg(S, -0.55, D, -2.5, 0.58);
+
+  S.deckSpots = [
+    { x: 0.85, y: D, z: 1.05, h: PI / 2 },
+    { x: -0.85, y: D, z: 1.05, h: -PI / 2 },
+    { x: 0.78, y: D, z: -1.15, h: PI / 2 },
+    { x: -0.78, y: D, z: -1.15, h: -PI / 2 },
+    { x: 0, y: D, z: 2.9, h: PI },
+  ];
+  S.fireSpots = [[0.35, D, -1.0, 0.7]];
+}
+
+const hexGeo = () => cached('hexPlate', () => new THREE.CylinderGeometry(1, 1.06, 1, 6, 1));
+
+function buildIronclad(S, T) {
+  S.brace = 0.25;
+  const C = { iron: 0x3c4842, plate: 0x6f8b78, lower: 0x4f5f56, bottom: 0x26302b, rim: 0x2c3530, wall: 0x52625a, deck: 0x9a8a6a, plank: 0x76684e, dome: 0x44564b, hex: 0x86a28d, skin: 0x8cc06e, skinDark: 0x5f9a4c, sail: 0xdcd4b0, emblem: 0x3f7a4a, spar: 0x3b3128, flag: 0x24302a };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 1.75,
+    deck: 1.3,
+    keel: -0.85,
+    bw: 0.24,
+    yc: 0.85,
+    n: 2.6,
+    tumble: 0.1,
+    sternLen: 0.13,
+    sternP: 2.4,
+    bowStart: 0.6,
+    bowP: 2,
+    bowQ: 0.75,
+    bowRise: 0.35,
+    sternRise: 0.25,
+    bowLift: 1.0,
+    sternLift: 0.8,
+    bowRake: 0.45,
+    sternRake: 0.2,
+    breaks: [{ rel: -0.16 }, { abs: 0.5 }, { abs: 0.22 }],
+  });
+  addHull(S, hull, { bands: [mat(C.iron), mat(C.plate), mat(C.lower), mat(C.bottom)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -4.6, 4.6, 6);
+  cutwater(S, hull, C.rim, 0.13);
+  const gz = [];
+  for (let i = 0; i < T.guns; i++) {
+    gz.push(gunOffset(T, i));
+    for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.82, sd, { frame: C.iron, hole: 0x161a18, scale: 1.05 });
+  }
+  // riveted iron hoops between the gun ports and at both ends of the battery
+  for (const z of [(gz[0] + gz[1]) / 2, (gz[1] + gz[2]) / 2, gz[0] - 1.05, gz[2] + 1.0]) {
+    for (const sd of [-1, 1]) hullBand(S, hull, z, sd, hull.railAt(z) - hull.rb - 0.04, { rivets: true });
+  }
+
+  // the shell: a low dome over the waist, plated with riveted hexagons, an iron band round its foot
+  const rx = hull.widthAt(-0.4, D) - hull.rb * 2 - 0.18;
+  const ry = 2.0;
+  const rz = 3.45;
+  const cz = -0.45;
+  add(S.group, cached('domeHemi', () => new THREE.SphereGeometry(1, 30, 12, 0, TAU, 0, PI / 2)), mat(C.dome), [0, D - 0.02, cz], null, [rx, ry, rz]);
+  const hexM = mat(C.hex);
+  const rm = mat(STEEL, { outline: THIN });
+  const s = 0.74;
+  const R = 0.33;
+  for (let row = -6; row <= 6; row++) {
+    const z = cz + row * s * 0.866;
+    for (let col = -4; col <= 4; col++) {
+      const x = (col + (row % 2 ? 0.5 : 0)) * s;
+      const f = (x / rx) ** 2 + ((z - cz) / rz) ** 2;
+      if (f > 0.84) continue;
+      const y = D + ry * Math.sqrt(1 - f);
+      const n = V3(x / (rx * rx), (y - D) / (ry * ry), (z - cz) / (rz * rz)).normalize();
+      // stretch the plate down the slope, so the plates meet as well on the sides as on the top
+      let t1 = V3(n.x, 0, n.z);
+      t1 = t1.lengthSq() < 1e-6 ? V3(1, 0, 0) : t1.addScaledVector(n, -t1.dot(n)).normalize();
+      const t2 = t1.clone().cross(n);
+      const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(t1, n, t2));
+      const stretch = Math.min(1.7, 1 / Math.max(0.55, n.y));
+      const plate = add(S.group, hexGeo(), hexM, V3(x, y, z).addScaledVector(n, 0.02).toArray());
+      plate.quaternion.copy(q);
+      plate.scale.set(R * stretch, 0.09, R);
+      // rivets on alternate corners
+      for (let k = 0; k < 6; k += 2) {
+        const a = (k / 6) * TAU;
+        const c = V3(Math.sin(a) * 0.78, 0.5, Math.cos(a) * 0.78).multiply(plate.scale).applyQuaternion(q).add(plate.position);
+        rivet(S.group, rm, c.addScaledVector(n, 0.012), n, 0.04);
+      }
+    }
+  }
+  const band = [];
+  for (let k = 0; k <= 40; k++) {
+    const a = (k / 40) * TAU;
+    band.push(V3(Math.cos(a) * rx * 1.01, D + 0.07, cz + Math.sin(a) * rz * 1.01));
+  }
+  band.pop();
+  add(S.group, taperTube(band, () => 0.1, 80, 8, true), mat(BAND_IRON));
+  for (let k = 0; k < 16; k++) {
+    const a = (k / 16) * TAU + 0.1;
+    const n = V3(Math.cos(a), 0.3, Math.sin(a)).normalize();
+    rivet(S.group, rm, V3(Math.cos(a) * (rx * 1.01 + 0.09), D + 0.1, cz + Math.sin(a) * (rz * 1.01 + 0.09)), n, 0.045);
+  }
+  // round doors fore and aft in the shell, and a hatch on top
+  for (const sz of [1, -1]) {
+    const f = 0.84;
+    const p = V3(0, D + ry * Math.sqrt(1 - f), cz + sz * Math.sqrt(f) * rz);
+    const n = V3(0, (p.y - D) / (ry * ry), (p.z - cz) / (rz * rz)).normalize();
+    const door = add(S.group, rbox(0.74, 0.86, 0.14, 0.1), mat(C.rim), p.addScaledVector(n, 0.03).toArray());
+    door.quaternion.copy(surfaceQuat(n));
+    add(S.group, sphere(), mat(STEEL, { outline: THIN }), door.position.clone().addScaledVector(n, 0.08).add(V3(0.2, 0, 0)).toArray(), null, 0.05);
+  }
+  add(S.group, cyl(0.34, 0.38, 0.14, 16), mat(C.iron), [0, D + ry - 0.01, cz]);
+  add(S.group, sphere(), mat(C.iron), [0, D + ry + 0.1, cz], null, [0.16, 0.08, 0.16]);
+
+  // a friendly turtle's head out of the bow, and four flippers
+  // (low on the stem, under the bowsprit: a short thick neck, a round head with a hooked beak)
+  const skin = mat(C.skin);
+  const skinDark = mat(C.skinDark);
+  const zb = hull.zAt(1, 0.8);
+  const neck = [V3(0, 0.72, zb - 0.45), V3(0, 0.92, zb + 0.12), V3(0, 1.08, zb + 0.45)];
+  add(S.group, taperTube(neck, (t) => 0.38 - 0.06 * t, 16, 10), skin);
+  const hg = new THREE.Group();
+  hg.position.copy(neck.at(-1)).add(V3(0, 0.1, 0.3));
+  hg.rotation.x = -0.1;
+  S.group.add(hg);
+  add(hg, sphere(), skin, [0, 0, 0], null, [0.46, 0.4, 0.52]);
+  // the beak: a darker upper jaw hooked over the lower, a wide smile under it
+  add(hg, sphere(), skinDark, [0, -0.03, 0.4], [0.2, 0, 0], [0.27, 0.15, 0.17]);
+  add(hg, cone(0.06, 0.12, 6), skinDark, [0, -0.13, 0.52], [PI, 0, 0]);
+  add(hg, torus(0.2, 0.024, 12, 5, PI), toon(0x2a1d1a, { outline: false }), [0, -0.1, 0.4], [0.4, 0, PI], [1.15, 0.6, 1]);
+  const eyeW = mat(0xffffff, { outline: THIN });
+  const pupil = toon(0x141018, { outline: false });
+  for (const sd of [-1, 1]) {
+    add(hg, sphere(), eyeW, [sd * 0.29, 0.13, 0.22], null, [0.12, 0.15, 0.11]);
+    add(hg, sphere(), pupil, [sd * 0.33, 0.14, 0.29], null, [0.055, 0.08, 0.05]);
+    add(hg, sphere(), skinDark, [sd * 0.18, 0.3, -0.12], null, [0.13, 0.06, 0.13]);
+    // flippers: a big pair at the bow cheeks, a small pair aft
+    const f1 = hullPoint(hull, 0.78, 0.32, sd, 0.02).p;
+    blob(S.group, skin, f1, f1.clone().add(V3(sd * 1.15, -0.18, 0.55)), 0.36, 0.07);
+    const f2 = hullPoint(hull, 0.12, 0.3, sd, 0.02).p;
+    blob(S.group, skin, f2, f2.clone().add(V3(sd * 0.72, -0.15, -0.42)), 0.24, 0.06);
+  }
+  add(S.group, cone(0.12, 0.45, 8), skin, [0, 0.55, hull.zAt(0, 0.55) - 0.15], [-PI / 2 - 0.4, 0, 0]);
+
+  // two masts up through the shell: square sails with the green turtle
+  const sail = mat(C.sail);
+  const emblem = mat(C.emblem, { outline: THIN });
+  const main = mast(S, -0.75, D, 9.2, 0.19, C.spar);
+  const fore = mast(S, 2.35, D, 8.2, 0.17, C.spar);
+  for (const z of [-0.75, 2.35]) {
+    const f = ((z - cz) / rz) ** 2;
+    add(S.group, torus(0.24, 0.07, 14, 6), mat(BAND_IRON), [0, D + ry * Math.sqrt(Math.max(0, 1 - f)) - 0.02, z], [PI / 2, 0, 0]);
+  }
+  shrouds(S, hull, -0.75, 8.5, { n: 3, spread: 0.45 });
+  shrouds(S, hull, 2.35, 7.6, { n: 2, spread: 0.42 });
+  squareRig(S, main, [
+    { y: 8.75, h: 1.75, wt: 2.8, wb: 3.4, belly: 0.42, mat: sail },
+    { y: 6.85, h: 2.6, wt: 3.6, wb: 4.25, belly: 0.65, mat: sail, decals: [{ shapes: turtleShapes(), size: 1.55, cy: -1.3, mat: emblem }] },
+  ], { spar: C.spar, yardR: 0.11 });
+  squareRig(S, fore, [
+    { y: 7.85, h: 1.6, wt: 2.5, wb: 3.05, belly: 0.4, mat: sail },
+    { y: 6.15, h: 2.25, wt: 3.15, wb: 3.75, belly: 0.6, mat: sail },
+  ], { spar: C.spar, yardR: 0.1 });
+  const tip = bowsprit(S, hull, 2.2, 0.28, C.spar, 0.12);
+  jibSail(S, [2.45, 7.4], tip, [2.75, 3.85], 0.32, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: 0x3b2a22 });
+  flagMesh(S, {
+    p: V3(0, 9.75, -0.75),
+    len: 1.9,
+    h: 1.2,
+    mat: mat(C.flag),
+    decal: { shapes: turtleShapes(), size: 0.72, cx: 0.48, cy: 0, mat: mat(C.hex, { outline: false }) },
+    yaw: -0.15,
+    staff: C.spar,
+  });
+  // her crew stand on the open decks fore and aft of the shell
+  lantern(S, S.group, 0, D + 1.1, -4.85, { s: 0.85 });
+  rod(S.group, mat(C.iron), V3(0, D, -4.85), V3(0, D + 0.85, -4.85), 0.045, 6);
+  S.deckSpots = [
+    { x: 0.62, y: D, z: 3.55, h: PI / 2 },
+    { x: -0.62, y: D, z: 3.55, h: -PI / 2 },
+    { x: 0.8, y: D, z: -4.3, h: PI / 2 },
+    { x: -0.8, y: D, z: -4.3, h: -PI / 2 },
+    { x: 0, y: D, z: 4.35, h: PI },
+  ];
+  // a wrecked turtle burns on top of her shell; a stink cloud sits there too
+  S.fireSpots = [[0.45, D + ry - 0.12, cz - 0.6, 0.85]];
+  S.deckAnchor = { x: 0, y: D + ry, z: cz };
+}
+
+function buildFireship(S, T) {
+  S.brace = 0;
+  const C = { tar: 0x2c2420, tarLight: 0x46382c, stripe: 0x7a3024, bottom: 0x1d1816, rim: 0x3a2c24, wall: 0x4a3a2e, deck: 0x6e5a44, plank: 0x54442f, sail: 0x9c9384, sailPatch: 0x6f6658, spar: 0x3a2a20, straw: 0xd8b456, strawDark: 0xa98a3a, flag: 0x1b171a, flame: 0xff5e14, flameCore: 0xffd84a, ember: 0xffb02e };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid - 0.1,
+    rail: 1.5,
+    deck: 1.12,
+    keel: -0.65,
+    bw: 0.16,
+    yc: 0.66,
+    n: 2.3,
+    tumble: 0.07,
+    sternLen: 0.14,
+    sternP: 2.1,
+    bowStart: 0.5,
+    bowP: 1.8,
+    bowQ: 0.85,
+    bowRise: 0.42,
+    sternRise: 0.22,
+    bowLift: 0.85,
+    sternLift: 0.75,
+    bowRake: 0.5,
+    sternRake: 0.28,
+    breaks: [{ rel: -0.2 }, { rel: -0.3 }, { abs: 0.3 }],
+  });
+  addHull(S, hull, { bands: [mat(C.tar), mat(C.stripe), mat(C.tarLight), mat(C.bottom)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -2.5, 2.4, 4);
+  cutwater(S, hull, C.rim, 0.09);
+  // scruffy: odd planks nailed over old holes
+  for (const [z, y, sd, tilt, color] of [[-1.6, 0.7, 1, 0.12, 0x6b5038], [0.9, 0.55, 1, -0.08, 0x5c4630], [1.9, 0.95, -1, 0.15, 0x6b5038], [-0.6, 0.62, -1, -0.12, 0x7a5c3e], [-2.4, 1.0, -1, 0.06, 0x5c4630]]) {
+    hullPatch(S, hull, z, y, sd, { tilt, color, w: 0.62, h: 0.34 });
+  }
+  // her cargo: barrels piled amidships, powder kegs with red bands, straw bales and bundles of sticks
+  const stave = 0x7a5232;
+  for (const [x, z, y, s] of [[0.45, -0.6, 0, 0.8], [-0.45, -0.55, 0, 0.8], [0.0, -1.25, 0, 0.8], [0.5, -1.35, 0, 0.72], [-0.5, -1.4, 0, 0.72], [0.22, -0.9, 0.48, 0.72], [-0.24, -0.92, 0.48, 0.7]]) barrel(S, x, D + y, z, stave, 0x2a1e18, s);
+  powderKeg(S, 0.0, D + 0.95, -0.95, 0.6);
+  powderKeg(S, 0.55, D, 1.15, 0.62);
+  powderKeg(S, -0.5, D, 1.3, 0.58);
+  const straw = mat(C.straw);
+  const strawDark = mat(C.strawDark);
+  for (const [x, z, a] of [[0.0, 1.85, 0.1], [-0.42, -2.15, -0.2], [0.42, -2.1, 0.25]]) {
+    const g = new THREE.Group();
+    g.position.set(x, D, z);
+    g.rotation.y = a;
+    S.group.add(g);
+    add(g, rbox(0.7, 0.36, 0.46, 0.1), straw, [0, 0.18, 0]);
+    for (const dx of [-0.18, 0.18]) add(g, rbox(0.06, 0.38, 0.48, 0.02), strawDark, [dx, 0.18, 0]);
+  }
+  const stick = mat(0x8a6a3e);
+  for (const [x, z] of [[0.62, -2.6], [-0.62, 0.35]]) {
+    for (let k = 0; k < 5; k++) rod(S.group, stick, V3(x + (k % 3 - 1) * 0.07, D + 0.08 + Math.floor(k / 3) * 0.12, z - 0.4), V3(x + (k % 3 - 1) * 0.07 + 0.03, D + 0.1 + Math.floor(k / 3) * 0.12, z + 0.4), 0.05, 5);
+    add(S.group, torus(0.15, 0.025, 10, 5), mat(ROPE), [x, D + 0.12, z], [0, 0, 0], [1, 1.1, 1]);
+  }
+
+  // one raked mast with a patched gaff sail and a jib
+  const mz = 0.45;
+  mast(S, mz, D, 6.9, 0.15, C.spar, { rake: -0.06 });
+  shrouds(S, hull, mz, 6.3, { n: 2, spread: 0.5, rake: -0.06 });
+  const sail = mat(C.sail);
+  const patchM = mat(C.sailPatch, { outline: THIN });
+  const gaff = quadDef([mz - 0.3, 5.95], [mz - 2.9, 6.85], [mz - 3.05, 2.08], [mz - 0.3, 1.95], 0.42, { nu: 14, nv: 12, leechBow: 0.3, footBow: 0.12 });
+  const gaffSail = foreAftSail(S, S.group, gaff, (d) => {
+    const parts = [{ geo: pillowGeometry(d), material: sail }];
+    for (const [cx, cy, w, h, r] of [[1.0, 4.6, 0.6, 0.5, 0.2], [2.1, 3.1, 0.7, 0.45, -0.15], [1.6, 5.9, 0.45, 0.35, 0.1]]) {
+      for (const side of [1, -1]) parts.push({ geo: sailDecal(d, [roundRectShape(w, h, 0.06)], 1, cx, cy, side, 0.06, r), material: patchM });
+    }
+    return parts;
+  }, { p: V3() });
+  const sparM = mat(C.spar);
+  rod(S.group, sparM, V3(0, 5.97, mz - 0.15), V3(0, 6.88, mz - 3.0), 0.07, 8); // gaff
+  rod(S.group, sparM, V3(0, 1.9, mz - 0.15), V3(0, 2.0, mz - 3.15), 0.08, 8); // boom
+  const tip = bowsprit(S, hull, 1.5, 0.2, C.spar, 0.1);
+  jibSail(S, [mz + 0.2, 5.8], tip, [mz + 0.3, 1.95], 0.28, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: 0x3a2a20, r: 0.03 });
+  S.dropSail = { mesh: gaffSail, kind: 'foreaft', yb: 1.95 };
+  S.droopSail = { mesh: S.sails[S.sails.length - 1], kind: 'foreaft', yb: 1.95 };
+  S.yardTips = { port: { x: 1.0, y: 4.6, z: mz }, star: { x: -1.0, y: 4.6, z: mz } };
+  rod(S.group, sparM, V3(-1.02, 4.6, mz - 0.27), V3(1.02, 4.6, mz - 0.27), 0.04, 6); // spreaders
+  // her colours: an orange flame on black
+  flagMesh(S, {
+    p: V3(0, 7.25, mz - 0.45),
+    len: 1.6,
+    h: 0.95,
+    shape: 'swallow',
+    mat: mat(C.flag),
+    decal: { shapes: flameShapes(), size: 0.62, cx: 0.4, cy: 0, mat: mat(C.flame, { outline: false }) },
+    yaw: -0.2,
+    staff: C.spar,
+  });
+
+  // the fuse (SPEC3 §4.2): lit, flames bloom on her cargo and climb her rigging (userData.fuse). Shape
+  // flicker only: the glows keep a steady brightness (flicker 0).
+  const outerM = glow(S, C.flame, 1.15, true, 0);
+  const coreM = glow(S, C.flameCore, 1.2, false, 0);
+  // (the cargo's flames grow out of the barrel pile: the mesh is scaled about it)
+  const zc = -0.7;
+  const low = flameTongues(outerM, coreM, [
+    [0.0, D + 1.42, -0.95, 0.85, 0.05],
+    [0.32, D + 1.08, -0.82, 0.6, 0.25],
+    [-0.34, D + 1.06, -0.9, 0.58, -0.3],
+    [0.56, D + 0.6, -1.36, 0.55, 0.38],
+    [-0.56, D + 0.6, -1.42, 0.52, -0.38],
+    [0.05, D + 0.62, -1.5, 0.5, 0.1],
+    [0.0, D + 0.36, 1.85, 0.62, 0.1],
+    [0.55, D + 0.58, 1.15, 0.45, 0.3],
+    [-0.5, D + 0.52, 1.3, 0.42, -0.3],
+    [0.42, D + 0.36, -2.1, 0.5, 0.25],
+    [-0.42, D + 0.36, -2.15, 0.5, -0.25],
+  ].map(([x, y, z, ...r]) => [x, y - D, z - zc, ...r]));
+  low.name = 'fuse-low';
+  low.position.set(0, D, zc);
+  low.userData.keep = true;
+  low.visible = false;
+  S.group.add(low);
+  // the rigging's flames grow from the deck up (the mesh is scaled from deck height)
+  const rig = [];
+  for (const [y, sd, s] of [[2.3, 1, 0.55], [3.2, -1, 0.52], [4.1, 1, 0.5], [5.0, -1, 0.46], [5.9, 1, 0.42]]) rig.push([sd * 0.12, y - D, mz - 0.06 * y, s, -sd * 0.4]);
+  for (const sd of [-1, 1]) {
+    for (const f of [0.3, 0.62]) {
+      const zr = mz - 0.35;
+      const a = V3(sd * (hull.widthAt(zr, D) - 0.02), hull.railAt(zr), zr);
+      const b = V3(sd * 0.12, 6.3, mz - 0.4);
+      const p = a.lerp(b, f);
+      rig.push([p.x, p.y - D, p.z, 0.46 - 0.08 * f, -sd * 0.3]);
+    }
+  }
+  for (const [z, y, s] of [[mz - 1.2, 6.3 - D, 0.42], [mz - 2.2, 6.65 - D, 0.38], [mz - 1.6, 2.0 - D + 0.02, 0.45], [mz - 2.7, 2.03 - D, 0.4]]) rig.push([0, y, z, s, 0]);
+  const rigMesh = flameTongues(outerM, coreM, rig);
+  const rigFlames = new THREE.Group();
+  rigFlames.name = 'fuse-rig';
+  rigFlames.position.set(0, D, 0);
+  rigFlames.userData.keep = true;
+  rigFlames.visible = false;
+  rigFlames.add(rigMesh);
+  S.group.add(rigFlames);
+  // embers drifting up off the flames (one merged mesh, no outline)
+  const emberParts = [];
+  const rnd = mulberry(41);
+  for (let k = 0; k < 14; k++) emberParts.push(new THREE.SphereGeometry(0.05 + rnd() * 0.04, 6, 4).translate((rnd() - 0.5) * 1.6, rnd() * 3.2, (rnd() - 0.5) * 2.4 - 0.6));
+  const embers = new THREE.Mesh(mergeGeometries(emberParts, false), glow(S, C.ember, 1.3, false, 0));
+  embers.name = 'fuse-embers';
+  embers.userData.keep = true;
+  embers.visible = false;
+  embers.position.set(0, D + 1.2, mz - 0.6);
+  S.group.add(embers);
+  S.fuse = { low, rig: rigFlames, embers };
+
+  S.deckSpots = [
+    { x: 0.62, y: D, z: 0.2, h: PI / 2 },
+    { x: -0.62, y: D, z: 0.0, h: -PI / 2 },
+    { x: 0.0, y: D, z: -2.75, h: 0 },
+    { x: 0.0, y: D, z: 2.6, h: PI },
+  ];
+  S.fireSpots = [[0.0, D, 0.95, 0.65]];
+}
+
+/** An extruded emblem standing on a side face that looks out to `side` (+1 = +x, port). */
+function sideDecal(S, shapes, x, y, z, side, material, depth = 0.07) {
+  const g = extrude(shapes, depth, 8);
+  g.rotateY((side * PI) / 2);
+  return add(S.group, g, material, [x + side * depth * 0.5, y, z]);
+}
+
+/** A tentacle along `pts` (tapering), with pale suckers on the side away from `axis` (or below). */
+function tentacle(parent, pts, r0, skin, sucker, o = {}) {
+  add(parent, taperTube(pts, (t) => r0 * (1 - 0.82 * t), o.segs ?? 28, 8), skin);
+  if (!sucker) return;
+  const curve = new THREE.CatmullRomCurve3(pts, false, 'centripetal');
+  const n = o.suckers ?? 6;
+  for (let k = 0; k < n; k++) {
+    const t = 0.12 + (0.7 * k) / Math.max(1, n - 1);
+    const p = curve.getPointAt(t);
+    const tan = curve.getTangentAt(t);
+    let out = o.axis ? V3().subVectors(p, o.axis(p)) : V3(0, -1, 0);
+    out.addScaledVector(tan, -out.dot(tan));
+    if (out.lengthSq() < 1e-6) out = V3(0, -1, 0);
+    out.normalize();
+    const r = r0 * (1 - 0.82 * t);
+    const m = add(parent, sphere(), sucker, p.clone().addScaledVector(out, r * 0.85).toArray(), null, [r * 0.42, r * 0.42, r * 0.2]);
+    m.quaternion.setFromUnitVectors(FWD, out);
+  }
+}
+
+function buildInkheart(S, T) {
+  S.brace = -0.36;
+  const C = { hull: 0x2b2036, hullDark: 0x1b1424, violet: 0x6e3fa6, gold: 0xe9b93c, deck: 0x56444f, plank: 0x3e303c, rim: 0x1c1524, wall: 0x3e2452, sail: 0x7a4fb0, spar: 0x241a2a, amber: 0xffb22e, kraken: 0x5c3a84, sucker: 0xe6c8f0, ink: 0x120e18, flag: 0x150f1c, pot: 0x3a2a4a };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 2.6,
+    deck: 1.8,
+    keel: -1.0,
+    bw: 0.26,
+    yc: 1.05,
+    n: 3.0,
+    tumble: 0.15,
+    sternLen: 0.07,
+    sternP: 3,
+    bowStart: 0.6,
+    bowP: 2,
+    bowQ: 0.7,
+    bowRise: 0.8,
+    sternRise: 0.9,
+    sternRiseSpan: 0.32,
+    bowLift: 1.25,
+    sternLift: 0.95,
+    bowRake: 0.65,
+    sternRake: 0.32,
+    breaks: [{ rel: -0.14 }, { abs: 2.02 }, { abs: 1.9 }, { abs: 0.45 }],
+  });
+  const gold = mat(C.gold);
+  addHull(S, hull, { bands: [mat(C.violet), mat(C.hull), gold, mat(C.hull), mat(C.hullDark)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -4.6, 6.2, 7);
+  cutwater(S, hull, C.gold, 0.14);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 1.0, sd, { frame: C.gold, scale: 1.05 });
+  const amber = glow(S, C.amber, 1.1, true, 0); // windows and eyes (steady: no flicker)
+  const ink = toon(C.ink, { outline: false });
+
+  // the stern castle in two tiers, amber windows, gold scales on its back and sides
+  const cab = sternCastle(S, hull, { z1: -4.8, y0: 1.8, y1: 4.0, color: C.hull, cap: C.gold, top: C.deck, r: 0.28, over: 0.12 });
+  const cab2 = sternCastle(S, hull, { z0: cab.z0 + 0.1, z1: -6.2, y0: 4.0, y1: 5.3, color: C.hull, cap: C.gold, top: C.deck, r: 0.25, w: cab.w - 0.6 });
+  windows(S, S.group, [-1.5, -0.5, 0.5, 1.5], 2.45, cab.z0, -1, { w: 0.44, h: 0.62, frame: C.gold, glow: C.amber, intensity: 1.1 });
+  windows(S, S.group, [-0.9, 0, 0.9], 4.3, cab2.z0, -1, { w: 0.4, h: 0.56, frame: C.gold, glow: C.amber, intensity: 1.1 });
+  const scaleM = mat(C.gold, { outline: THIN });
+  aftDecal(S, scaleShapes(cab.w - 0.7, 0.62, 7, 2), 1, 0, 2.05, cab.z0 - 0.01, scaleM, 0.06);
+  aftDecal(S, scaleShapes(cab.w - 0.7, 0.62, 7, 2), 1, 0, 3.62, cab.z0 - 0.01, scaleM, 0.06);
+  aftDecal(S, scaleShapes(cab2.w - 0.7, 0.3, 5, 1), 1, 0, 5.08, cab2.z0 + 0.09, scaleM, 0.06);
+  for (const sd of [-1, 1]) {
+    sideDecal(S, scaleShapes(cab.z1 - cab.z0 - 0.8, 1.45, 6, 4), sd * (cab.w / 2 + 0.01), 3.08, (cab.z0 + cab.z1) / 2, sd, scaleM, 0.06);
+    add(S.group, rbox(0.12, 0.12, cab.z1 - cab.z0 - 0.2, 0.05), gold, [sd * (cab.w / 2 + 0.03), 2.15, (cab.z0 + cab.z1) / 2]);
+    lantern(S, S.group, sd * (cab2.w / 2 - 0.1), cab2.y1 + 0.45, cab2.z0 + 0.18, { s: 1.1, color: C.amber, intensity: 1.1 });
+    rod(S.group, mat(C.rim), V3(sd * (cab2.w / 2 - 0.1), cab2.y1 - 0.05, cab2.z0 + 0.18), V3(sd * (cab2.w / 2 - 0.1), cab2.y1 + 0.2, cab2.z0 + 0.18), 0.05, 6);
+  }
+  for (const sd of [-1, 1]) rail(S, V3(sd * (cab2.w / 2 - 0.1), cab2.y1, cab2.z0 + 0.5), V3(sd * (cab2.w / 2 - 0.1), cab2.y1, cab2.z1 - 0.12), 0.32, C.gold, 2);
+  add(S.group, rbox(0.75, 1.05, 0.12, 0.1), mat(C.wall), [0, D + 0.55, cab.z1 + 0.02]);
+
+  // the figurehead: a carved kraken with amber eyes, its arms down the bow and wrapped round the bowsprit
+  const kraken = mat(C.kraken);
+  const sucker = mat(C.sucker, { outline: THIN });
+  const yH = hull.rail(1) - 0.55;
+  const zH = hull.zAt(1, yH);
+  const hg = new THREE.Group();
+  hg.position.set(0, yH, zH + 0.15);
+  hg.rotation.x = 0.35;
+  S.group.add(hg);
+  add(hg, sphere(), kraken, [0, 0.35, -0.05], null, [0.68, 0.95, 0.78]);
+  add(hg, sphere(), kraken, [0, 1.05, -0.25], [-0.5, 0, 0], [0.4, 0.55, 0.42]);
+  for (const sd of [-1, 1]) {
+    add(hg, sphere(), amber, [sd * 0.3, 0.32, 0.55], null, [0.2, 0.25, 0.12]);
+    add(hg, sphere(), ink, [sd * 0.3, 0.32, 0.65], null, [0.05, 0.18, 0.04]);
+    add(hg, rbox(0.36, 0.09, 0.08, 0.04), mat(C.rim), [sd * 0.32, 0.6, 0.55], [0, 0, -sd * 0.3]);
+  }
+  for (const sd of [-1, 1]) {
+    for (const [u0, y0, u1, y1, curl] of [[0.975, yH - 0.1, 0.83, 0.55, 1], [0.955, yH + 0.2, 0.78, 1.25, -1]]) {
+      const pts = [];
+      for (let i = 0; i <= 7; i++) {
+        const t = i / 7;
+        pts.push(hullPoint(hull, lerp(u0, u1, t), lerp(y0, y1, t) + curl * 0.15 * Math.sin(PI * t), sd, 0.1 - 0.04 * t).p);
+      }
+      const end = pts.at(-1);
+      for (let i = 1; i <= 5; i++) {
+        const a = (i / 5) * TAU * 0.8;
+        pts.push(end.clone().add(V3(sd * 0.04 * i, curl * 0.22 * Math.sin(a), -0.22 * (1 - Math.cos(a)) * 0.9)));
+      }
+      tentacle(S.group, pts, 0.17, kraken, sucker, { suckers: 6, axis: (p) => V3(0, p.y, p.z) });
+    }
+  }
+  const tip = bowsprit(S, hull, 3.7, 0.3, C.spar, 0.17);
+  const base = V3(0, hull.rail(1) - 0.15, hull.zAt(1, hull.rail(1)) - 0.9);
+  const dir = V3().subVectors(tip, base).normalize();
+  const e1 = V3(1, 0, 0);
+  const e2 = V3().crossVectors(dir, e1).normalize();
+  const len = tip.distanceTo(base);
+  for (const ph of [0, PI]) {
+    const pts = [];
+    for (let i = 0; i <= 26; i++) {
+      const t = i / 26;
+      const th = ph + t * TAU * 1.55;
+      const rr = 0.17 + 0.16 * (1 - 0.75 * t);
+      pts.push(base.clone().addScaledVector(dir, 0.55 + t * (len - 0.95)).addScaledVector(e1, Math.cos(th) * rr).addScaledVector(e2, Math.sin(th) * rr));
+    }
+    const axis = (p) => base.clone().addScaledVector(dir, V3().subVectors(p, base).dot(dir));
+    tentacle(S.group, pts, 0.15, kraken, sucker, { suckers: 7, axis, segs: 48 });
+  }
+
+  // three masts, tattered violet sails, a giant painted eye on the main course
+  const sail = mat(C.sail);
+  const E = eyeShapes();
+  const eyeRim = mat(C.amber, { outline: THIN });
+  const eyePupil = mat(C.ink, { outline: THIN });
+  const sparC = C.spar;
+  const main = mast(S, 0.4, D, 14.4, 0.26, sparC);
+  const fore = mast(S, 5.0, D, 12.8, 0.23, sparC);
+  const miz = mast(S, -3.9, D, 11.0, 0.2, sparC);
+  shrouds(S, hull, 0.4, 13.6, { n: 4, spread: 0.5, color: 0x1a1220 });
+  shrouds(S, hull, 5.0, 12.0, { n: 3, spread: 0.45, color: 0x1a1220 });
+  shrouds(S, hull, -3.9, 10.2, { n: 2, spread: 0.45, color: 0x1a1220 });
+  squareRig(S, main, [
+    { y: 13.6, h: 2.4, wt: 3.4, wb: 4.3, belly: 0.5, mat: sail, torn: 0.2, seed: 3 },
+    { y: 10.9, h: 2.8, wt: 4.6, wb: 5.4, belly: 0.65, mat: sail, torn: 0.16, seed: 6 },
+    { y: 7.8, h: 3.9, wt: 5.8, wb: 6.5, belly: 0.9, mat: sail, torn: 0.2, seed: 1, decals: [{ shapes: E.rim, size: 4.3, cy: -1.9, mat: eyeRim }, { shapes: E.pupil, size: 4.3, cy: -1.9, mat: eyePupil }] },
+  ], { spar: sparC, yardR: 0.14 });
+  squareRig(S, fore, [
+    { y: 12.0, h: 2.2, wt: 3.1, wb: 3.9, belly: 0.5, mat: sail, torn: 0.22, seed: 5 },
+    { y: 9.5, h: 3.2, wt: 4.5, wb: 5.3, belly: 0.75, mat: sail, torn: 0.18, seed: 9 },
+  ], { spar: sparC, yardR: 0.13 });
+  squareRig(S, miz, [
+    { y: 10.3, h: 2.0, wt: 2.8, wb: 3.4, belly: 0.42, mat: sail, torn: 0.22, seed: 2 },
+    { y: 8.1, h: 2.3, wt: 3.3, wb: 3.9, belly: 0.5, mat: sail, torn: 0.2, seed: 11 },
+  ], { spar: sparC, yardR: 0.12 });
+  jibSail(S, [5.1, 11.6], tip, [5.5, 4.4], 0.4, (d) => [{ geo: pillowGeometry(d), material: sail }], { color: 0x1a1220, r: 0.04 });
+  // her colours: an amber squid on black-purple, violet pennants
+  flagMesh(S, {
+    p: V3(0, 15.25, 0.4),
+    len: 2.9,
+    h: 1.85,
+    shape: 'swallow',
+    mat: mat(C.flag),
+    decal: { shapes: squidShapes(), size: 1.0, cx: 0.45, cy: 0.04, mat: glow(S, C.amber, 1.0, false, 0) },
+    yaw: -0.12,
+    staff: sparC,
+    staffR: 0.07,
+  });
+  flagMesh(S, { p: V3(0, 13.25, 5.0), len: 2.4, h: 0.6, shape: 'pennant', mat: mat(C.violet), yaw: -0.2, staff: sparC });
+  flagMesh(S, { p: V3(0, 11.45, -3.9), len: 2.2, h: 0.55, shape: 'pennant', mat: mat(C.violet), yaw: -0.2, staff: sparC });
+
+  // the ink-pot mortar on the foredeck and her pots of ink; ink barrels by the mizzen
+  mortarPiece(S, 0, D, 2.7, { s: 0.8, metal: C.pot, bed: C.spar, tilt: 0.36, smoke: 0x7a4fb0 });
+  const potM = mat(C.pot);
+  const cork = mat(0xd9b88a);
+  for (const [x, z] of [[0.95, 3.35], [1.25, 3.0], [1.05, 2.6], [1.15, 3.4]]) {
+    add(S.group, lathe('inkpot', [[0.0001, 0], [0.16, 0.0], [0.22, 0.12], [0.2, 0.26], [0.1, 0.36], [0.11, 0.42], [0.0001, 0.42]], 12), potM, [x, D, z]);
+    add(S.group, cyl(0.075, 0.08, 0.08, 10), cork, [x, D + 0.45, z]);
+  }
+  for (const [x, z, s] of [[-1.1, -2.6, 0.8], [-1.25, -2.0, 0.75], [1.15, -2.55, 0.8]]) barrel(S, x, D, z, C.pot, C.violet, s);
+  add(S.group, torus(0.3, 0.1, 16, 8), mat(ROPE), [-1.0, D + 0.1, 1.2], [PI / 2, 0, 0]);
+
+  S.deckSpots = [
+    { x: 1.25, y: D, z: -1.3, h: PI / 2 },
+    { x: -1.25, y: D, z: -1.3, h: -PI / 2 },
+    { x: 1.3, y: D, z: 1.6, h: PI / 2 },
+    { x: -1.3, y: D, z: 2.3, h: -PI / 2 },
+    { x: 0.1, y: D, z: -2.6, h: -PI / 2 },
+    { x: 0, y: D, z: 6.2, h: PI },
+  ];
+  S.fireSpots = [[0.9, D, 0.9, 1.0], [-0.6, D, -3.0, 0.9]];
+}
+
+// The Frost Raider's looks; the Squid Skiff (SPEC3 §4.3) is the same longship in the Kraken Crew's colours
+// with a squid for a prow (buildRaider takes the look).
+const RAIDER_LOOK = {
+  C: { blue: 0x2f6db5, oak: 0xb57d45, oakDark: 0x8a5a32, tar: 0x2e2420, deck: 0xc49a66, plank: 0x9c7346, rim: 0x5a3a22, white: 0xf5f1e6, red: 0xd2402f, yellow: 0xf2c23a, spar: 0x6b4428, navy: 0x1e2f5a },
+  W: 2.45,
+  lap: 0x3a2616,
+  oar: null, // (oak)
+  chests: null, // (oak, oakDark)
+  prow: serpentProw,
+  rig: { mastH: 7.4, shroudTop: 6.8, y: 6.65, h: 3.5, wt: 3.7, wb: 4.3, flagY: 7.7 },
+  flag: snowflakeShapes,
+};
+const SKIFF_LOOK = {
+  C: { blue: 0x6a3d9a, oak: 0x8656b4, oakDark: 0x58337e, tar: 0x221830, deck: 0xbd9a6c, plank: 0x8e6c48, rim: 0x3a2350, white: 0xeadff7, red: 0x2a9d8f, yellow: 0xf2c23a, spar: 0x4a3426, navy: 0x2a1840 },
+  W: 2.25,
+  lap: 0x24142f,
+  oar: 0x9a6a3a,
+  chests: [0x2a9d8f, 0x58337e],
+  prow: squidProw,
+  rig: { mastH: 6.9, shroudTop: 6.3, y: 6.2, h: 3.2, wt: 3.4, wb: 4.0, flagY: 7.2 },
+  flag: squidShapes,
+};
+
+/** The Frost Raider's serpent prow and curled tail. */
+function serpentProw(S, hull, C, M) {
+  const { blue, yellow, red } = M;
+  const serpent = blue;
+  const stemTop = V3(0, hull.rail(1) - 0.06, hull.zAt(1, hull.rail(1)) - 0.04);
+  const neck = [stemTop.clone().add(V3(0, -0.5, -0.12)), stemTop.clone(), stemTop.clone().add(V3(0, 0.42, 0.2)), stemTop.clone().add(V3(0, 0.78, 0.16)), stemTop.clone().add(V3(0, 1.02, 0.36))];
+  add(S.group, taperTube(neck, (t) => 0.19 - 0.06 * t, 28, 10), serpent);
+  const hg = new THREE.Group();
+  hg.position.copy(neck.at(-1));
+  hg.rotation.x = 0.28;
+  S.group.add(hg);
+  add(hg, sphere(), serpent, [0, 0.02, 0.1], null, [0.23, 0.22, 0.34]);
+  add(hg, sphere(), serpent, [0, -0.02, 0.42], null, [0.15, 0.12, 0.25]);
+  add(hg, sphere(), serpent, [0, -0.17, 0.33], [0.32, 0, 0], [0.12, 0.05, 0.22]);
+  add(hg, sphere(), red, [0, -0.11, 0.38], [0.15, 0, 0], [0.11, 0.045, 0.2]);
+  for (const sd of [-1, 1]) {
+    add(hg, sphere(), mat(C.white, { outline: THIN }), [sd * 0.15, 0.1, 0.27], null, [0.075, 0.085, 0.06]);
+    add(hg, sphere(), toon(0x120e14, { outline: false }), [sd * 0.18, 0.1, 0.31], null, [0.035, 0.05, 0.03]);
+    add(hg, taperTube([V3(sd * 0.12, 0.17, 0.02), V3(sd * 0.2, 0.36, -0.14), V3(sd * 0.22, 0.42, -0.38)], (t) => 0.06 * (1 - t * 0.85), 10, 6), yellow);
+    add(hg, cone(0.025, 0.14, 6), red, [sd * 0.035, -0.12, 0.66], [PI / 2, sd * 0.35, 0]);
+  }
+  for (let k = 0; k < 4; k++) {
+    const p = new THREE.CatmullRomCurve3(neck).getPointAt(0.25 + k * 0.2);
+    add(S.group, cone(0.07, 0.2, 6), yellow, [p.x, p.y + 0.02, p.z - 0.16], [-0.9, 0, 0]);
+  }
+  const sternTop = V3(0, hull.rail(0) - 0.06, hull.zAt(0, hull.rail(0)) + 0.04);
+  const r0 = 0.46;
+  const cz = sternTop.z - 0.02 - r0;
+  const cy = sternTop.y + 0.55;
+  const tail = [sternTop.clone().add(V3(0, -0.5, 0.12)), sternTop.clone(), V3(0, cy - 0.05, sternTop.z - 0.08)];
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const ang = t * TAU * 1.2;
+    const r = r0 * (1 - 0.7 * t);
+    tail.push(V3(0, cy + Math.sin(ang) * r, cz + Math.cos(ang) * r));
+  }
+  add(S.group, taperTube(tail, (t) => 0.17 * (1 - 0.62 * t), 40, 10), serpent);
+  add(S.group, sphere(), yellow, tail.at(-1).toArray(), null, 0.07);
+}
+
+/** The Squid Skiff's prow: a squid with googly eyes reaching over the stem, and a curled tentacle astern. */
+function squidProw(S, hull, C, M) {
+  const { blue: skin } = M;
+  const sucker = mat(C.white, { outline: THIN });
+  const stemTop = V3(0, hull.rail(1) - 0.06, hull.zAt(1, hull.rail(1)) - 0.04);
+  // the mantle: a tall rounded cone leaning forward over the stem, two fins at its tip
+  const hg = new THREE.Group();
+  hg.position.copy(stemTop).add(V3(0, 0.12, 0.12));
+  hg.rotation.x = 0.5;
+  S.group.add(hg);
+  add(hg, lathe('mantle', [[0.0001, -0.12], [0.27, -0.06], [0.33, 0.18], [0.29, 0.52], [0.18, 0.86], [0.06, 1.04], [0.0001, 1.08]], 14), skin);
+  for (const sd of [-1, 1]) {
+    blob(hg, skin, V3(sd * 0.1, 0.78, -0.02), V3(sd * 0.46, 0.98, -0.08), 0.22, 0.05);
+    // googly eyes: big whites, the pupils rolled different ways
+    add(hg, sphere(), mat(0xffffff, { outline: THIN }), [sd * 0.22, 0.1, 0.2], null, 0.16);
+    add(hg, sphere(), toon(0x120e14, { outline: false }), [sd * 0.24 + (sd > 0 ? 0.03 : -0.06), 0.1 + (sd > 0 ? 0.07 : -0.05), 0.33], null, [0.07, 0.07, 0.05]);
+  }
+  // tentacles: two reaching forward and curling up, four hanging down the bow and curling in
+  const foot = hg.localToWorld.bind(hg);
+  hg.updateMatrixWorld(true);
+  const root = (a, r = 0.22) => foot(V3(Math.cos(a) * r, -0.08, Math.sin(a) * r));
+  for (const [a, reach, up] of [[0.5, 0.9, 0.55], [PI - 0.5, 0.9, 0.55]]) {
+    const p0 = root(a);
+    const sd = Math.sign(Math.cos(a));
+    const pts = [p0, p0.clone().add(V3(sd * 0.12, 0.05, 0.35)), p0.clone().add(V3(sd * 0.2, 0.2, reach)), p0.clone().add(V3(sd * 0.16, up, reach + 0.12)), p0.clone().add(V3(sd * 0.1, up + 0.12, reach - 0.08))];
+    tentacle(S.group, pts, 0.085, skin, sucker, { suckers: 4 });
+  }
+  for (const sd of [-1, 1]) {
+    for (const [u1, y1] of [[0.86, 0.55], [0.92, 0.25]]) {
+      const pts = [root(sd > 0 ? 0.1 : PI - 0.1, 0.24)];
+      for (let i = 1; i <= 5; i++) {
+        const t = i / 5;
+        pts.push(hullPoint(hull, lerp(0.985, u1, t), lerp(stemTop.y - 0.2, y1, t), sd, 0.08).p);
+      }
+      const end = pts.at(-1);
+      pts.push(end.clone().add(V3(sd * 0.05, -0.12, -0.12)), end.clone().add(V3(sd * 0.08, -0.04, -0.24)), end.clone().add(V3(sd * 0.08, 0.08, -0.17)));
+      tentacle(S.group, pts, 0.095, skin, sucker, { suckers: 5, axis: (p) => V3(0, p.y, p.z) });
+    }
+  }
+  // astern: a tentacle curling up over the stern post
+  const sternTop = V3(0, hull.rail(0) - 0.06, hull.zAt(0, hull.rail(0)) + 0.04);
+  const r0 = 0.42;
+  const cz = sternTop.z - 0.02 - r0;
+  const cy = sternTop.y + 0.5;
+  const tail = [sternTop.clone().add(V3(0, -0.5, 0.12)), sternTop.clone(), V3(0, cy - 0.05, sternTop.z - 0.08)];
+  for (let i = 0; i <= 20; i++) {
+    const t = i / 20;
+    const ang = t * TAU * 1.25;
+    const r = r0 * (1 - 0.72 * t);
+    tail.push(V3(0, cy + Math.sin(ang) * r, cz + Math.cos(ang) * r));
+  }
+  tentacle(S.group, tail, 0.16, skin, sucker, { suckers: 7, segs: 40, axis: () => V3(0, cy, cz) });
+}
+
 /** Small deterministic RNG for per-type detail placement. */
 function mulberry(seed) {
   let a = seed >>> 0;
@@ -3607,6 +4971,12 @@ const BUILDERS = {
   galleon: buildGalleon,
   raider: buildRaider,
   phantom: buildPhantom,
+  shark: buildShark,
+  bombketch: buildBombKetch,
+  ironclad: buildIronclad,
+  fireship: buildFireship,
+  skiff: buildSkiff,
+  inkheart: buildInkheart,
 };
 
 // ---------------------------------------------------------------------------
@@ -3928,11 +5298,15 @@ function spinShot() {
 }
 
 /**
- * A cannonball mesh for an ammo id ('round' | 'chain' | 'grape'; anything else = round). Geometry
- * is cached and the material shared: the caller adds it to the scene and removes it again, never
- * disposes it. Round shot is the same ball as before; chain shot spins by itself.
+ * A cannonball mesh for an ammo id ('round' | 'chain' | 'grape'; anything else = round), or one of the
+ * Kraken Seas' shots (SPEC3 §2.7): 'fire' (an orange ball in cartoon flame), 'frost' (a pale-blue ball
+ * with crystal spikes), 'stink' (a wobbling clay stinkpot with a green puff), and for the bombs 'shell'
+ * (the Bomb Ketch's, fuse and spark) and 'ink' (the Inkheart's pot). Geometry is cached and the material
+ * shared: the caller adds it to the scene and removes it again, never disposes it. Round shot is the
+ * same ball as before; chain shot spins by itself, and so do the specials flicker, spin or wobble.
  */
 export function projectileMesh(ammoId) {
+  if (SPECIAL_SHOT.includes(ammoId)) return specialProjectile(ammoId);
   const id = ammoId === 'chain' || ammoId === 'grape' ? ammoId : 'round';
   const m = new THREE.Mesh(shotGeo(id), toon(SHOT_COLOR));
   m.name = `shot:${id}`;
@@ -3940,6 +5314,111 @@ export function projectileMesh(ammoId) {
     m.userData.spin = Math.random() * TAU;
     m.onBeforeRender = spinShot;
   }
+  return m;
+}
+
+// ---------------------------------------------------------------------------
+// Special shot (SPEC3 §2.7) and the Voyage III bombs: one vertex-coloured mesh each, all sharing one
+// material (cached geometry, never disposed, like the round, chain and grape shot)
+// ---------------------------------------------------------------------------
+
+const SPECIAL_SHOT = ['fire', 'frost', 'stink', 'shell', 'ink'];
+let specialShotMaterial = null;
+function specialShotMat() {
+  if (!specialShotMaterial) {
+    specialShotMaterial = setOutline(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradientMap(3) }), true);
+    specialShotMaterial.name = 'ship:special-shot';
+  }
+  return specialShotMaterial;
+}
+
+/** A part for a vertex-coloured merge: indexed, position / normal / uv / color only, transformed. */
+function tinted(geo, color, m = null) {
+  const g = new THREE.BufferGeometry().copy(geo);
+  for (const n of Object.keys(g.attributes)) if (!['position', 'normal', 'uv'].includes(n)) g.deleteAttribute(n);
+  g.morphAttributes = {};
+  if (!g.attributes.normal) g.computeVertexNormals();
+  if (!g.attributes.uv) g.setAttribute('uv', new THREE.Float32BufferAttribute(new Float32Array(g.attributes.position.count * 2), 2));
+  ensureIndex(g);
+  if (m) g.applyMatrix4(m);
+  const c = new THREE.Color(color);
+  const col = new Float32Array(g.attributes.position.count * 3);
+  for (let i = 0; i < col.length; i += 3) col.set([c.r, c.g, c.b], i);
+  g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+  return g;
+}
+const TRS = (p, r, s) => new THREE.Matrix4().compose(V3(...p), new THREE.Quaternion().setFromEuler(new THREE.Euler(...r)), typeof s === 'number' ? V3(s, s, s) : V3(...s));
+
+function specialShotGeo(id) {
+  if (shotGeos[id]) return shotGeos[id];
+  const parts = [];
+  const flame = lathe('flame', [[0.0001, 0], [0.3, 0.1], [0.36, 0.3], [0.24, 0.62], [0.08, 0.95], [0.0001, 1.15]], 12); // (the brazier's: lathe keys ignore seg)
+  if (id === 'fire') {
+    // an orange ball wrapped in cartoon flame: tongues licking up and back round its top
+    parts.push(tinted(new THREE.SphereGeometry(0.3, 12, 8), 0xff6a1a));
+    for (const [a, tilt, s, c] of [[0, 0.15, 0.5, 0xffb020], [1.3, 0.75, 0.38, 0xff8a1f], [2.6, 0.7, 0.36, 0xffb020], [3.9, 0.8, 0.38, 0xff8a1f], [5.2, 0.7, 0.34, 0xffb020]]) {
+      const m = new THREE.Matrix4().makeRotationY(a).multiply(TRS([0, 0.08, 0.1], [tilt, 0, 0], [s, s * 1.2, s]));
+      parts.push(tinted(flame, c, m));
+    }
+    parts.push(tinted(flame, 0xffe066, TRS([0, 0.12, 0], [0, 0, 0], [0.26, 0.42, 0.26])));
+  } else if (id === 'frost') {
+    // a pale-blue ball bristling with ice crystals
+    parts.push(tinted(new THREE.IcosahedronGeometry(0.28, 1), 0x9fd8ff));
+    const dirs = new THREE.IcosahedronGeometry(1, 0).attributes.position;
+    const seen = new Set();
+    for (let i = 0; i < dirs.count; i++) {
+      const d = V3().fromBufferAttribute(dirs, i).normalize();
+      const key = d.toArray().map((v) => v.toFixed(2)).join();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const q = new THREE.Quaternion().setFromUnitVectors(UP, d);
+      const m = new THREE.Matrix4().compose(d.clone().multiplyScalar(0.3), q, V3(1, 1, 1));
+      parts.push(tinted(new THREE.ConeGeometry(0.075, 0.3, 4), seen.size % 2 ? 0xeefaff : 0xc8ecff, m));
+    }
+  } else if (id === 'stink') {
+    // a clay stinkpot: round belly, a cord round its neck, a cork, and a green puff of fumes
+    parts.push(tinted(lathe('stinkpot', [[0.0001, -0.3], [0.2, -0.29], [0.31, -0.14], [0.32, 0.04], [0.22, 0.18], [0.12, 0.25], [0.15, 0.3], [0.0001, 0.31]], 12), 0xc4703a));
+    parts.push(tinted(torus(0.315, 0.035, 16, 6), 0x7a4022, TRS([0, -0.03, 0], [PI / 2, 0, 0], 1)));
+    parts.push(tinted(cyl(0.09, 0.1, 0.1, 10), 0xe2c08a, TRS([0, 0.34, 0], [0, 0, 0], 1)));
+    parts.push(tinted(puffGeo(), 0x8bc34a, TRS([0.06, 0.52, 0], [0, 0.6, 0.2], 0.26)));
+    parts.push(tinted(puffGeo(), 0x5a8f2e, TRS([-0.12, 0.7, 0.05], [0, 2.1, -0.3], 0.18)));
+  } else if (id === 'shell') {
+    // a mortar shell: an iron ball, a fuse and its spark
+    parts.push(tinted(new THREE.SphereGeometry(0.32, 12, 8), 0x2b2b38));
+    parts.push(tinted(cyl(0.09, 0.1, 0.12, 8), 0x4d4a5c, TRS([0, 0.32, 0], [0, 0, 0], 1)));
+    parts.push(tinted(capsule(0.025, 0.16, 6), 0xd9c39a, TRS([0.03, 0.46, 0], [0, 0, -0.3], 1)));
+    parts.push(tinted(new THREE.OctahedronGeometry(0.11, 0), 0xffb12e, TRS([0.08, 0.58, 0], [0.4, 0.3, 0.2], 1)));
+  } else {
+    // an ink pot: a dark pot slopping violet ink
+    parts.push(tinted(lathe('inkshot', [[0.0001, -0.28], [0.2, -0.27], [0.3, -0.12], [0.3, 0.06], [0.2, 0.2], [0.13, 0.26], [0.0001, 0.27]], 12), 0x3a2a4a));
+    parts.push(tinted(puffGeo(), 0x7a4fb0, TRS([0, 0.36, 0], [0, 0.4, 0], [0.3, 0.22, 0.3])));
+  }
+  shotGeos[id] = mergeGeometries(parts, false);
+  for (const g of parts) g.dispose();
+  return shotGeos[id];
+}
+
+function wobbleShot() {
+  // visual only: the fire ball's flames flicker, frost spins slowly, the stinkpot and ink pot wobble
+  const t = performance.now() * 0.001 + this.userData.ph;
+  const k = this.userData.kind;
+  if (k === 'fire') {
+    const f = Math.sin(t * 13) * 0.5 + Math.sin(t * 21) * 0.5;
+    this.scale.set(1 + 0.05 * f, 1 + 0.1 * f, 1 + 0.05 * f);
+  } else if (k === 'frost') this.rotation.set(t * 1.3, t * 2.1, 0);
+  else this.rotation.set(Math.sin(t * 9) * 0.35, t * 3, Math.cos(t * 7) * 0.3);
+  this.updateMatrix();
+  if (this.parent) this.matrixWorld.multiplyMatrices(this.parent.matrixWorld, this.matrix);
+  else this.matrixWorld.copy(this.matrix);
+}
+
+/** Fire, Frost and Stink shot (and the mortar's shell and the Inkheart's ink pot): see projectileMesh. */
+function specialProjectile(id) {
+  const m = new THREE.Mesh(specialShotGeo(id), specialShotMat());
+  m.name = `shot:${id}`;
+  m.userData.kind = id;
+  m.userData.ph = Math.random() * 10;
+  if (id !== 'shell') m.onBeforeRender = wobbleShot;
   return m;
 }
 
@@ -3989,6 +5468,11 @@ export function addHole(group, at = {}) {
   H.count = Math.min(MAX_HOLES, P.holeNext);
   H.instanceMatrix.needsUpdate = true;
   H.visible = true;
+  const sa = group.userData.statusAnchors;
+  if (sa && Array.isArray(sa.holes)) {
+    sa.holes.unshift({ x: r3(pos.x), y: r3(pos.y), z: r3(pos.z), side: side < 0 ? -1 : 1 });
+    if (sa.holes.length > MAX_HOLES) sa.holes.length = MAX_HOLES;
+  }
 }
 
 /** Remove every hole (e.g. the player's hull back to full). */
@@ -3998,6 +5482,8 @@ export function clearHoles(group) {
   P.holes.count = 0;
   P.holes.visible = false;
   P.holeNext = 0;
+  const sa = group.userData.statusAnchors;
+  if (sa && Array.isArray(sa.holes)) sa.holes.length = 0;
 }
 
 /**
@@ -4090,8 +5576,12 @@ function raiseFlag(group, P, look) {
  * opts (player only; other types ignore it, and no opts = the stock ship):
  *   type: the upgraded ship type (playerType() in upgrades.js); its gun count places the gun ports
  *   look: { hull, sails, flag } paint ids from LOOKS (unknown ids -> the default paint)
- *   upgrades: { guns, shot, crew, hull, sails, carpenter } tiers, each shown on the model
+ *   upgrades: { guns, shot, crew, hull, sails, carpenter, rudder } tiers, each shown on the model (rudder,
+ *             Big rudder & wheel 0..3: a big rudder blade, then a gold-trimmed bigger wheel, then a brass
+ *             wheel and a compass binnacle; left out = 0)
  *   armory: { grapple } Long grapples tier (0..2): coiled grapnels on the rail (none at tier 0)
+ *   powder: the powder record ({ v, own: { fire, frost, stink } }, 1 = owned): a small keg of each special
+ *           shot owned stands on a tray beside the main hatch, an icon on its lid (none owned: no kegs)
  * group.userData = { type, sails: Mesh[], flags: Mesh[], glows: [{material, base, amt, f, ph}],
  *                    fx: [{kind, obj, ...}], cloth: Material[] (player only), phase,
  *   battle data (ship-local; +x = port, -x = starboard, bow = +z):
@@ -4103,6 +5593,14 @@ function raiseFlag(group, P, look) {
  *     sailInfo: [{ mesh, top, dropped }] every sail mesh; top marks the one holding the sail that
  *                comes down on MAST DOWN, dropped is true while it is down
  *     damageLevel: 0 | 1 | 2, mastDown: boolean, flag: 'own' | 'white' | 'player' (see setShipDamage, hoistFlag)
+ *     statusAnchors: { rail: [{x, y, z}], deck: {x, y, z}, holes: [{x, y, z, side}] } where statusfx.js
+ *                draws a status (SPEC3 §2.7; holes newest first, kept up to date by addHole / clearHoles)
+ *   fire ship only: fuse: { lit, level, k } her rigging flames: set lit = true and they bloom on her cargo
+ *     and climb to the masthead in 1.6 s (her arming time), lit = false and they die down in 0.5 s; or set
+ *     level (0..1) to drive them directly (null = follow lit); k is what animateShip shows
+ *   Bomb Ketch and Inkheart: mortar: { muzzle: {x, y, z}, dir: {x, y, z}, fire(t) } where a shell or ink pot
+ *     leaves (ship-local) and the bore's direction; fire(t), with the visual time animateShip gets, makes the
+ *     mortar jump and blow a smoke ring
  *   player only: helm: {x, y, z, h} (the captain's place behind the wheel, facing the bow), coils (grapnels
  *     shown), hullSpots: [{x, y, z, side, h}] (on the hull sides just above the waterline, h = yaw facing
  *     the hull) and blockers: [{x, z, r} | {x, z, hx, hz}] (deck props) }
@@ -4177,6 +5675,9 @@ export function buildShip(typeKey, opts = {}) {
     group.userData.helm = S.helm;
     group.userData.coils = S.coils;
   }
+  group.userData.statusAnchors = statusAnchors(S, hull);
+  if (S.fuse) group.userData.fuse = { lit: false, level: null, k: 0 };
+  if (S.mortar) group.userData.mortar = mortarApi(S.mortar);
   const sources = new Map();
   for (const t of [top, droop]) {
     if (!t || !t.ranges || sources.has(t.mesh)) continue;
@@ -4203,8 +5704,55 @@ export function buildShip(typeKey, opts = {}) {
     white: null,
     prize: null,
     prizeKey: '',
+    fuse: S.fuse,
+    fuseT: null,
+    mortar: S.mortar,
   });
   return group;
+}
+
+/**
+ * Where statusfx.js draws a status on a ship (SPEC3 §2.7), ship-local (+x = port, bow = +z):
+ * rail: points along both cap rails of the waist (port side first; icicles hang under them, ice plates
+ * bob below them), deck: the middle of her deck (the stink cloud; the Iron Turtle's is on her shell),
+ * holes: her holes newest first, [{ x, y, z, side }] (side +1 starboard, -1 port; kept by addHole and
+ * clearHoles: flames lick up from the two newest).
+ */
+function statusAnchors(S, hull) {
+  const L = hull.L;
+  const z1 = -L / 2 + L * 0.82;
+  let z0 = Math.max(-L / 2 + L * 0.16, (S.castle ?? -Infinity) + 0.35);
+  if (z1 - z0 < 1.5) z0 = z1 - 1.5;
+  const rail = [];
+  const N = 8;
+  for (const side of [1, -1]) {
+    for (let i = 0; i < N; i++) {
+      const z = lerp(z0, z1, (i + 0.5) / N);
+      const u = hullU(hull, z, hull.D);
+      const y = hull.rail(u) - hull.rb;
+      rail.push({ x: r3(side * hull.xAt(u, y)), y: r3(y), z: r3(hull.zAt(u, y)) });
+    }
+  }
+  const d = S.deckAnchor || { x: 0, y: hull.D, z: (z0 + z1) / 2 };
+  return { rail, deck: { x: r3(d.x), y: r3(d.y), z: r3(d.z) }, holes: [] };
+}
+
+/** userData.mortar: where her shells leave from, and fire(t) to make the mortar jump and blow a smoke ring. */
+function mortarApi(M) {
+  M.group.updateMatrixWorld(true);
+  const muzzle = M.tilt.localToWorld(V3(0, 0.67, 0));
+  const dir = V3(0, 1, 0).applyQuaternion(M.tilt.getWorldQuaternion(new THREE.Quaternion()));
+  M.muzzle = muzzle;
+  M.dir = dir;
+  return {
+    muzzle: { x: r3(muzzle.x), y: r3(muzzle.y), z: r3(muzzle.z) },
+    dir: { x: r3(dir.x), y: r3(dir.y), z: r3(dir.z) },
+    at: -Infinity,
+    /** The mortar fires at visual time t (the t that animateShip gets). */
+    fire(t) {
+      this.at = Number.isFinite(t) ? t : 0;
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -4325,6 +5873,82 @@ export function animateShip(group, t, speedRatio = 0) {
       fx.obj.rotation.y = fx.ph * 7 + q * 1.2;
     }
   }
+  if (u.fuse || u.mortar) {
+    const P = PRIV.get(group);
+    if (P && P.fuse && u.fuse) animateFuse(P, u.fuse, t);
+    if (P && P.mortar && u.mortar) animateMortar(P.mortar, u.mortar, t);
+  }
+}
+
+const FUSE_BLOOM = 1.6; // s for the flames to climb from her cargo to the masthead (her arming time, SPEC3 §4.2)
+const FUSE_OUT = 0.5; // s for them to die down when the fuse is put out
+
+/** The fire ship's fuse: flames bloom on her cargo, then climb the rigging; shape flicker, steady brightness. */
+function animateFuse(P, fuse, t) {
+  const dt = P.fuseT == null ? 0 : clamp(t - P.fuseT, 0, 0.1);
+  P.fuseT = t;
+  if (typeof fuse.level === 'number' && Number.isFinite(fuse.level)) fuse.k = clamp(fuse.level, 0, 1);
+  else fuse.k = fuse.lit ? Math.min(1, fuse.k + dt / FUSE_BLOOM) : Math.max(0, fuse.k - dt / FUSE_OUT);
+  const k = fuse.k;
+  const F = P.fuse;
+  const a = sstep(0, 0.4, k);
+  const b = sstep(0.25, 1, k);
+  const flick = (ph) => Math.sin(t * 13 + ph) * 0.5 + Math.sin(t * 21 + ph * 2) * 0.5;
+  F.low.visible = a > 0.01;
+  if (F.low.visible) {
+    const f = flick(0.7);
+    F.low.scale.set(a * (1 + 0.05 * f), a * (1 + 0.12 * f), a * (1 + 0.05 * f));
+  }
+  F.rig.visible = b > 0.01;
+  if (F.rig.visible) {
+    const f = flick(2.3);
+    F.rig.scale.set(Math.min(1, b * 2) * (1 + 0.04 * f), b * (1 + 0.08 * f), Math.min(1, b * 2) * (1 + 0.04 * f));
+  }
+  F.embers.visible = k > 0.3;
+  if (F.embers.visible) {
+    const q = (t * 0.45) % 1;
+    const s = 0.6 + 0.6 * (1 - q);
+    F.embers.position.y = P.deckY + 1.0 + q * 2.6;
+    F.embers.scale.set(s, s, s);
+    F.embers.rotation.y = t * 0.7;
+  }
+}
+
+const MORTAR_T = 1.15; // s: the jump and the smoke ring
+
+/** The mortar jumps on its bed and blows a smoke ring when it fires (userData.mortar.fire(t)). */
+function animateMortar(M, api, t) {
+  const q = t - api.at;
+  if (!(q >= 0 && q < MORTAR_T)) {
+    if (M.moved) {
+      M.group.position.copy(M.base);
+      M.group.scale.set(1, 1, 1);
+      M.ring.visible = false;
+      M.moved = false;
+    }
+    return;
+  }
+  M.moved = true;
+  // squat, hop up, land with a little squash
+  const s = M.s;
+  let dy = 0;
+  let sy = 1;
+  if (q < 0.1) sy = 1 - 0.16 * (q / 0.1);
+  else if (q < 0.42) {
+    const w = Math.sin((PI * (q - 0.1)) / 0.32);
+    dy = 0.32 * s * w;
+    sy = 0.84 + 0.26 * w;
+  } else if (q < 0.7) sy = 1 - 0.1 * Math.sin((PI * (q - 0.42)) / 0.28);
+  M.group.position.set(M.base.x, M.base.y + dy, M.base.z);
+  M.group.scale.set(1 + (1 - sy) * 0.5, sy, 1 + (1 - sy) * 0.5);
+  // the smoke ring leaves the muzzle, rises and swells, then shrinks away
+  const e = 1 - (1 - q / MORTAR_T) ** 2;
+  const fade = q > 0.8 ? Math.max(0, (MORTAR_T - q) / (MORTAR_T - 0.8)) : 1;
+  const r = M.ring;
+  r.visible = true;
+  r.position.copy(M.muzzle).addScaledVector(M.dir, (0.15 + 1.8 * e) * s).add(V3(0, 0.8 * q, 0));
+  r.quaternion.setFromUnitVectors(FWD, M.dir);
+  r.scale.setScalar((0.55 + 1.5 * e) * s * fade);
 }
 
 /**

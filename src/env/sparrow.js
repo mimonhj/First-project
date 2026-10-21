@@ -5,6 +5,7 @@ import { toon, setOutline, gradientMap, ensureIndex, OUTLINE_THICKNESS } from '.
 import { waveHeight } from '../scenery.js';
 import { buildShip, animateShip, disposeShip, hoistFlag } from '../ships.js';
 import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIGHT, RAIL } from '../people.js';
+import * as islandRules from '../island.js';
 
 // Sparrow's Floating Island: the pirate town on the water where the player's ship docks
 // for repairs, upgrades and a fresh coat of paint (the shipyard screen).
@@ -778,6 +779,252 @@ function arrowPlane(w, h, back = false) {
 }
 
 // ---------------------------------------------------------------------------
+// The Kraken Seas' painted boards (SPEC3 §7.1, §8.1, §8.3), on a canvas of their own: "Build me!" on the empty
+// plots, the town's rank on a plaque under the welcome sign, the Riddle Bell's chalkboard and Builder Bess's
+// island plan. (Only with the plots; without them the town paints exactly today's signs.)
+// ---------------------------------------------------------------------------
+const DEV_W = 1024;
+const DEV_H = 512;
+const DEV_UV = {
+  buildme: [0, 0, 512, 256],
+  plaque: [512, 0, 512, 128],
+  chalk: [512, 128, 512, 384],
+  map: [0, 256, 512, 256],
+};
+function paintDev(c, rank) {
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  const rr = (x, y, w, h, r) => {
+    g.beginPath();
+    g.moveTo(x + r, y);
+    g.arcTo(x + w, y, x + w, y + h, r);
+    g.arcTo(x + w, y + h, x, y + h, r);
+    g.arcTo(x, y + h, x, y, r);
+    g.arcTo(x, y, x + w, y, r);
+    g.closePath();
+  };
+  // hand-lettered, like the town's signs: a thick ink stroke under a bright fill, each letter a little wobbly
+  const letters = (text, cx, cy, size, fill, stroke = '#2a1a12', wob = 0.06, maxW = Infinity) => {
+    g.font = `${size}px ${SIGN_FONT}`;
+    g.textBaseline = 'middle';
+    g.textAlign = 'left';
+    let widths = [...text].map((ch) => g.measureText(ch).width + size * 0.02);
+    let total = widths.reduce((a, b) => a + b, 0);
+    if (total > maxW) return letters(text, cx, cy, Math.floor((size * maxW) / total), fill, stroke, wob);
+    let x = cx - total / 2;
+    let i = 0;
+    for (const ch of text) {
+      const w = widths[i];
+      g.save();
+      g.translate(x + w / 2, cy + Math.sin(i * 1.7) * size * 0.04);
+      g.rotate(Math.sin(i * 2.3 + 1) * wob);
+      g.lineJoin = 'round';
+      if (stroke) {
+        g.lineWidth = size * 0.16;
+        g.strokeStyle = stroke;
+        g.strokeText(ch, -w / 2, 0);
+      }
+      g.fillStyle = fill;
+      g.fillText(ch, -w / 2, 0);
+      g.restore();
+      x += w;
+      i++;
+    }
+  };
+  // "Build me!" (a cream board in a wooden edge, a red hammer beside the words)
+  {
+    const [x, y, w, h] = DEV_UV.buildme;
+    g.fillStyle = '#7a4a28';
+    rr(x + 4, y + 4, w - 8, h - 8, 30);
+    g.fill();
+    g.fillStyle = '#fff3d6';
+    rr(x + 18, y + 18, w - 36, h - 36, 20);
+    g.fill();
+    g.strokeStyle = 'rgba(150, 95, 45, 0.22)';
+    g.lineWidth = 3;
+    for (let k = 1; k < 4; k++) {
+      const yy = y + (h * k) / 4;
+      g.beginPath();
+      g.moveTo(x + 24, yy);
+      g.bezierCurveTo(x + w * 0.3, yy + 5, x + w * 0.6, yy - 5, x + w - 24, yy + 2);
+      g.stroke();
+    }
+    letters('BUILD', x + w * 0.42, y + 82, 96, '#e2383d', '#2a1a12', 0.06);
+    letters('ME!', x + w * 0.42, y + 178, 104, '#3a6fd8', '#2a1a12', 0.07);
+    // the hammer
+    g.save();
+    g.translate(x + w * 0.83, y + h * 0.52);
+    g.rotate(-0.5);
+    g.fillStyle = '#2a1a12';
+    rr(-17, -18, 34, 120, 12);
+    g.fill();
+    g.fillStyle = '#c68b4e';
+    rr(-11, -12, 22, 108, 8);
+    g.fill();
+    g.fillStyle = '#2a1a12';
+    rr(-48, -66, 96, 56, 14);
+    g.fill();
+    g.fillStyle = '#8f98b0';
+    rr(-41, -59, 82, 42, 10);
+    g.fill();
+    g.restore();
+  }
+  // the rank plaque (navy, a gold rim and gold letters)
+  {
+    const [x, y, w, h] = DEV_UV.plaque;
+    g.fillStyle = '#b8862b';
+    rr(x + 4, y + 4, w - 8, h - 8, 26);
+    g.fill();
+    g.fillStyle = '#2b3866';
+    rr(x + 14, y + 14, w - 28, h - 28, 18);
+    g.fill();
+    g.fillStyle = '#ffd84a';
+    for (const sx of [x + 52, x + w - 52]) {
+      g.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const a = -Math.PI / 2 + (i * Math.PI) / 5;
+        const r = i % 2 ? 11 : 26;
+        g.lineTo(sx + Math.cos(a) * r, y + h / 2 + Math.sin(a) * r);
+      }
+      g.closePath();
+      g.fill();
+    }
+    // (the longest rank, PIRATE CAPITAL, shrinks to keep clear of the two stars)
+    letters(String(rank || islandRules.RANKS[0].name).toUpperCase(), x + w / 2, y + h / 2 + 4, 66, '#ffd84a', '#1a1f3a', 0.04, w - 184);
+  }
+  // the chalkboard: QUIZ and a star, a sum and a doodled fish, in chalk
+  {
+    const [x, y, w, h] = DEV_UV.chalk;
+    g.fillStyle = '#8a5a30';
+    rr(x + 4, y + 4, w - 8, h - 8, 18);
+    g.fill();
+    g.fillStyle = '#2f5a46';
+    rr(x + 22, y + 22, w - 44, h - 44, 10);
+    g.fill();
+    g.fillStyle = 'rgba(255, 255, 255, 0.06)';
+    for (let k = 0; k < 7; k++) {
+      g.beginPath();
+      g.ellipse(x + 80 + k * 60, y + 90 + ((k * 53) % 200), 70, 18, -0.3, 0, Math.PI * 2);
+      g.fill();
+    }
+    letters('QUIZ', x + w * 0.44, y + 105, 118, '#fdfbf0', null, 0.05);
+    // a chalk star
+    g.save();
+    g.translate(x + w * 0.83, y + 100);
+    g.rotate(0.12);
+    g.strokeStyle = '#ffe57a';
+    g.lineWidth = 9;
+    g.lineJoin = 'round';
+    g.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const a = -Math.PI / 2 + (i * Math.PI) / 5;
+      const r = i % 2 ? 20 : 48;
+      g.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+    }
+    g.closePath();
+    g.stroke();
+    g.restore();
+    letters('2 + 3 = ?', x + w * 0.42, y + 228, 64, '#ffe57a', null, 0.05);
+    // a doodled fish and a wave
+    g.strokeStyle = '#f9a8bd';
+    g.lineWidth = 7;
+    g.lineCap = 'round';
+    g.beginPath();
+    g.ellipse(x + w * 0.78, y + 290, 46, 24, 0, 0, Math.PI * 2);
+    g.moveTo(x + w * 0.78 + 46, y + 290);
+    g.lineTo(x + w * 0.78 + 78, y + 268);
+    g.lineTo(x + w * 0.78 + 78, y + 312);
+    g.closePath();
+    g.stroke();
+    g.fillStyle = '#f9a8bd';
+    g.beginPath();
+    g.arc(x + w * 0.78 - 22, y + 284, 6, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = '#a7d3f5';
+    g.beginPath();
+    for (let k = 0; k <= 8; k++) g.lineTo(x + 60 + k * 30, y + 318 + Math.sin(k * 1.6) * 10);
+    g.stroke();
+  }
+  // Bess's island plan: the town's decks on a parchment sea, the ten plots marked with red crosses
+  {
+    const [x, y, w, h] = DEV_UV.map;
+    g.fillStyle = '#7a4a28';
+    rr(x + 4, y + 4, w - 8, h - 8, 14);
+    g.fill();
+    g.fillStyle = '#f3e2b8';
+    rr(x + 16, y + 16, w - 32, h - 32, 8);
+    g.fill();
+    g.fillStyle = '#bfe3ef';
+    rr(x + 30, y + 64, w - 60, h - 92, 30);
+    g.fill();
+    letters('ISLAND PLAN', x + w / 2, y + 40, 40, '#7a4a28', null, 0.04);
+    // the walkable decks (the plaza in the middle, the tavern above it, the pier below), as seen from above
+    const deck = (cx, cy, ww, hh, col = '#d9a465') => {
+      g.fillStyle = '#5a3820';
+      rr(x + cx - ww / 2 - 3, y + cy - hh / 2 - 3, ww + 6, hh + 6, 6);
+      g.fill();
+      g.fillStyle = col;
+      rr(x + cx - ww / 2, y + cy - hh / 2, ww, hh, 4);
+      g.fill();
+    };
+    deck(256, 168, 110, 58);
+    deck(232, 116, 84, 46);
+    deck(256, 214, 150, 16);
+    deck(330, 158, 46, 50);
+    deck(282, 110, 40, 32);
+    deck(186, 96, 34, 34);
+    g.fillStyle = '#f7dd9c';
+    g.beginPath();
+    g.arc(x + 170, y + 160, 22, 0, Math.PI * 2);
+    g.fill();
+    g.strokeStyle = '#d23a3a';
+    g.lineWidth = 6;
+    g.lineCap = 'round';
+    for (const [px, py] of [[120, 104], [158, 80], [96, 140], [126, 186], [108, 222], [252, 70], [316, 92], [356, 94], [400, 160], [130, 150]]) {
+      g.beginPath();
+      g.moveTo(x + px - 9, y + py - 9);
+      g.lineTo(x + px + 9, y + py + 9);
+      g.moveTo(x + px + 9, y + py - 9);
+      g.lineTo(x + px - 9, y + py + 9);
+      g.stroke();
+    }
+  }
+}
+function devTexture(rank) {
+  if (typeof document === 'undefined') return null;
+  const c = document.createElement('canvas');
+  c.width = DEV_W;
+  c.height = DEV_H;
+  const tex = new THREE.CanvasTexture(c);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 4;
+  tex.userData.rank = rank;
+  tex.userData.paint = (r) => {
+    if (tex.userData.disposed) return;
+    if (r !== undefined) tex.userData.rank = r;
+    paintDev(c, tex.userData.rank);
+    tex.needsUpdate = true;
+  };
+  paintDev(c, rank);
+  // repaint once the game's display font has arrived (it may still be loading)
+  if (document.fonts && document.fonts.load) {
+    document.fonts.load(`64px ${SIGN_FONT}`).then(() => tex.userData.paint(), () => {});
+  }
+  return tex;
+}
+function devPlane(region, w, h) {
+  const [x, y, rw, rh] = DEV_UV[region];
+  const g = new THREE.PlaneGeometry(w, h);
+  const uv = g.attributes.uv;
+  for (let i = 0; i < uv.count; i++) {
+    const u = uv.getX(i);
+    const v = uv.getY(i);
+    uv.setXY(i, (x + u * rw) / DEV_W, 1 - (y + (1 - v) * rh) / DEV_H);
+  }
+  return g;
+}
+
+// ---------------------------------------------------------------------------
 // Props
 // ---------------------------------------------------------------------------
 const barrelGeo = () => lathe('barrel', [[0, -0.5], [0.36, -0.5], [0.44, -0.3], [0.48, 0], [0.44, 0.3], [0.36, 0.5], [0, 0.5]], 14);
@@ -1389,6 +1636,10 @@ function deckOccupancy(tris, deckY, { X0 = -1.9, Z0 = -4.6, NX = 76, NZ = 206 } 
 // ---------------------------------------------------------------------------
 export function build(scene, ctx = {}) {
   const rand = mulberry32(51013); // fixed: the town always looks the same
+  const townRand = rand;
+  // The Kraken Seas (SPEC3 §8, ctx.kraken): the island's plots, Builder Bess, Professor Barnacle's Riddle Bell and
+  // the villagers. Without it the town is exactly today's (the same draws, the same bake, the same walk).
+  const KRAKEN = ctx.kraken === true;
   const root = new THREE.Group();
   root.name = 'env-sparrow';
   scene.add(root);
@@ -1422,6 +1673,7 @@ export function build(scene, ctx = {}) {
   // { x, z, w, d, ry, y0, y1 } (a box) or { x, z, r, y0, y1 } (an upright cylinder), world units.
   const walkData = { radius: 0.3, areas: [], links: [], blockers: [], camBlockers: [], places: [], spawn: null };
   const walkDecks = []; // the walkable decks, whole (for telling which townsfolk stand on them)
+  const doors = []; // (the Kraken Seas) the doorways on the walk: { id, x, z }
   const r2 = (v) => Math.round(v * 100) / 100;
   const yawOf = (obj) => {
     obj.updateWorldMatrix(true, false);
@@ -2236,6 +2488,11 @@ export function build(scene, ctx = {}) {
     // The Salty Sparrow (a place): the captain stops on the porch in front of the door; the
     // tavern panel's camera looks at the door and the table from the plaza side
     const door = worldAt(g, 0, 0, D / 2 + 1.15);
+    if (KRAKEN) {
+      const front = worldAt(g, 0, 0, D / 2);
+      const back = worldAt(g, 0.1, 0, -D / 2);
+      doors.push({ id: 'tavern', x: r2(front.x), z: r2(front.z) }, { id: 'tavernBack', x: r2(back.x), z: r2(back.z) });
+    }
     const camT = worldAt(g, 1.3, 1.25, D / 2 + 1.0);
     const camP = worldAt(g, 0.3, 3.0, D / 2 + 5.8);
     walkData.places.push({ id: 'tavern', name: 'The Salty Sparrow', x: r2(door.x), z: r2(door.z), r: 1.6, face: r3(g.rotation.y + PI), cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] } });
@@ -2531,6 +2788,8 @@ export function build(scene, ctx = {}) {
   // ----- shacks -----
   function roof(g, w, d, y, rh, color, o = {}) {
     // gable roof with the ridge along x; three shingle bands per side, patches with nails
+    // (o.rand: a stream of its own for the patches; the town's own rand by default)
+    const rand = o.rand || townRand;
     const half = d / 2;
     const slope = Math.atan2(rh, half);
     const L = Math.hypot(half, rh);
@@ -2601,6 +2860,7 @@ export function build(scene, ctx = {}) {
     }
   }
   function shack(parent, x, y, z, ry, o) {
+    const rand = o.rand || townRand; // (o.rand: a stream of its own; the town's own rand by default)
     const g = new THREE.Group();
     g.position.set(x, y, z);
     g.rotation.set(0, ry, o.tilt || 0);
@@ -2658,7 +2918,7 @@ export function build(scene, ctx = {}) {
         pc.rotation.order = 'YXZ';
       }
     } else {
-      roof(g, w + 0.8, d + 0.9, h + 0.25, o.rh ?? 1.5, o.roof, { patches: o.patches ?? 2, gable: shade(wall, 0.25) });
+      roof(g, w + 0.8, d + 0.9, h + 0.25, o.rh ?? 1.5, o.roof, { patches: o.patches ?? 2, gable: shade(wall, 0.25), rand: o.rand });
     }
     if (o.chimney === 'pipe') {
       const cx = w / 2 - 0.6;
@@ -2694,11 +2954,37 @@ export function build(scene, ctx = {}) {
     ['s17', 0, -0.5, 0.0, { w: 4.2, d: 3.4, h: 2.8, wall: WALLS[6], roof: ROOFS[1], patches: 2, stack: { w: 3.0, d: 2.6, h: 2.2, wall: WALLS[4], roof: ROOFS[6], chimney: 'pipe' } }],
     ['s18', 0, -0.4, 0.0, { w: 3.6, d: 3.0, h: 2.5, wall: WALLS[5], roof: ROOFS[4], patches: 2, round: true }],
   ];
+  // The plots (SPEC3 §8.1, the Kraken Seas only): ten of these platforms, each built up by the player. A plot's
+  // things are built in a group of its own placed like its platform, outside the town's bake: its tier-0 kit
+  // (today's shack and porch clutter, built here with today's draws in today's order) and later the buildings of
+  // tiers 1-3, all baked into the development layer.
+  // island.js's PLOTS is the one source of §8.1's numbers: each row's platform, kind and tier-3 height are read
+  // from it (its x / z are that platform's, which the walk test checks); the art only adds how each plot looks.
+  const plotList = [];
+  const plotOf = {};
+  if (KRAKEN) {
+    for (const d of islandRules.PLOTS) {
+      const P = plats[d.platform];
+      if (!P || P.walk || plotOf[d.platform] || !(d.height > 0)) continue;
+      const kit0 = new THREE.Group();
+      kit0.position.copy(P.g.position);
+      kit0.rotation.copy(P.g.rotation);
+      const kind = d.kind === 'home' ? 'home' : d.id;
+      const plot = { id: d.id, def: d, kind, P, kit0, smoke0: [], index: plotList.length, tier: 0, height: d.height };
+      plotList.push(plot);
+      plotOf[d.platform] = plot;
+    }
+  }
   let seed = 0;
   for (const [pn, lx, lz, ry, look] of SHACKS) {
     const P = plats[pn];
+    // (a plot's shack and clutter go to its tier-0 kit, its chimney smoke with them)
+    const plot = plotOf[pn] || null;
+    const home = plot ? plot.kit0 : P.g;
+    const smokeSrc = anim.smokeSrc;
+    if (plot) anim.smokeSrc = plot.smoke0;
     const tilt = (rand() - 0.5) * 0.05;
-    const s = shack(P.g, lx, P.y, lz, ry, { ...look, tilt, seed: seed++ });
+    const s = shack(home, lx, P.y, lz, ry, { ...look, tilt, seed: seed++ });
     if (look.stack) {
       // a second shack perched on top, slightly crooked
       shack(s, 0.3, look.h + 0.35, -0.2, (rand() - 0.5) * 0.25, { ...look.stack, tilt: (rand() - 0.5) * 0.08, seed: seed++, patches: 2 });
@@ -2711,9 +2997,10 @@ export function build(scene, ctx = {}) {
       }
     }
     // porch clutter
-    barrel(P.g, -P.w / 2 + 0.6, P.y, P.d / 2 - 0.7, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
-    if (seed % 3 === 0) crate(P.g, P.w / 2 - 0.7, P.y, P.d / 2 - 0.6, 0.7, rand());
-    if (seed % 3 === 1) netRack(P.g, P.w / 2 - 0.9, P.y, 0.9, -PI / 2);
+    barrel(home, -P.w / 2 + 0.6, P.y, P.d / 2 - 0.7, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
+    if (seed % 3 === 0) crate(home, P.w / 2 - 0.7, P.y, P.d / 2 - 0.6, 0.7, rand());
+    if (seed % 3 === 1) netRack(home, P.w / 2 - 0.9, P.y, 0.9, -PI / 2);
+    anim.smokeSrc = smokeSrc;
     // (the camera in the town view keeps out of the houses)
     blockBox(s, 0, 0, look.w + 0.35, look.d + 0.35, 0, look.h + 1.8 + (look.stack ? look.stack.h + 2 : 0));
   }
@@ -2801,6 +3088,10 @@ export function build(scene, ctx = {}) {
     add(shop, cyl(0.14, 0.14, 0.04, 12), winGlow, doorX, 1.45, fz + 0.11, PI / 2);
     add(shop, sphere(8), ink(COL.brass), doorX + 0.27, 0.95, fz + 0.15, 0, 0, 0, 0.06);
     add(shop, rbox(1.1, 0.1, 0.4, 0.03), ink(COL.wood3), doorX, 0.06, fz + 0.2);
+    if (KRAKEN) {
+      const d = worldAt(shop, doorX, 0, fz);
+      doors.push({ id: 'tailor', x: r2(d.x), z: r2(d.z) });
+    }
     // the scalloped striped awning over the window and the door
     {
       const nS = 8;
@@ -3199,16 +3490,23 @@ export function build(scene, ctx = {}) {
   }
 
   // ----- chimney smoke (instanced puffs) -----
+  // (with the plots, room for the development layer's chimneys too, and a colour per puff: the Powder
+  // Windmill's shed puffs blue, orange and green)
+  const DEV_SMOKE = 12;
   {
     const per = 6;
-    const n = anim.smokeSrc.length * per;
+    const n = (anim.smokeSrc.length + (KRAKEN ? DEV_SMOKE : 0)) * per;
     const puff = new THREE.InstancedMesh(sphere(10), toon(COL.smoke, { outline: THIN }), Math.max(1, n));
     puff.frustumCulled = false;
     puff.userData.keep = true;
     root.add(puff);
     root.updateMatrixWorld(true);
     for (const s of anim.smokeSrc) s.world = s.obj.localToWorld(s.local.clone());
-    anim.smoke = { puff, per, m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: V3(), s: V3() };
+    anim.smoke = { puff, per, m: new THREE.Matrix4(), q: new THREE.Quaternion(), p: V3(), s: V3(), dev: [], c: new THREE.Color() };
+    if (KRAKEN) {
+      for (let i = 0; i < n; i++) puff.setColorAt(i, anim.smoke.c.setHex(0xffffff));
+      puff.count = anim.smokeSrc.length * per;
+    }
   }
 
   // ----- bake the statics -----
@@ -3218,6 +3516,1319 @@ export function build(scene, ctx = {}) {
     o.updateMatrix();
     o.matrixAutoUpdate = false;
   });
+
+  // ----- the development layer (SPEC3 §8.2, the Kraken Seas only) -----
+  // Every plot's buildings (and the new places' props) bake into one mesh per ink weight, with vertex colours (the
+  // lit windows' and lanterns' glow ride along as a vertex attribute, so they need no mesh of their own), plus one
+  // mesh for the painted boards: at most 4 meshes, 6 draw calls with the outline pass. Each tier of each plot is
+  // built and baked once, the first time it is wanted, into plain arrays (a chunk); setIsland() then only joins
+  // the chunks of the tiers standing now. The animated parts (the windmill's sails, the lighthouse's beam, the
+  // fountain's jet) are meshes of their own, and the chimneys puff through the town's smoke.
+  const dev = { root: null, meshes: [], chunks: new Map(), tex: null, texMat: null, mats: {}, props: null, lit: {}, built: false, rank: islandRules.RANKS[0].name, anim: {} };
+  const devFlicker = { value: 1.1 }; // the lanterns' flicker (lanternGlow's intensity), for their glow in the layer
+  function devMaterial(kind) {
+    let m = dev.mats[kind];
+    if (m) return m;
+    m = new THREE.MeshToonMaterial({ color: 0xffffff, vertexColors: true, gradientMap: gradientMap(3) });
+    m.name = `sparrow-dev:${kind}`;
+    setOutline(m, kind === 'ink' ? true : kind === 'thin' ? THIN : false);
+    // glow: rgb the emissive light of a lit window or a lantern, a = 1 where it flickers with the lanterns
+    m.onBeforeCompile = (sh) => {
+      sh.uniforms.uFlicker = devFlicker;
+      sh.vertexShader = sh.vertexShader
+        .replace('#include <common>', '#include <common>\nattribute vec4 glow;\nvarying vec4 vGlow;')
+        .replace('#include <begin_vertex>', '#include <begin_vertex>\nvGlow = glow;');
+      sh.fragmentShader = sh.fragmentShader
+        .replace('#include <common>', '#include <common>\nvarying vec4 vGlow;\nuniform float uFlicker;')
+        .replace('#include <emissivemap_fragment>', '#include <emissivemap_fragment>\ntotalEmissiveRadiance += vGlow.rgb * mix(1.0, uFlicker, vGlow.a);');
+    };
+    m.customProgramCacheKey = () => 'sparrow-dev-glow';
+    ownMaterials.push(m);
+    dev.mats[kind] = m;
+    return m;
+  }
+  const _dm = new THREE.Matrix4();
+  const _dn = new THREE.Matrix3();
+  const _dv = V3();
+  /** Bake every mesh under `holder` (placed in the world; nothing is changed) into plain arrays per ink weight. */
+  function devChunk(holder) {
+    holder.updateMatrixWorld(true);
+    const groups = { ink: [], thin: [], flat: [], tex: [] };
+    holder.traverse((o) => {
+      if (!o.isMesh || o.isInstancedMesh || o.isSkinnedMesh || Array.isArray(o.material)) return;
+      const m = o.material;
+      let cls = 'tex';
+      if (!m.map) {
+        if (m.transparent) return;
+        const op = m.userData.outlineParameters;
+        cls = !op || op.visible === false ? 'flat' : (op.thickness ?? OUTLINE_THICKNESS) < OUTLINE_THICKNESS * 0.8 ? 'thin' : 'ink';
+      }
+      groups[cls].push(o);
+    });
+    const out = { smoke: [] };
+    for (const cls of Object.keys(groups)) {
+      const items = groups[cls];
+      if (!items.length) continue;
+      let verts = 0;
+      let idx = 0;
+      for (const o of items) {
+        const g = o.geometry;
+        if (!g.attributes.normal) g.computeVertexNormals();
+        const n = g.attributes.position.count;
+        verts += n;
+        idx += g.index ? g.index.count : n;
+      }
+      const tex = cls === 'tex';
+      const pos = new Float32Array(verts * 3);
+      const nor = new Float32Array(verts * 3);
+      const col = tex ? null : new Float32Array(verts * 3);
+      const glow = tex ? null : new Float32Array(verts * 4);
+      const uv = tex ? new Float32Array(verts * 2) : null;
+      const index = new Uint32Array(idx);
+      let vo = 0;
+      let io = 0;
+      for (const o of items) {
+        const g = o.geometry;
+        const P = g.attributes.position;
+        const N = g.attributes.normal;
+        const n = P.count;
+        _dm.copy(o.matrixWorld);
+        _dn.getNormalMatrix(_dm);
+        const flip = _dm.determinant() < 0;
+        for (let i = 0; i < n; i++) {
+          _dv.fromBufferAttribute(P, i).applyMatrix4(_dm);
+          pos[(vo + i) * 3] = _dv.x;
+          pos[(vo + i) * 3 + 1] = _dv.y;
+          pos[(vo + i) * 3 + 2] = _dv.z;
+          _dv.fromBufferAttribute(N, i).applyMatrix3(_dn).normalize();
+          nor[(vo + i) * 3] = _dv.x;
+          nor[(vo + i) * 3 + 1] = _dv.y;
+          nor[(vo + i) * 3 + 2] = _dv.z;
+        }
+        if (col) {
+          const m = o.material;
+          const c = o.userData.tint || m.color;
+          const e = m.emissive && m.emissive.getHex() !== 0 ? m.emissive : null;
+          const fl = m === lanternGlow ? 1 : 0;
+          const k = e ? (fl ? 1 : m.emissiveIntensity) : 0;
+          for (let i = vo; i < vo + n; i++) {
+            col[i * 3] = c.r;
+            col[i * 3 + 1] = c.g;
+            col[i * 3 + 2] = c.b;
+            if (e) {
+              glow[i * 4] = e.r * k;
+              glow[i * 4 + 1] = e.g * k;
+              glow[i * 4 + 2] = e.b * k;
+              glow[i * 4 + 3] = fl;
+            }
+          }
+        }
+        if (uv && g.attributes.uv) {
+          const U = g.attributes.uv;
+          for (let i = 0; i < n; i++) {
+            uv[(vo + i) * 2] = U.getX(i);
+            uv[(vo + i) * 2 + 1] = U.getY(i);
+          }
+        }
+        if (g.index) {
+          const I = g.index.array;
+          for (let i = 0; i < I.length; i += 3) {
+            index[io++] = I[i] + vo;
+            index[io++] = I[flip ? i + 2 : i + 1] + vo;
+            index[io++] = I[flip ? i + 1 : i + 2] + vo;
+          }
+        } else {
+          for (let i = 0; i < n; i += 3) {
+            index[io++] = vo + i;
+            index[io++] = vo + (flip ? i + 2 : i + 1);
+            index[io++] = vo + (flip ? i + 1 : i + 2);
+          }
+        }
+        vo += n;
+      }
+      out[cls] = { pos, nor, col, glow, uv, index, verts };
+    }
+    return out;
+  }
+  /** Join chunks into the layer's meshes (one per ink weight, one for the boards), replacing the old ones (or,
+   * with `into`, into new meshes there, returned). */
+  function devMerge(list, into = null) {
+    const made = [];
+    if (!into) {
+      for (const m of dev.meshes) {
+        dev.root.remove(m);
+        m.geometry.dispose();
+      }
+      dev.meshes.length = 0;
+    }
+    for (const cls of ['ink', 'thin', 'flat', 'tex']) {
+      const parts = list.map((c) => c && c[cls]).filter(Boolean);
+      if (!parts.length || (cls === 'tex' && !dev.texMat)) continue;
+      let verts = 0;
+      let idx = 0;
+      for (const p of parts) {
+        verts += p.verts;
+        idx += p.index.length;
+      }
+      const tex = cls === 'tex';
+      const pos = new Float32Array(verts * 3);
+      const nor = new Float32Array(verts * 3);
+      const col = tex ? null : new Float32Array(verts * 3);
+      const glow = tex ? null : new Float32Array(verts * 4);
+      const uv = tex ? new Float32Array(verts * 2) : null;
+      const index = verts > 65535 ? new Uint32Array(idx) : new Uint16Array(idx);
+      let vo = 0;
+      let io = 0;
+      for (const p of parts) {
+        pos.set(p.pos, vo * 3);
+        nor.set(p.nor, vo * 3);
+        if (col) {
+          col.set(p.col, vo * 3);
+          glow.set(p.glow, vo * 4);
+        }
+        if (uv) uv.set(p.uv, vo * 2);
+        const I = p.index;
+        for (let i = 0; i < I.length; i++) index[io++] = I[i] + vo;
+        vo += p.verts;
+      }
+      const geo = new THREE.BufferGeometry();
+      geo.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+      geo.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+      if (col) {
+        geo.setAttribute('color', new THREE.BufferAttribute(col, 3));
+        geo.setAttribute('glow', new THREE.BufferAttribute(glow, 4));
+      }
+      if (uv) geo.setAttribute('uv', new THREE.BufferAttribute(uv, 2));
+      geo.setIndex(new THREE.BufferAttribute(index, 1));
+      geo.computeBoundingSphere();
+      const mesh = new THREE.Mesh(geo, tex ? dev.texMat : devMaterial(cls));
+      mesh.name = `sparrow-development-${cls}`;
+      mesh.matrixAutoUpdate = false;
+      made.push(mesh);
+      if (into) into.add(mesh);
+      else {
+        dev.root.add(mesh);
+        dev.meshes.push(mesh);
+      }
+    }
+    return made;
+  }
+  /** A group placed like a plot's platform (the frame every plot's art is built in). */
+  function plotFrame(plot) {
+    const g = new THREE.Group();
+    g.position.copy(plot.P.g.position);
+    g.rotation.copy(plot.P.g.rotation);
+    return g;
+  }
+  /** The chunk of a plot at a tier (its tier-0 kit and "Build me!" board, or the buildings of tiers 1-3). */
+  function plotChunk(plot, tier) {
+    const lit = plot.kind === 'home' && tier > 0 && dev.lit[plot.id] !== false;
+    const key = `${plot.id}:${tier}:${lit ? 1 : 0}`;
+    let c = dev.chunks.get(key);
+    if (c) return c;
+    const holder = new THREE.Group();
+    const smoke = [];
+    if (tier === 0) {
+      holder.add(plot.kit0);
+      const b = plotFrame(plot);
+      buildMeBoard(plot, b);
+      holder.add(b);
+      holder.updateMatrixWorld(true);
+      for (const s of plot.smoke0) smoke.push({ world: s.obj.localToWorld(s.local.clone()), s: s.s });
+    } else {
+      const g = plotFrame(plot);
+      holder.add(g);
+      buildPlot(plot, tier, g, lit, smoke);
+      holder.updateMatrixWorld(true);
+      for (const s of smoke) if (s.obj) s.world = s.obj.localToWorld(s.local.clone());
+    }
+    c = devChunk(holder);
+    holder.remove(...holder.children);
+    c.smoke = smoke.map((s) => ({ world: s.world, s: s.s, colors: s.colors || null }));
+    dev.chunks.set(key, c);
+    return c;
+  }
+  // The "Build me!" board on an empty plot: a small painted board on a stake, turned to the walk.
+  const BOARD = {
+    homeA: [2.15, -1.25, PI / 2],
+    homeB: [1.05, 2.2, 0],
+    homeC: [-2.2, -1.2, -PI / 2],
+    homeD: [0.75, 2.05, 0],
+    bakery: [2.15, -0.7, PI / 2],
+    windmill: [2.3, -1.3, PI / 2],
+    lighthouse: [-1.85, 0.75, -PI / 4],
+    market: [2.3, -0.5, PI / 2],
+    school: [2.15, 0.85, PI / 2],
+    park: [2.05, -1.3, PI / 2],
+  };
+  function buildMeBoard(plot, frame) {
+    const at = BOARD[plot.id];
+    if (!at) return;
+    const b = new THREE.Group();
+    b.position.set(at[0], plot.P.y, at[1]);
+    b.rotation.y = at[2];
+    frame.add(b);
+    add(b, rbox(0.12, 1.25, 0.12, 0.03), ink(COL.woodDark), 0, 0.62, -0.05);
+    add(b, rbox(1.12, 0.62, 0.09, 0.04), ink(COL.woodDark), 0, 1.0, 0);
+    if (dev.texMat) add(b, devPlane('buildme', 1.04, 0.54), dev.texMat, 0, 1.0, 0.05);
+    for (const sx of [-1, 1]) add(b, sphere(6), flat(COL.iron), sx * 0.44, 1.2, 0.06, 0, 0, 0, 0.03);
+  }
+  /** Rebake the layer from the plots' tiers now (and place the animated parts). show: { plotId: tier | null }
+   * overrides a plot's tier (null: leave it out; the construction montage draws it apart meanwhile). */
+  function rebuildDev(show = null) {
+    const list = [dev.props];
+    const smoke = [];
+    for (const plot of plotList) {
+      const tier = show && Object.prototype.hasOwnProperty.call(show, plot.id) ? show[plot.id] : plot.tier;
+      if (tier === null) continue;
+      const c = plotChunk(plot, tier);
+      list.push(c);
+      for (const s of c.smoke) smoke.push(s);
+    }
+    devMerge(list);
+    anim.smoke.dev = smoke.slice(0, DEV_SMOKE);
+    placeDevAnim(show);
+    dev.built = true;
+  }
+  /** Where a plot stands: its platform's centre, deck height, size and turn (world). */
+  const plotInfo = (plot) => ({ id: plot.id, x: r2(plot.P.x), z: r2(plot.P.z), y: r2(plot.P.y), w: plot.P.w, d: plot.P.d, ry: r3(plot.P.ry || 0), height: plot.height });
+  if (KRAKEN) {
+    dev.root = new THREE.Group();
+    dev.root.name = 'sparrow-development';
+    root.add(dev.root);
+    dev.tex = devTexture(dev.rank);
+    if (dev.tex) {
+      ownTextures.push(dev.tex);
+      dev.texMat = new THREE.MeshToonMaterial({ color: 0xffffff, map: dev.tex, gradientMap: gradientMap(3) });
+      dev.texMat.name = 'sparrow-dev:boards';
+      setOutline(dev.texMat, false);
+      ownMaterials.push(dev.texMat);
+    }
+    for (const plot of plotList) {
+      plot.tier = 0;
+      // the walk camera keeps out of the tallest building each plot may ever carry, from tier 0 on (§8.1): the
+      // walk data never changes with the tiers
+      walkData.camBlockers.push({ x: r2(plot.P.x), z: r2(plot.P.z), w: r2(plot.P.w), d: r2(plot.P.d), ry: r3(plot.P.ry || 0), y0: r2(plot.P.y - 0.3), y1: r2(plot.P.y + plot.height), plot: plot.id });
+    }
+  }
+
+  // ----- the plots' buildings, tier by tier (SPEC3 §8.2; each tier adds to the last) -----
+  // Built in the plot's frame (its platform's: +z its front, the deck at P.y), from the town's own parts and
+  // colours, each from a stream of its own (so a building always looks the same, whenever it is built).
+  const subG = (parent, x, y, z, ry = 0) => {
+    const g = new THREE.Group();
+    g.position.set(x, y, z);
+    g.rotation.y = ry;
+    parent.add(g);
+    return g;
+  };
+  const FLOWERS = [COL.red, COL.pink, COL.yellow, COL.white, COL.purple, COL.orange];
+  /** A window in a wall facing +z: frame, glass (lit or dark), glazing bars, shutters and a flower box. */
+  function pane(g, x, y, z, w, h, lit, shutter, flowerBox = true, k = 0) {
+    add(g, rbox(w + 0.2, h + 0.2, 0.1, 0.04), ink(COL.woodDeep), x, y, z + 0.02);
+    add(g, rbox(w, h, 0.1, 0.03), lit ? winGlow : ink(COL.glass), x, y, z + 0.05);
+    add(g, rbox(0.05, h, 0.12, 0.02), thin(COL.woodDeep), x, y, z + 0.07);
+    add(g, rbox(w, 0.05, 0.12, 0.02), thin(COL.woodDeep), x, y, z + 0.07);
+    if (shutter !== null && shutter !== undefined) {
+      for (const s of [-1, 1]) {
+        const sh = add(g, rbox(w * 0.48, h + 0.08, 0.06, 0.03), ink(shutter), x + s * (w * 0.74 + 0.1), y, z + 0.16);
+        sh.rotation.y = s * 0.4;
+      }
+    }
+    if (flowerBox) {
+      add(g, rbox(w + 0.14, 0.18, 0.26, 0.04), ink(COL.wood2), x, y - h / 2 - 0.14, z + 0.16);
+      const n = Math.max(3, Math.round(w / 0.2));
+      for (let i = 0; i < n; i++) add(g, sphere(8), ink(FLOWERS[(i + k) % FLOWERS.length]), x - w / 2 + (w * (i + 0.5)) / n, y - h / 2 - 0.01 + (i % 2) * 0.04, z + 0.2, 0, 0, 0, 0.1);
+      for (let i = 0; i < n - 1; i++) add(g, sphere(6), ink(COL.leaf), x - w / 2 + (w * (i + 1)) / n, y - h / 2 - 0.05, z + 0.26, 0, 0, 0, [0.09, 0.06, 0.07]);
+    }
+  }
+  /** A door in a wall facing +z (its foot at y = 0): frame, a round-topped door, a knob and a step. */
+  function doorway(g, x, z, col, w = 0.8, h = 1.6) {
+    add(g, rbox(w + 0.2, h + 0.12, 0.1, 0.04), ink(COL.woodDeep), x, 0.1 + h / 2, z + 0.03);
+    add(g, rbox(w, h, 0.12, 0.05), ink(col), x, 0.06 + h / 2, z + 0.06);
+    add(g, cyl(w / 2 + 0.1, w / 2 + 0.1, 0.1, 14, false), ink(COL.woodDeep), x, 0.1 + h, z + 0.03, PI / 2, 0, 0, [1, 1, 0.55]);
+    add(g, cyl(w / 2, w / 2, 0.12, 14), ink(col), x, 0.06 + h, z + 0.06, PI / 2, 0, 0, [1, 1, 0.5]);
+    add(g, sphere(8), ink(COL.brass), x + w * 0.3, 0.06 + h * 0.5, z + 0.15, 0, 0, 0, 0.06);
+    add(g, rbox(w + 0.3, 0.1, 0.36, 0.03), ink(COL.wood3), x, 0.05, z + 0.2);
+  }
+  /** Walls of a storey (w x d, h tall, its floor at y), with board-and-batten all round and corner posts. */
+  function storey(g, w, d, h, y, col, o = {}) {
+    add(g, rbox(w, h, d, 0.1, 2), ink(col), 0, y + h / 2, 0);
+    const bat = thin(shade(col, -0.18));
+    if (o.clap) {
+      // clapboard: thin boards across
+      for (let yy = y + 0.3; yy < y + h - 0.15; yy += 0.3) {
+        add(g, box(w - 0.06, 0.05, 0.05), bat, 0, yy, d / 2 + 0.01);
+        add(g, box(w - 0.06, 0.05, 0.05), bat, 0, yy, -d / 2 - 0.01);
+        for (const sx of [-1, 1]) add(g, box(0.05, 0.05, d - 0.06), bat, sx * (w / 2 + 0.01), yy, 0);
+      }
+    } else if (o.timber) {
+      // half-timbering: dark posts, a rail and crossed braces on each face
+      const tm = ink(COL.woodDeep);
+      for (const s of [-1, 1]) {
+        for (const x of [-w / 2 + 0.1, -w / 6, w / 6, w / 2 - 0.1]) add(g, rbox(0.12, h, 0.08, 0.03), tm, x, y + h / 2, s * (d / 2 + 0.02));
+        add(g, rbox(w, 0.12, 0.08, 0.03), tm, 0, y + h * 0.55, s * (d / 2 + 0.02));
+        for (const [x0, x1] of [[-w / 2 + 0.1, -w / 6], [w / 6, w / 2 - 0.1]]) beam(g, tm, V3(x0, y + h * 0.58, s * (d / 2 + 0.03)), V3(x1, y + h - 0.08, s * (d / 2 + 0.03)), 0.1, 0.06, 0.02);
+        for (const z of [-d / 2 + 0.1, 0, d / 2 - 0.1]) add(g, rbox(0.08, h, 0.12, 0.03), tm, s * (w / 2 + 0.02), y + h / 2, z);
+        add(g, rbox(0.08, 0.12, d, 0.03), tm, s * (w / 2 + 0.02), y + h * 0.55, 0);
+      }
+    } else {
+      for (let bx = -w / 2 + 0.45; bx < w / 2 - 0.3; bx += 0.5) {
+        add(g, box(0.07, h - 0.2, 0.05), bat, bx, y + h / 2, d / 2 + 0.02);
+        add(g, box(0.07, h - 0.2, 0.05), bat, bx, y + h / 2, -d / 2 - 0.02);
+      }
+      for (const sx of [-1, 1]) for (let bz = -d / 2 + 0.45; bz < d / 2 - 0.3; bz += 0.5) add(g, box(0.05, h - 0.2, 0.07), bat, sx * (w / 2 + 0.02), y + h / 2, bz);
+    }
+    if (!o.timber) for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(g, rbox(0.22, h + 0.1, 0.22, 0.05), ink(o.post ?? COL.woodDark), sx * w / 2, y + h / 2, sz * d / 2);
+    add(g, rbox(w + 0.28, 0.18, d + 0.28, 0.05), ink(o.band ?? COL.woodDark), 0, y + h + 0.05, 0);
+  }
+  /** A wavy (scalloped) trim board hanging under an eave of length L, facing +z. */
+  const wavyGeo = (L) =>
+    cached(`wavy${r3(L)}`, () => {
+      const n = Math.max(3, Math.round(L / 0.42));
+      const pts = [new THREE.Vector2(-L / 2, 0.08), new THREE.Vector2(L / 2, 0.08)];
+      for (let i = n * 6; i >= 0; i--) {
+        const x = -L / 2 + (L * i) / (n * 6);
+        pts.push(new THREE.Vector2(x, -0.09 - 0.07 * (0.5 - 0.5 * Math.cos(((x + L / 2) / (L / n)) * TAU))));
+      }
+      return slabShape(new THREE.Shape(pts), 0.05, 0.01);
+    });
+  /** A gable roof (ridge along x) whose eaves are hung with wavy trim, on a storey top at y. */
+  function wavyRoof(g, w, d, y, rh, col, trim, R, o = {}) {
+    const rg = subG(g, 0, y, 0);
+    roof(rg, w, d, 0, rh, col, { patches: o.patches ?? 0, gable: o.gable ?? trim, rand: R, dormer: o.dormer, dormerX: o.dormerX });
+    for (const s of [-1, 1]) add(rg, wavyGeo(w - 0.1), ink(trim), 0, 0.02, s * (d / 2 + 0.03), 0, s > 0 ? 0 : PI, 0);
+    return rg;
+  }
+  /** A brick chimney (its foot at y), smoking when `puff` (a list of the plot's smoke sources). */
+  function chimney(g, x, y, z, h, puff, s = 0.6) {
+    add(g, rbox(0.55, h, 0.55, 0.06), ink(COL.stone), x, y + h / 2, z);
+    add(g, rbox(0.68, 0.18, 0.68, 0.05), ink(COL.stoneDark), x, y + h, z);
+    for (let i = 0; i < 4; i++) add(g, rbox(0.24, 0.12, 0.05, 0.02), thin(COL.stoneDark), x + ((i % 2) - 0.5) * 0.24, y + 0.3 + i * 0.32, z + 0.28);
+    if (puff) puff.push({ obj: g, local: V3(x, y + h + 0.15, z), s });
+  }
+  /** A bench (seat facing +z) with its foot at y = 0. */
+  function bench(g, x, z, ry, col = COL.wood3, len = 1.3) {
+    const b = subG(g, x, 0, z, ry);
+    add(b, rbox(len, 0.08, 0.38, 0.03), ink(col), 0, 0.3, 0);
+    add(b, rbox(len, 0.3, 0.06, 0.03), ink(col), 0, 0.55, -0.17, -0.12, 0, 0);
+    for (const sx of [-1, 1]) add(b, rbox(0.08, 0.3, 0.34, 0.03), ink(COL.woodDark), sx * (len / 2 - 0.12), 0.15, 0);
+    return b;
+  }
+  /** A fish weathervane (brass) on a rod from y0 to y1. */
+  function fishVane(g, x, y0, y1, z, ry = 0.6) {
+    rod(g, ink(COL.iron), V3(x, y0, z), V3(x, y1, z), 0.035, 6);
+    add(g, sphere(8), ink(COL.brass), x, y1 - 0.25, z, 0, 0, 0, 0.08);
+    const f = subG(g, x, y1, z, ry);
+    add(f, sphere(10), ink(COL.brass), 0, 0, 0.05, 0, 0, 0, [0.07, 0.17, 0.36]);
+    add(f, cached('vaneFishTail', () => new THREE.ConeGeometry(0.16, 0.26, 4).rotateX(-PI / 2)), ink(COL.brass), 0, 0, -0.38, 0, 0, PI / 4, [0.5, 1.2, 1]);
+    add(f, sphere(6), flat(COL.black), 0.065, 0.04, 0.24, 0, 0, 0, 0.025);
+    add(f, sphere(6), flat(COL.black), -0.065, 0.04, 0.24, 0, 0, 0, 0.025);
+  }
+  /** Striped awning (+z its front, its top edge at the wall) of width w and depth dd. */
+  function awning(g, x, y, z, w, dd, cols, tilt = 0.36) {
+    const n = Math.max(4, Math.round(w / 0.42));
+    const aw = w / n;
+    for (let i = 0; i < n; i++) {
+      const xx = x - w / 2 + aw * (i + 0.5);
+      add(g, rbox(aw + 0.01, 0.06, dd, 0.02), ink(cols[i % 2]), xx, y - Math.sin(tilt) * dd * 0.5, z + Math.cos(tilt) * dd * 0.5, tilt);
+      const sc = add(g, cached('awScallop', () => {
+        const sh = new THREE.Shape();
+        sh.moveTo(-0.225, 0);
+        sh.absarc(0, 0, 0.225, PI, TAU, false);
+        sh.lineTo(-0.225, 0);
+        return slabShape(sh, 0.05, 0.01);
+      }), ink(cols[i % 2]), xx, y - Math.sin(tilt) * dd - 0.02, z + Math.cos(tilt) * dd);
+      sc.scale.set(aw / 0.45, 1, 1);
+    }
+  }
+  // the homes' colours: walls (ground floor / upper floor), roof, trim, door, shutters
+  const HOME_LOOK = {
+    homeA: { wall: 0xf9b4c0, wall2: 0xfff1d0, roof: 0x3a6fd8, trim: 0xfaf6ee, door: COL.teal, shutter: 0x2bb3a3, at: [-0.1, -0.5] },
+    homeB: { wall: 0xaee6c8, wall2: 0xfde29a, roof: 0xe45c33, trim: 0xfaf6ee, door: COL.red, shutter: 0xe45c33, at: [0, -0.55] },
+    homeC: { wall: 0xfde29a, wall2: 0xd7c4f5, roof: 0x9b6fd6, trim: 0xfaf6ee, door: COL.blue, shutter: 0x3a6fd8, at: [-0.25, -0.5] },
+    homeD: { wall: 0xa7d3f5, wall2: 0xffcfa1, roof: 0xf2a93b, trim: 0xfaf6ee, door: COL.green, shutter: 0x4c9e3e, at: [0, -0.5] },
+  };
+  // A home: a cottage with a wavy roof and window boxes; a second storey and a balcony; a turret and a
+  // fish weathervane. Lit windows and chimney smoke while villagers are at home.
+  function homeArt(g, plot, tier, lit, smoke, R) {
+    const L = HOME_LOOK[plot.id] || HOME_LOOK.homeA;
+    const W = 3.3;
+    const D = 2.7;
+    const H1 = 2.25;
+    const H2 = 1.85;
+    const h = subG(g, L.at[0], plot.P.y, L.at[1]);
+    add(h, rbox(W + 0.4, 0.22, D + 0.4, 0.06), ink(COL.woodDark), 0, 0.05, 0);
+    storey(h, W, D, H1, 0.1, L.wall);
+    const fz = D / 2;
+    doorway(h, -0.75, fz, L.door);
+    pane(h, 0.8, 1.35, fz, 0.78, 0.74, lit, L.shutter, true, plot.index);
+    for (const sx of [-1, 1]) {
+      const s = subG(h, sx * (W / 2), 0, 0, (sx * PI) / 2);
+      pane(s, 0, 1.4, 0.02, 0.62, 0.62, lit, null, true, plot.index + 2);
+    }
+    pane(subG(h, 0, 0, -fz, PI), 0.4, 1.4, 0.02, 0.62, 0.62, lit, null, false);
+    lantern(h, -0.05, 1.7, fz + 0.36, lanternGlow, 0.8);
+    beam(h, thin(COL.iron), V3(-0.05, 2.0, fz), V3(-0.05, 2.0, fz + 0.38), 0.05, 0.05, 0.015);
+    let top = H1 + 0.15;
+    if (tier >= 2) {
+      // the second storey in the second colour, clapboarded, with a balcony across the front
+      storey(h, W - 0.1, D - 0.1, H2, top, L.wall2, { clap: true, post: COL.white, band: COL.woodDark });
+      const uz = (D - 0.1) / 2;
+      pane(h, -0.85, top + 1.0, uz, 0.66, 0.66, lit, L.shutter, false);
+      pane(h, 0.85, top + 1.0, uz, 0.66, 0.66, lit, L.shutter, false);
+      add(h, rbox(0.75, 1.3, 0.1, 0.04), ink(COL.woodDeep), 0, top + 0.72, uz + 0.03);
+      add(h, rbox(0.58, 1.18, 0.12, 0.04), lit ? winGlow : ink(COL.glass), 0, top + 0.7, uz + 0.06);
+      // the balcony: a deck on two brackets, a rail with balusters, flower pots
+      const bz = uz + 0.42;
+      add(h, rbox(W - 0.5, 0.12, 0.8, 0.04), ink(COL.wood3), 0, top + 0.06, bz);
+      for (const sx of [-1, 1]) beam(h, ink(COL.woodDark), V3(sx * (W / 2 - 0.45), top - 0.55, uz + 0.02), V3(sx * (W / 2 - 0.45), top, bz + 0.3), 0.1, 0.1, 0.03);
+      for (let x = -W / 2 + 0.35; x <= W / 2 - 0.3; x += 0.32) add(h, rbox(0.07, 0.52, 0.07, 0.02), thin(L.trim), x, top + 0.38, bz + 0.34);
+      beam(h, ink(L.trim), V3(-W / 2 + 0.28, 0.66 + top, bz + 0.34), V3(W / 2 - 0.28, 0.66 + top, bz + 0.34), 0.12, 0.08, 0.03);
+      for (const sx of [-1, 1]) beam(h, ink(L.trim), V3(sx * (W / 2 - 0.28), 0.66 + top, uz + 0.02), V3(sx * (W / 2 - 0.28), 0.66 + top, bz + 0.34), 0.08, 0.08, 0.02);
+      for (const [x, c] of [[-1.15, COL.red], [1.15, COL.pink]]) {
+        add(h, cyl(0.13, 0.1, 0.2, 10), ink(COL.cork), x, top + 0.22, bz + 0.05);
+        add(h, sphere(8), ink(c), x, top + 0.42, bz + 0.05, 0, 0, 0, 0.14);
+      }
+      top += H2 + 0.15;
+    }
+    wavyRoof(h, W + 0.75, D + 0.85, top, 1.4, L.roof, L.trim, R);
+    chimney(h, -W / 2 + 0.65, top + 0.55, -D / 4, 1.35, lit ? smoke : null);
+    if (tier >= 3) {
+      // a round turret at the front right corner, its cone roof topped by a fish weathervane
+      const tx = W / 2 - 0.05;
+      const tz = fz - 0.15;
+      const TH = top + 0.6;
+      add(h, cyl(0.62, 0.66, TH, 16), ink(L.wall2), tx, TH / 2, tz);
+      for (let yy = 0.6; yy < TH - 0.3; yy += 0.42) add(h, torus(0.64, 0.025, 20, 3), thin(shade(L.wall2, -0.18)), tx, yy, tz, PI / 2);
+      add(h, torus(0.66, 0.07, 20, 5), ink(COL.woodDark), tx, TH, tz, PI / 2);
+      for (const a of [0.2, 1.3]) {
+        const s = subG(h, tx + Math.sin(a) * 0.62, 0, tz + Math.cos(a) * 0.62, a);
+        add(s, rbox(0.42, 0.62, 0.1, 0.04), ink(COL.woodDeep), 0, TH - 0.75, 0.0);
+        add(s, rbox(0.3, 0.5, 0.1, 0.03), lit ? winGlow : ink(COL.glass), 0, TH - 0.75, 0.03);
+      }
+      add(h, cone(0.86, 1.5, 16), ink(L.roof), tx, TH + 0.75, tz);
+      add(h, torus(0.84, 0.05, 20, 4), ink(shade(L.roof, -0.25)), tx, TH + 0.05, tz, PI / 2);
+      fishVane(h, tx, TH + 1.45, TH + 2.15, tz, 0.4 + plot.index);
+    }
+  }
+  // The Biscuit Bakery: a half-timbered bakehouse with a bread oven and a giant biscuit sign, warm chimney
+  // smoke; then a striped awning and two tables; then a café terrace under a vine pergola and a pretzel
+  // weathervane.
+  function bakeryArt(g, plot, tier, smoke, R) {
+    const W = 3.2;
+    const D = 2.5;
+    const H = 2.4;
+    const h = subG(g, -0.45, plot.P.y, -0.65);
+    add(h, rbox(W + 0.4, 0.22, D + 0.4, 0.06), ink(COL.woodDark), 0, 0.05, 0);
+    storey(h, W, D, H, 0.1, COL.cream, { timber: true, band: COL.woodDeep });
+    const fz = D / 2;
+    doorway(h, 0.85, fz, COL.red);
+    // the shop window: wide, warm-lit, with loaves on the sill
+    pane(h, -0.55, 1.25, fz, 1.15, 0.8, true, null, false);
+    add(h, rbox(1.4, 0.1, 0.3, 0.03), ink(COL.wood2), -0.55, 0.78, fz + 0.15);
+    for (let i = 0; i < 4; i++) add(h, sphere(8), ink(i % 2 ? 0xd9984a : 0xe8b86a), -1.0 + i * 0.3, 0.88, fz + 0.18, 0, 0, 0, [0.13, 0.08, 0.09]);
+    pane(subG(h, -W / 2, 0, 0, -PI / 2), 0, 1.4, 0.02, 0.6, 0.6, true, null, true, 2);
+    const top = H + 0.15;
+    wavyRoof(h, W + 0.8, D + 0.9, top, 1.45, 0xe45c33, COL.cream, R, { gable: COL.cream });
+    chimney(h, W / 2 - 0.7, top + 0.5, -D / 4, 1.5, smoke, 0.75);
+    // the bread oven: a brick dome against the right wall, a dark mouth and its own little flue
+    const ov = subG(h, W / 2 + 0.55, 0, -0.35);
+    add(ov, rbox(1.25, 0.5, 1.3, 0.08), ink(COL.stoneDark), 0, 0.3, 0);
+    add(ov, sphere(16), ink(0xd98a5a), 0, 0.55, 0, 0, 0, 0, [0.6, 0.65, 0.62]);
+    add(ov, cyl(0.24, 0.24, 0.12, 14), flat(0x3a2418), 0, 0.72, 0.56, PI / 2, 0, 0, [1, 1, 1.05]);
+    add(ov, cyl(0.27, 0.27, 0.08, 14), ink(COL.stone), 0, 0.72, 0.53, PI / 2, 0, 0);
+    add(ov, rbox(0.2, 0.08, 0.2, 0.03), winGlow, 0, 0.6, 0.52);
+    add(ov, cyl(0.1, 0.12, 0.7, 10), ink(COL.iron), -0.15, 1.35, -0.2);
+    // the giant biscuit on an iron bracket off the front left corner
+    const bx = -W / 2 - 0.1;
+    beam(h, ink(COL.iron), V3(bx + 0.05, 2.25, fz), V3(bx - 0.55, 2.25, fz + 0.45), 0.07, 0.07, 0.02);
+    rod(h, thin(COL.iron), V3(bx - 0.5, 2.22, fz + 0.42), V3(bx - 0.5, 1.98, fz + 0.42), 0.012);
+    const bis = subG(h, bx - 0.5, 1.45, fz + 0.42, -0.6);
+    add(bis, cyl(0.55, 0.55, 0.12, 22), ink(0xe8b86a), 0, 0, 0, PI / 2, 0, 0);
+    add(bis, torus(0.52, 0.05, 22, 5), ink(0xc8863e), 0, 0, 0);
+    for (let i = 0; i < 7; i++) {
+      const a = (i / 7) * TAU + 0.3;
+      const r = i === 6 ? 0 : 0.3;
+      for (const s of [-1, 1]) add(bis, sphere(6), flat(0x8a5428), Math.cos(a) * r, Math.sin(a) * r, s * 0.065, 0, 0, 0, [0.045, 0.045, 0.02]);
+    }
+    if (tier >= 2) {
+      // a red-and-white awning over the window and the door; two little tables with stools
+      awning(h, 0.15, H - 0.05, fz + 0.02, W - 0.2, 0.95, [COL.red, COL.white]);
+      for (const [x, z] of [[-1.55, 1.95], [1.25, 1.95]]) {
+        const t = subG(g, x, plot.P.y, z);
+        add(t, cyl(0.32, 0.32, 0.06, 16), ink(COL.white), 0, 0.7, 0);
+        add(t, cyl(0.04, 0.06, 0.66, 8), ink(COL.iron), 0, 0.36, 0);
+        add(t, cyl(0.18, 0.2, 0.04, 10), ink(COL.iron), 0, 0.02, 0);
+        add(t, cyl(0.07, 0.07, 0.1, 10), ink(COL.white), 0.08, 0.78, 0.05);
+        add(t, sphere(8), ink(0xe8b86a), -0.1, 0.76, -0.04, 0, 0, 0, [0.09, 0.04, 0.09]);
+        for (const s of [-1, 1]) {
+          add(t, cyl(0.15, 0.15, 0.05, 10), ink(COL.red), s * 0.5, 0.42, 0);
+          add(t, cyl(0.03, 0.03, 0.4, 6), ink(COL.iron), s * 0.5, 0.2, 0);
+        }
+      }
+    }
+    if (tier >= 3) {
+      // the café terrace: a pergola of posts and slats over the tables, hung with vines; a pretzel vane
+      const pg = subG(g, -0.15, plot.P.y, 1.95);
+      for (const x of [-2.3, -0.05, 2.2]) for (const z of [-0.45, 0.45]) add(pg, cyl(0.07, 0.08, 2.15, 8), ink(COL.woodDark), x, 1.07, z);
+      for (const z of [-0.45, 0.45]) beam(pg, ink(COL.wood2), V3(-2.4, 2.15, z), V3(2.3, 2.15, z), 0.12, 0.14, 0.03);
+      for (let x = -2.2; x <= 2.15; x += 0.36) add(pg, rbox(0.08, 0.08, 1.2, 0.02), thin(COL.wood3), x, 2.27, 0);
+      for (let i = 0; i < 16; i++) {
+        const x = -2.25 + i * 0.3;
+        add(pg, sphere(8), ink(i % 3 ? COL.leaf : COL.leaf2), x, 2.36 + (i % 2) * 0.05, ((i * 7) % 5) * 0.2 - 0.4, 0, 0, 0, [0.2, 0.12, 0.2]);
+        if (i % 4 === 1) add(pg, sphere(6), ink(COL.pink), x + 0.1, 2.44, ((i * 3) % 5) * 0.2 - 0.4, 0, 0, 0, 0.07);
+      }
+      for (const x of [-2.3, 2.2]) {
+        rod(pg, thin(COL.leaf2), V3(x, 0.1, 0.45), V3(x + 0.05, 2.1, 0.45), 0.04, 5);
+        for (let k = 0; k < 4; k++) add(pg, sphere(6), ink(COL.leaf), x + 0.06, 0.5 + k * 0.45, 0.5, 0, 0, 0, [0.12, 0.1, 0.1]);
+      }
+      // the pretzel weathervane on the ridge
+      const ridge = top + 1.45 + 0.2;
+      rod(h, ink(COL.iron), V3(-0.4, ridge, 0), V3(-0.4, ridge + 0.75, 0), 0.035, 6);
+      const pz = subG(h, -0.4, ridge + 1.0, 0, 0.5);
+      add(pz, torus(0.16, 0.055, 14, 6, PI * 1.5), ink(0xc8863e), -0.12, 0, 0, 0, 0, PI * 0.4);
+      add(pz, torus(0.16, 0.055, 14, 6, PI * 1.5), ink(0xc8863e), 0.12, 0, 0, 0, 0, PI * 0.1 + PI);
+      add(pz, torus(0.24, 0.055, 16, 6, PI), ink(0xc8863e), 0, 0.02, 0, 0, 0, 0);
+      for (let i = 0; i < 6; i++) add(pz, sphere(5), flat(COL.white), -0.22 + i * 0.09, 0.08 + (i % 2) * 0.1, 0.05, 0, 0, 0, 0.022);
+    }
+  }
+  // The Powder Windmill: a post mill on a trestle; then a stone tower under it; then a powder shed puffing
+  // blue, orange and green smoke (the special shots' colours). The sails are a mesh of their own (they turn).
+  const MILL = { 1: { hub: 3.35, z: 0.62, r: 2.1 }, 2: { hub: 4.55, z: 0.72, r: 2.55 }, 3: { hub: 4.55, z: 0.72, r: 2.55 } };
+  function windmillArt(g, plot, tier, smoke, R) {
+    const y0 = plot.P.y;
+    const cz = -0.45;
+    const m = subG(g, 0, y0, cz);
+    let base;
+    if (tier === 1) {
+      // the trestle: four raking legs to a stout central post, cross braces, steps up the back
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) rod(m, ink(COL.woodDark), V3(sx * 1.05, 0, sz * 1.05), V3(sx * 0.2, 1.45, sz * 0.2), 0.11, 8);
+      add(m, cyl(0.2, 0.24, 1.7, 10), ink(COL.woodDark), 0, 0.85, 0);
+      for (const [a, b] of [[[-1, -1], [1, 1]], [[1, -1], [-1, 1]]]) beam(m, thin(COL.wood2), V3(a[0] * 0.85, 0.35, a[1] * 0.85), V3(b[0] * 0.85, 0.35, b[1] * 0.85), 0.1, 0.1, 0.02);
+      add(m, rbox(0.7, 0.2, 0.7, 0.05), ink(COL.stoneDark), 0, 0.1, 0);
+      for (let k = 0; k < 6; k++) add(m, rbox(0.62, 0.06, 0.16, 0.02), thin(COL.wood3), 0, 0.25 + k * 0.28, -1.15 - k * 0.12);
+      for (const sx of [-0.33, 0.33]) rod(m, thin(COL.wood3), V3(sx, 0, -1.2), V3(sx, 1.7, -1.85 + 0.2), 0.04, 5);
+      base = 1.5;
+    } else {
+      // the stone tower: a tapering drum of whitewashed stone with a door and two little windows
+      add(m, lathe('millTower', [[0, 0], [1.38, 0], [1.3, 0.3], [1.08, 3.1], [1.12, 3.2], [0, 3.2]], 20), ink(0xe9e0cf), 0, 0, 0);
+      for (let k = 0; k < 7; k++) add(m, torus(1.36 - k * 0.042, 0.02, 24, 3), thin(0xc9bda6), 0, 0.4 + k * 0.42, 0, PI / 2);
+      add(m, torus(1.13, 0.08, 24, 5), ink(COL.woodDark), 0, 3.18, 0, PI / 2);
+      const fr = subG(m, 0, 0, 1.3, 0);
+      doorway(fr, 0, -0.05, COL.blue, 0.7, 1.4);
+      for (const a of [-1.1, 1.3]) {
+        const s = subG(m, Math.sin(a) * 1.18, 0, Math.cos(a) * 1.18, a);
+        add(s, rbox(0.4, 0.52, 0.1, 0.04), ink(COL.woodDeep), 0, 2.05, 0);
+        add(s, rbox(0.28, 0.4, 0.1, 0.03), winGlow, 0, 2.05, 0.03);
+      }
+      base = 3.2;
+    }
+    // the body (the cap on a stone mill): boarded, a gable roof running front to back, the windshaft's bearing
+    const bd = subG(m, 0, base, 0);
+    const BW = tier === 1 ? 1.8 : 1.9;
+    const BD = tier === 1 ? 2.1 : 1.8;
+    const BH = tier === 1 ? 2.0 : 1.2;
+    add(bd, rbox(BW + 0.15, 0.16, BD + 0.15, 0.05), ink(COL.woodDark), 0, 0.02, 0);
+    storey(bd, BW, BD, BH, 0.08, tier === 1 ? 0xd9a465 : 0xc68b4e, { band: COL.woodDark });
+    if (tier === 1) pane(bd, 0, 1.15, BD / 2, 0.45, 0.45, true, null, false);
+    const rr = subG(bd, 0, BH + 0.15, 0, PI / 2);
+    roof(rr, BD + 0.6, BW + 0.55, 0, 1.0, 0xe2383d, { patches: 0, gable: COL.cream, rand: R });
+    add(bd, cyl(0.2, 0.24, 0.5, 12), ink(COL.woodDeep), 0, MILL[tier].hub - base, BD / 2 + 0.15, PI / 2, 0, 0);
+    if (tier >= 3) {
+      // the powder shed behind, its three vents puffing the specials' colours; a stack of kegs
+      const sh = subG(g, -1.8, y0, -1.6, 0.25);
+      add(sh, rbox(1.25, 0.18, 1.15, 0.05), ink(COL.woodDark), 0, 0.05, 0);
+      storey(sh, 1.1, 1.0, 1.25, 0.1, 0x8f8579, { band: COL.woodDark });
+      add(sh, rbox(1.4, 0.16, 1.3, 0.05), ink(COL.iron), 0, 1.5, 0);
+      add(sh, rbox(0.55, 0.95, 0.1, 0.04), ink(COL.red), 0.15, 0.6, 0.53);
+      const cols = [[0x7fc8ff, 0x9fd8ff], [0xffa64a, 0xffc07a], [0x8fe06a, 0xb2ee90]];
+      for (let i = 0; i < 3; i++) {
+        const vx = -0.38 + i * 0.38;
+        add(sh, cyl(0.08, 0.09, 0.55, 10), ink(COL.iron), vx, 1.85, -0.15);
+        add(sh, cone(0.15, 0.14, 10), ink(COL.iron), vx, 2.18, -0.15);
+        smoke.push({ obj: sh, local: V3(vx, 2.32, -0.15), s: 0.42, colors: cols[i] });
+      }
+      for (let i = 0; i < 3; i++) barrel(g, -2.25 + (i % 2) * 0.55, y0 + (i === 2 ? 0.62 : 0), -0.25 + (i === 2 ? -0.05 : 0), 0.62, i === 1 ? 0x3f8fbf : i === 2 ? COL.red : COL.barrel);
+    }
+  }
+  // The Lighthouse: a wooden beacon with a fire basket; then a red-and-white tower; then a tall tower whose soft
+  // beam turns (a mesh of its own).
+  const LIGHT = { 3: { lamp: 9.25 } };
+  function lighthouseArt(g, plot, tier, smoke, R) {
+    const y0 = plot.P.y;
+    const m = subG(g, 0, y0, -0.4);
+    if (tier === 1) {
+      const H = 3.7;
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) rod(m, ink(COL.woodDark), V3(sx * 1.0, 0, sz * 1.0), V3(sx * 0.6, H, sz * 0.6), 0.1, 8);
+      for (let lv = 0; lv < 3; lv++) {
+        const ya = 0.35 + lv * 1.1;
+        const yb = ya + 1.1;
+        const at = (s, y) => 1.0 - (0.4 * y) / H;
+        for (const [a, b] of [[[-1, 1], [1, 1]], [[1, 1], [1, -1]], [[1, -1], [-1, -1]], [[-1, -1], [-1, 1]]]) {
+          rod(m, thin(COL.wood3), V3(a[0] * at(0, ya), ya, a[1] * at(0, ya)), V3(b[0] * at(0, yb), Math.min(H, yb), b[1] * at(0, yb)), 0.05, 5);
+        }
+      }
+      add(m, rbox(1.7, 0.16, 1.7, 0.05), ink(COL.wood2), 0, H, 0);
+      for (const [sx, sz] of [[-1, -1], [1, -1], [1, 1], [-1, 1]]) add(m, cyl(0.04, 0.04, 0.6, 6), thin(COL.woodDark), sx * 0.78, H + 0.3, sz * 0.78);
+      for (const s of [-1, 1]) {
+        beam(m, thin(COL.wood2), V3(-0.8, H + 0.58, s * 0.78), V3(0.8, H + 0.58, s * 0.78), 0.07, 0.06, 0.02);
+        beam(m, thin(COL.wood2), V3(s * 0.78, H + 0.58, -0.8), V3(s * 0.78, H + 0.58, 0.8), 0.07, 0.06, 0.02);
+      }
+      // the fire basket: an iron cage on a post, glowing coals and flames
+      add(m, cyl(0.07, 0.09, 0.55, 8), ink(COL.iron), 0, H + 0.35, 0);
+      add(m, cyl(0.45, 0.3, 0.42, 12, true), ink(COL.iron), 0, H + 0.82, 0);
+      add(m, torus(0.45, 0.04, 16, 4), ink(COL.iron), 0, H + 1.03, 0, PI / 2);
+      for (let i = 0; i < 5; i++) {
+        const a = (i / 5) * TAU;
+        add(m, cone(0.16 + (i % 2) * 0.05, 0.6 + (i % 3) * 0.15, 8), lanternGlow, Math.cos(a) * 0.17, H + 1.25 + (i % 2) * 0.05, Math.sin(a) * 0.17);
+      }
+      add(m, cone(0.22, 0.9, 8), lanternGlow, 0, H + 1.4, 0);
+      for (let k = 0; k < 7; k++) rod(m, thin(COL.wood3), V3(-0.25, 0.3 + k * 0.5, 1.15 - k * 0.055), V3(0.25, 0.3 + k * 0.5, 1.15 - k * 0.055), 0.03, 4);
+      for (const sx of [-0.25, 0.25]) rod(m, thin(COL.wood3), V3(sx, 0, 1.18), V3(sx, H, 0.78), 0.035, 5);
+      return;
+    }
+    // the tower: banded red and white, tapering, with a door and little windows
+    const H = tier === 2 ? 5.9 : 7.6;
+    const r0 = 1.2;
+    const r1 = 0.82;
+    const bands = tier === 2 ? 5 : 6;
+    for (let i = 0; i < bands; i++) {
+      const ya = (H * i) / bands;
+      const yb = (H * (i + 1)) / bands;
+      const ra = r0 + ((r1 - r0) * ya) / H;
+      const rb = r0 + ((r1 - r0) * yb) / H;
+      add(m, cyl(rb, ra, yb - ya + 0.01, 20), ink(i % 2 ? COL.white : COL.red), 0, (ya + yb) / 2, 0);
+    }
+    add(m, cyl(r0 + 0.12, r0 + 0.16, 0.3, 20), ink(COL.stone), 0, 0.15, 0);
+    const fr = subG(m, 0, 0.25, r0 - 0.04);
+    doorway(fr, 0, -0.06, COL.navy, 0.62, 1.25);
+    for (let i = 1; i < bands; i += 2) {
+      const y = (H * (i + 0.5)) / bands;
+      const r = r0 + ((r1 - r0) * y) / H;
+      const a = 0.5 + i * 1.3;
+      const s = subG(m, Math.sin(a) * r, 0, Math.cos(a) * r, a);
+      add(s, rbox(0.34, 0.46, 0.1, 0.04), ink(COL.woodDeep), 0, y, 0);
+      add(s, rbox(0.22, 0.34, 0.1, 0.03), winGlow, 0, y, 0.03);
+    }
+    // the gallery with its railing, the lantern room and the cap
+    add(m, cyl(r1 + 0.42, r1 + 0.32, 0.2, 22), ink(COL.navy), 0, H + 0.08, 0);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * TAU;
+      add(m, cyl(0.03, 0.03, 0.52, 5), thin(COL.navy), Math.cos(a) * (r1 + 0.35), H + 0.44, Math.sin(a) * (r1 + 0.35));
+    }
+    add(m, torus(r1 + 0.35, 0.04, 28, 4), ink(COL.navy), 0, H + 0.7, 0, PI / 2);
+    const LR = tier === 2 ? 0.55 : 0.68;
+    const LH = tier === 2 ? 0.85 : 1.1;
+    add(m, cyl(LR, LR, LH, 16), winGlow, 0, H + 0.2 + LH / 2, 0);
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * TAU;
+      add(m, cyl(0.035, 0.035, LH, 5), ink(COL.navy), Math.cos(a) * (LR + 0.02), H + 0.2 + LH / 2, Math.sin(a) * (LR + 0.02));
+    }
+    add(m, cyl(LR + 0.12, LR + 0.12, 0.12, 16), ink(COL.navy), 0, H + 0.26 + LH, 0);
+    add(m, cone(LR + 0.2, 0.8, 16), ink(COL.red), 0, H + 0.72 + LH, 0);
+    add(m, sphere(10), ink(COL.brass), 0, H + 1.18 + LH, 0, 0, 0, 0, 0.14);
+    rod(m, ink(COL.iron), V3(0, H + 1.2 + LH, 0), V3(0, H + 1.6 + LH, 0), 0.03, 5);
+  }
+  // The Market Hall: two stalls; then a canvas hall over them; then a clock tower.
+  function marketArt(g, plot, tier, smoke, R) {
+    const y0 = plot.P.y;
+    const m = subG(g, 0, y0, -0.2);
+    const goods = [
+      { x: -1.2, c: [COL.green, COL.white], kind: 'veg' },
+      { x: 1.2, c: [COL.orange, COL.white], kind: 'cheese' },
+    ];
+    for (const st of goods) {
+      const s = subG(m, st.x, 0, 0);
+      add(s, rbox(2.0, 0.6, 0.72, 0.07), ink(COL.wood2), 0, 0.3, 0.2);
+      add(s, rbox(2.1, 0.09, 0.82, 0.04), ink(COL.plank), 0, 0.63, 0.2);
+      for (const sx of [-1, 1]) {
+        add(s, cyl(0.06, 0.07, 2.05, 8), ink(COL.woodDark), sx * 0.95, 1.03, 0.55);
+        add(s, cyl(0.06, 0.07, 2.3, 8), ink(COL.woodDark), sx * 0.95, 1.15, -0.4);
+      }
+      awning(s, 0, 2.28, -0.42, 2.15, 1.35, st.c, 0.3);
+      if (st.kind === 'veg') {
+        for (let i = 0; i < 10; i++) add(s, sphere(8), ink([COL.pumpkin, COL.melon, COL.apple, COL.banana][i % 4]), -0.75 + (i % 5) * 0.37, 0.76 + (i > 4 ? 0.1 : 0), 0.08 + (i > 4 ? 0.0 : 0.25), 0, 0, 0, [0.15, 0.12, 0.15]);
+        add(s, cyl(0.25, 0.2, 0.3, 10), ink(COL.wood3), 0.6, 0.15, 0.95);
+        for (let i = 0; i < 3; i++) add(s, sphere(8), ink(COL.apple), 0.55 + i * 0.08, 0.34, 0.92, 0, 0, 0, 0.1);
+      } else {
+        for (let i = 0; i < 4; i++) add(s, cyl(0.2, 0.2, 0.14, 14), ink(0xffd84a), -0.7 + i * 0.45, 0.75 + (i % 2) * 0.14, 0.2);
+        for (let i = 0; i < 3; i++) add(s, cyl(0.13, 0.13, 0.12, 12), ink(0xf6c445), -0.5 + i * 0.5, 0.74, 0.45);
+        sack(s, 0.75, 0, 1.0, 0.8, 0xd8bf88);
+      }
+    }
+    if (tier >= 2) {
+      // the canvas hall: posts down both sides and a striped canvas roof over the stalls
+      for (const x of [-2.45, 0, 2.45]) for (const z of [-1.9, 1.3]) {
+        if (x === 0 && z === -1.9 && tier >= 3) continue;
+        add(m, cyl(0.08, 0.1, 2.9, 8), ink(COL.woodDark), x, 1.45, z);
+      }
+      for (const z of [-1.9, 1.3]) beam(m, ink(COL.wood2), V3(-2.55, 2.9, z), V3(2.55, 2.9, z), 0.14, 0.16, 0.04);
+      const cr = subG(m, 0, 2.95, -0.3);
+      const half = 1.95;
+      const rh = 1.1;
+      const slope = Math.atan2(rh, half);
+      const L = Math.hypot(half, rh) + 0.25;
+      const n = 8;
+      for (const s of [-1, 1]) {
+        for (let i = 0; i < n; i++) {
+          const x = -2.7 + (5.4 * (i + 0.5)) / n;
+          const p = add(cr, rbox(5.4 / n + 0.01, 0.06, L, 0.02), ink(i % 2 ? COL.canvas : COL.red), x, rh / 2, (s * half) / 2);
+          p.rotation.x = s * slope;
+        }
+      }
+      add(cr, cyl(0.1, 0.1, 5.6, 8), ink(COL.woodDark), 0, rh + 0.05, 0, 0, 0, PI / 2);
+      for (const sx of [-1, 1]) {
+        const tri = add(cr, cached(`hallGable`, () => {
+          const sh = new THREE.Shape([new THREE.Vector2(-half, 0), new THREE.Vector2(half, 0), new THREE.Vector2(0, rh)]);
+          const gg = slabShape(sh, 0.05, 0.01);
+          gg.rotateY(PI / 2);
+          return gg;
+        }), ink(COL.canvas), sx * 2.62, 0, 0);
+        tri.scale.set(1, 0.9, 0.9);
+      }
+      // bunting-like scallops along the eaves
+      for (const s of [-1, 1]) add(cr, wavyGeo(5.3), ink(COL.red), 0, -0.02, s * (half + 0.18), 0, s > 0 ? 0 : PI, 0);
+    }
+    if (tier >= 3) {
+      // the clock tower behind the hall, rising through its roof
+      const tw = subG(m, 0, 0, -1.85);
+      add(tw, rbox(1.25, 0.2, 1.25, 0.05), ink(COL.stoneDark), 0, 0.1, 0);
+      add(tw, rbox(1.05, 6.0, 1.05, 0.08, 2), ink(0xf0d9b0), 0, 3.0, 0);
+      for (const y of [1.5, 3.0, 4.5]) add(tw, rbox(1.12, 0.12, 1.12, 0.03), ink(COL.woodDark), 0, y, 0);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(tw, rbox(0.14, 6.0, 0.14, 0.03), ink(COL.woodDark), sx * 0.52, 3.0, sz * 0.52);
+      add(tw, rbox(1.3, 0.18, 1.3, 0.05), ink(COL.woodDark), 0, 6.05, 0);
+      add(tw, cone(1.05, 1.25, 4), ink(COL.blue), 0, 6.75, 0, 0, PI / 4, 0);
+      add(tw, sphere(10), ink(COL.brass), 0, 7.45, 0, 0, 0, 0, 0.14);
+      // the clock face on the front (+z) and the back
+      for (const s of [1, -1]) {
+        const cf = subG(tw, 0, 5.15, s * 0.53, s > 0 ? 0 : PI);
+        add(cf, cyl(0.44, 0.44, 0.08, 24), ink(COL.white), 0, 0, 0.02, PI / 2, 0, 0);
+        add(cf, torus(0.44, 0.05, 24, 4), ink(COL.brass), 0, 0, 0.05);
+        for (let i = 0; i < 12; i++) {
+          const a = (i / 12) * TAU;
+          add(cf, sphere(5), flat(COL.black), Math.cos(a) * 0.34, Math.sin(a) * 0.34, 0.07, 0, 0, 0, i % 3 ? 0.025 : 0.04);
+        }
+        add(cf, rbox(0.05, 0.26, 0.02, 0.01), flat(COL.black), 0.05, 0.1, 0.08, 0, 0, -0.5);
+        add(cf, rbox(0.04, 0.32, 0.02, 0.01), flat(COL.black), -0.1, 0.12, 0.09, 0, 0, 0.7);
+      }
+      pane(subG(tw, 0, 0, 0.53, 0), 0, 3.75, 0, 0.36, 0.5, true, null, false);
+    }
+  }
+  // The Sea School: a blue schoolroom with a bell cupola; then a bell tower; then a telescope dome on the tower.
+  function schoolArt(g, plot, tier, smoke, R) {
+    const y0 = plot.P.y;
+    const W = 3.0;
+    const D = 2.5;
+    const H = 2.3;
+    const h = subG(g, -0.55, y0, -0.6);
+    add(h, rbox(W + 0.4, 0.22, D + 0.4, 0.06), ink(COL.woodDark), 0, 0.05, 0);
+    storey(h, W, D, H, 0.1, 0x8fc0f0, { post: COL.white, band: COL.white });
+    const fz = D / 2;
+    doorway(h, -0.7, fz, COL.red, 0.75, 1.55);
+    pane(h, 0.65, 1.35, fz, 0.8, 0.75, true, COL.white, true, 3);
+    for (const sx of [-1, 1]) pane(subG(h, sx * (W / 2), 0, 0, (sx * PI) / 2), 0, 1.4, 0.02, 0.62, 0.62, true, null, false);
+    // a little slate by the door: ABC
+    add(h, rbox(0.62, 0.45, 0.06, 0.02), ink(COL.woodDark), -1.4, 1.2, fz + 0.06);
+    add(h, rbox(0.52, 0.35, 0.05, 0.02), flat(0x2f5a46), -1.4, 1.2, fz + 0.09);
+    for (let i = 0; i < 3; i++) add(h, rbox(0.08, 0.1, 0.02, 0.01), flat(COL.white), -1.55 + i * 0.15, 1.24, fz + 0.12);
+    const top = H + 0.15;
+    wavyRoof(h, W + 0.7, D + 0.8, top, 1.35, 0xe2383d, COL.white, R);
+    // the bell cupola astride the ridge: four white posts, a little pyramid roof, the bell inside
+    const cu = subG(h, 0.35, top + 1.35 + 0.18, 0);
+    add(cu, rbox(0.75, 0.16, 0.75, 0.04), ink(COL.white), 0, 0.02, 0);
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(cu, cyl(0.04, 0.04, 0.62, 6), ink(COL.white), sx * 0.3, 0.38, sz * 0.3);
+    add(cu, cone(0.58, 0.5, 4), ink(0xe2383d), 0, 0.92, 0, 0, PI / 4, 0);
+    add(cu, lathe('cupolaBell', [[0, 0.22], [0.06, 0.21], [0.1, 0.12], [0.12, 0.0], [0.15, -0.04], [0, -0.04]], 12), ink(COL.brass), 0, 0.38, 0);
+    if (tier >= 2) {
+      // the bell tower at the right: white boards, an open belfry, a pyramid roof (a dome on top at tier 3)
+      const tw = subG(g, 1.5, y0, -0.95);
+      add(tw, rbox(1.4, 0.2, 1.4, 0.05), ink(COL.woodDark), 0, 0.05, 0);
+      storey(tw, 1.2, 1.2, 3.6, 0.1, 0xfaf6ee, { post: 0x3a6fd8, band: 0x3a6fd8 });
+      pane(tw, 0, 2.3, 0.6, 0.4, 0.55, true, null, false);
+      add(tw, rbox(1.3, 0.12, 1.3, 0.04), ink(0x3a6fd8), 0, 3.8, 0);
+      for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(tw, rbox(0.14, 1.2, 0.14, 0.04), ink(COL.white), sx * 0.55, 4.45, sz * 0.55);
+      add(tw, rbox(1.36, 0.14, 1.36, 0.04), ink(0x3a6fd8), 0, 5.1, 0);
+      add(tw, lathe('towerBell', [[0, 0.5], [0.12, 0.48], [0.22, 0.3], [0.27, 0.02], [0.33, -0.06], [0, -0.06]], 14), ink(COL.brass), 0, 4.15, 0);
+      add(tw, sphere(8), ink(COL.iron), 0, 4.05, 0, 0, 0, 0, 0.07);
+      if (tier === 2) {
+        add(tw, cone(1.0, 1.0, 4), ink(0xe2383d), 0, 5.7, 0, 0, PI / 4, 0);
+        add(tw, sphere(8), ink(COL.brass), 0, 6.25, 0, 0, 0, 0, 0.1);
+      } else {
+        // the telescope dome: a drum, a white dome with an open slit and a brass telescope peering out
+        add(tw, cyl(0.68, 0.7, 0.35, 18), ink(0x3a6fd8), 0, 5.35, 0);
+        add(tw, cached('obsDome', () => new THREE.SphereGeometry(0.7, 18, 10, 0, TAU, 0, PI / 2)), ink(COL.white), 0, 5.5, 0);
+        add(tw, rbox(0.3, 0.05, 1.1, 0.02), flat(COL.navy), 0, 6.0, 0.22, -0.65, 0, 0);
+        const sc = subG(tw, 0, 5.85, 0.25, 0);
+        sc.rotation.x = -0.75;
+        add(sc, cyl(0.1, 0.13, 1.25, 12), ink(COL.brass), 0, 0.45, 0);
+        add(sc, cyl(0.15, 0.15, 0.12, 12), ink(COL.woodDark), 0, 1.06, 0);
+        add(sc, cyl(0.12, 0.12, 0.04, 12), winGlow, 0, 1.13, 0);
+      }
+    }
+  }
+  // The Flower Park: flower beds round a lawn and a bench; then a fountain; then a bandstand and a topiary sea
+  // serpent. (The fountain's jet is a mesh of its own: it splashes.)
+  function parkArt(g, plot, tier, smoke, R) {
+    const y0 = plot.P.y;
+    const p = subG(g, 0, y0, 0);
+    add(p, rbox(4.5, 0.1, 4.3, 0.05), ink(0x7acb4f), 0, 0.03, -0.2);
+    for (let i = 0; i < 26; i++) add(p, sphere(6), ink(i % 2 ? COL.grass : 0x8ad85c), -2.0 + R() * 4.0, 0.09, -2.1 + R() * 3.8, 0, 0, 0, [0.12, 0.04, 0.1]);
+    // gravel paths: a ring round the middle and a way in from the front
+    add(p, cyl(1.35, 1.35, 0.04, 28), ink(0xeadbb8), 0, 0.09, -0.15);
+    add(p, rbox(0.9, 0.04, 1.4, 0.03), ink(0xeadbb8), 0, 0.09, 1.25);
+    add(p, cyl(0.95, 0.95, 0.045, 24), ink(0x7acb4f), 0, 0.1, -0.15);
+    // raised beds: one along the back left, one down the left side, a round one at the front right
+    const bed = (x, z, w, d, ry, k) => {
+      const b = subG(p, x, 0, z, ry);
+      add(b, rbox(w, 0.32, d, 0.05), ink(COL.wood2), 0, 0.18, 0);
+      add(b, rbox(w - 0.16, 0.06, d - 0.16, 0.03), ink(0x6b4528), 0, 0.33, 0);
+      const n = Math.round((w * d) / 0.07);
+      for (let i = 0; i < n; i++) {
+        const fx = (R() - 0.5) * (w - 0.3);
+        const fz = (R() - 0.5) * (d - 0.3);
+        add(b, sphere(6), ink(COL.leaf2), fx, 0.4, fz, 0, 0, 0, [0.11, 0.08, 0.11]);
+        add(b, sphere(8), ink(FLOWERS[(i + k) % FLOWERS.length]), fx + 0.03, 0.5 + R() * 0.08, fz, 0, 0, 0, 0.085);
+      }
+      return b;
+    };
+    bed(-0.9, -2.0, 2.4, 0.6, 0, 0);
+    bed(-2.05, -0.55, 0.6, 2.2, 0, 2);
+    const rb = subG(p, 1.45, 0, 0.95);
+    add(rb, cyl(0.55, 0.58, 0.3, 18), ink(COL.stone), 0, 0.15, 0);
+    add(rb, cyl(0.48, 0.48, 0.06, 18), ink(0x6b4528), 0, 0.31, 0);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * TAU;
+      const r = i % 2 ? 0.2 : 0.36;
+      add(rb, sphere(8), ink(FLOWERS[i % FLOWERS.length]), Math.cos(a) * r, 0.42 + (i % 3) * 0.03, Math.sin(a) * r, 0, 0, 0, 0.09);
+    }
+    add(rb, sphere(8), ink(COL.yellow), 0, 0.52, 0, 0, 0, 0, 0.12);
+    bench(p, 1.95, -0.35, -PI / 2, COL.teal, 1.2);
+    lampPost(p, -1.95, 0, 1.25, PI * 0.75, lanternGlow);
+    if (tier >= 2) {
+      // the fountain: a round stone basin, its water, a pedestal bowl (the jet is animated, see devAnim)
+      const f = subG(p, 0, 0, -0.15);
+      add(f, lathe('fountainBasin', [[0.92, 0], [0.95, 0.38], [0.86, 0.45], [0.8, 0.12], [0, 0.12]], 26), ink(0xd9d2c4), 0, 0.08, 0);
+      add(f, cyl(0.8, 0.8, 0.04, 24), flat(0x7fd3ef), 0, 0.42, 0);
+      add(f, cyl(0.12, 0.16, 0.85, 12), ink(0xd9d2c4), 0, 0.75, 0);
+      add(f, lathe('fountainBowl', [[0.4, 0.0], [0.42, 0.14], [0.36, 0.16], [0.1, 0.02], [0, 0]], 18), ink(0xd9d2c4), 0, 1.15, 0);
+      add(f, cyl(0.34, 0.34, 0.03, 18), flat(0x9fe3f7), 0, 1.28, 0);
+      for (let i = 0; i < 3; i++) add(f, sphere(8), ink(0xff9a3c), Math.cos(i * 2.1) * 0.5, 0.46, Math.sin(i * 2.1) * 0.5, 0, i * 2.1, 0, [0.06, 0.04, 0.14]);
+    }
+    if (tier >= 3) {
+      // the bandstand at the back right: a raised round floor, slim posts, a striped cone roof
+      const bs = subG(p, 1.25, 0, -1.25);
+      add(bs, cyl(1.0, 1.05, 0.28, 16), ink(COL.white), 0, 0.14, 0);
+      add(bs, cyl(1.02, 1.02, 0.06, 16), ink(COL.wood3), 0, 0.31, 0);
+      for (let i = 0; i < 6; i++) {
+        const a = (i / 6) * TAU + 0.26;
+        add(bs, cyl(0.05, 0.05, 2.0, 6), ink(COL.white), Math.cos(a) * 0.9, 1.32, Math.sin(a) * 0.9);
+      }
+      add(bs, torus(0.92, 0.05, 24, 4), ink(COL.white), 0, 2.3, 0, PI / 2);
+      for (let i = 0; i < 8; i++) {
+        const geo = cached(`bandRoof${i}`, () => new THREE.ConeGeometry(1.3, 1.1, 8, 1, false, (i / 8) * TAU, TAU / 8));
+        add(bs, geo, ink(i % 2 ? COL.white : COL.red), 0, 2.88, 0);
+      }
+      add(bs, sphere(10), ink(COL.brass), 0, 3.5, 0, 0, 0, 0, 0.13);
+      rod(bs, ink(COL.iron), V3(0, 3.55, 0), V3(0, 4.1, 0), 0.03, 5);
+      add(bs, cached('bandPennant', () => new THREE.ConeGeometry(0.16, 0.5, 3).rotateZ(-PI / 2)), ink(COL.yellow), 0.25, 3.95, 0, 0, 0, 0, [1, 0.5, 0.2]);
+      // a music stand and a drum on the stage
+      add(bs, cyl(0.2, 0.2, 0.22, 14), ink(COL.red), -0.35, 0.46, 0.2);
+      add(bs, cyl(0.21, 0.21, 0.03, 14), ink(COL.white), -0.35, 0.58, 0.2);
+      rod(bs, thin(COL.iron), V3(0.3, 0.34, 0.25), V3(0.3, 1.2, 0.25), 0.02, 4);
+      add(bs, rbox(0.4, 0.3, 0.03, 0.01), ink(COL.iron), 0.3, 1.28, 0.25, -0.4, 0, 0);
+      // the topiary sea serpent swimming through the left-hand bed: humps of clipped hedge and a smiling head
+      const sp = subG(p, -2.05, 0.38, -0.55);
+      const hedge = ink(0x3f9a46);
+      for (const [z, r] of [[0.75, 0.28], [0.15, 0.34], [-0.45, 0.3]]) add(sp, torus(r, 0.13, 14, 8, PI), hedge, 0, 0, z, 0, PI / 2, 0);
+      add(sp, cached('serpentTail', () => new THREE.ConeGeometry(0.12, 0.45, 8).rotateX(-PI / 2)), hedge, 0, 0.08, -0.95, 0.3, 0, 0);
+      const hd = subG(sp, 0, 0.4, 1.12, 0);
+      add(hd, sphere(12), hedge, 0, 0, 0, 0, 0, 0, [0.22, 0.24, 0.3]);
+      add(hd, sphere(10), hedge, 0, -0.05, 0.22, 0, 0, 0, [0.16, 0.13, 0.18]);
+      for (const sx of [-1, 1]) {
+        add(hd, sphere(8), thin(COL.white), sx * 0.11, 0.1, 0.16, 0, 0, 0, 0.065);
+        add(hd, sphere(6), flat(COL.black), sx * 0.12, 0.11, 0.21, 0, 0, 0, 0.035);
+        add(hd, cone(0.05, 0.16, 6), ink(0x3f9a46), sx * 0.1, 0.24, -0.06, -0.4, 0, sx * 0.3);
+      }
+      add(hd, sphere(8), ink(COL.pink), 0, -0.1, 0.37, 0, 0, 0, [0.06, 0.03, 0.04]);
+    }
+  }
+  function buildPlot(plot, tier, g, lit, smoke) {
+    const R = mulberry32(4201 + plot.index * 97 + tier * 13);
+    if (plot.kind === 'home') homeArt(g, plot, tier, lit, smoke, R);
+    else if (plot.id === 'bakery') bakeryArt(g, plot, tier, smoke, R);
+    else if (plot.id === 'windmill') windmillArt(g, plot, tier, smoke, R);
+    else if (plot.id === 'lighthouse') lighthouseArt(g, plot, tier, smoke, R);
+    else if (plot.id === 'market') marketArt(g, plot, tier, smoke, R);
+    else if (plot.id === 'school') schoolArt(g, plot, tier, smoke, R);
+    else if (plot.id === 'park') parkArt(g, plot, tier, smoke, R);
+  }
+
+  // ----- the animated parts: the windmill's sails, the lighthouse's beam, the fountain's jet -----
+  function devAnimBuild() {
+    const A = dev.anim;
+    // the sails: four lattice blades round a hub, one baked mesh turning about its local z
+    {
+      const sg = new THREE.Group();
+      const sails = new THREE.Group();
+      sg.add(sails);
+      add(sails, cyl(0.26, 0.3, 0.3, 12), ink(COL.woodDeep), 0, 0, 0.05, PI / 2, 0, 0);
+      add(sails, sphere(10), ink(COL.brass), 0, 0, 0.24, 0, 0, 0, 0.12);
+      for (let i = 0; i < 4; i++) {
+        const b = subG(sails, 0, 0, 0.12);
+        b.rotation.z = (i / 4) * TAU + 0.35;
+        add(b, rbox(0.12, 2.3, 0.1, 0.03), ink(COL.woodDark), 0, 1.15, 0);
+        add(b, rbox(0.55, 1.7, 0.04, 0.02), ink(COL.canvas), 0.3, 1.38, 0.04);
+        for (let k = 0; k < 6; k++) add(b, rbox(0.62, 0.05, 0.06, 0.015), thin(COL.wood2), 0.28, 0.6 + k * 0.32, 0.07);
+        add(b, rbox(0.05, 1.75, 0.06, 0.015), thin(COL.wood2), 0.58, 1.38, 0.07);
+      }
+      bake(sails, { force: 'ink' });
+      sg.visible = false;
+      sg.userData.keep = true;
+      dev.root.add(sg);
+      A.sails = { group: sg, spin: sails };
+    }
+    // the lighthouse beam: two soft cones of light from the lantern, turning slowly (additive, never bright: at
+    // most 0.2 by the lamp, fading out along the beam, and only the outside of each cone drawn, so the beam
+    // sweeping past a camera inside it never flashes the screen)
+    {
+      const mat = new THREE.MeshBasicMaterial({ color: 0xfff2b8, vertexColors: true, transparent: true, opacity: 0.2, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.FrontSide, fog: true });
+      setOutline(mat, false);
+      ownMaterials.push(mat);
+      const geo = new THREE.ConeGeometry(2.2, 14, 18, 4, true);
+      const fade = new Float32Array(geo.attributes.position.count * 4);
+      for (let i = 0; i < geo.attributes.position.count; i++) {
+        const u = (7 - geo.attributes.position.getY(i)) / 14; // 0 at the lamp (the cone's tip), 1 at the far end
+        fade.set([1, 1, 1, Math.max(0, 1 - u) ** 1.5], i * 4);
+      }
+      geo.setAttribute('color', new THREE.BufferAttribute(fade, 4));
+      geo.translate(0, -7, 0);
+      geo.rotateZ(PI / 2);
+      const pair = new THREE.Group();
+      const m1 = new THREE.Mesh(mergeGeometries([geo, geo.clone().rotateY(PI)], false), mat);
+      geo.dispose();
+      m1.renderOrder = 2;
+      pair.add(m1);
+      pair.visible = false;
+      dev.root.add(pair);
+      A.beam = { group: pair, mesh: m1 };
+    }
+    // the fountain's jet: a tall splash and a crown of drops (flat, no ink)
+    {
+      const jg = new THREE.Group();
+      const jet = new THREE.Group();
+      jg.add(jet);
+      add(jet, lathe('fountainJet', [[0.0, 0], [0.07, 0.05], [0.05, 0.45], [0.09, 0.8], [0.16, 0.95], [0.1, 1.05], [0, 1.08]], 10), flat(0xd8f6ff), 0, 0, 0);
+      for (let i = 0; i < 8; i++) {
+        const a = (i / 8) * TAU;
+        add(jet, sphere(6), flat(0xbfefff), Math.cos(a) * 0.28, 0.72 - (i % 2) * 0.12, Math.sin(a) * 0.28, 0, 0, 0, 0.06);
+      }
+      bake(jet, { force: 'flat' });
+      jg.visible = false;
+      jg.userData.keep = true;
+      dev.root.add(jg);
+      A.jet = { group: jg, spin: jet };
+    }
+  }
+  /** Place (and show or hide) the animated parts for the plots' tiers now (show: rebuildDev's overrides). */
+  function placeDevAnim(show = null) {
+    const A = dev.anim;
+    if (!A.sails) devAnimBuild();
+    const tierOf = (p) => (p && show && Object.prototype.hasOwnProperty.call(show, p.id) ? show[p.id] ?? p.tier : p ? p.tier : 0);
+    const at = (plot, x, y, z) => {
+      plot.P.g.updateMatrixWorld(true);
+      return plot.P.g.localToWorld(V3(x, y, z));
+    };
+    const mill = plotList.find((p) => p.id === 'windmill');
+    const mt = tierOf(mill);
+    A.sails.group.visible = mt >= 1;
+    if (mt >= 1) {
+      const M = MILL[mt];
+      A.sails.group.position.copy(at(mill, 0, mill.P.y + M.hub, -0.45 + M.z + 0.42));
+      A.sails.group.rotation.set(0, mill.P.ry || 0, 0);
+      A.sails.group.scale.setScalar(M.r / 2.3);
+    }
+    const light = plotList.find((p) => p.id === 'lighthouse');
+    A.beam.group.visible = !!light && tierOf(light) >= 3;
+    if (A.beam.group.visible) A.beam.group.position.copy(at(light, 0, light.P.y + LIGHT[3].lamp, -0.4));
+    const park = plotList.find((p) => p.id === 'park');
+    A.jet.group.visible = !!park && tierOf(park) >= 2;
+    if (A.jet.group.visible) A.jet.group.position.copy(at(park, 0, park.P.y + 1.28, -0.15));
+  }
+  /** The layer's animation (each frame, with the town's): the sails turn, the beam sweeps, the fountain splashes;
+   * a building going up; a new home's villagers waving from the porch. */
+  function updateDev(t, dt) {
+    devFlicker.value = lanternGlow.emissiveIntensity;
+    montageStep(clamp(t - (dev.lastT ?? t), 0, 0.1));
+    dev.lastT = t;
+    // each plot's next tier baked ahead, one chunk a frame while nothing is going up, so a purchase only re-joins the
+    // layer (well inside §8.2's 40 ms) and the montage never waits on a cold bake (homes: lit and dark both)
+    if (dev.built && !dev.montage) {
+      for (const plot of plotList) {
+        if (plot.tier >= 3) continue;
+        const keys = plot.kind === 'home' ? [1, 0] : [0];
+        const miss = keys.find((l) => !dev.chunks.has(`${plot.id}:${plot.tier + 1}:${l}`));
+        if (miss === undefined) continue;
+        const was = dev.lit[plot.id];
+        if (plot.kind === 'home') dev.lit[plot.id] = miss === 1;
+        plotChunk(plot, plot.tier + 1);
+        dev.lit[plot.id] = was;
+        break;
+      }
+    }
+    for (let i = dev.wavers.length - 1; i >= 0; i--) {
+      const w = dev.wavers[i];
+      if (w.until === null) w.until = t + 2;
+      if (t >= w.until) {
+        dev.root.remove(w.p);
+        disposePerson(w.p);
+        dev.wavers.splice(i, 1);
+      } else animatePerson(w.p, t, 'wave', {});
+    }
+    const A = dev.anim;
+    if (A.sails && A.sails.group.visible) A.sails.spin.rotation.z = -t * 0.6;
+    if (A.beam && A.beam.group.visible) A.beam.group.rotation.y = t * 0.6;
+    if (A.jet && A.jet.group.visible) {
+      const k = 1 + 0.07 * Math.sin(t * 5.3) + 0.04 * Math.sin(t * 8.7);
+      A.jet.spin.scale.set(1 / Math.sqrt(k), k, 1 / Math.sqrt(k));
+      A.jet.spin.rotation.y = t * 0.9;
+    }
+  }
+
+  // ----- building: the construction montage (SPEC3 §8.3) -----
+  // A scaffold pops up in a sawdust puff (0.4 s), the hammering and the saw (1.2 s, the panel's sounds), then the
+  // new building springs up with squash and stretch (0.6 -> 1.08 -> 1 over 0.5 s; a plain cut under reduced motion)
+  // and goes into the layer. setIsland(cfg, { built }) starts it; finishBuild() skips to the end.
+  const MONTAGE = { scaffold: 0.4, knocks: 1.2, spring: 0.5 };
+  dev.wavers = [];
+  function scaffold(plot) {
+    const g = plotFrame(plot);
+    const s = subG(g, 0, plot.P.y, -0.45);
+    const wd = ink(COL.wood3);
+    const W = 3.9;
+    const D = 3.3;
+    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(s, cyl(0.07, 0.08, 3.6, 6), ink(COL.woodDark), (sx * W) / 2, 1.8, (sz * D) / 2);
+    for (const y of [1.25, 2.55]) {
+      for (const sz of [-1, 1]) add(s, rbox(W + 0.3, 0.08, 0.36, 0.02), wd, 0, y, (sz * D) / 2);
+      for (const sx of [-1, 1]) add(s, rbox(0.36, 0.08, D + 0.3, 0.02), wd, (sx * W) / 2, y, 0);
+    }
+    for (const sz of [-1, 1]) {
+      beam(s, thin(COL.wood2), V3(-W / 2, 0.1, (sz * D) / 2), V3(0, 2.5, (sz * D) / 2), 0.07, 0.05, 0.02);
+      beam(s, thin(COL.wood2), V3(W / 2, 0.1, (sz * D) / 2), V3(0, 2.5, (sz * D) / 2), 0.07, 0.05, 0.02);
+    }
+    for (let k = 0; k < 7; k++) rod(s, thin(COL.wood3), V3(W / 2 + 0.25, 0.3 + k * 0.42, 0.9), V3(W / 2 + 0.25, 0.3 + k * 0.42, 1.4), 0.03, 4);
+    for (const z of [0.9, 1.4]) rod(s, thin(COL.wood3), V3(W / 2 + 0.25, 0, z), V3(W / 2 + 0.25, 3.0, z), 0.035, 4);
+    crate(s, -1.1, 0, 1.95, 0.6, 0.3);
+    for (let i = 0; i < 3; i++) add(s, rbox(1.6, 0.1, 0.3, 0.03), wd, 0.6, 0.06 + i * 0.11, 2.0, 0, 0.05 * i, 0);
+    g.updateMatrixWorld(true);
+    bake(g, { force: 'thin' });
+    g.userData.keep = true;
+    return g;
+  }
+  function startMontage(plot, from) {
+    plotChunk(plot, plot.tier); // the new building, baked now (out of sight)
+    const M = { plot, from, t: 0, stage: 'scaffold', pop: null, scaffold: scaffold(plot), dust: [] };
+    dev.montage = M;
+    dev.root.add(M.scaffold);
+    rebuildDev({ [plot.id]: from });
+    if (!ctx.reducedMotion) {
+      for (const [x, z] of [[-1.9, -2.1], [1.9, -2.1], [-1.9, 1.2], [1.9, 1.2], [0, -0.45]]) {
+        plot.P.g.updateMatrixWorld(true);
+        M.dust.push({ world: plot.P.g.localToWorld(V3(x, plot.P.y - 0.2, z)), s: 0.85, colors: [0xf3e2b8, 0xfff6e0, 0xe9cf92] });
+      }
+      anim.smoke.dev = anim.smoke.dev.concat(M.dust);
+    }
+  }
+  function montageStep(dt) {
+    const M = dev.montage;
+    if (!M) return;
+    M.t += dt;
+    if (M.dust.length && M.t >= MONTAGE.scaffold + 0.25) {
+      anim.smoke.dev = anim.smoke.dev.filter((q) => !M.dust.includes(q));
+      M.dust.length = 0;
+    }
+    if (M.stage === 'scaffold' && M.t >= MONTAGE.scaffold + MONTAGE.knocks) {
+      // the building springs up from the deck (drawn apart from the layer meanwhile)
+      rebuildDev({ [M.plot.id]: null });
+      const P = M.plot.P;
+      const g = new THREE.Group();
+      g.position.set(P.x, P.y, P.z);
+      const inner = new THREE.Group();
+      inner.position.set(-P.x, -P.y, -P.z);
+      g.add(inner);
+      devMerge([plotChunk(M.plot, M.plot.tier)], inner);
+      g.userData.keep = true;
+      dev.root.add(g);
+      M.pop = g;
+      dev.root.remove(M.scaffold);
+      M.stage = 'spring';
+    }
+    if (M.stage === 'spring') {
+      const u = clamp((M.t - MONTAGE.scaffold - MONTAGE.knocks) / MONTAGE.spring, 0, 1);
+      const ease = (x) => x * x * (3 - 2 * x);
+      const sy = ctx.reducedMotion ? 1 : u < 0.6 ? 0.6 + 0.48 * ease(u / 0.6) : 1.08 - 0.08 * ease((u - 0.6) / 0.4);
+      M.pop.scale.set(1 / Math.sqrt(sy), sy, 1 / Math.sqrt(sy));
+      if (u >= 1) finishMontage();
+    }
+  }
+  /** Skip the montage to its end (the building stands, baked into the layer). */
+  function finishMontage() {
+    const M = dev.montage;
+    if (!M) return false;
+    dev.montage = null;
+    for (const g of [M.pop, M.scaffold]) {
+      if (!g) continue;
+      dev.root.remove(g);
+      g.traverse((o) => o.isMesh && o.geometry.dispose());
+    }
+    rebuildDev();
+    // a new home's villagers wave from its porch for 2 s
+    if (M.plot.kind === 'home' && M.from === 0) {
+      const L = HOME_LOOK[M.plot.id] || HOME_LOOK.homeA;
+      const hi = plotList.filter((p) => p.kind === 'home').indexOf(M.plot);
+      for (let k = 0; k < 2; k++) {
+        const seed = 5000 + Math.max(0, hi) * 37 + k * 11;
+        const p = buildPerson({ kind: KINDS_W[(seed + k) % KINDS_W.length], seed, shirt: L.wall, share: true, detail: 'low' });
+        M.plot.P.g.updateMatrixWorld(true);
+        p.position.copy(M.plot.P.g.localToWorld(V3(L.at[0] + (k ? 0.95 : -0.15), M.plot.P.y, L.at[1] + 1.35 + 0.65)));
+        p.rotation.y = (M.plot.P.ry || 0) + (k ? -0.25 : 0.2);
+        dev.root.add(p);
+        dev.wavers.push({ p, until: null });
+      }
+    }
+    return true;
+  }
+  const KINDS_W = ['woman', 'man', 'kid', 'old'];
+
+  // ----- the plots' API (SPEC3 §11.1): setIsland, plotPose, setRank -----
+  /**
+   * The island record (pirates-ahoy-island, { v, t: { homeA: 0..3, ... } }): every plot shows the building of its
+   * tier (tier 0: today's shack and a "Build me!" board). Rebakes the development layer when a tier changed.
+   * opts.built: the plot just built (its new building springs up). Returns whether the island changed.
+   */
+  function setIsland(cfg, opts = {}) {
+    if (!KRAKEN) return false;
+    // (the record read by island.js's own rules, so the town shows exactly the tiers the panel and the perks see)
+    const t = islandRules.parseIsland(cfg).t;
+    let changed = false;
+    const was = new Map(plotList.map((p) => [p.id, p.tier]));
+    if (dev.montage) finishMontage();
+    for (const plot of plotList) {
+      const tier = t[plot.id];
+      if (tier !== plot.tier) {
+        plot.tier = tier;
+        changed = true;
+      }
+    }
+    const built = opts && typeof opts.built === 'string' ? plotList.find((p) => p.id === opts.built) || null : null;
+    if (built && changed && built.tier > was.get(built.id)) startMontage(built, was.get(built.id));
+    else if (changed || !dev.built) rebuildDev();
+    return changed;
+  }
+  /** The camera pose framing a plot (for the build panel: it glides there, beside the panel): looking at the plot
+   * from round its front, the side, height and distance picked so that nothing tall stands between the lens and
+   * the plot or fills the near view (the walk data's obstacles and camera boxes, the other plots' tallest
+   * buildings, the prize ships' berths). The walk data never changes, so each plot's pose is worked out once. */
+  const PLOT_VIEW = {
+    // the preferred world yaw the camera looks from (round the plot's front)
+    homeA: 0.6,
+    homeB: 0.3,
+    homeC: -0.45,
+    homeD: -0.6,
+    bakery: 0.9,
+    windmill: 0.8,
+    lighthouse: -1.0,
+    market: 0.6,
+    school: 0.85,
+    park: 0.5,
+  };
+  const poseCache = new Map();
+  /** The things a plot's camera keeps clear of: { x, z, r | hw, hd, c, s, y0, y1 }, near the plot. */
+  function poseObstacles(plot, reach) {
+    const out = [];
+    const near = (x, z, e) => Math.hypot(x - plot.P.x, z - plot.P.z) < reach + e;
+    const put = (k, y0, y1) => {
+      if (k.r !== undefined) {
+        if (near(k.x, k.z, k.r)) out.push({ x: k.x, z: k.z, r: k.r, y0, y1 });
+      } else if (near(k.x, k.z, Math.hypot(k.w, k.d) / 2)) out.push({ x: k.x, z: k.z, hw: k.w / 2, hd: k.d / 2, c: Math.cos(k.ry || 0), s: Math.sin(k.ry || 0), y0, y1 });
+    };
+    for (const k of walkData.camBlockers) if (k.plot !== plot.id) put(k, k.y0, k.y1);
+    for (const k of walkData.blockers) if (k.h >= 2) put(k, 0, DECK + k.h);
+    for (const b of PRIZE_BERTHS) put({ x: b.x, z: b.z, r: 3.6 }, 0, 13);
+    return out;
+  }
+  const inObstacle = (o, x, y, z, pad = 0) => {
+    if (y < o.y0 - pad || y > o.y1 + pad) return false;
+    const dx = x - o.x;
+    const dz = z - o.z;
+    if (o.r !== undefined) return dx * dx + dz * dz < (o.r + pad) * (o.r + pad);
+    return Math.abs(dx * o.c - dz * o.s) < o.hw + pad && Math.abs(dx * o.s + dz * o.c) < o.hd + pad;
+  };
+  function plotPose(id) {
+    const plot = plotList.find((p) => p.id === id);
+    if (!plot) return null;
+    if (!poseCache.has(id)) poseCache.set(id, findPose(plot));
+    const q = poseCache.get(id);
+    return { pos: [...q.pos], target: [...q.target] };
+  }
+  function findPose(plot) {
+    const P = plot.P;
+    const yaw0 = PLOT_VIEW[plot.id] ?? (P.ry || 0);
+    const H = plot.height;
+    const R = Math.max(P.w, P.d) * 0.5;
+    const target = V3(P.x, P.y + Math.min(H, 7) * 0.42, P.z);
+    const tanV = Math.tan((25 * PI) / 180);
+    const d0 = ((Math.max(H, 2 * R) * 0.5) / tanV) * 1.1 + R;
+    const obs = poseObstacles(plot, d0 * 1.2 + R + 2);
+    const F = V3();
+    const Rt = V3();
+    const U = V3();
+    const dir = V3();
+    let best = null;
+    for (let k = 0; k < 16; k++) {
+      const yaw = yaw0 + (k % 2 ? 1 : -1) * Math.ceil(k / 2) * (TAU / 16);
+      const turn = Math.abs(Math.atan2(Math.sin(yaw - yaw0), Math.cos(yaw - yaw0)));
+      for (const up of [0.45, 0.62]) {
+        for (const d of [d0, d0 * 0.85]) {
+          const pos = V3(target.x + Math.sin(yaw) * Math.cos(up) * d, target.y + Math.sin(up) * d, target.z + Math.cos(yaw) * Math.cos(up) * d);
+          if (obs.some((o) => inObstacle(o, pos.x, pos.y, pos.z, 0.8))) continue;
+          F.subVectors(target, pos).normalize();
+          Rt.crossVectors(F, _up).normalize();
+          U.crossVectors(Rt, F);
+          // what the lens sees: 5 x 3 rays over the middle of the frame, each marched to the plot; anything in
+          // the way counts, the nearer the worse (a near roof or palm would fill the frame)
+          let score = turn * 0.6 + (up > 0.5 ? 0.25 : 0) + (d < d0 ? 0.1 : 0);
+          for (let i = -2; i <= 2; i++) {
+            for (let j = -1; j <= 1; j++) {
+              dir.copy(F).addScaledVector(Rt, i * 0.33 * tanV * 1.6).addScaledVector(U, j * 0.6 * tanV).normalize();
+              for (let s = 0.5; s < d; s += 0.45) {
+                const x = pos.x + dir.x * s;
+                const y = pos.y + dir.y * s;
+                const z = pos.z + dir.z * s;
+                if (Math.hypot(x - P.x, z - P.z) < R + 0.3 || y < 0) break; // reached the plot (or the sea)
+                if (obs.some((o) => inObstacle(o, x, y, z))) {
+                  score += 1 + 2.5 * (1 - s / d);
+                  break;
+                }
+              }
+            }
+          }
+          if (!best || score < best.score) best = { score, pos };
+        }
+      }
+    }
+    const pos = best ? best.pos : V3(target.x + Math.sin(yaw0) * d0 * 0.9, target.y + d0 * 0.43, target.z + Math.cos(yaw0) * d0 * 0.9);
+    return { pos: [r2(pos.x), r2(pos.y), r2(pos.z)], target: [r2(target.x), r2(target.y), r2(target.z)] };
+  }
+  /** The town's rank, painted on the plaque under the welcome sign. */
+  function setRank(name) {
+    if (!KRAKEN) return false;
+    const n = typeof name === 'string' && name.trim() ? name.trim().slice(0, 24) : islandRules.RANKS[0].name;
+    if (n === dev.rank) return false;
+    dev.rank = n;
+    if (dev.tex) dev.tex.userData.paint(n);
+    return true;
+  }
 
   // ----- townsfolk -----
   // Seen from the showcase camera they are only a few dozen pixels tall: the light build (a third of
@@ -3889,7 +5500,319 @@ export function build(scene, ctx = {}) {
   walkData.spawn = { x: r2(gangFoot.x), z: r2(pier.z + 0.15), h: r3(PI) };
   // the docked ship at the berth (beyond the pier's edge, so only the town camera ever meets it)
   walkData.blockers.push({ x: BERTH.x, z: BERTH.z, w: 16, d: 4.8, ry: 0, h: 10 });
-  const PLACE_ORDER = ['ship', 'shipyard', 'tailor', 'tavern'];
+  // ----- the Kraken Seas' new places (SPEC3 §7.1, §8.3): Professor Barnacle's Riddle Bell and Builder Bess -----
+  // Their props bake into the development layer (with the painted chalkboard, island plan and rank plaque); the
+  // professor and Bess are townsfolk who stand still, each with a blocker of their own, clear of every walker's
+  // path, bridge mouth, doorway and place circle but their own.
+  const npcs = []; // { id, x, z, r, folk } (walk.npcs: for the walk tests)
+  if (KRAKEN) {
+    const kp = new THREE.Group(); // the props, baked into the development layer
+    const tower = towerRaft;
+    const tw = (lx, lz, dy = 0) => tower.at(lx, lz, dy);
+    const tyaw = tower.ry || 0;
+    // the Riddle Bell: a brass bell hung in a little timber frame against the lookout tower's front, west of its
+    // ladder (inside the tower's footprint, so nobody walks into it)
+    {
+      const g = new THREE.Group();
+      g.position.copy(tw(-1.05, 2.02));
+      g.rotation.y = tyaw;
+      kp.add(g);
+      for (const sx of [-1, 1]) {
+        add(g, rbox(0.16, 2.55, 0.16, 0.04), ink(COL.woodDark), sx * 0.55, 1.27, 0);
+        add(g, rbox(0.4, 0.14, 0.4, 0.04), ink(COL.woodDark), sx * 0.55, 0.07, 0);
+        beam(g, thin(COL.wood2), V3(sx * 0.55, 1.9, 0), V3(sx * 0.18, 2.42, 0), 0.08, 0.08, 0.02);
+      }
+      add(g, rbox(1.4, 0.18, 0.24, 0.05), ink(COL.wood2), 0, 2.5, 0);
+      for (const s of [-1, 1]) {
+        const r = add(g, rbox(0.95, 0.07, 0.42, 0.03), ink(COL.red), s * 0.33, 2.74, 0, 0, 0, -s * 0.55);
+        r.rotation.order = 'ZXY';
+      }
+      add(g, sphere(8), ink(COL.brass), 0, 2.98, 0, 0, 0, 0, 0.09);
+      // the bell on its yoke, a clapper and a bell rope with a red tassel
+      add(g, rbox(0.42, 0.14, 0.16, 0.04), ink(COL.woodDeep), 0, 2.33, 0);
+      add(g, lathe('riddleBell', [[0, 0.62], [0.12, 0.61], [0.2, 0.52], [0.23, 0.3], [0.27, 0.1], [0.36, 0.0], [0.36, -0.04], [0, -0.04]], 18), ink(COL.brass), 0, 1.66, 0);
+      add(g, torus(0.3, 0.03, 18, 4), thin(0xd9a52a), 0, 1.76, 0, PI / 2);
+      add(g, sphere(8), ink(COL.iron), 0, 1.62, 0, 0, 0, 0, 0.08);
+      rod(g, thin(COL.rope), V3(0.18, 2.3, 0.04), V3(0.32, 1.0, 0.18), 0.02, 4);
+      add(g, sphere(8), ink(COL.red), 0.32, 0.95, 0.18, 0, 0, 0, [0.07, 0.11, 0.07]);
+      // a small sign on the frame: a brass star
+      add(g, cyl(0.12, 0.12, 0.04, 5), ink(COL.brass), 0, 2.5, 0.13, PI / 2, 0, 0);
+    }
+    // the chalkboard easel "QUIZ ★", under the tower's front east of the ladder (the professor stands between)
+    {
+      const g = new THREE.Group();
+      g.position.copy(tw(1.3, 1.93));
+      g.rotation.y = tyaw - 0.12;
+      kp.add(g);
+      for (const sx of [-1, 1]) rod(g, ink(COL.woodDark), V3(sx * 0.45, 0, 0.18), V3(sx * 0.3, 1.85, -0.05), 0.04, 6);
+      rod(g, ink(COL.woodDark), V3(0, 0, -0.45), V3(0, 1.75, -0.06), 0.035, 6);
+      add(g, rbox(1.0, 0.06, 0.16, 0.02), ink(COL.wood2), 0, 0.82, 0.12);
+      add(g, rbox(0.98, 0.78, 0.07, 0.03), ink(COL.woodDark), 0, 1.24, 0.06, -0.12, 0, 0);
+      if (dev.texMat) add(g, devPlane('chalk', 0.88, 0.66), dev.texMat, 0, 1.24, 0.105, -0.12, 0, 0);
+      add(g, rbox(0.14, 0.04, 0.04, 0.01), ink(COL.white), 0.2, 0.87, 0.15);
+    }
+    // two log benches at the raft's front edge, facing the bell: in the deck's outer band, which the captain
+    // never reaches (his middle keeps 0.65 from the edge, his body 0.35), so they need no blocker and leave the
+    // narrow way in front of the tower (from the bridge to the bell) as wide as it was
+    for (const lx of [-2.05, 0.05]) {
+      const g = new THREE.Group();
+      g.position.copy(tw(lx, 3.31));
+      g.rotation.y = tyaw;
+      kp.add(g);
+      add(g, cyl(0.15, 0.15, 0.85, 10), ink(COL.trunk), 0, 0.3, 0, 0, 0, PI / 2);
+      for (const sx of [-1, 1]) {
+        add(g, cyl(0.13, 0.13, 0.02, 10), thin(COL.plank), sx * 0.43, 0.3, 0, 0, 0, PI / 2);
+        add(g, rbox(0.14, 0.18, 0.3, 0.04), ink(COL.woodDark), sx * 0.3, 0.09, 0);
+      }
+    }
+    // Professor Barnacle (old man, round spectacles, a mortarboard, a long grey beard, a pointer) with Quizzle, his
+    // green-and-yellow macaw, on his shoulder: under the tower's front between the ladder and his chalkboard, turned
+    // to the visitor at the bell. He stands inside the tower's footprint, which nobody walks into, so he narrows no
+    // way at all; like every townsperson he is in folk() (r 0.35), and has no blocker of his own.
+    {
+      const spot = tw(0.64, 1.8);
+      const look = tw(-1.05, 2.75);
+      const f = person({ kind: 'old', seed: 413, hat: 'mortarboard', tool: 'pointer', beard: 'full', hair: 0xd9d6cf, glasses: true, pet: 'parrot', petColor: { body: 0x3fae5a, wing: 0xffd84a, head: 0xffd84a } },
+        (t) => (t % 9 < 2.6 ? 'point' : 'idle'), V3(spot.x, DECK, spot.z), Math.atan2(look.x - spot.x, look.z - spot.z));
+      f.npc = 'barnacle';
+      npcs.push({ id: 'barnacle', x: r2(spot.x), z: r2(spot.z), r: 0.35 });
+    }
+    // the place: the visitor stops in front of the bell (the tower's front strip), facing it; the panel's camera
+    // looks from over the water off the raft's south-west corner (clear of Tavern Row's tallest building), so the
+    // bell, the visitor, the professor and his chalkboard stand side by side with nothing in front of them
+    {
+      const at = tw(-1.05, 2.56);
+      const bell = tw(-1.05, 2.0);
+      const camP = tw(-4.33, 5.92, 2.7);
+      const camT = tw(-0.2, 2.2, 1.15);
+      walkData.places.push({
+        id: 'quiz', name: "Professor Barnacle's Riddle Bell", x: r2(at.x), z: r2(at.z), r: 1.3, face: r3(Math.atan2(bell.x - at.x, bell.z - at.z)),
+        cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] },
+      });
+    }
+    // Builder Bess (a woman in a bandana, with the hammer) by the welcome sign's east post, beside an easel with
+    // the island plan; the visitor stops east of the easel, facing the plan, and Bess stands at its north end,
+    // turned to him (so the panel's camera sees the three of them side by side); like every townsperson she is in
+    // folk() (r 0.35) and has no blocker of her own (the easel has).
+    {
+      const ez = { x: -1.72, z: -7.62 };
+      const g = new THREE.Group();
+      g.position.set(ez.x, DECK, ez.z);
+      g.rotation.y = PI / 2 - 0.2; // the plan faces east, a little north
+      kp.add(g);
+      for (const sx of [-1, 1]) rod(g, ink(COL.woodDark), V3(sx * 0.5, 0, 0.18), V3(sx * 0.32, 1.95, -0.05), 0.04, 6);
+      rod(g, ink(COL.woodDark), V3(0, 0, -0.5), V3(0, 1.85, -0.06), 0.035, 6);
+      add(g, rbox(1.16, 0.06, 0.16, 0.02), ink(COL.wood2), 0, 0.92, 0.12);
+      add(g, rbox(1.16, 0.64, 0.07, 0.03), ink(COL.woodDark), 0, 1.3, 0.06, -0.1, 0, 0);
+      if (dev.texMat) add(g, devPlane('map', 1.06, 0.53), dev.texMat, 0, 1.3, 0.105, -0.1, 0, 0);
+      // a roll of plans and a pot of pencils on the tray
+      add(g, cyl(0.05, 0.05, 0.42, 8), ink(COL.cream), -0.28, 0.98, 0.14, 0, 0, PI / 2);
+      add(g, cyl(0.05, 0.05, 0.12, 8), ink(COL.blue), 0.35, 1.0, 0.14);
+      for (let i = 0; i < 3; i++) add(g, cyl(0.012, 0.012, 0.16, 4), ink([COL.red, COL.yellow, COL.green][i]), 0.33 + i * 0.02, 1.1, 0.14);
+      block(g, 0, 0, 0.36, 1.9);
+      const spot = { x: -1.4, z: -8.5 };
+      const at = { x: -0.62, z: -7.48 };
+      const f = person({ kind: 'woman', seed: 409, hat: 'bandana', tool: 'hammer', hatColor: 0xe2383d, shirt: 0x3f8fd8 },
+        (t) => (t % 11 < 2.4 ? 'point' : t % 11 > 9.2 ? 'wave' : 'idle'), V3(spot.x, DECK, spot.z), Math.atan2(at.x - spot.x, at.z - spot.z));
+      f.npc = 'bess';
+      npcs.push({ id: 'bess', x: spot.x, z: spot.z, r: 0.35 });
+      const camP = V3(2.6, DECK + 2.9, -6.3);
+      const camT = V3(-1.5, DECK + 1.05, -8.0);
+      walkData.places.push({
+        id: 'builder', name: 'Builder Bess', x: at.x, z: at.z, r: 1.3, face: r3(Math.atan2(ez.x - at.x, ez.z + 0.15 - at.z)),
+        cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] },
+      });
+    }
+    // the town's rank on a plaque hung under the welcome sign's board
+    {
+      const g = new THREE.Group();
+      g.position.set(SIGN.x, DECK, SIGN.z);
+      g.rotation.y = SIGN.ry;
+      kp.add(g);
+      const y = 3.1 + SIGN_LIFT - 1.03 - 0.5;
+      for (const sx of [-1, 1]) rod(g, thin(COL.iron), V3(sx * 0.7, y + 0.5, 0.02), V3(sx * 0.7, y + 0.2, 0.04), 0.018, 4);
+      add(g, rbox(1.74, 0.46, 0.08, 0.04), ink(0xb8862b), 0, y, 0.04);
+      if (dev.texMat) add(g, devPlane('plaque', 1.66, 0.4), dev.texMat, 0, y, 0.085);
+      camBox(g, 0, 0.04, 1.9, 0.3, 0, y - 0.35, y + 0.55);
+    }
+    dev.props = devChunk(kp);
+    rebuildDev();
+    walkData.npcs = npcs;
+    walkData.doors = doors;
+  }
+  // ----- the villagers (SPEC3 §8.4, the Kraken Seas only) -----
+  // Up to 8 drawn (VILLAGER_CAP), each on a loop of its own along the decks' centrelines: two lanes on the pier,
+  // four on the plaza, one past the tavern and over its rope bridge to the lookout raft, one over the garden bridge
+  // round a palm. They are walker()s in folk(), so the captain squeezes past them and they wait for him (LOOK-2);
+  // nothing else is added. A loop never pauses (it is a loop), crosses no other walker's path, keeps clear of every
+  // place circle, Bess and the professor, and at most one villager uses any bridge. A villager stops only to greet
+  // the captain, and never on a bridge, near a bridge mouth, in a place circle, a doorway or at the gangplank.
+  const villagerLoops = [];
+  const villagers = []; // their folk entries
+  if (KRAKEN) {
+    const P = (x, z, y = DECK) => V3(x, y, z);
+    // a lane: out along one track and back along another `gap` to its side, round both ends
+    const lane = (ax, az, bx, bz, gap = 0.4) => {
+      const L = Math.hypot(bx - ax, bz - az);
+      const nx = (-(bz - az) / L) * gap * 0.5;
+      const nz = ((bx - ax) / L) * gap * 0.5;
+      const ux = ((bx - ax) / L) * gap * 0.5;
+      const uz = ((bz - az) / L) * gap * 0.5;
+      return [P(ax + nx, az + nz), P(bx + nx, bz + nz), P(bx + ux, bz + uz), P(bx - nx, bz - nz), P(ax - nx, az - nz), P(ax - ux, az - uz), P(ax + nx, az + nz)];
+    };
+    const gardenY = (x, z) => {
+      const r = Math.hypot(x - GARDEN.x, z - GARDEN.z);
+      const pr = [[0, GARDEN.y + 0.15], [GARDEN.r * 0.55, GARDEN.y + 0.08], [GARDEN.r * 0.85, GARDEN.y - 0.1]];
+      if (r <= 0) return pr[0][1];
+      for (let i = 1; i < pr.length; i++) if (r <= pr[i][0]) return pr[i - 1][1] + ((pr[i][1] - pr[i - 1][1]) * (r - pr[i - 1][0])) / (pr[i][0] - pr[i - 1][0]);
+      return pr[pr.length - 1][1];
+    };
+    const G = (x, z) => P(x, z, gardenY(x, z));
+    const link = (id) => (walkData.links.find((l) => l.id === id) || { pts: [] }).pts.map(([x, y, z]) => V3(x, y, z));
+    // the tavern lollipop: from the porch's west end, up the walkway past the tavern's west wall, over the rope
+    // bridge to the lookout raft, a turn on its east side (out along one track, back along the other), and back
+    const towerOut = link('tavernTower');
+    const tav = [P(-8.6, -16.15), P(-11.75, -16.15), P(-11.75, -23.3), ...towerOut.slice(1, -1), tower2(2.62, 2.25), tower2(2.62, -1.15), tower2(2.24, -1.3), tower2(2.24, 2.25), ...towerOut.slice(1, -1).reverse(), P(-11.95, -23.45), P(-11.35, -23.0), P(-11.35, -16.5), P(-8.6, -16.5), P(-8.6, -16.15)];
+    function tower2(lx, lz) {
+      return towerRaft.at(lx, lz);
+    }
+    // the garden lollipop: from the plaza over the garden bridge, once round the little palm, and back
+    const gardenOut = link('plazaGarden');
+    const ring = [];
+    const pc = { x: -13.4, z: -8.5 }; // the little palm by the bridge
+    for (let i = 0; i <= 14; i++) {
+      const a = (i / 14) * TAU; // from its east side (the bridge end)
+      ring.push(G(pc.x + Math.cos(a) * 0.9, pc.z + Math.sin(a) * 0.9));
+    }
+    const gar = [P(-6.6, -8.4), ...gardenOut.slice(1, -1), ...ring, ...gardenOut.slice(1, -1).reverse(), P(-6.6, -8.65), P(-6.6, -8.4)];
+    villagerLoops.push(
+      { id: 'plazaWest', pts: lane(-5.85, -9.75, -1.65, -9.75, 0.32) },
+      { id: 'plazaNorth', pts: lane(-5.85, -13.85, 3.2, -13.85, 0.36) },
+      { id: 'pierEast', pts: lane(3.2, -4.5, 6.9, -4.5, 0.4) },
+      { id: 'tavernTower', pts: tav },
+      { id: 'garden', pts: gar },
+      { id: 'plazaEast', pts: lane(2.95, -6.95, 2.95, -10.55, 0.4) },
+      { id: 'pierWest', pts: lane(-5.6, -4.5, -2.0, -4.5, 0.4) },
+      { id: 'portal', pts: lane(-6.95, -11.95, -6.95, -14.75, 0.4) },
+    );
+  }
+  /** The house colours a home's villagers dress in. */
+  const homeShirt = (id) => (HOME_LOOK[id] || HOME_LOOK.homeA).wall;
+  const KINDS = ['woman', 'man', 'kid', 'old'];
+  /**
+   * The villagers out walking (built on dock open, behind the "Rowing to…" toast). list: how many live on the
+   * island (a number: they come from the homes as built, 2 / 4 / 6 a home by tier), or [{ home, kind?, seed? }].
+   * At most 8 are drawn; the rest are "at home" (their homes' windows lit). Returns how many are drawn.
+   */
+  function setVillagers(list) {
+    if (!KRAKEN) return 0;
+    for (const f of villagers) {
+      const i = folk.indexOf(f);
+      if (i >= 0) folk.splice(i, 1);
+      disposePerson(f.p);
+    }
+    villagers.length = 0;
+    const homes = plotList.filter((p) => p.kind === 'home');
+    // (a home's villagers by tier: island.js's numbers, 2 / 4 / 6)
+    const perTier = (p) => (p.tier > 0 ? p.def.perk.villagers[p.tier - 1] | 0 : 0);
+    let want = [];
+    if (Array.isArray(list)) {
+      want = list.filter((q) => q && typeof q === 'object').map((q, i) => ({ home: homes.some((h) => h.id === q.home) ? q.home : null, kind: KINDS.includes(q.kind) ? q.kind : null, seed: Number.isInteger(q.seed) ? q.seed : null, i }));
+    } else {
+      const n = Number.isFinite(list) ? Math.max(0, Math.floor(list)) : homes.reduce((s, p) => s + perTier(p), 0);
+      // take them from the homes in turn (each home's first villager before anyone's second)
+      const left = homes.map((p) => ({ id: p.id, n: perTier(p) }));
+      for (let k = 0; want.length < n && left.some((h) => h.n > 0); k++) {
+        for (const h of left) {
+          if (want.length >= n) break;
+          if (h.n > 0) {
+            h.n--;
+            want.push({ home: h.id, kind: null, seed: null, i: want.length });
+          }
+        }
+      }
+      while (want.length < n) want.push({ home: homes.length ? homes[want.length % homes.length].id : null, kind: null, seed: null, i: want.length });
+    }
+    const cap = Math.min(islandRules.VILLAGER_CAP, villagerLoops.length);
+    const drawn = want.slice(0, cap);
+    // homes with villagers left over are "at home": their windows lit, their chimneys smoking
+    const lit = {};
+    for (const h of homes) {
+      const total = Array.isArray(list) ? want.filter((q) => q.home === h.id).length : perTier(h);
+      const out = drawn.filter((q) => q.home === h.id).length;
+      lit[h.id] = total > out;
+    }
+    const litChanged = homes.some((h) => (dev.lit[h.id] !== false) !== lit[h.id]);
+    dev.lit = lit;
+    drawn.forEach((q, k) => {
+      const loop = villagerLoops[k];
+      const hi = Math.max(0, homes.findIndex((h) => h.id === q.home));
+      const seed = q.seed ?? 5000 + hi * 37 + k * 11;
+      const kind = q.kind ?? KINDS[(seed + k) % KINDS.length];
+      const f = walker({ kind, seed, shirt: homeShirt(q.home), share: true }, loop.pts, { loop: true, speed: kind === 'kid' ? 1.15 : kind === 'old' ? 0.75 : 0.9, off: (k * 7.3) % 11 });
+      f.villager = true;
+      f.home = q.home;
+      f.loop = loop.id;
+      f.greets = true;
+      villagers.push(f);
+    });
+    if (litChanged && dev.built && !dev.montage) rebuildDev(); // (a building going up rebakes at its end anyway)
+    // a frame's pose straight away (they were built between two frames)
+    for (const f of villagers) {
+      walkerPose(f, lastT);
+      animatePerson(f.p, lastT, 'walk', f.aopts);
+      // (they walk the town only: hidden in the shipyard view, as cull() keeps them)
+      f.p.visible = townView && (!lastCam || Math.hypot(f.p.position.x - lastCam.x, f.p.position.z - lastCam.z) <= 30);
+    }
+    return villagers.length;
+  }
+  /** Is (x, z) on a rope bridge or its run-ins, or on the 3 u of deck leading straight onto one (1 u either side of
+   * its line)? A villager there is no obstacle to the captain (folkOnWalk). */
+  function nearBridge(x, z) {
+    const segD = (ax, az, bx, bz) => {
+      const L2 = (bx - ax) ** 2 + (bz - az) ** 2 || 1;
+      const u = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L2, 0, 1);
+      return Math.hypot(x - ax - (bx - ax) * u, z - az - (bz - az) * u);
+    };
+    for (const l of walkData.links) {
+      const P = l.pts;
+      for (let i = 0; i + 1 < P.length; i++) if (segD(P[i][0], P[i][2], P[i + 1][0], P[i + 1][2]) < 0.75) return true;
+      for (const [e, n] of [[P[0], P[1]], [P[P.length - 1], P[P.length - 2]]]) {
+        const L = Math.hypot(n[0] - e[0], n[2] - e[2]) || 1;
+        const ux = (n[0] - e[0]) / L;
+        const uz = (n[2] - e[2]) / L;
+        if (segD(e[0] - ux * 3, e[2] - uz * 3, e[0], e[2]) < 1.0) return true;
+      }
+    }
+    return false;
+  }
+  /** May a villager stop here (to greet the captain)? Not on a bridge, near a bridge mouth, in a place circle, a doorway or at the gangplank. */
+  function quietSpot(x, z) {
+    for (const l of walkData.links) {
+      const a = l.pts[0];
+      const b = l.pts[l.pts.length - 1];
+      if (Math.hypot(x - a[0], z - a[2]) < 2.9 || Math.hypot(x - b[0], z - b[2]) < 2.9) return false; // (the run-in is 0.9 into the deck)
+      for (let i = 0; i + 1 < l.pts.length; i++) {
+        const [ax, , az] = l.pts[i];
+        const [bx, , bz] = l.pts[i + 1];
+        const L2 = (bx - ax) ** 2 + (bz - az) ** 2 || 1;
+        const u = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L2, 0, 1);
+        if (Math.hypot(x - ax - (bx - ax) * u, z - az - (bz - az) * u) < 0.8) return false;
+      }
+    }
+    for (const p of walkData.places) if (Math.hypot(x - p.x, z - p.z) < p.r + 0.5) return false;
+    if (walkData.spawn && Math.hypot(x - walkData.spawn.x, z - walkData.spawn.z) < 1.9) return false;
+    return true;
+  }
+  // every walker's path and every villager's loop (for the walk tests: Bess and the professor keep clear of them)
+  if (KRAKEN) {
+    const pts = (list) => list.map((q) => [r2(q.x), r2(q.y), r2(q.z)]);
+    walkData.paths = [
+      ...folk.filter((f) => f.path).map((f, i) => ({ id: `walker${i}`, kind: 'walker', loop: !!f.loop, pts: pts(f.path) })),
+      ...villagerLoops.map((l) => ({ id: l.id, kind: 'villager', loop: true, pts: pts(l.pts) })),
+    ];
+  }
+  const PLACE_ORDER = ['ship', 'shipyard', 'tailor', 'tavern', 'quiz', 'builder'];
   walkData.places.sort((p, q) => PLACE_ORDER.indexOf(p.id) - PLACE_ORDER.indexOf(q.id));
   const gangTop = V3(1.62, 1.86, 0.6); // ship-local, on the rail
   gang.visible = false;
@@ -4064,7 +5987,16 @@ export function build(scene, ctx = {}) {
       const f = folk[i];
       if (f.p.parent !== root) continue;
       const p = f.p.position;
-      if (onWalk(p.x, p.y, p.z)) out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets });
+      if (!onWalk(p.x, p.y, p.z)) continue;
+      // (the Kraken Seas' villagers and the two new townsfolk say who they are, for their greetings)
+      // (near a rope bridge a villager is no obstacle to the captain: he walks straight through, as he would squeeze
+      // past after a moment anyway, rather than slide round them and off the bridge's line into the rope beside its
+      // mouth, where a held key would keep him pressed for ever)
+      if (f.villager) {
+        if (!nearBridge(p.x, p.z)) out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets, villager: true, home: f.home });
+      }
+      else if (f.npc) out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets, npc: f.npc });
+      else out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets });
     }
     return out;
   }
@@ -4076,6 +6008,7 @@ export function build(scene, ctx = {}) {
   function greet(index, seconds = 2, toward = null) {
     const f = folk[index];
     if (!f || !f.greets) return false;
+    if (f.villager && !quietSpot(f.p.position.x, f.p.position.z)) return false; // (never stops on a bridge, in a place...)
     const at = toward && Number.isFinite(toward.x) && Number.isFinite(toward.z) ? { x: toward.x, z: toward.z } : lastCam ? { ...lastCam } : null;
     const s0 = f.greet ? f.greet.s0 : lastT + (f.off || 0);
     f.greet = { until: lastT + Math.max(0, Number.isFinite(seconds) ? seconds : 2), at, s0 };
@@ -4106,12 +6039,13 @@ export function build(scene, ctx = {}) {
     townView = Number.isFinite(x) && Number.isFinite(z);
     for (const f of folk) {
       if (!townView) {
-        f.p.visible = true;
+        f.p.visible = !f.villager; // (the villagers walk the town only: none in the shipyard view, SPEC3 §14)
         continue;
       }
       const w = f.p.parent === root ? f.p.position : f.p.getWorldPosition(tmpW);
       const d = Math.hypot(w.x - x, w.z - z);
-      f.p.visible = d <= radius && d >= near;
+      // (and only within 30 u of the lens, §8.4)
+      f.p.visible = d <= (f.villager ? Math.min(radius, 30) : radius) && d >= near;
     }
     for (const zz of prizes) zz.ship.visible = townView;
   }
@@ -4185,6 +6119,7 @@ export function build(scene, ctx = {}) {
       m.morphTargetInfluences[1] = Math.cos(t * 3.1);
     }
     lanternGlow.emissiveIntensity = 1.0 + 0.12 * Math.sin(t * 7.3) + 0.08 * Math.sin(t * 13.1);
+    if (KRAKEN) updateDev(t, dt0);
     // boats and the barge
     for (const b of anim.boats) {
       const { x, z } = b.userData.base;
@@ -4257,6 +6192,23 @@ export function build(scene, ctx = {}) {
           S.puff.setMatrixAt(k++, S.m);
         }
       }
+      if (KRAKEN) {
+        // the development layer's chimneys (the same puffs), and the powder shed's coloured ones
+        for (const src of S.dev) {
+          for (let i = 0; i < S.per; i++) {
+            const p = (t * 0.2 + i / S.per + src.world.x * 0.01) % 1;
+            S.p.set(src.world.x + p * p * 3.0 * src.s + Math.sin(t * 1.3 + i) * 0.12, src.world.y + p * 5.5 * src.s, src.world.z + p * 1.2 * src.s);
+            const sc = Math.max(0.01, (0.32 + p * 0.95) * src.s * Math.min(1, (1 - p) * 3.5) * Math.min(1, 0.35 + p * 6));
+            S.s.set(sc, sc * 0.85, sc);
+            S.m.compose(S.p, S.q, S.s);
+            S.puff.setMatrixAt(k, S.m);
+            S.puff.setColorAt(k, S.c.setHex(src.colors ? src.colors[i % src.colors.length] : 0xffffff));
+            k++;
+          }
+        }
+        S.puff.count = k;
+        if (S.puff.instanceColor) S.puff.instanceColor.needsUpdate = true;
+      }
       S.puff.instanceMatrix.needsUpdate = true;
     }
     // townsfolk (a greeting turns one to the captain and waves; walkers stop for it and then go on)
@@ -4268,7 +6220,10 @@ export function build(scene, ctx = {}) {
         if (f.path) f.off = G.s0 - t;
         f.greet = null;
       }
-      if (!f.p.visible) continue; // culled in the town view
+      if (!f.p.visible) {
+        if (f.villager && !f.greet) walkerPose(f, t); // (a villager still walks his round out of sight)
+        continue; // culled in the town view
+      }
       if (f.cheerUntil > t) {
         animatePerson(f.p, t, 'cheer', f.aopts);
         continue;
@@ -4349,6 +6304,11 @@ export function build(scene, ctx = {}) {
     prizes.length = 0;
     for (const f of folk) disposePerson(f.p);
     for (const c of crew) disposePerson(c.p);
+    if (KRAKEN) {
+      for (const w of dev.wavers) disposePerson(w.p);
+      dev.wavers.length = 0;
+      dev.chunks.clear();
+    }
     scene.remove(root);
     const geos = new Set();
     for (const r of [root, crewRig]) {
@@ -4376,7 +6336,11 @@ export function build(scene, ctx = {}) {
     view: { ...VIEW, target: [...VIEW.target] }, // the showcase camera
     setShip,
     setCrewStyle,
-    peopleCount: folk.length + crew.length,
+    get peopleCount() {
+      // (every person sparrow adds: the townsfolk with the villagers, Bess and the professor, the crew, and a new
+      // home's villagers waving from its porch for their 2 s)
+      return folk.length + crew.length + dev.wavers.length;
+    },
     walk: walkData,
     folk: folkOnWalk,
     setCaptain,
@@ -4384,6 +6348,24 @@ export function build(scene, ctx = {}) {
     cheer,
     cull,
     setPrizes,
+    // the Kraken Seas (SPEC3 §8, §11.1; harmless no-ops without them)
+    setIsland,
+    plotPose,
+    setRank,
+    setVillagers,
+    finishBuild: finishMontage,
+    buildTimes: { ...MONTAGE },
+    get montage() {
+      const M = dev.montage;
+      return M ? { id: M.plot.id, stage: M.stage, t: M.t } : null;
+    },
+    // every villager out walking, wherever they are (folk() leaves out those by a rope bridge): { x, y, z, home, loop, visible }
+    get villagers() {
+      return villagers.map((f) => ({ x: f.p.position.x, y: f.p.position.y, z: f.p.position.z, home: f.home, loop: f.loop, visible: f.p.visible }));
+    },
+    get plots() {
+      return plotList.map((p) => ({ ...plotInfo(p), tier: p.tier }));
+    },
     update,
     dispose,
     group: root,
@@ -4455,6 +6437,12 @@ export function walkDebugLines(walk) {
     if (p.podium) circle(p.podium.x, p.podium.y + 0.05, p.podium.z, 0.3, cols.place, 16);
     for (const q of p.lineup || []) circle(q.x, q.y + 0.05, q.z, 0.25, cols.place, 12);
   }
+  // (the Kraken Seas) the walkers' paths (violet) and the villagers' loops (blue), Bess and the professor (white)
+  for (const q of walk.paths || []) {
+    const hex = q.kind === 'villager' ? 0x2f7bff : 0xb44cff;
+    for (let i = 0; i + 1 < q.pts.length; i++) seg([q.pts[i][0], q.pts[i][1] + lift + 0.1, q.pts[i][2]], [q.pts[i + 1][0], q.pts[i + 1][1] + lift + 0.1, q.pts[i + 1][2]], hex);
+  }
+  for (const n of walk.npcs || []) circle(n.x, yAt + 0.1, n.z, 1.0, cols.spawn, 24);
   if (walk.spawn) {
     const s = walk.spawn;
     circle(s.x, yAt + 0.08, s.z, 0.3, cols.spawn, 16);

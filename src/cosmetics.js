@@ -8,7 +8,9 @@
 //
 // A look is { v: 1, cap: { <captain slot>: key }, crew: { <crew slot>: key }, own: [paid item ids] }
 // and is stored as exactly that JSON (serializeLook). Feats are { captures, boardings, rakes, crits,
-// legend, prizes: { <enemy type>: count } } (serializeFeats). parseLook / parseFeats accept anything
+// legend, kraken, quiz, stars, island, prizes: { <enemy type>: count } } (serializeFeats; kraken, quiz,
+// stars and island came with the Kraken Seas, SPEC3 §10.1: a record without them reads them as 0).
+// parseLook / parseFeats accept anything
 // (missing, blocked or tampered storage, or an object) and never throw: field by field, own
 // properties only, a hostile object counts as missing, unknown fields are dropped.
 //
@@ -62,6 +64,13 @@ export const PALETTE = Object.freeze({
   goldenBody: 0xffcc3a,
   goldenWing: 0xffe27a,
   goldenHead: 0xfff3b0,
+  rainbowBody: 0xf2552c, // the Rainbow macaw: a red-orange body, green wings (yellow-green inside), a blue head
+  rainbowWing: 0x27b35a,
+  rainbowHead: 0x2f6fe0,
+  // the Kraken Seas' trophies: the professor's mortarboard, the baby kraken's suckers and spots (its body is purple)
+  academic: 0x2c2f4a,
+  octoSucker: 0xffc2e0,
+  octoSpot: 0xff8fc8,
   // enemy crews
   fur: 0x7a5232,
   steel: 0xa7afb9,
@@ -71,6 +80,10 @@ export const PALETTE = Object.freeze({
   ragsDark: 0x34363b,
   soot: 0x2a2730,
   ember: 0xf2602a,
+  sharkGrey: 0x7d8894, // the Shark Raiders' bandanas
+  mustard: 0xd9a62b, // the Bomb Ketch's shirts
+  turtleGreen: 0x4e7a52, // the Iron Turtle's coats
+  inkTeal: 0x1f5a5e, // the Kraken Crew's vests
   bare: 0xe8dcc4, // swatch for "none" items (no colour to show)
 });
 const C = PALETTE;
@@ -86,7 +99,16 @@ export const SLOT_NAMES = Object.freeze({
   pet: 'Pet', patch: 'Eyepatch', shirt: 'Shirts', head: 'Headgear', sash: 'Sash',
 });
 
-export const FEAT_IDS = Object.freeze(['captures', 'boardings', 'rakes', 'crits', 'legend']);
+export const FEAT_IDS = Object.freeze(['captures', 'boardings', 'rakes', 'crits', 'legend', 'kraken', 'quiz', 'stars', 'island']);
+/**
+ * The feats that mirror progress rather than count things (SPEC3 §10.2): two tabs merge them by the larger
+ * value, never by adding what each counted. legend: the Phantom captured (0..1); kraken: the Kraken driven off
+ * (0..1); quiz: quiz islands passed (0..9, QUIZ_LEVELS.length); stars: quiz stars (0..27, 3 per island); island:
+ * island tiers built (0..30, the PLOTS' tiers). (No imports here, so a Node test checks these numbers against
+ * quiz.js and island.js.)
+ */
+export const MAX_FEATS = Object.freeze(['legend', 'kraken', 'quiz', 'stars', 'island']);
+const FEAT_MAX = { legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30 }; // every other counter: MAX_COUNT
 /** Enemy ship types whose captures are counted in feats.prizes (SHIP_TYPES minus the player). */
 export const FEAT_PRIZE_TYPES = Object.freeze(['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom', 'shark', 'bombketch', 'ironclad', 'fireship', 'skiff', 'inkheart']);
 
@@ -108,6 +130,8 @@ const CATALOGUE = {
     ['plume', "Cavalier's plume", [C.hatBlack, C.scarlet], { hat: 'plumed', hatColor: C.hatBlack }, { price: 180 }],
     ['crown', "Pirate King's crown", [C.gold, C.scarlet], { hat: 'crown', hatColor: C.gold },
       { trophy: { feat: 'legend', min: 1, text: 'capture the Phantom Galleon', unit: 'Phantom Galleon captured' } }],
+    ['mortarboard', "Professor's mortarboard", [C.academic, C.gold], { hat: 'mortarboard', hatColor: C.academic },
+      { trophy: { feat: 'quiz', min: 9, text: 'pass all 9 quiz islands', unit: 'quiz islands passed' } }],
   ],
   coat: [
     // with a coat: a plain cream shirt in the open front; "none" is the striped shirt and a vest
@@ -119,6 +143,9 @@ const CATALOGUE = {
     ['plum', 'Plum coat', [C.plum, C.silver], coat(C.plum, C.silver), { price: 60 }],
     ['admiral', "Admiral's white coat", [C.admiral, C.gold], coat(C.admiral, C.gold),
       { trophy: { feat: 'captures', min: 10, text: 'capture 10 ships', unit: 'captures' } }],
+    // white and gold: a gold waistcoat front under a snow-white coat with gold facings
+    ['governor', "Governor's coat", [C.white, C.gold], { ...coat(C.white, C.gold), shirt: C.gold, shirt2: C.gold },
+      { trophy: { feat: 'island', min: 30, text: 'build every plot up to tier 3', unit: 'island tiers built' } }],
   ],
   beard: [
     ['full', 'Full beard', [C.hairBrown], { beard: 'full' }, { isDefault: true }],
@@ -157,6 +184,11 @@ const CATALOGUE = {
     ['macaw', 'Blue macaw', [C.sky, C.gold], { pet: 'parrot', petColor: { body: C.sky, wing: C.blue, head: C.gold } }, { price: 150 }],
     ['golden', 'Golden parrot', [C.goldenBody, C.goldenWing], { pet: 'parrot', petColor: { body: C.goldenBody, wing: C.goldenWing, head: C.goldenHead } },
       { trophy: { feat: 'rakes', min: 50, text: 'land 50 raking shots', unit: 'raking shots' } }],
+    // the baby kraken (people.js pet 'octopus': body = mantle and tentacles, wing = suckers, head = spots)
+    ['octopus', 'Baby kraken', [C.purple, C.octoSpot], { pet: 'octopus', petColor: { body: C.purple, wing: C.octoSucker, head: C.octoSpot } },
+      { trophy: { feat: 'kraken', min: 1, text: 'drive off the Kraken', unit: 'Kraken driven off' } }],
+    ['rainbow', 'Rainbow macaw', [C.rainbowBody, C.rainbowWing, C.rainbowHead], { pet: 'parrot', petColor: { body: C.rainbowBody, wing: C.rainbowWing, head: C.rainbowHead } },
+      { trophy: { feat: 'stars', min: 27, text: 'win all 27 quiz stars', unit: 'quiz stars' } }],
   ],
   patch: [
     ['off', 'No eyepatch', [C.bare], { eyepatch: false }, { isDefault: true }],
@@ -219,6 +251,13 @@ export const ITEMS = (() => {
   }
   return freezeDeep(out);
 })();
+
+/**
+ * The items that came with the Kraken Seas (SPEC3 §11.1: the four trophies), in catalogue order. They
+ * are in ITEMS like every other item; a screen that must look as before Voyage III goes live (WITH_KRAKEN
+ * false) leaves these out of its lists.
+ */
+export const KRAKEN_ITEMS = Object.freeze(['hat.mortarboard', 'coat.governor', 'pet.octopus', 'pet.rainbow']);
 
 const ALL_IDS = Object.keys(ITEMS);
 const PAID_IDS = ALL_IDS.filter((id) => ITEMS[id].price > 0); // catalogue order = the order `own` is written in
@@ -405,7 +444,7 @@ function cleanFeats(obj) {
   const feats = defaultFeats();
   if (!isRecord(obj)) return feats;
   for (const id of FEAT_IDS) {
-    const n = readInt(field(obj, id), id === 'legend' ? 1 : MAX_COUNT);
+    const n = readInt(field(obj, id), FEAT_MAX[id] ?? MAX_COUNT);
     if (n !== null) feats[id] = n;
   }
   const prizes = field(obj, 'prizes');
@@ -610,6 +649,8 @@ export function crewOpts(look, seed, baseOpts, hullPaint, trial = null) {
 const FACTION = {
   cutter: 'rovers', privateer: 'rovers', prahu: 'islanders', junk: 'islanders', corsair: 'corsairs',
   inferno: 'embers', manowar: 'marines', galleon: 'merchants', raider: 'raiders', phantom: 'ghosts',
+  // the Kraken Seas (SPEC3 §4.3)
+  shark: 'sharks', bombketch: 'bombers', ironclad: 'turtles', fireship: 'firebrands', skiff: 'krakenCrew', inkheart: 'krakenCrew',
 };
 // A well-mixed hash of (seed, salt) in [0, 1) (murmur3's finaliser), so neighbouring seeds differ.
 function hash01(seed, salt) {
@@ -644,6 +685,20 @@ const FACTION_LOOK = {
   raiders: (pick) => ({ kind: 'pirate', hat: 'horned', hatColor: C.steel, beard: pick(['full', 'braids']), stripes: false, shirt: C.linen, shirt2: C.linen, vest: C.fur }),
   // the Phantom's crew: pale green skin (and pale hair), dark grey rags, no hats
   ghosts: () => ({ kind: 'pirate', skin: C.ghostSkin, hair: C.ghostHair, hat: 'none', stripes: false, shirt: C.rags, shirt2: C.rags, vest: null, pants: C.ragsDark, accent: C.ragsDark }),
+  // ----- the Kraken Seas (SPEC3 §4.3) -----
+  // Shark Raiders: grey bandanas and sashes, blue-and-white stripes
+  sharks: () => ({ kind: 'pirate', hat: 'bandana', hatColor: C.sharkGrey, stripes: true, shirt: C.blue, shirt2: C.white, vest: null, accent: C.sharkGrey }),
+  // the Bomb Ketch's gunners: mustard shirts, brown caps and leather powder belts (darker than the galleon's yellow)
+  bombers: () => ({ kind: 'pirate', hat: 'cap', hatColor: C.leather, stripes: false, shirt: C.mustard, shirt2: C.mustard, vest: null, accent: C.leather }),
+  // the Iron Turtle's crew: green coats with iron-grey facings and sashes, caps
+  turtles: (pick) => ({ kind: 'pirate', hat: 'cap', hatColor: pick([C.ink, C.steel]), coat: C.turtleGreen, coatTrim: C.steel, stripes: false, shirt: C.linen, shirt2: C.linen, vest: null, accent: C.steel }),
+  // the Fire Ship's crew: soot-black shirts, red bandanas, ember or orange sashes
+  firebrands: (pick) => ({ kind: 'pirate', hat: 'bandana', hatColor: C.scarlet, stripes: false, shirt: C.soot, shirt2: C.soot, vest: null, accent: pick([C.ember, C.orange]) }),
+  // the Kraken Crew (Squid Skiffs and the Inkheart): purple bandanas and sashes, dark-teal vests
+  krakenCrew: (pick) => {
+    const shirt = pick([C.cream, C.linen]);
+    return { kind: 'pirate', hat: 'bandana', hatColor: C.purple, stripes: false, shirt, shirt2: shirt, vest: C.inkTeal, accent: C.purple };
+  },
 };
 
 /** buildPerson options for an enemy sailor of a ship type (a plain pirate for an unknown type). */

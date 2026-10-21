@@ -6,10 +6,13 @@ import * as THREE from 'three';
 //
 // createPops(layerEl, camera, { reducedMotion, avoid, insetTop, furniture }) → {
 //   pop(text, x, y, z, style, mod) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'slow'
-//                                           //        | 'capture' | 'gold' | 'bad'; a '\n' (or "CRIT! <effect>")
+//                                           //        | 'capture' | 'gold' | 'bad' | 'fire' | 'frost' | 'stink'
+//                                           //        | 'kraken'; a '\n' (or "CRIT! <effect>", or for the
+//                                           //        four new styles "<WORD!> <more>", e.g. "FIRE OUT! SSSS!")
 //                                           //        splits the text into a big line and a smaller second
 //                                           //        line; mod (optional, a word): an extra class pop-<mod>,
-//                                           //        e.g. 'round' for round shot's bigger hull damage
+//                                           //        e.g. 'round' for round shot's bigger hull damage,
+//                                           //        'kaboom' for KA-BOOM! (bigger), 'eye' for BULLSEYE!
 //   update(dt),   // ages, moves and fades the pops (dt in seconds; 0 while paused freezes them)
 //   clear(), get count /* pops alive */
 // }
@@ -32,8 +35,12 @@ import * as THREE from 'three';
 // when there is none (a crowded short screen) the nearest clear spot beside what is in its way.
 // An impact off the side of the screen (a broadside's target on a portrait phone) shows its pops at that
 // edge; only an impact behind the camera, or far above or below the view, hides them.
+// The Kraken Seas' words (SPEC3 §2.7, §5.7): 'fire' ON FIRE! / KA-BOOM!, 'frost' FROZEN! / FIRE OUT! SSSS!,
+// 'stink' STINKY! / Clothes-pegs!, 'kraken' SLAM! / BULLSEYE! / OUCH! / ACHOO! / TENTACLE!: each a status or a
+// monster's move a child must see, so they count as important (below).
 // Throttle: ≤ 12 alive (the oldest makes room), ≤ 8 new per second; a pop over the rate waits up to
-// 0.4 s in a short queue (CAPTURED!, CRIT!, gold and bad news jump it) and is dropped if it is still waiting then.
+// 0.4 s in a short queue (CAPTURED!, CRIT!, gold, bad news, statuses and the Kraken's words jump it) and is
+// dropped if it is still waiting then.
 // No room: a pop with no clear spot waits a moment for one (ROOM_WAIT); POINT BLANK! and the rake words (the
 // HIT mark's stickers say them too) are let go if none comes, anything else then shows least covered.
 
@@ -41,7 +48,9 @@ const MAX_ALIVE = 12;
 const RATE = 8; // new pops per second
 const QUEUE_MAX = 8;
 const QUEUE_AGE = 0.4;
-const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold']);
+const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold', 'fire', 'frost', 'stink', 'kraken']);
+// the styles whose "<WORD!> <more>" splits into two lines
+const SPLIT_BANG = new Set(['fire', 'frost', 'stink', 'kraken']);
 // A pop that finds no clear spot (a crowded short screen) waits up to ROOM_WAIT s for one (the words around it
 // rise and fade), looking again every ROOM_LOOK s; then it shows where it is least covered, except a word the
 // HIT mark's stickers already say or that only adds colour (DROPPABLE), which is let go. Important pops never wait.
@@ -64,6 +73,11 @@ const STYLES = {
   capture: { life: 2.0, rise: 60, pop: 1.5, wobble: -5 },
   gold: { life: 1.4, rise: 56, pop: 1.25, wobble: 0 },
   bad: { life: 1.5, rise: 50, pop: 1.2, wobble: 0 },
+  // SPEC3: special shot statuses and the Kraken
+  fire: { life: 1.4, rise: 54, pop: 1.4, wobble: 8 }, // ON FIRE!, KA-BOOM!
+  frost: { life: 1.4, rise: 40, pop: 1.25, wobble: -3 }, // FROZEN! (stiff), FIRE OUT! SSSS!
+  stink: { life: 1.5, rise: 36, pop: 1.3, wobble: 11 }, // STINKY! (wobbly), Clothes-pegs!
+  kraken: { life: 1.5, rise: 56, pop: 1.45, wobble: -8 }, // SLAM!, BULLSEYE!, OUCH!, ACHOO!
 };
 const EDGE = 6; // px kept clear at the screen edges (a pop near the edge slides in instead of being cut off)
 const GAP = 6; // px kept between a pop's line box and another pop or an avoided box (its outline and shadow)
@@ -459,6 +473,12 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
       b = s.slice(nl + 1).trim();
     } else if (style === 'crit') {
       const m = /^(CRIT!)\s+(.+)$/i.exec(s);
+      if (m) {
+        a = m[1];
+        b = m[2];
+      }
+    } else if (SPLIT_BANG.has(style)) {
+      const m = /^([^!]{1,24}!)\s+(\S.*)$/.exec(s);
       if (m) {
         a = m[1];
         b = m[2];

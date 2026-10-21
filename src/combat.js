@@ -314,6 +314,19 @@ export function shotResult(opts) {
   };
 }
 
+/**
+ * Armour ("The Kraken Seas", SPEC3 §4.1, §4.2): the damage factor of a hit on an armoured ship. `armour` is her
+ * type's own number (the Iron Turtle's type.armour 0.5; there is no separate armour table): a hit on her beam
+ * (aspect null) does × armour ("CLANG!"); a rake ('stern' or 'bow') does full damage, and so does a crit when
+ * `crit` is true (§4.2: rakes, crits, burns and KA-BOOM do full damage). 1 without armour; an armour that isn't
+ * a number in [0, 1] counts as none.
+ */
+export function armourMul(aspect, armour, crit) {
+  if (typeof armour !== 'number' || !(armour >= 0 && armour <= 1)) return 1;
+  if (aspect === 'stern' || aspect === 'bow' || crit === true) return 1;
+  return armour;
+}
+
 // ---------------------------------------------------------------------------------------- crew
 
 /**
