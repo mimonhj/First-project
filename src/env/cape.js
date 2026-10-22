@@ -1294,6 +1294,18 @@ const CREST = {
     [5.5, 3.8], [4.4, 4.2], [3.5, 3.6], [3.4, 2.2], [4.4, 0.9], [6.4, -0.1], [8.5, -0.9], [0, -1.7],
   ],
 };
+// The crest ducks out of the camera's way (createRogueView): it never stands between the camera and what it looks
+// at (your ship), nor engulfs the camera.
+// - near the camera (within `nearAlong` .. `nearFade` u along the wave's travel, `nearAcross` u across it), its top
+//   stays `margin` u under the camera;
+// - in front of the camera, within `half` u of its line of sight (a gaussian), every point of its profile (back,
+//   top and lip) stays under the line from `margin` u under the camera down to the sea at `shipK` × the distance
+//   where the camera's centre ray meets the sea (`seaY`): for the game's chase camera (10 up, 17 behind you,
+//   looking 8 u past you) that is your ship's waterline, so the crest dips under your ship as it rolls past her
+//   and stands up again `beyond` u past her.
+const VIEW = { margin: 3.5, nearAlong: 10, nearFade: 22, nearAcross: 10, half: 12, seaY: 1.5, shipK: 0.7, minL: 8, maxL: 60, beyond: 4 };
+// the profile's points that stand 1.5 u or more out of the sea, flat [u, y, u, y, ...] (VIEW's line-of-sight test)
+const VIEW_PROFILE = CREST.ctrl.filter(([, y]) => y >= 1.5).flat();
 const CREST_M = CREST.ctrl.length;
 const CREST_SUB = 3; // samples per profile segment
 // the profile parameter (in control-point units) of the foam lip: the claws and knobs are painted with it
@@ -1678,6 +1690,7 @@ function createRogueView(root, own, land, reduced, ampU) {
   const qI = new THREE.Quaternion();
   const vP = new THREE.Vector3();
   const vS = new THREE.Vector3();
+  const vDir = new THREE.Vector3();
 
   function emit(x, y, z, vx, vy, vz, life, size, g) {
     if (alive >= CREST.spray) return;
@@ -1753,13 +1766,33 @@ function createRogueView(root, own, land, reduced, ampU) {
     let camS = 0;
     let camK = 0;
     let camY = 99;
+    // and the columns in its line of sight duck under the view of your ship (VIEW)
+    let view = false;
+    let camX = 0;
+    let camZ = 0;
+    let fwx = 0;
+    let fwz = 0;
+    let shipF = 0;
     if (camera && camera.position) {
       const dx = camera.position.x - cur.x;
       const dz = camera.position.z - cur.z;
       const cu = dx * ux + dz * uz;
       camS = dx * lx + dz * lz;
       camY = camera.position.y;
-      camK = (1 - smooth(10, 22, Math.abs(cu))) * (1 - smooth(CREST.height * hK + 2.5, CREST.height * hK + 4.5, camY));
+      camX = camera.position.x;
+      camZ = camera.position.z;
+      camK = (1 - smooth(VIEW.nearAlong, VIEW.nearFade, Math.abs(cu))) * (1 - smooth(CREST.height * hK + VIEW.margin, CREST.height * hK + VIEW.margin + 2, camY));
+      if (typeof camera.getWorldDirection === 'function') {
+        camera.getWorldDirection(vDir);
+        const hl = Math.hypot(vDir.x, vDir.z);
+        const down = -vDir.y;
+        if (hl > 1e-3 && down > 1e-3 && camY > VIEW.margin && Number.isFinite(down / hl)) {
+          fwx = vDir.x / hl;
+          fwz = vDir.z / hl;
+          shipF = VIEW.shipK * Math.min(VIEW.maxL, Math.max(VIEW.minL, (camY - VIEW.seaY) / (down / hl)));
+          view = true;
+        }
+      }
     }
     // land near the crest (for the die-down and the crash spray)
     near.length = 0;
@@ -1777,9 +1810,27 @@ function createRogueView(root, own, land, reduced, ampU) {
       const ripple = calm ? 0 : 0.07 * Math.sin(s * 0.17 + t * 0.9) + 0.04 * Math.sin(s * 0.41 - t * 1.7);
       let a = Math.max(0, rise * sinkK * edgeK * land0[i] * (1 + ripple));
       if (camK > 0) {
-        const g = Math.exp(-(((s - camS) / 10) ** 2)) * camK;
-        const cap = clamp01((camY - 2.4 - waveHeight(px, pz, t, amp)) / (CREST.height * hK));
+        const g = Math.exp(-(((s - camS) / VIEW.nearAcross) ** 2)) * camK;
+        const cap = clamp01((camY - VIEW.margin - waveHeight(px, pz, t, amp)) / (CREST.height * hK));
         if (a > cap) a = lerp(a, cap, g);
+      }
+      if (view && a > 0) {
+        // every point of the column's profile (its back, top and lip, spread along the travel as the template is)
+        // in front of the camera and short of your ship keeps under the line of sight
+        const su = 0.38 + 0.62 * a;
+        const sw = waveHeight(px, pz, t, amp);
+        for (let k = 0; k < VIEW_PROFILE.length; k += 2) {
+          const u = VIEW_PROFILE[k] * su;
+          const qx = px + ux * u - camX;
+          const qz = pz + uz * u - camZ;
+          const f = qx * fwx + qz * fwz;
+          const side = qz * fwx - qx * fwz;
+          const g = smooth(-4, 0, f) * (1 - smooth(shipF, shipF + VIEW.beyond, f)) * Math.exp(-((side / VIEW.half) ** 2));
+          if (g < 1e-3) continue;
+          const top = (camY - VIEW.margin) * Math.max(0, 1 - f / shipF);
+          const cap = clamp01((top - sw) / (VIEW_PROFILE[k + 1] * hK));
+          if (a > cap) a = lerp(a, cap, g);
+        }
       }
       amps[i] = a;
       total += a;

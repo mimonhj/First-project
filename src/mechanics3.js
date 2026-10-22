@@ -13,9 +13,10 @@
 // createMechanics3(ids, ctx) → the SPEC2 §6.3 hook shape (see mechanics.js) plus:
 //   init(), onSpawn(e, waveIndex), onCapture(e), onSink(e), onRemove(e),
 //   step(dt)                      every simulation step, after moveShip, before separateShips (as mechanics.js)
-//   steer(e, dt) → { h, speed } | null   a charging shark (lines up for 1.5 s, then surges on a locked heading),
-//                                 a bomb ketch keeping her range, a fire ship sailing at you, a fleeing ship
-//                                 making for the world edge, a boss turning her bow into a rogue wave
+//   steer(e, dt) → { h, speed } | null   a shark with an attack slot (she comes at you bow first, lines up for
+//                                 1.5 s, surges on a locked heading, sheers off broadside while she cools: RAM and
+//                                 RAM.approach), a bomb ketch keeping her range, a fire ship sailing at you, a
+//                                 fleeing ship making for the world edge, a boss turning her bow into a rogue wave
 //   holdFire(e) → boolean         fire ships (no guns) and fleeing ships
 //   drift(s) → { vx, vz } | null  spout pulls and flings, rogue-wave and ram pushes (main skips the glued pair)
 //   avoid() → [{ x, z, r }]       pirates keep r 16 off every waterspout
@@ -149,8 +150,30 @@ export const ROGUE = {
  * (frost: × frost). Hull contact (centre distance < (len_a + len_b) × contact): you take
  * round(damage × min(1, v / speed)), she takes `self`, both are pushed apart at `push` for `pushTime` and she
  * keeps `after` of her speed. Then `cooldown` s before the next charge. Stink cancels a charge.
+ * Her course while she holds an attack slot (`approach`; without a slot she waits like any pirate): idle, she comes
+ * at you bow first, at her top speed beyond `far` u (main's engage + 8 for her engage of 18) and at `speed` × her
+ * top speed inside it, until `near` u; inside `near` (you are off her bow, or she would be winding up) and all
+ * through her cooldown she sheers off broadside at `sheer` × her top speed: turned `out` rad away from you while
+ * closer than `ring`, and `out` rad back towards you once beyond `reach`, so she has room to come round again
+ * when her cooldown ends (a charge about every 10 s).
  */
-export const RAM = { reach: 25, cone: 0.35, windup: 1.5, windupSpeed: 0.4, surge: 2, speed: 16, frost: 0.5, contact: 0.36, damage: 10, self: 8, push: 4, pushTime: 0.6, after: 0.3, cooldown: 6 };
+export const RAM = {
+  reach: 25,
+  cone: 0.35,
+  windup: 1.5,
+  windupSpeed: 0.4,
+  surge: 2,
+  speed: 16,
+  frost: 0.5,
+  contact: 0.36,
+  damage: 10,
+  self: 8,
+  push: 4,
+  pushTime: 0.6,
+  after: 0.3,
+  cooldown: 6,
+  approach: { far: 26, speed: 0.7, near: 13, sheer: 0.8, out: 0.7, ring: 18 },
+};
 
 /**
  * The Bomb Ketch's mortar (§4.2): she keeps `keep` u off (under `flee` she runs straight away, under keep[0] she
@@ -549,6 +572,22 @@ export function createMechanics3(ids, ctx) {
       R.phase = 'idle';
       R.t = 0;
     }
+  }
+  // Her course outside the wind-up and the surge, while she holds an attack slot (RAM.approach): bow first at you
+  // from afar so a charge can line up; inside `near`, and while she cools, broadside, opening the range inside
+  // `ring` and closing it beyond RAM.reach.
+  function ramCourse(e, R, p, toYou, max) {
+    const A = RAM.approach;
+    const d = Math.hypot(p.x - e.x, p.z - e.z);
+    if (R.phase !== 'cool' && d > A.near) return { h: toYou, speed: max * (d > A.far ? 1 : A.speed) };
+    const h0 = num(e.h, 0);
+    const a1 = wrapAngle(toYou + Math.PI / 2);
+    const a2 = wrapAngle(toYou - Math.PI / 2);
+    const side = Math.abs(wrapAngle(a1 - h0)) <= Math.abs(wrapAngle(a2 - h0)) ? 1 : -1; // (the beam nearer her bow)
+    let h = side > 0 ? a1 : a2;
+    if (d < A.ring) h += side * A.out;
+    else if (d > RAM.reach) h -= side * A.out;
+    return { h: wrapAngle(h), speed: max * A.sheer };
   }
 
   // ------------------------------------------------------------------ the Bomb Ketch's mortar
@@ -1117,6 +1156,7 @@ export function createMechanics3(ids, ctx) {
       if (r.fire && !r.fire.out && !r.fire.exploded) return { h: toYou, speed: max }; // straight at you
       if (r.ram && r.ram.phase === 'windup') return { h: toYou, speed: max * RAM.windupSpeed };
       if (r.ram && r.ram.phase === 'surge') return { h: r.ram.h, speed: surgeSpeed(e) };
+      if (r.ram && c.attacking(e)) return ramCourse(e, r.ram, p, toYou, max);
       if (r.mortar && c.attacking(e)) {
         const d = Math.hypot(p.x - e.x, p.z - e.z);
         const away = wrapAngle(toYou + Math.PI);

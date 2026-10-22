@@ -9,7 +9,8 @@
 //   the start 16 u farther per bonus second); 49° surfs, 50° and 130° take 10 and the push, 131° rides; every
 //   wave puts fire out; the directions come from env.rogueDirs; bosses turn bow-in
 // - the Shark Raider's ram: a 1.5 s wind-up before any surge, the surge at 16 (frost: 8), contact damage that
-//   scales with speed (10 / 5), 8 to her, the push apart, CRUNCH!, the 6 s cooldown; stink cancels it
+//   scales with speed (10 / 5), 8 to her, the push apart, CRUNCH!, the 6 s cooldown; stink cancels it; her course
+//   (RAM.approach): bow first at you, broadside inside 13 u and while she cools, a charge about every 10 s
 // - the Bomb Ketch: the range window 25–48, every 6–8 s, the shell's numbers and lead, stink pauses, her course
 // - the Fire Ship: lit at 30 u, never a blast before 1.6 s lit, the blast and its falloff (pirates too), a blast
 //   when sunk while lit (none when sunk before), frost → she strikes and never explodes
@@ -720,6 +721,146 @@ function mulberry32(seed) {
       r26.w.m.state.counts.windups === 0 && cone.w.m.state.counts.windups === 0 && coneIn.w.m.state.counts.windups === 1 && slot.w.m.state.counts.windups === 0 && !early && gr.w.m.state.counts.windups === 1,
       'no charge from 26 u, from 0.4 rad off her bow, without an attack slot, or in the level\'s grace; one at 0.34 rad'
     );
+  }
+
+  {
+    // Her course outside the wind-up and the surge (RAM.approach, 2A-2's round 3 request): with an attack slot she
+    // comes at you bow first (full speed beyond 26 u, 0.7 × her top speed inside, as main's own rule did), sheers
+    // off broadside inside 13 u, and all through her cooldown sheers off broadside at 0.8 × her top speed (out
+    // 0.7 rad inside 18 u, back in 0.7 rad beyond her 25 u reach), so she comes round again.
+    check(same(RAM.approach, { far: 26, speed: 0.7, near: 13, sheer: 0.8, out: 0.7, ring: 18 }) && RAM.approach.far === SHIP_TYPES.shark.engage + 8,
+      `RAM.approach: full speed beyond 26 u (her engage 18 + 8), 0.7 × her top speed to 13 u, then broadside at 0.8 × (out 0.7 rad inside 18 u, in beyond 25 u) (${JSON.stringify(RAM.approach)})`);
+    const max = SHIP_TYPES.shark.maxSpeed;
+    // main.js updateEnemy's own rule for a ship with type.ram (attacking, no steer from a mechanic): the answers
+    // steer() must keep while she is idle, so main's copy can go.
+    const mainRule = (e, p) => {
+      const d = Math.hypot(p.x - e.x, p.z - e.z);
+      const to = Math.atan2(p.x - e.x, p.z - e.z);
+      if (d > e.type.engage + 8) return { h: to, speed: max };
+      if (d > 13) return { h: to, speed: max * 0.7 };
+      const a1 = wrap(to + Math.PI / 2);
+      const a2 = wrap(to - Math.PI / 2);
+      let h = Math.abs(wrap(a1 - e.h)) < Math.abs(wrap(a2 - e.h)) ? a1 : a2;
+      h += Math.sign(wrap(h - to)) * 0.7;
+      return { h: wrap(h), speed: max * 0.8 };
+    };
+    // you at the origin facing +z; she at (x, z) with heading h (you are 1 rad or more off her bow: no wind-up)
+    const at = (x, z, h, phase = 'idle', attacking = true) => {
+      const p = ship('player', 0, 0, 0);
+      const e = ship('shark', x, z, h);
+      const w = world({ player: p, enemies: [e] });
+      w.attacking = () => attacking;
+      w.m.init();
+      if (phase === 'cool') {
+        // a charge that missed: from 20 u, you dead ahead of her bow, she winds up and surges; you dodge far off
+        e.x = 0;
+        e.z = 20;
+        e.h = Math.PI;
+        w.run(RAM.windup + 2 * DT);
+        p.x = 1000;
+        w.run(RAM.surge + 2 * DT);
+        p.x = 0;
+        e.x = x;
+        e.z = z;
+        e.h = h;
+      } else w.m.step(DT);
+      return { p, e, w, st: w.m.state.rams[0], s: w.m.steer(e, DT), rule: mainRule(e, p) };
+    };
+    const far = at(0, 40, 0); // 40 u off, her stern to you
+    const mid = at(20, 0, 0); // 20 u off your beam, you on her beam
+    const close = at(10, 0, 0); // 10 u
+    const ok = (r, h, speed) => !!r.s && near(wrap(r.s.h - h), 0, 1e-9) && near(r.s.speed, speed, 1e-9);
+    check(far.st.phase === 'idle' && ok(far, Math.PI, max) && ok(mid, -Math.PI / 2, max * 0.7),
+      `idle with an attack slot: she comes at you bow first, at her top speed from 40 u (${JSON.stringify(far.s)}) and at 0.7 × it from 20 u (${JSON.stringify(mid.s)})`);
+    // (she is at +x, heading 0; toward you is -π/2: the beam nearer her bow is heading 0, turned 0.7 rad away)
+    check(ok(close, 0.7, max * 0.8) && Math.sin(close.s.h) > 0,
+      `inside 13 u (you off her bow) she sheers off broadside, turned 0.7 rad away from you, at 0.8 × her top speed (${JSON.stringify(close.s)})`);
+    const grid = [];
+    for (const d of [5, 12.9, 13.1, 20, 25.9, 26.1, 40, 80]) {
+      for (const bear of [0.3, 1.2, 2.5, -1, -2.8]) {
+        for (const h of [0, 1.5, -2.2, 3]) {
+          const r = at(Math.sin(bear) * d, Math.cos(bear) * d, h);
+          if (r.st.phase !== 'idle') continue; // (you were in her bow cone: she winds up instead)
+          if (!(r.s && near(wrap(r.s.h - r.rule.h), 0, 1e-9) && near(r.s.speed, r.rule.speed, 1e-9))) grid.push(`${d}/${bear}/${h}: ${JSON.stringify(r.s)} vs ${JSON.stringify(r.rule)}`);
+        }
+      }
+    }
+    check(grid.length === 0, `idle, steer() gives exactly main.js updateEnemy's own ram rule (to its engage + 8, 13 u) at 8 ranges × 5 bearings × 4 headings, so main's copy can go${grid.length ? ': ' + grid.slice(0, 3).join('; ') : ''}`);
+    const c10 = at(10, 0, 0, 'cool');
+    const c20 = at(20, 0, 0, 'cool');
+    const c40 = at(40, 0, 0, 'cool');
+    // (she is at +x, you at the origin: toward you is -π/2; her heading 0 is nearer the beam heading 0, so +1 side)
+    check(c10.st.phase === 'cool' && ok(c10, 0 + 0.7, max * 0.8) && ok(c20, 0, max * 0.8) && ok(c40, -0.7, max * 0.8),
+      `cooling, she sheers off broadside at 0.8 × her top speed: turned 0.7 rad away inside 18 u (${JSON.stringify(c10.s)}), on your beam at 20 u (${JSON.stringify(c20.s)}), 0.7 rad back in beyond 25 u (${JSON.stringify(c40.s)})`);
+    const c20b = at(20, 0, Math.PI, 'cool');
+    check(ok(c20b, Math.PI, max * 0.8), `she takes the beam nearer her bow (heading π: ${JSON.stringify(c20b.s)})`);
+    const noSlot = [at(40, 0, 0, 'idle', false), at(10, 0, 0, 'idle', false), at(20, 0, 0, 'cool', false)];
+    check(noSlot.every((r) => r.s === null), 'without an attack slot she waits like any pirate (steer null, idle or cooling)');
+    const wind = at(0, 20, Math.PI); // you dead ahead of her bow: the wind-up's own course
+    check(wind.st.phase === 'windup' && ok(wind, Math.PI, max * RAM.windupSpeed), `the wind-up keeps its own course (at you, ${RAM.windupSpeed} × her top speed: ${JSON.stringify(wind.s)})`);
+    const gone = at(10, 0, 0);
+    gone.p.hp = 0;
+    const struck = at(10, 0, 0);
+    struck.e.surrendered = true;
+    check(gone.w.m.steer(gone.e, DT) === null && struck.w.m.steer(struck.e, DT) === null, 'no course for her once you are gone or she has struck (main sails her)');
+
+    // A small sea, as main's updateEnemy sails her: she turns at most her turn rate (× 0.35 at a standstill, the
+    // stock rudder) toward steer()'s heading and speeds up at her accel (slows at 1.5 ×), ships kept apart at
+    // their contact distance. She charges again and again, about every 10 s, each after a 1.5 s wind-up.
+    const cadence = (move, seconds = 90) => {
+      const p = ship('player', 0, 0, 0, { hp: 1e6 }); // (nobody sinks: we count her charges)
+      const e = ship('shark', 30, 40, 2, { hp: 1e6 });
+      const w = world({ player: p, enemies: [e] });
+      w.m.init();
+      const T = e.type;
+      const winds = [];
+      let last = 'idle';
+      let t = 0;
+      let lost = 0;
+      for (let i = 0; i < seconds / DT; i++, t += DT) {
+        const s = w.m.steer(e, DT);
+        if (s) {
+          const rate = T.turn * (0.35 + 0.65 * Math.min(1, e.speed / T.maxSpeed));
+          e.h = wrap(e.h + Math.max(-rate * DT, Math.min(rate * DT, wrap(s.h - e.h))));
+          const target = Math.min(s.speed, T.maxSpeed + w.m.shipMods(e).capAdd);
+          e.speed += Math.max(-T.accel * 1.5 * DT, Math.min(T.accel * DT, target - e.speed));
+        } else lost++;
+        move(p, t);
+        for (const k of [p, e]) {
+          const dr = w.m.drift(k);
+          k.x += Math.sin(k.h) * k.speed * DT + (dr ? dr.vx * DT : 0);
+          k.z += Math.cos(k.h) * k.speed * DT + (dr ? dr.vz * DT : 0);
+        }
+        w.m.step(DT);
+        const dd = Math.hypot(p.x - e.x, p.z - e.z);
+        const min = (T.len + p.type.len) * RAM.contact;
+        if (dd < min && dd > 1e-9) {
+          const k = (min - dd) / dd / 2;
+          const dx = (p.x - e.x) * k;
+          const dz = (p.z - e.z) * k;
+          e.x -= dx;
+          e.z -= dz;
+          p.x += dx;
+          p.z += dz;
+        }
+        const ph = w.m.state.rams[0].phase;
+        if (ph === 'windup' && last !== 'windup') winds.push(t);
+        last = ph;
+      }
+      const gaps = winds.slice(1).map((x, i) => x - winds[i]);
+      const surges = w.m.state.counts.windups;
+      return { winds: winds.length, first: winds[0], gaps, lost, rams: w.m.state.counts.rams, surges };
+    };
+    const still = cadence((p) => (p.speed = 0));
+    const sailing = cadence((p) => (p.speed = 8));
+    const turning = cadence((p) => {
+      p.speed = 8;
+      p.h = wrap(p.h + 0.4 * DT);
+    });
+    const fmt = (r) => `${r.winds} wind-ups, gaps ${r.gaps.length ? f3(Math.min(...r.gaps)) + '–' + f3(Math.max(...r.gaps)) : '-'} s, ${r.rams} rams`;
+    const regular = (r) => r.winds >= 6 && r.first < 6 && r.gaps.every((g) => g >= RAM.windup + RAM.cooldown && g <= 14) && r.lost === 0;
+    check(regular(still) && still.rams >= 6, `you sit still: she lines up and charges again and again, about every 10 s (${fmt(still)})`);
+    check(regular(sailing) && regular(turning), `you sail straight at 8 u/s (${fmt(sailing)}) or round in a circle (${fmt(turning)}): she still comes round, about every 10 s`);
   }
 
   // ---------------------------------------------------------------- the Bomb Ketch's mortar

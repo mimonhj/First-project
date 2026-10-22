@@ -958,3 +958,165 @@ Diff: `git diff HEAD --numstat tests/battle.cjs` = 1715 added, 0 removed. The fu
 - Level 9 with ?kraken=1 today: when the Inkheart falls every fighting ship flees, so the level clears and goes to 'won' 2.5 s later; the level clear removes all bombs. This is expected until the Kraken rise (round 5) keeps the level going. My deep section stops before the rise.
 - Not covered yet (round 5 / Stage 3): the finale and Kraken checks; the Voyage III cards, save migration and the Maelstrom-to-level-7 flow (need Voyage III live); bot v3 L7-L9 clears with and without specials; draw calls in the busiest sampled play and the Kraken fight (≤ 450); kraken-rise.png and kraken-fight.png.
 - npm test time: battle.cjs is in npm test, so the 12 kraken-* sections add about 6 min to it (nothing in my files changes npm test's order).
+
+## Round R4
+
+**Coordinator test run:** npm test on a snapshot of the round 4 files (identical to the committed ones), started 2026-10-22 12:49:26 UTC: the 13 Node suites (mechanics3 173), smoke, controls and audio passed; battle.cjs stopped at 276/1 on a flake in round 3's kraken-steer section (a page reload aborts the level music download and the audio warning counts as a page error; 2C fixes it in round 5). Re-run of battle, levels and town on the same snapshot from 15:27:39 UTC: battle 277/0, levels 73/0, town 135/0. In all 1,970 checks, 0 failed.
+
+### 2E
+
+Both round 3 hook requests aimed at my files are applied, verified and published, each copied to a temp name and then moved into place.
+
+(a) src/mechanics3.js: the Shark Raider's whole course now comes from mechanics3, using a new RAM.approach table { far 26, speed 0.7, near 13, sheer 0.8, out 0.7, ring 18 }.
+- Idle, holding an attack slot: steer() gives exactly main.js's own rule, checked over a 160-pose grid. She comes at you at full speed beyond 26 u, at 0.7 × her top speed inside it, and sheers off broadside inside 13 u.
+- Cooling: she sheers off broadside at 0.8 × her top speed. She turns 0.7 rad away while closer than 18 u and 0.7 rad back once beyond her 25 u reach, so she is in reach to line up again when the cooldown ends.
+- Without an attack slot steer() still returns null, so she waits like any pirate.
+- main.js's copy of the rule (updateEnemy, the `t.ram` branch) is now dead code. The exact removal is in hook_requests.
+- Results: main's old rule left a shark circling at 12–16 u from a player who sits still, with only 1 wind-up in 60 s. The new course gives a wind-up every 8.7–9.2 s, and every 8.9–11.6 s against a moving player. In a natural ?kraken=1 level 7 run the counts match the old rule: 9 wind-ups against 10, 4 rams each.
+- tests/mechanics3.test.cjs: 173 checks, 11 of them new. 13 of 13 mutations caught.
+
+(b) src/env/cape.js createRogueView: the crest now ducks out of the camera's way.
+- The near-camera margin goes from 2.4 to 3.5, and its height fade now covers the chase camera (10 up). Before, the old rule never acted at that height.
+- A constant margin could not clear the sightline, so I added a line-of-sight cap. In front of the camera, within ±12 u of its view line, every point of the crest's profile stays under a line from 3.5 u below the camera down to the sea at 0.7 × the distance where the camera's centre ray meets the sea. For the chase camera that is your ship's waterline. The crest dips under your ship as it passes her and stands up again 4 u beyond.
+- Raycast probe, 6 wave bearings: the old cape.js hid 86–98% of the ship, with 10–15 frames at ≥ 50% hidden in the live game. The new one hides at most 1–14%, with 0 frames at ≥ 50%, at both 1280x720 and 390x844.
+- The wave still shows full height while it approaches (the warning) and away from your ship.
+
+Every Node suite is green. Without ?kraken=1 nothing changes: only the shark carries the ram flag, and cape.js is built only on level 8. Battle kraken-live passed 6/6.
+
+**Files:** src/mechanics3.js, tests/mechanics3.test.cjs, src/env/cape.js
+
+**Brief, item by item**
+
+- (a) mechanics3 ram course: DONE and published (src/mechanics3.js md5 f6499471, tests/mechanics3.test.cjs b945b1fd).
+- RAM.approach table plus ramCourse() in createMechanics3().steer().
+- Node: mechanics3 173/173 on the repo (11 new checks); mechanics 121/121.
+- mut.py: 13/13 single-line mutations caught, including the HEAD module.
+- Live ?kraken=1 probe (scratch p-ram.cjs, mirror vs repo):
+  - lone shark cadence: still player 8.74–9.17 s (old rule: stuck, 1 wind-up in 60 s); circling 8.9–11.3 s; cruising 11.0–11.6 s.
+  - natural L7: 9 wind-ups and 4 rams (old: 10 and 4).
+- voyage3 atolls section: 8/8 on the mirror, then 15/15 for atolls+cape on the repo after publishing.
+- Screenshots of a second wind-up and of the sheer-off while she cools, at 1280x720 and 390x844, looked at: RAM! pop and RAM chevrons on her tag.
+- (b) cape.js rogue-crest camera duck: DONE and published (src/env/cape.js md5 8861651e).
+- Margin raised to 3.5, plus the line-of-sight cap.
+- 1L harness copy (.dock-harness/kraken2/R4-2E/h1L), with a raycast occlusion probe, sweeping 6 bearings through the crest's passage:
+  - 1280x720: published version 91–97% of the ship hidden, ≥ 50% hidden for 0.6–1.1 s. New: 1–11%, 0 s.
+  - 390x844: published 91–95% (astern/port/ahead). New: 1–11%, 0 s.
+- 1L standard stills (wave.cjs, 12 views) looked at: the warning, the crash on the cliffs, the top view and the approach still show the full crest.
+- 1L robust.cjs: identical to 1L (0 throws on 15 junk snapshots, sink 1.37 s, no geometry leaks).
+- eslint with 1L's config: clean.
+- Live ?kraken=1 level 8 (scratch p-rogue.cjs, real frames, raycast):
+  - mirror 1280x720: worst 1–9% hidden, 0 frames ≥ 50% (6 bearings).
+  - repo before publish (old): 86–98%, 10–15 frames ≥ 50%; the probe fails all 3 of its old-tree bearings.
+  - mirror 390x844: 1–14%, 0 frames.
+- voyage3 cape section: 8/8 on the mirror; atolls+cape 15/15 on the repo after publishing.
+- package.json request (test:balance / test:voyage3): NOT applied. The file belongs to 3C (Stage 3), as the coordinator notes say.
+- Six-button places bar and Powder room rows in town.css: nothing to do this round. No 2B request targets them; they were done in round 2.
+- Exit check: every Node suite green on the repo: mechanics3 173, mechanics 121, combat 107, specials 110, armory 35, cosmetics 83, walk 106, upgrades 53, quiz 85, island 52, settings 16, kraken 154.
+
+**API notes**
+
+mechanics3.js (pure; still imports nothing; composeMechanics unchanged):
+- New table member RAM.approach = { far: 26, speed: 0.7, near: 13, sheer: 0.8, out: 0.7, ring: 18 }. The RAM keys the tests pin are unchanged, and every table still holds plain numbers.
+- steer(e) for a ram-flagged ship, in priority order:
+  - fleeing / the boss-in-a-rogue-wave rule: as before.
+  - windup: { toward you, 0.4 × max }, as before.
+  - surge: { locked heading, 16 (frost 8) }, as before.
+  - otherwise, while ctx.attacking(e):
+    - idle and d > near: { toward you, max when d > far, else 0.7 × max }.
+    - idle and d ≤ near, or cool: { the beam nearer her bow, ±0.7 rad (out inside ring, in beyond RAM.reach), 0.8 × max }.
+  - otherwise null (no slot, player gone, she has struck).
+- The idle answers equal main.js updateEnemy's own t.ram branch together with its `r.dist > t.engage + 8` branch (grid-checked in the Node test). The one behaviour change: while cooling she circles 18–25 u instead of closing to 13 u.
+- Deviation from the request's wording: I added `far` (keeps main's full-speed close-in from afar) and the ring/out range keeper during the cooldown, which keeps the charge cycle about 10 s. Each is in the table.
+
+cape.js:
+- New module constants VIEW = { margin 3.5, nearAlong 10, nearFade 22, nearAcross 10, half 12, seaY 1.5, shipK 0.7, minL 8, maxL 60, beyond 4 } and VIEW_PROFILE (the crest profile points ≥ 1.5 u high).
+- createRogueView.update() reads camera.getWorldDirection() and is guarded: missing, NaN or upward-looking cameras skip the new cap.
+- No API, mesh or draw-call change; the env contract is unchanged.
+- The cap assumes the focus (your ship) sits at about 0.7 × the distance where the camera's centre ray meets the sea, which is exact for the chase camera (17 back, 10 up, looking 8 past the ship).
+
+Probes and harnesses (scratch /tmp/claude-0/-home-user-First-project/7f649d8c-67e4-5236-a80e-5e9eae321fb4/scratchpad/kraken/build2/R4-2E/):
+- ramsim.cjs, mut.py, p-ram.cjs, p-rogue.cjs, sweep.cjs, wave.cjs, robust.cjs, run.cjs, mkmirror.sh.
+- Harness copy: /home/user/First-project/.dock-harness/kraken2/R4-2E/h1L/env.html, which adds window.occl(), a raycast check of how much of the ship is hidden and how much of the screen the crest covers.
+- Mirror: /home/user/First-project/.dock-harness/kraken2/R4-2E/mirror.
+- p-rogue.cjs uses G.camera, G.player.mesh, G.env.group and G.mechanics3.wave(), plus a dynamic import('three') for the Raycaster.
+
+**Hook requests applied / rejected**
+
+- APPLIED (adjusted), 2A-2, src/mechanics3.js createMechanics3().steer(): the ram ship's approach and sheer-off now come from the tuned table RAM.approach.
+- Approach: as asked, 0.7 × max toward you down to 13 u. I added full speed beyond 26 u (main's engage + 8) so the hand-over from main's generic far branch changes nothing. I also added the sheer-off inside 13 u while idle, as main's copy did; without it, an idle shark close to you would fall into main's generic circling.
+- Cooling: she sheers off broadside at 0.8 × max, as asked, and keeps her range: 0.7 rad out inside 18 u, 0.7 rad back in beyond her 25 u reach. A pure sheer-off for the whole 6 s cooldown would carry her about 40 u away and stretch the charge cycle well past 10 s.
+- Checked as 1B (Node suite plus mutations) and live: a Shark Raider lines up and winds up about every 9–11 s.
+- main's copy can now be removed (see hook_requests).
+- APPLIED (extended), 2A-2 and 1L, src/env/cape.js createRogueView, the `cap` line.
+- The margin is raised from 2.4 to 3.5 u, and its camera-height fade is shifted (CREST.height + margin .. + 2) so it now acts on the 10 u chase camera; before, it never did at that height.
+- Raising the margin alone cannot keep a side-on or stern-to crest out of the sightline to the ship. So I added the line-of-sight cap described in api_notes (profile-sampled). The coordinator should know this goes beyond a margin change.
+- Checked as 1L would: their harness, 12 standard stills, robust.cjs, eslint, and a live ?kraken=1 level 8 probe at 1280x720 and 390x844.
+- NOT APPLIED, 2C, package.json (test:balance, test:voyage3, voyage3 in scripts.test): the file belongs to 3C (Stage 3), as the coordinator notes say.
+
+**Hook requests raised**
+
+- src/main.js, updateEnemy (owner 2A-3, next round): delete the whole `} else if (t.ram) {` branch, about 14 lines at ~3732–3745 in c7fca8d. It begins with the comment "A Shark Raider (SPEC3 §4.2) charges bow first: she comes at you head-on…" and ends with its own closing `}` just before `} else if (t.boarder && e.boardCooldown > RAIDERS.sheer && boarding.counterTarget !== e) {`. Keep the `r.dist > t.engage + 8` branch above it, because other ship types use it. Optionally update the comment above `const steered = mechanics.steer(e, dt);` to mention the shark's course.
+  - Why: since mechanics3 md5 f6499471, steer() returns a course for every attacking shark in every phase (RAM.approach: idle answers identical to that branch, sheer-off while cooling). So `steered` is always truthy for her and the branch can no longer run. Without a slot, steer() returns null and main's waiting circle applies, as now.
+  - Verify after removing: scratch p-ram.cjs (PART=cadence,natural) on ?kraken=1 should still show a wind-up about every 9–11 s, and voyage3 atolls should pass.
+
+**Live game unchanged**
+
+- mechanics3 is composed on every level, but the new code runs only for ships whose type has ram: true. Only the Shark Raider has it, and she spawns only on Voyage III levels (?kraken=1). For every Act I and Act II ship, steer() returns exactly what it did before; the Node null-object test checks this.
+- cape.js is imported but only built for level 8, which exists only with ?kraken=1.
+- No file of main.js, index.html, style.css or voyage.js was touched.
+- Checked after publishing: battle.cjs kraken-live, the live game without ?kraken=1 (six levels, keys, shipyard, phone controls, no page errors), 6/6.
+- The mechanics Node suite (121) and the other Node suites are green with no test edits other than mechanics3.test.cjs.
+
+**Verification**
+
+Node (repo, after publishing; NODE_PATH=/opt/node22/lib/node_modules node tests/X.test.cjs):
+- mechanics3 173/173, mechanics 121, combat 107, specials 110, armory 35, cosmetics 83, walk 106, upgrades 53, quiz 85, island 52, settings 16, kraken 154. All "All … checks passed".
+
+Mutations (scratch mut.py against the mirror): 13/13 caught. Among them: the HEAD module, speed 0.6, far 30, near 15, sheer 1, out sign, no inward turn, ring 13, no slot gate, cool approaches, far beam, full speed always, no course in cool.
+
+eslint with 1L's config on the dev cape.js and mechanics3.js: no output (clean).
+
+Node simulation (scratch ramsim.cjs), lone shark, old rule vs new:
+- still player: 1 wind-up in 90 s vs 10, gaps 8.7–9.2 s.
+- straight 8 u/s: gaps 8.8–9.5 s vs 8.5–10.4 s.
+- circling: 9.2–10.9 s vs 11.1–11.6 s.
+- dodging: 8.0–9.5 s vs 11.6–14.0 s.
+
+Live ?kraken=1 shark probe (scratch p-ram.cjs, loop frozen and stepped):
+- Lone shark on level 1 with colliders moved away. Mirror (new) vs repo (old):
+  - still player: wind-ups at 3.2, 12.4, 21.2, 29.9, 38.7, 47.4, 56.2 s, gaps 8.74–9.15 s, 7 rams (old: 1 wind-up).
+  - circling: gaps 8.88–11.26 s (old: 7.75–9.51 s).
+  - cruising: gaps 11.02–11.57 s (old: 9.5–10.4 s).
+- Level 7 itself was not used for the cadence: diag runs there showed waterspout avoidance pushing her away. That affects old and new alike.
+- Natural L7 bot run, 126 s: new 9 wind-ups and 4 rams; old 10 and 4.
+- Long gaps in both, traced with p-diag: island and world-edge avoidance, not the course.
+- voyage3 VOYAGE3_ONLY=atolls on the mirror: 8 passed, 0 failed.
+
+Rogue crest, harness sweep (scratch sweep.cjs; worst hidden share of the ship / time ≥ 50% hidden):
+- 1280x720, published version: astern 0.96/1.1 s, port 0.94/0.7 s, star 0.97/0.8 s, pquarter 0.94/0.9 s, sbow 0.94/0.6 s, ahead 0.91/0.7 s.
+- 1280x720, v1 (margin only plus a top-point cap): 0.07–0.22, 0 s.
+- 1280x720, final: astern 0.01, port 0.11, star 0.11, pquarter 0.02, sbow 0.06, ahead 0.06, all 0 s. Max cover 0.31–0.66 (published 0.40–0.71).
+- 390x844, published: astern 0.95/1.1 s, port 0.94/0.7 s, ahead 0.91/0.7 s.
+- 390x844, final: 0.01–0.11, 0 s. Cover 0.36–0.54.
+- wave.cjs (1L's 12 views) looked at as contact sheets grid-wv1.png and grid-wv2.png.
+- robust.cjs: junkThrown 0, sinkSeconds 1.37, geometries 18 → 5 after dispose, errors [].
+
+Live ?kraken=1 level 8 (scratch p-rogue.cjs; G.mechanics3.wave at 6 bearings; real frames; raycast):
+- mirror 1280x720: 6 PASS, worst 0.01–0.09, 0 frames ≥ 50%.
+- repo before publishing: 3 FAIL, worst 0.86–0.98, 10–15 frames ≥ 50%.
+- mirror 390x844 touch: 6 PASS, worst 0.01–0.14, 0 frames.
+- Side-on runs show hp 120 → 110 (SPLASH unchanged).
+
+After publishing, on the repo:
+- BATTLE_ONLY=kraken-live node tests/battle.cjs: 6 passed, 0 failed.
+- VOYAGE3_ONLY=atolls,cape node tests/voyage3.cjs: 15 passed, 0 failed.
+
+Not run: the full npm test, as the brief asked.
+
+**Open issues**
+
+- main.js still has its own copy of the ram rule, now dead code. 2A-3 removes it (see hook_requests).
+- Balance (3B, bot v3): a player who sits still is now rammed about every 9 s (10 damage each). Main's old rule wound up only once, then circled at about 13 u. Every number lives in RAM.approach.
+- In natural level 7 play, island and world-edge avoidance can still stretch the gap between charges to 25–36 s. The old rule did the same; it comes from main's obstacle avoidance, not the course.
+- The cape crest duck assumes your ship is at about 0.7 × the distance where the camera's centre ray meets the sea. That is exact for the chase camera. In the portrait broadside framing (updateFraming, an enemy framed) the protected corridor may be a little off the ship; I probed without a framed enemy. If that ever matters, main could pass the focus point (for example envFrame.focus = { x, z }) for the env to use. This is not requested now.
+- When a stern-to wave has passed, its back still fills up to about 66–70% of the 1280x720 view behind your ship. The ship stays fully visible in front of it (≤ 1% hidden). In portrait, the crest near the camera covers up to about 54% of the lower screen without hiding the ship.
