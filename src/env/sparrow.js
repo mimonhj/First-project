@@ -5505,6 +5505,9 @@ export function build(scene, ctx = {}) {
   // professor and Bess are townsfolk who stand still, each with a blocker of their own, clear of every walker's
   // path, bridge mouth, doorway and place circle but their own.
   const npcs = []; // { id, x, z, r, folk } (walk.npcs: for the walk tests)
+  // the Riddle Bell's swinging part: { parts (built with the props), at, ry, pivot (once baked), t0, until }
+  const BELL_PIVOT = 2.3; // the pivot's height in the bell frame's space (just under the yoke)
+  const bell = { parts: null, pivot: null, t0: 0, until: 0 };
   if (KRAKEN) {
     const kp = new THREE.Group(); // the props, baked into the development layer
     const tower = towerRaft;
@@ -5528,11 +5531,17 @@ export function build(scene, ctx = {}) {
         r.rotation.order = 'ZXY';
       }
       add(g, sphere(8), ink(COL.brass), 0, 2.98, 0, 0, 0, 0, 0.09);
-      // the bell on its yoke, a clapper and a bell rope with a red tassel
+      // the bell on its yoke, a clapper and a bell rope with a red tassel; the bell, its band and the clapper are a
+      // little chunk of their own, hung from a pivot under the yoke (after the props are baked), so the bell swings
+      // when the professor rings it (npcReact('barnacle', 'ring'))
       add(g, rbox(0.42, 0.14, 0.16, 0.04), ink(COL.woodDeep), 0, 2.33, 0);
-      add(g, lathe('riddleBell', [[0, 0.62], [0.12, 0.61], [0.2, 0.52], [0.23, 0.3], [0.27, 0.1], [0.36, 0.0], [0.36, -0.04], [0, -0.04]], 18), ink(COL.brass), 0, 1.66, 0);
-      add(g, torus(0.3, 0.03, 18, 4), thin(0xd9a52a), 0, 1.76, 0, PI / 2);
-      add(g, sphere(8), ink(COL.iron), 0, 1.62, 0, 0, 0, 0, 0.08);
+      const parts = new THREE.Group();
+      add(parts, lathe('riddleBell', [[0, 0.62], [0.12, 0.61], [0.2, 0.52], [0.23, 0.3], [0.27, 0.1], [0.36, 0.0], [0.36, -0.04], [0, -0.04]], 18), ink(COL.brass), 0, 1.66 - BELL_PIVOT, 0);
+      add(parts, torus(0.3, 0.03, 18, 4), thin(0xd9a52a), 0, 1.76 - BELL_PIVOT, 0, PI / 2);
+      add(parts, sphere(8), ink(COL.iron), 0, 1.62 - BELL_PIVOT, 0, 0, 0, 0, 0.08);
+      bell.parts = parts;
+      bell.at = g.position.clone();
+      bell.ry = tyaw;
       rod(g, thin(COL.rope), V3(0.18, 2.3, 0.04), V3(0.32, 1.0, 0.18), 0.02, 4);
       add(g, sphere(8), ink(COL.red), 0.32, 0.95, 0.18, 0, 0, 0, [0.07, 0.11, 0.07]);
       // a small sign on the frame: a brass star
@@ -5576,6 +5585,8 @@ export function build(scene, ctx = {}) {
         (t) => (t % 9 < 2.6 ? 'point' : 'idle'), V3(spot.x, DECK, spot.z), Math.atan2(look.x - spot.x, look.z - spot.z));
       f.npc = 'barnacle';
       npcs.push({ id: 'barnacle', x: r2(spot.x), z: r2(spot.z), r: 0.35 });
+      const bellAt = tw(-1.05, 2.02);
+      bell.face = Math.atan2(bellAt.x - spot.x, bellAt.z - spot.z); // (he turns to the bell to ring it)
     }
     // the place: the visitor stops in front of the bell (the tower's front strip), facing it; the panel's camera
     // looks from over the water off the raft's south-west corner (clear of Tavern Row's tallest building), so the
@@ -5637,6 +5648,18 @@ export function build(scene, ctx = {}) {
     }
     dev.props = devChunk(kp);
     rebuildDev();
+    if (bell.parts) {
+      // the bell's own chunk (the layer's materials: 2 meshes) on its pivot, placed like the bell frame
+      const frame = new THREE.Group();
+      frame.position.copy(bell.at);
+      frame.rotation.y = bell.ry;
+      bell.pivot = new THREE.Group();
+      bell.pivot.position.y = BELL_PIVOT;
+      frame.add(bell.pivot);
+      dev.root.add(frame);
+      devMerge([devChunk(bell.parts)], bell.pivot); // (the parts' geometries are the town's shared ones: kept)
+      bell.parts = null;
+    }
     walkData.npcs = npcs;
     walkData.doors = doors;
   }
@@ -6031,6 +6054,77 @@ export function build(scene, ctx = {}) {
     return any;
   }
   /**
+   * The Kraken Seas' two townsfolk react (SPEC3 §7.3, §8.3), for `seconds` (0..10; a default per reaction):
+   * - 'barnacle', 'ring' (a right answer, new stars): Professor Barnacle turns to the Riddle Bell and points his
+   *   pointer at it, the bell swings (a ring, not a swing, under reduced motion: it holds still), and Quizzle, the
+   *   macaw on his shoulder, flaps and lifts his beak ("Right you are!");
+   * - 'barnacle', 'tilt' (a wrong answer): Quizzle tilts his head;
+   * - 'barnacle' or 'bess', 'cheer': a cheer (Bess's when a building stands).
+   * Returns whether anyone reacted (false without the Kraken Seas, or for anything else).
+   */
+  const REACTS = { barnacle: { ring: 1.6, tilt: 1.2, cheer: 1.6 }, bess: { cheer: 1.6 } };
+  function npcReact(who, what, seconds) {
+    const R = Object.prototype.hasOwnProperty.call(REACTS, who) ? REACTS[who] : null;
+    if (!KRAKEN || !R || !Object.prototype.hasOwnProperty.call(R, what)) return false;
+    const f = folk.find((q) => q.npc === who);
+    if (!f) return false;
+    const secs = clamp(Number.isFinite(seconds) ? seconds : R[what], 0, 10);
+    if (what === 'cheer') {
+      f.react = null;
+      f.cheerUntil = lastT + secs;
+      return true;
+    }
+    f.cheerUntil = 0;
+    f.react = { what, t0: lastT, until: lastT + secs, face: bell.face ?? f.h0 };
+    if (what === 'ring' && bell.pivot) {
+      bell.t0 = lastT;
+      bell.until = lastT + secs;
+    }
+    return true;
+  }
+  // A reaction's pose (the professor's: see npcReact); k eases it in over 0.15 s and out over the last 0.25 s.
+  function reactPose(f, t, dt) {
+    const R = f.react;
+    const P = f.p.userData.parts || {};
+    const still = reducedMotion();
+    const k = still ? 1 : clamp(Math.min((t - R.t0) / 0.15, (R.until - t) / 0.25), 0, 1);
+    if (R.what === 'ring') {
+      f.p.rotation.y = turnTo(f.p.rotation.y, R.face, 9 * dt);
+      animatePerson(f.p, t, 'point', f.aopts);
+      if (P.pet && P.petWingL && P.petWingR && P.petHead) {
+        // Quizzle flaps on the shoulder (wings out and still under reduced motion), hops a little and lifts his beak
+        const fl = still ? 0.6 : 0.5 + 0.5 * Math.sin(t * TAU * 5);
+        P.petWingL.rotation.set(0, 0, k * (0.35 + 1.15 * fl));
+        P.petWingR.rotation.set(0, 0, -k * (0.35 + 1.15 * fl));
+        if (!still) P.pet.position.y += 0.045 * k * Math.abs(Math.sin(t * TAU * 2.5));
+        P.petHead.rotation.x -= 0.4 * k;
+      }
+    } else {
+      if (f.p.rotation.y !== f.h0) f.p.rotation.y = turnTo(f.p.rotation.y, f.h0, 4 * dt);
+      animatePerson(f.p, t, 'idle', f.aopts);
+      // Quizzle cocks his head ("Not quite!")
+      if (P.petHead) {
+        P.petHead.rotation.z += 0.62 * k;
+        P.petHead.rotation.x += 0.15 * k;
+      }
+    }
+  }
+  // The Riddle Bell swings while it rings: side to side in its frame, as the visitor and the panel's camera see it
+  // (up to 0.15 rad, which keeps its lip clear of the posts), one and a half swings a second (a stroke at each end),
+  // dying away over the ring; still under reduced motion
+  function swingBell(t) {
+    const p = bell.pivot;
+    if (!p) return;
+    if (t >= bell.until || t < bell.t0 || reducedMotion()) {
+      if (p.rotation.z !== 0) p.rotation.z = 0;
+      return;
+    }
+    const D = Math.max(0.01, bell.until - bell.t0);
+    const u = (t - bell.t0) / D;
+    p.rotation.z = 0.15 * Math.sin((t - bell.t0) * TAU * 1.5) * Math.min(1, u / 0.06) * (1 - u);
+  }
+  const reducedMotion = () => !!(typeof ctx.reducedMotion === 'function' ? ctx.reducedMotion() : ctx.reducedMotion);
+  /**
    * The town view: hide the townsfolk farther than `radius` from (x, z) (the camera) or nearer than
    * `near` (right at the lens), and show the prize ships. cull() with no arguments goes back to the
    * shipyard view: everyone shown, the prize ships hidden.
@@ -6119,7 +6213,10 @@ export function build(scene, ctx = {}) {
       m.morphTargetInfluences[1] = Math.cos(t * 3.1);
     }
     lanternGlow.emissiveIntensity = 1.0 + 0.12 * Math.sin(t * 7.3) + 0.08 * Math.sin(t * 13.1);
-    if (KRAKEN) updateDev(t, dt0);
+    if (KRAKEN) {
+      updateDev(t, dt0);
+      swingBell(t);
+    }
     // boats and the barge
     for (const b of anim.boats) {
       const { x, z } = b.userData.base;
@@ -6223,6 +6320,13 @@ export function build(scene, ctx = {}) {
       if (!f.p.visible) {
         if (f.villager && !f.greet) walkerPose(f, t); // (a villager still walks his round out of sight)
         continue; // culled in the town view
+      }
+      if (f.react) {
+        if (t < f.react.until && t >= f.react.t0) {
+          reactPose(f, t, dt);
+          continue;
+        }
+        f.react = null;
       }
       if (f.cheerUntil > t) {
         animatePerson(f.p, t, 'cheer', f.aopts);
@@ -6346,6 +6450,7 @@ export function build(scene, ctx = {}) {
     setCaptain,
     greet,
     cheer,
+    npcReact,
     cull,
     setPrizes,
     // the Kraken Seas (SPEC3 §8, §11.1; harmless no-ops without them)
@@ -6365,6 +6470,16 @@ export function build(scene, ctx = {}) {
     },
     get plots() {
       return plotList.map((p) => ({ ...plotInfo(p), tier: p.tier }));
+    },
+    // a new home's villagers while they wave from its porch (SPEC3 §8.3, for the "Thank you, Captain!" bubble):
+    // { x, y, z } where each stands (world), top: the top of the head, secs: how long they go on waving
+    get wavers() {
+      return dev.wavers.map((w) => {
+        const at = w.p.getWorldPosition(V3());
+        const head = w.p.userData.parts && w.p.userData.parts.head;
+        const top = head ? head.getWorldPosition(V3()).y + 0.45 : at.y + 1.8;
+        return { x: at.x, y: at.y, z: at.z, top, secs: w.until === null ? 2 : Math.max(0, w.until - lastT) };
+      });
     },
     update,
     dispose,

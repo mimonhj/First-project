@@ -316,7 +316,10 @@ export function playerType(baseType, config) {
   };
 }
 
-/** Short UI text for an upgrade's stat at a tier, e.g. "4 guns", "1.35 s", "140 hp", "50% turn when slow". */
+/**
+ * Short UI text for an upgrade's stat at a tier, e.g. "4 guns", "1.35 s", "140 hp", "50%". The rudder's is the bare
+ * percentage: its row already reads "Turning when slow: 50%" (RUDDER.stat), like "Reload: 1.35 s".
+ */
 export function statText(id, tier) {
   const u = upgrade(id);
   if (!u) return '';
@@ -337,7 +340,7 @@ export function statText(id, tier) {
     case 'carpenter':
       return `${val} hp/s`;
     case 'rudder':
-      return `${Math.round(val * 100)}% turn when slow`;
+      return `${Math.round(val * 100)}%`;
     default:
       return String(val);
   }

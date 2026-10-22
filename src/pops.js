@@ -10,9 +10,13 @@ import * as THREE from 'three';
 //                                           //        | 'kraken'; a '\n' (or "CRIT! <effect>", or for the
 //                                           //        four new styles "<WORD!> <more>", e.g. "FIRE OUT! SSSS!")
 //                                           //        splits the text into a big line and a smaller second
-//                                           //        line; mod (optional, a word): an extra class pop-<mod>,
-//                                           //        e.g. 'round' for round shot's bigger hull damage,
-//                                           //        'kaboom' for KA-BOOM! (bigger), 'eye' for BULLSEYE!
+//                                           //        line; mod (optional, a word, or up to 3 words with
+//                                           //        spaces): an extra class pop-<mod> for each, e.g.
+//                                           //        'round' for round shot's bigger hull damage, 'kaboom'
+//                                           //        for KA-BOOM! (bigger), 'eye' for BULLSEYE!; and 'keep'
+//                                           //        (also a class, pop-keep) for a pop that is never
+//                                           //        dropped (see Keep below), e.g. pop('IMMUNE!', x, y, z,
+//                                           //        'info', 'keep')
 //   update(dt),   // ages, moves and fades the pops (dt in seconds; 0 while paused freezes them)
 //   clear(), get count /* pops alive */
 // }
@@ -43,6 +47,10 @@ import * as THREE from 'three';
 // dropped if it is still waiting then.
 // No room: a pop with no clear spot waits a moment for one (ROOM_WAIT); POINT BLANK! and the rake words (the
 // HIT mark's stickers say them too) are let go if none comes, anything else then shows least covered.
+// Keep (mod 'keep'): a word that explains a refusal (IMMUNE!, CLANG!: why a shot did nothing; SPEC3 §0.1 "no
+// hidden traps") must show even in a crowded volley. It jumps the queue like an important pop and is never pushed
+// out of it, shows late rather than never when the rate holds it past its moment, shows least covered rather than
+// be let go when there is no room (even as an 'info' pop), and is the last pushed off the screen when 12 are up.
 
 const MAX_ALIVE = 12;
 const RATE = 8; // new pops per second
@@ -57,6 +65,8 @@ const SPLIT_BANG = new Set(['fire', 'frost', 'stink', 'kraken']);
 const ROOM_WAIT = 0.6;
 const ROOM_LOOK = 0.05;
 const DROPPABLE = new Set(['info', 'rake']);
+// the pops that jump the queue: the important styles and any pop marked 'keep'
+const vital = (q) => IMPORTANT.has(q.style) || !!q.keep;
 // The battle HUD's pieces the pops keep off (index.html ids; see `furniture`): [selector, weight]. The banner
 // is a soft obstacle: a pop crosses it rather than another pop, the HIT mark or a control when there is no room
 // for all (its words are big and it soon goes; a short landscape phone has room for little else).
@@ -137,7 +147,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     sub.className = 'pop-sub';
     el.append(main, sub);
     layerEl.appendChild(el);
-    pool.push({ el, main, sub, alive: false, x: 0, y: 0, z: 0, style: 'dmg', S: STYLES.dmg, age: 0, life: 1, still: false, stack: 0, dx: 0, wayAt: -1, wayCost: 0, ax: 0, ay: 0, ok: false, w: 0, h: 0 });
+    pool.push({ el, main, sub, alive: false, keep: false, x: 0, y: 0, z: 0, style: 'dmg', S: STYLES.dmg, age: 0, life: 1, still: false, stack: 0, dx: 0, wayAt: -1, wayCost: 0, ax: 0, ay: 0, ok: false, w: 0, h: 0 });
   }
   const alive = []; // oldest first
   const queue = [];
@@ -375,11 +385,14 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     }
     let p = pool.find((x) => !x.alive);
     if (!p) {
-      p = alive.shift(); // the oldest makes room
+      // the oldest makes room (a 'keep' pop only when every pop up is one)
+      const i = alive.findIndex((x) => !x.keep);
+      p = alive.splice(i < 0 ? 0 : i, 1)[0];
       p.alive = false;
     }
     const S = STYLES[q.style] || STYLES.info;
     p.alive = true;
+    p.keep = !!q.keep;
     p.x = q.x;
     p.y = q.y;
     p.z = q.z;
@@ -396,7 +409,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     p.main.textContent = a;
     p.sub.textContent = b;
     p.sub.style.display = b ? '' : 'none';
-    const mod = typeof q.mod === 'string' && /^[a-z]{1,16}$/.test(q.mod) ? ` pop-${q.mod}` : '';
+    const mod = q.mods.map((m) => ` pop-${m}`).join('');
     p.el.className = `pop pop-${p.style}${mod}${p.still ? ' still' : ''}`;
     p.el.style.display = '';
     p.el.style.opacity = '0';
@@ -525,21 +538,27 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     pop(text, x, y, z, style = 'dmg', mod = '') {
       if (!hasDom || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
       if (text === null || text === undefined || String(text).trim() === '') return false;
-      const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', mod, at: clock };
+      // the mod words: plain lower-case words, at most 3 (anything else adds no class)
+      const mods = typeof mod === 'string' ? [...new Set(mod.trim().split(/\s+/))].filter((m) => /^[a-z]{1,16}$/.test(m)).slice(0, 3) : [];
+      const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', mods, keep: mods.includes('keep'), at: clock };
       // "−N CREW" right after its volley's damage at the same point: the damage pop's second line
       if (q.style === 'crew' && joinCrew(q)) return true;
       if (tokens >= 1) {
         tokens -= 1;
         return spawn(q);
       }
-      // over the rate: wait in the queue (important pops first), dropping the oldest plain one if full
+      // over the rate: wait in the queue (important and 'keep' pops first), dropping the oldest plain one if
+      // full (else the oldest important one; never a 'keep' pop: with nothing else to drop, a new 'keep' pop
+      // makes the queue longer and any other new pop is dropped)
       if (queue.length >= QUEUE_MAX) {
-        const plain = queue.findIndex((e) => !IMPORTANT.has(e.style));
-        if (plain < 0 && !IMPORTANT.has(q.style)) return false;
-        queue.splice(plain >= 0 ? plain : 0, 1);
+        let out = queue.findIndex((e) => !vital(e));
+        if (out < 0 && !vital(q)) return false;
+        if (out < 0) out = queue.findIndex((e) => !e.keep);
+        if (out >= 0) queue.splice(out, 1);
+        else if (!q.keep) return false;
       }
-      if (IMPORTANT.has(q.style)) {
-        const firstPlain = queue.findIndex((e) => !IMPORTANT.has(e.style));
+      if (vital(q)) {
+        const firstPlain = queue.findIndex((e) => !vital(e));
         queue.splice(firstPlain < 0 ? queue.length : firstPlain, 0, q);
       } else queue.push(q);
       return true;
@@ -551,7 +570,11 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
       tokens = Math.min(RATE, tokens + RATE * step);
       while (queue.length && (clock - queue[0].at > QUEUE_AGE || tokens >= 1)) {
         const q = queue.shift();
-        if (clock - q.at > QUEUE_AGE) continue; // stale: its moment has passed
+        if (clock - q.at > QUEUE_AGE) {
+          // stale: its moment has passed (a 'keep' pop shows anyway, late rather than never)
+          if (q.keep) spawn(q);
+          continue;
+        }
         tokens -= 1;
         spawn(q);
       }
@@ -566,7 +589,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
         for (const w of due) {
           waiting.splice(waiting.indexOf(w), 1);
           if (clock - w.at >= ROOM_WAIT) {
-            if (DROPPABLE.has(w.style)) continue;
+            if (DROPPABLE.has(w.style) && !w.keep) continue;
             w.force = true;
           }
           spawn(w);

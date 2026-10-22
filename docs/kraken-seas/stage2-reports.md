@@ -347,3 +347,199 @@ Not run, as instructed: the full npm test.
 - Sparrow's scaffold is hard to read in the montage at both sizes. It is sparrow's art (1N listed it as 3D polish).
 - Under heavy load the quiz results' coin and the build montage run on different clocks (wall clock vs game time). townMode now lets a key or tap skip a montage that outlasts the panel's window, but the panel's own celebrating flag can end before the 3D building stands.
 - 1N's optional town.js bridge-mouth squeeze-past change (owner 3D) was not applied, to keep live walking identical. Sparrow's villager exemption near bridges stays.
+
+## Round R2
+
+**Coordinator test run:** npm test on a snapshot of the round 2 files (identical to the committed ones), started 2026-10-22 05:23:26 UTC: 19 suites, 1,859 checks passed, 0 failed, exit 0. Coordinator change: town.css quiz-sparkle keyframe ends at scale(1) (2D's real bug: 18-24 px of sideways scroll in the quiz panel after a right answer). tests/ashore.cjs is not in npm test yet (3C adds it after 3A); it runs on a patched mirror with ASHORE_ROOT.
+
+### 2E
+
+2E (round 2 module fixer) is finished. I applied all four round-1 hook requests aimed at my files and published each one atomically: (a) a never-droppable 'keep' mod in src/pops.js; (b) statText('rudder', t) in src/upgrades.js now returns just the percentage ('35%'), with 1F's rudder checks in tests/upgrades.test.cjs updated; (c) 2B's six-button places bar (.six), copied exactly, plus the optional Powder room styling in town.css; (d) env.npcReact(who, what, seconds) and the optional `wavers` getter in src/env/sparrow.js. The Riddle Bell now swings for 'ring'. Every change sits behind the Kraken flag or an opt-in, so the live game is unchanged. On the final files all 13 Node suites pass, and so do town.cjs sections places, ashore, draws, layout, touch and review4-world. Each change was also checked the way its Stage 1 owner checks it (probes, harnesses, screenshots); details are under verification. The container restart at 03:45 killed the earlier town run during places. I re-ran it one section at a time and it passed.
+
+**Files:** src/pops.js, src/upgrades.js, tests/upgrades.test.cjs, town.css, src/env/sparrow.js
+
+**Brief, item by item**
+
+- (a) src/pops.js 'keep' mod: DONE and published. pop(text,x,y,z,style,mod): mod may now be up to 3 lower-case words, each adding a pop-<word> class. With 'keep' the pop jumps the queue like an important pop and is never pushed out of the queue. If the rate holds it past QUEUE_AGE it shows late rather than never. With no clear spot it shows least covered, even with style 'info'. When 12 pops are up it is the last one pushed off. Checked with p-pops.cjs (h/pops.html, dev vs base) at 1280x720, 390x844 and 568x320: 18/18. In flood, no-room, 12-up and full-queue cases the keep pops show where base drops them. Without 'keep', frames match base exactly (80 pops, reduced motion too). Also battle.cjs BATTLE_ONLY=hud2,touch,short,phone on a mirror: 44/0. Screenshots pops-keep-* looked at.
+- (b) src/upgrades.js: DONE and published. statText('rudder', t) returns '35%' / '50%' / '65%' / '80%', clamped as before. RUDDER.stat stays 'Turning when slow'. In tests/upgrades.test.cjs I changed only 1F's rudder text check and added a row check ('Turning when slow: 35% → 50%', words said once). No pre-Kraken check was touched. upgrades.test 53/53 and cosmetics.test 83/83. Mutation check: the old text fails 2 checks. p-rudder.cjs on a mirror with ?kraken=1 at 1280 and 390: 2/2, and the shipyard row reads 'Turning when slow: 35% → next: 50%' (screenshots looked at).
+- (c) town.css: DONE and published. 2B's four .town-places.six rules copied exactly in a @media (max-width: 759px), (orientation: landscape) and (max-height: 560px) block. Powder room styling: .tav-h.powder-h top margin 20px (townMode gives #tavern-powder-h the classes 'tav-h powder-h'), .powder-row.locked .up-ico svg grayscale(0.6) and opacity 0.8, .rumour-tip bold, upright, ink colour. Checks: 2B's layout.cjs on the mk mirror (patched current main.js, ?kraken=1, real town.css, no injected rules) 91/0 at 7 sizes. p-towncss.cjs 20/20: the bar is 300 px, buttons 44x44 at the 5 compact sizes, labels at 1024 and 1280, the bar clears the stick and the action button, and without the flag the bar is pixel-identical to the repo's at 4 sizes. Screenshots bar6-*, powder-*, rumour-* looked at. town.cjs layout section on the final repo: 57/0.
+- (d) src/env/sparrow.js: DONE and published. env.npcReact(who, what, seconds) returns a boolean. ('barnacle','ring'): the professor turns to the Riddle Bell and points; the bell, which is now its own 2-mesh chunk on a pivot, swings side to side (at most 0.15 rad, 1.5 swings/s, dying away, still under reduced motion); Quizzle flaps, hops and lifts his beak. ('barnacle','tilt'): Quizzle cocks his head. ('barnacle'|'bess','cheer'): a cheer. It returns false without the Kraken flag or for any other who/what. Default seconds are 1.6 / 1.2 / 1.6, clamped to 0..10. The `wavers` getter returns [{x,y,z,top,secs}] for porch villagers while they wave. Checks: p-sparrow.cjs (1N's h1N harness, dev vs base) 21/21. With the flag, walk equals the fixture (also at tier 3 with 24 villagers). Without it, dev equals base for walk, 40 people, draw calls and pixels. Wavers report 2 people for 2.03 s. 1N's drawprobe (TOWN_ONLY=1, ISLAND=3, ?kraken=1&quality=low): town 30x8 max 401, the same as base and 1N's figure. The shipyard view is +4 calls (the bell's 2 outlined meshes). p-react-mk.cjs on the mk mirror with the real townMode: 20/20 at 1280x720 and 390x844 touch. Screenshots ring/tilt/cheer/mk-* looked at. walk.test 106/106.
+- Exit: all 13 Node suites green on the final repo. Each applied request was verified the way its owner would.
+
+**API notes**
+
+pops.js: pop(text, x, y, z, style = 'dmg', mod = ''). mod is a string of up to 3 distinct words, each matching /^[a-z]{1,16}$/; each adds a class pop-<word> (other words are ignored). The word 'keep' marks a refusal word that must be seen: it is queued with the important styles and never pushed out; when stale it still shows (late); with no room it shows least covered; it is the last pushed off the screen at 12 up. A queue holding only keep pops grows by one for a new keep pop and drops any other new pop. Unchanged: return values, rates, every non-keep path (identical to base in the probe). Example: pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info', 'keep'). The pop element also gets the class pop-keep; fx.css does not style it.
+upgrades.js: statText('rudder', t) returns '35%'|'50%'|'65%'|'80%'. RUDDER.stat is still 'Turning when slow'. main.js's row reads 'Turning when slow: 35% → next: 50%' and the purchase announcement reads 'Bought Rudder. Turning when slow: 50%.' This follows the coordinator's choice over SPEC3 §3.1's '50% turn when slow' text.
+town.css: .town-places.six rules exactly as 2B gave them (only townMode with withKraken adds .six; the four-button bar is unchanged). .tav-h.powder-h, .powder-row.locked .up-ico svg, .rumour-tip.
+sparrow.js (env returned by build): npcReact(who, what, seconds) -> boolean. Cases: 'barnacle' with 'ring' | 'tilt' | 'cheer', and 'bess' with 'cheer'. KRAKEN only (otherwise false). seconds must be finite, is clamped to 0..10, and defaults per reaction. A later reaction replaces an earlier one; 'cheer' clears a ring/tilt and vice versa. Getter wavers -> [{ x, y, z, top, secs }] in world coordinates; top = head top + 0.45, a bubble anchor; secs = how long they keep waving. The array is empty without the Kraken flag or when nobody is waving. The bell is a separate development-layer chunk on a pivot (2 meshes, +4 draw calls in views that see it); it rests at rotation 0 outside a ring. Test hooks used by my probes (scratch only): env.npcReact, env.wavers, and the bell pivot rotation found through the scene. No changes to __game.
+
+**Hook requests applied / rejected**
+
+- APPLIED (a) 2A-1 -> src/pops.js: never-droppable 'keep' mod for IMMUNE!/CLANG! info pops. Applied a little more broadly than asked: beyond skipping DROPPABLE, a keep pop also survives a full queue, staleness and the 12-up limit. Otherwise a keep pop could still vanish through those paths. main.js must still pass 'keep' (see hook_requests).
+- APPLIED (b) 2A-1 -> src/upgrades.js: the coordinator's choice. RUDDER.stat stays 'Turning when slow'; statText('rudder', t) returns the bare percentage like the other rows. 1F's rudder text check updated and a row-wording check added in tests/upgrades.test.cjs; pre-Kraken checks untouched.
+- APPLIED (c) 2B -> town.css: the six-button bar rules exactly as given, and the optional Powder room styling. Selector .tav-h.powder-h instead of #tavern-powder-h.powder-h: same element, and it avoids an id selector in shared CSS.
+- APPLIED (d) 2B -> src/env/sparrow.js: env.npcReact(who, what, seconds) with ring/tilt/cheer, which townMode already calls guarded by typeof. For 'ring' the Riddle Bell itself swings. Also applied the optional `wavers` getter.
+- NOT MINE (left for their owners): 2A-1 -> townMode.js powder purchase rebuild (2B/3A); 2B -> main.js townMode ctx (withKraken, unlocked, powder, island, quiz, rebuildShip, setIsland at openDock) for 3A; 2B -> main.js buildPlayerMesh powder (2A/3A). I rejected no request.
+
+**Hook requests raised**
+
+- src/main.js (2A-2 / whoever owns the battle pops in Stage 2), two one-word changes so IMMUNE! and CLANG! use the new 'keep' mod (2A-1's own request; pops.js now honours it). In onArmourHit (line ~2688) change `pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info');` to `pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info', 'keep');`. In the status-hit code (line ~2875) change `pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : '');` to `pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : ev.includes('immune') ? 'keep' : '');`. Why: SPEC3 §0.1 'no hidden traps': with style 'info' these words can still be dropped in a crowded volley until main.js passes 'keep'.
+- src/townMode.js (2B / 3A, optional, SPEC3 §8.3): show the 'Thank you, Captain!' bubble over env.wavers while it is non-empty (guard with `env && 'wavers' in env`; each entry gives world {x, top, z} as the anchor and secs as the time left). Why: 2B asked for the getter so townMode can show the bubble; sparrow.js now has it, but nothing reads it yet.
+
+**Live game unchanged**
+
+Every change is either opt-in or behind the Kraken flag. pops.js: 'keep' only acts when a caller passes it, and main.js does not yet. Without 'keep', p-pops shows frames identical to base (80 pops, reduced motion too), and battle.cjs hud2/touch/short/phone passes 44/0. upgrades.js: only the rudder row's text changed, and that row is only shown with ?kraken=1 (Stage 1's SHIPYARD gating). Every pre-Kraken upgrades check passes unedited, and cosmetics 83/83. town.css: the six-button rules match only .town-places.six, which townMode adds only with withKraken. p-towncss shows the no-flag bar pixel-identical to the repo's at 4 sizes, and town.cjs layout passes 57/0 at 7 sizes. The Powder and rumour-tip classes are only emitted with the flag. sparrow.js: the bell chunk, npcReact (returns false) and swingBell all run only under KRAKEN, and f.react is never set without it. p-sparrow shows no-flag dev == base for walk data, 40 people, draw calls and pixels. walk.test 106/106, fixture untouched. town.cjs draws, review4-world, ashore, places and touch all pass on the repo without ?kraken=1.
+
+**Verification**
+
+Node, on the final repo files (03:48 UTC): armory 35, combat (pass), cosmetics 83, island (pass), kraken 154, mechanics 121, mechanics3 162, quiz 85, server (pass), settings 16, specials (pass), upgrades 53, walk 106. All exit 0.
+town.cjs on the repo (no ?kraken=1, the live game), final files, SCREENSHOT_DIR in scratch, one section per run: places 12 passed / 0 failed; ashore 7/0; draws 5/0 (walk view spawn 216, plaza 170, yard 124, tavern 61, tower 28, garden 338; Polly 41; tavern 66); layout 57/0 (7 sizes); touch 6/0; review4-world 9/0 (rope bridges 48 runs 0 stopped, LOOK-2, squeeze-past 10/10, LOOK-4/5, PERF-1/2/3). Screenshots town.png and tailor.png looked at: the four-button bar is as today.
+Earlier in this round, all on the final versions of the files (repo == dev copy, cmp-verified after each restart): p-pops.cjs 18/18 at 1280x720, 390x844 and 568x320; battle.cjs BATTLE_ONLY=hud2,touch,short,phone BATTLE_ROOT=mirror (dev pops) 44 passed, 0 failed; 2B's layout.cjs on the mk mirror with ?kraken=1 and the real town.css 91 passed, 0 failed; p-towncss.cjs 20/20; p-rudder.cjs 2/2; p-sparrow.cjs 21/21; 1N's drawprobe on base vs dev (town 30x8 max 401 both; shipyard 304-309 vs 308-315, the bell's +4; no errors); p-react-mk.cjs 20/20 on the mk mirror (real townMode) at 1280x720 and 390x844 touch. Mutation: the old rudder text fails 2 upgrades checks. In this session I looked again at bar6-390x844, mk-ring-390x844, pops-keep-390x844 and town.png. I did not run the full npm test (the coordinator's job).
+
+**Open issues**
+
+- main.js does not pass 'keep' yet, so IMMUNE!/CLANG! can still be dropped in a crowded volley until 2A-2 applies the hook request.
+- Nothing shows the §8.3 'Thank you, Captain!' bubble yet: env.wavers exists but townMode does not read it (hook request to 2B/3A).
+- The bell chunk adds 4 draw calls (2 outlined meshes) to views that see the Riddle Bell, with the Kraken flag only. 1N's tier-3 town 30x8 maximum is unchanged at 401.
+- I ran town.cjs sections places, ashore, draws, layout, touch and review4-world, not the full town suite (walk, wardrobe, tavern, records, review4 and battle untouched by my files) and not the full npm test; the coordinator runs that after the round.
+- Progress log: /home/user/First-project/.dock-harness/kraken2/R2-2E/PROGRESS.md (marked DONE).
+
+### 2D
+
+I finished 2D's brief. tests/ashore.cjs is a new file, published as v8 with cp to a temp name + mv, and only my own runs use it so far.
+
+**Runs on the final files.** I built the mirror .dock-harness/kraken2/R2-2D/mkF at 03:47 from the current tree: HEAD 0602cbe plus 2E's final sparrow.js, town.css, pops.js and upgrades.js. Its main.js is the current one patched with the 3A-like townMode ctx (patchmain2.py). At 05:11 it still matched the repo with 0 differences.
+- A single-process run of the published v7 (every section but draws) gave 106 passed, 17 failed, no page errors.
+  - 9 of the failures are tagged checks that wait for later work: governor, lighthouse, bakery, gift, tabs-island ×2, tabs-quiz ×2 (all 3A's main.js) and mouth (town.js).
+  - 7 are a real town.css bug: after a right answer, the quiz panel scrolls sideways by 18–24 px at all 7 sizes.
+  - 1 was a timing flaw in my own suite. The desktop "Back to town" click landed inside the quiz panel's 350 ms tap guard. v8 waits 420 ms first; keys then passed 11/0 twice on mkF.
+- draws passed 4/0 on mkF (shipyard 308–315 calls, walk view max 401, quiz view 44, build views max 96; budget 450). Its code has not changed since that run.
+
+**Breaking copies.** I ran 69 mutations, each on a copy of a mirror and never on the repo files.
+- 61 failed their expected checks the first time.
+- The 8 misses are all resolved: 5 needed two faults (a guard that other code backs up) or my new "never shown" helper; 2 led me to make checks stricter (Frost double click, cut-off build-button labels); and walking (a), which wk-squeeze did not break, fails under wk-stops and wk-look2.
+- Every distinct check in the final logs fails in at least one mutation log.
+
+**Two real bugs** (details in open_issues):
+1. The quiz sparkle in town.css leaves the panel scrollable sideways after a right answer.
+2. A walking wedge at the plaza mouth of the plazaS1 rope bridge stalls the captain for 8.23 s. It is pre-existing and also happens without ?kraken=1.
+
+**Changes to the suite this round:**
+- Taps and clicks go through press(): a 20 s wait, then up to 10 s for the tap's effect, because the synthesized click comes after touchend on a busy machine.
+- The Frost double-click check also reads the live text, so it catches the "You have the … recipe" message.
+- The cut-off-label check also looks at text inside inline spans, and skips badges placed on purpose over a button's edge.
+
+I did not run npm test (the coordinator runs it) and did not edit package.json.
+
+**Files:** tests/ashore.cjs
+
+**Brief, item by item**
+
+- §13.2 ashore suite, all 13 sections (bar, keys, walking, quiz, quiztaps, quizrec, build, perks, powder, tabs, layout, draws, rays): written and published as /home/user/First-project/tests/ashore.cjs (v8, cp to a temp name + mv; byte-identical to .dock-harness/kraken2/R2-2D/dev/ashore.cjs). Verified on mkF, the mirror of the final files, as listed in verification.
+- Takes a root option, as asked: ASHORE_ROOT (default: the repo root). Also ASHORE_ONLY (sections), ASHORE_QUERY (default ?quality=low&kraken=1), SCREENSHOT_DIR, and ASHORE_PENDING=<tags>|all, which reports checks waiting for later work as PEND instead of FAIL. After 3A wires the ctx it runs on the repo unchanged.
+- Run against 2B's harness design: mirror mk/mkF = a real-file repo copy plus main.js patched with a 3A-like townMode ctx (scratch R2-2D/patchmain2.py, adapted from 2B's patchmain.py to the current main.js). The final run used mkF, built from the final 2E files and checked identical to the repo at 05:11.
+- Each check fails on a broken copy: 69 mutations (scratch R2-2D/muts/m1-m4.json, runner mutate.cjs, logs in scratch R2-2D/mut/*.log and logs/mut-m*.log). 61 were caught first time; all 8 first-run misses are resolved (see verification).
+- Tagged checks that wait for 3A (governor, lighthouse, bakery, gift, tabs-island, tabs-quiz): proven to pass on the prototype mirror mk3 (patchmain3.py) and to fail on broken copies of it (b-governor, p-lighthouse, p-bakery, p-gift, tb-island, tb-quiz). The [mouth] check passes 240/240 on mkfix (mk + the fixmouth.py prototype) and fails on wk-squeeze.
+- Screenshots looked at: quiz.png, build.png and island-tier3.png at 1280x720; the quiz map and build panel at 1280x720 and 390x844 portrait touch. They match what the checks report.
+- Not done: the full npm test (the coordinator runs it) and the package.json entry (3C adds the suite to npm test after 3A).
+
+**API notes**
+
+Runs: `node tests/ashore.cjs`, with env ASHORE_ROOT (served copy, default the repo root), ASHORE_ONLY (comma list of sections), ASHORE_QUERY (default '?quality=low&kraken=1'), SCREENSHOT_DIR (default <root>/tests/screenshots), ASHORE_PENDING (tags: gift, bakery, lighthouse, governor, tabs-island, tabs-quiz, mouth, or all).
+- Timing on this 4-CPU box (another agent's browser job running at the same time): about 10 min for everything but draws, plus about 9 min for draws.
+
+Game hooks it relies on (2B's api_notes plus the Stage 0/1 __game):
+- window.__game.town.{view, open, back, simulate, walkTo, goTo, pos}
+- window.__game.town.api.{quiz (mode, round, result, panel, start/answer/next/...), build, auto (place), town (panning, enter), tavern.powder, prompt, harbour, montage, plotFocus}
+- window.__game.env.{walk, villagers, folk, plots, montage}
+- window.__game.island.config.t, window.__game.quiz.record, window.__game.specials.powder.own
+- window.__game.dock.{open, ship, ashore}, window.__game.renderInfo.calls, window.__game.scene
+- window.__game.state.{purse, mode, time, wave, intro}, window.__game.audio.play (wrapped to list sounds)
+
+In-page helper window.T: a localStorage.setItem wrapper that records every write and can refuse keys (storage full); T.sig, the state a tap changes (view, walk goal, aboard dialog, quiz mode/level/index/removed/picks), which press() waits on; T.q / T.text / T.shown / T.focus / T.walkView; and the layout probes window.__probe.{town, bar, panel, dialog, contrast}.
+
+What ashore needs from 3A's ctx is what patchmain2.py prototypes:
+- withKraken, unlocked
+- powder {state, buy}, island {state, build}, quiz {record, save}
+- rebuildShip
+- env.setIsland / setVillagers / setRank on dock open
+- the record written first, then the chest
+The tagged checks additionally need the patchmain3.py pieces (see hook_requests).
+
+Deviations from SPEC3 §13.2, and why:
+- Walking is hand-stepped with __game.town.simulate in one evaluate, from a fixed clock (P.t=100) with Math.random seeded, and with env.cull run each frame as townMode does. This makes it deterministic: two runs give identical results. Without the cull, hidden villagers never wait for the captain (LOOK-2).
+- The walk-view draw sweep (30 spots × 8 headings) is measured at 320x180 (the same 16:9 aspect) for speed; the 8 busiest views are measured again at 1280x720 (max 401 both ways).
+- Walking (d) samples env.villagers and counts LOOK-2 waits separately (1N's request).
+- Taps and clicks on controls that may never appear go through press(): a 20 s timeout, the failure noted in the check message ("never shown"), then up to 10 s waiting for T.sig to change. Playwright's tap returns before the browser's synthesized click lands.
+- The suite waits 420 ms before tapping or clicking a control that just appeared (the panels' 350 ms tap guard).
+
+**Hook requests applied / rejected**
+
+- (1N, stage1-reports 'tests/ashore.cjs') Walking (d) samples villagers through env.villagers, which includes hidden ones, and counts LOOK-2 waits separately instead of as stops. Applied: (d) reports '0 stops; N samples of LOOK-2 waits for the captain there, not counted', and the LOOK-2 check measures the waits on their own.
+- The round 1 hook file (build2/r1-hooks.md) and the coordinator notes hold no requests aimed at tests/ashore.cjs, so there was nothing else to apply.
+
+**Hook requests raised**
+
+- town.css (owner now 2E; 3D in Stage 3), @keyframes quiz-sparkle. Change `to { transform: scale(1.15); opacity: 0; }` to `to { transform: scale(1); opacity: 0; }`. Why: after a right answer, the right answer's ::after sparkle (inset -10px, animation fill-mode forwards) stays scaled to 1.15 after it fades out. That leaves 18–24 px of sideways scroll in the quiz panel, so on a phone the panel slides sideways under the child's finger. ashore layout fails at all 7 sizes in the 'answered' state ('the panel scrolls sideways (24 px)' at 390x844 and 1280x720). With the change, layout passes 29/0 (mirror mkcss, log scratch R2-2D/logs/l2css.log). `.quiz-panel .dock-body { overflow-x: hidden }` does not remove the overflow.
+- src/town.js (3D in Stage 3; a candidate for a hotfix, since SPEC3 §0.3 says to hotfix a walking bug confirmed live), stepWalk: when the captain walks by hand and has been stuck for 0.25 s, the people-free move is no better, and he stands within 1 u of a rope bridge's mouth pushing onto it (heading within 60° of the bridge), steer him for up to 0.6 s to a point on the bridge's middle line 0.5 u inside the mouth, with cap.pass = 0.8 so he squeezes past anyone there. A working prototype is scratch R2-2D/fixmouth.py (copy in .dock-harness/kraken2/R2-2D/tools/fixmouth.py). Why: the walking bug of §0.3 (see open_issues). ashore walking (b) [mouth] fails without it and passes 240/240 with it (mkfix).
+- src/main.js (3A, rows marked 3 in SPEC3 §11.2), needed for ashore's tagged checks. Prototyped in scratch R2-2D/patchmain3.py; on that mirror (mk3) all these checks pass and fail on broken copies. (1) lighthouse: warnBonus() returns islandRules.perks(islandCfg).warnBonus (today `return 0`). (2) bakery: the reinforcement patch uses perks(island).wavePatch instead of WAVE_REPAIR, and the card reads 'Your crew patches N% of the hull'. (3) gift: finishLevel adds the villagers' gift and the Market Hall bonus (capped), with 'Villagers' gift +N' and 'Market Hall +X% +N' lines on the level-cleared card. (4) governor: feats.island is raised when every plot reaches tier 3, so Polly unlocks the Governor's coat. (5) tabs-island / tabs-quiz: the storage listener, and the island build and quiz save, merge -island and -quiz by max before writing, so tiers and stars never go down across two tabs.
+- package.json (3C, after 3A): add tests/ashore.cjs to npm test with a test:ashore script. It runs on the repo with ?kraken=1 by default. Until a tagged piece lands, run with ASHORE_PENDING=<its tag>.
+
+**Live game unchanged**
+
+My only file is tests/ashore.cjs. It is new and untracked, it is not in package.json or npm test, and no game page loads it, so nothing reaches the published site; the live game looks and behaves as today, with or without ?kraken=1. All suite runs served mirrors under .dock-harness/kraken2/R2-2D (mk, mk3, mkfix, mkcss, mkF). Mutations broke hard-linked copies of those mirrors, unlinking each edited file before writing it, so neither the mirrors nor the repo were ever written to. git status shows only 2E's files plus tests/ashore.cjs. I made no edits to src/, index.html, the CSS files, vendor/ or package.json, and ran no git commit, push, reset or checkout.
+
+**Verification**
+
+All browser runs used Playwright chromium with swiftshader and tests/server.cjs, one browser job of mine at a time.
+
+**Mirror mkF.** Built 03:47 with scratch R2-2D/mkmirror.sh (HEAD 0602cbe plus 2E's final files: sparrow.js 5ce0c5ae, town.css 3627bf47; main.js ba3c287f patched). Re-checked at 05:11 against git ls-files: 0 differences besides the patched main.js.
+
+**Section runs on mkF:**
+| Section | Suite version | Result | Notes |
+|---|---|---|---|
+| bar | v7 | 29/0 | |
+| keys | v3, then v8 | 13/0 with quiztaps (v3); 11/0 twice (v8) | |
+| quiztaps | v3 | in the 13/0 above | |
+| walking | v3 | 6/1 | only [mouth]: m0 plazaS1 stick, 8.23 s stall |
+| quiz | v3 | 15/0 | |
+| quizrec | v3 | 8/0 | |
+| build | v3 | 10/1 | [governor] |
+| perks | v3 | 3/3 | [lighthouse], [bakery], [gift] |
+| powder | v4 | 7/0 | |
+| tabs | v3 | 2/4 | [tabs-island] ×2, [tabs-quiz] ×2 |
+| layout | v7 | 22/7 | the sparkle sideways scroll, 18–24 px |
+| rays | v3 | 2/0 | |
+| draws | v3 | 4/0 | 528 s |
+
+Each count includes that run's 'no page errors' check.
+
+**Single-process run of the published v7** (ASHORE_ONLY = every section but draws): 'ashore.cjs: 106 passed, 17 failed', errors: none (scratch logs/FINAL.log). The extra failure was the keys desktop 'Back to town' tap-guard timing, fixed in v8.
+
+**Earlier versions on mkF.** v3's quiztaps crashed and keys failed 10/1 on the busy machine (taps landing late). v5's text check flagged the answers' ✓ / 'your pick' badges (absolutely positioned 6–8 px over the top edge on purpose, town.css:855); v7 skips such badges.
+
+**Mutations** (scratch R2-2D/mutate.cjs: cp -al copy of a mirror, unlink-before-write, run the named sections):
+- m1 (24 quiz/quiztaps/quizrec/keys): 20 caught. q-held, t-taps, k-view and k-harbour missed, then caught as m3 q-held2, t-taps2, k-view2 and k-harbour2 (two faults, or the never-shown helper).
+- m2 (38): 34 caught.
+  - b-guard missed (the swallowTap guard backs it up); m3 b-guard2 caught.
+  - w-guard missed (the 'owned' check backs it up); the check now also reads #tavern-live and m4 w-guard2 caught it ('You have the Frost shot recipe…').
+  - wk-squeeze: its (a) expectation missed (longest 0.83 s), while (b) 127/240 and (c) were caught; (a) fails under wk-stops (1.6 s) and wk-look2 (1.1 s).
+  - l-bbtn missed (label clipped inside an inline span); m4 l-bbtn2 caught at all 7 sizes ('Build Cottage — 100 gold' 20–34 px past the left).
+- d-heavy (260 extra meshes) failed the 3 draw checks.
+- Every one of the 126 distinct check prefixes in the final logs appears as FAIL in at least one mutation log (scratch checks.txt vs mutfails.txt).
+
+**Two bugs reproduced on mirrors:**
+- Sparkle: fails on mk and mkF; mkcss (the keyframe fix) passes layout 29/0.
+- Mouth wedge: 239/240 on mk and mkF; 240/240 on mkfix.
+
+Screenshots looked at: quiz.png, build.png, island-tier3.png, ashore-quiz-map and ashore-build at 1280x720 and 390x844.
+
+Not run: the full npm test (the coordinator's job).
+
+**Open issues**
+
+- REAL BUG (town.css, quiz panel): after a right answer, the quiz panel has 18–24 px of sideways scroll at all 7 town sizes (320x480 19, 360x640 22, 390x844 24, 844x390 24, 568x320 18, 1024x600 19, 1280x720 24). Cause: .quiz-ans.right::after (inset -10px) runs quiz-sparkle with fill-mode forwards and ends at scale(1.15), opacity 0, so the invisible sparkle keeps overflowing. Evidence: ashore layout 22/7 on mkF (scratch logs/F-layout-v7.log); with the keyframe ending at scale(1), mkcss passes 29/0 (logs/l2css.log). Fix in hook_requests.
+- REAL BUG (src/town.js, the §0.3 walking bug), pre-existing and also live without ?kraken=1 (3/720 runs, scratch logs/probe6-nok.log). At the plaza mouth of the plazaS1 rope bridge, a townsperson coming off the bridge stops for the captain (LOOK-2) and pushes him into the corner beside the mouth. He is pinned against the rope with the person 0.62–0.67 u away, so the squeeze-past (cap.pass) never starts, and he creeps at 0.03 u/s. A held stick (0.09, 0.88) stalls 8.23 s and does not cross in 14 s; a held key stalls 3.2 s. Deterministic in ashore walking (b) [mouth] (fixed clock, seeded): 239/240 crossings on mk and mkF, 240/240 with the fixmouth.py prototype (mkfix). Probe logs: scratch logs/probe5.log and probe6-nok.log.
+- Until 3A lands the ctx and the §11.2 row-3 pieces, the suite runs only on a patched mirror (scratch R2-2D/mkmirror.sh) and 9 tagged checks fail on it: governor, lighthouse, bakery, gift, tabs-island ×2, tabs-quiz ×2, plus mouth for town.js. Use ASHORE_PENDING=<tags> to report them as PEND. After 3A, run it on the repo and drop the tags as each piece lands.
+- Timing: draws takes 9–12 min, and the rest about 10 min on this machine when another browser job runs at the same time. Under that load Playwright taps took up to about 6 s to become actionable, and a tap's click can land after page.tap returns; press() now absorbs both. Expected checks that fail as a 'never shown' control wait up to 30 s each, so a broken copy can take 3–5 min (k-view2: 323 s).
+- The mutation proofs ran on mirrors built before 2E's final sparrow.js and pops.js (mk/mk3/mkfix/mkcss, which share the final town.css). The checks themselves were re-verified on mkF, the mirror of the final files.

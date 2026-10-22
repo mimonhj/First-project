@@ -288,6 +288,16 @@
   .town-place { width: 56px; padding: 4px; }
   .town-place .tp-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
+/* The Kraken Seas' six-button bar (SPEC3 §7.1; townMode adds .six only then): Shipyard, Tailor, Tavern, Quiz,
+   Build, Set sail. Below 760 px wide and on short landscape the buttons become 44 x 44 px, icon-only (each keeps
+   its aria-label, "Walk to the quiz"), 4 px apart: 6 x 44 + 5 x 4 + 16 = 300 px, which fits 320 px portrait and
+   the gap between the stick and the action button at 568 x 320. The four-button bar stays as it was. */
+@media (max-width: 759px), (orientation: landscape) and (max-height: 560px) {
+  .town-places.six { gap: 4px; padding: 5px; }
+  .town-places.six .town-place { width: 44px; min-width: 44px; height: 44px; min-height: 44px; padding: 2px; border-radius: 12px; }
+  .town-places.six .town-place svg { width: 28px; height: 28px; margin-top: 0; }
+  .town-places.six .town-place .tp-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
 
 /* ---------- Speech bubbles over the townsfolk ---------- */
 .town-bubble {
@@ -489,6 +499,12 @@
 .rumour-title b { font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.02em; color: var(--red-text); }
 .rumour-line { font-weight: 500; color: #4a3826; font-style: italic; }
 .rumour-ammo b { color: var(--teal-text); }
+/* The Powder room (SPEC3 §2.5; shown once the Kraken Seas sail): its heading sits a little apart from the crew
+   upgrades above it; a recipe not on sale yet has a muted icon (its button also says "Soon" with a lock, so the
+   state is never shown by colour alone); the rumour board's powder tips stand out from the rumour itself. */
+.tav-h.powder-h { margin-top: 20px; }
+.powder-row.locked .up-ico svg { filter: grayscale(0.6); opacity: 0.8; }
+.rumour-tip { font-weight: 700; font-style: normal; color: var(--ink); }
 .log-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .log-stats div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 5px 10px; background: #fffaf0; border: 2px solid var(--ink); border-radius: 12px; }
 .log-stats dt { font-size: 13px; line-height: 1.25; color: #5a4632; }
@@ -697,7 +713,7 @@
 }
 @keyframes quiz-sparkle {
   from { transform: scale(0.7); opacity: 1; }
-  to { transform: scale(1.15); opacity: 0; }
+  to { transform: scale(1); opacity: 0; }
 }
 /* The footer: Next ▶, the lifebuoy, Leave quiz, Back to town */
 .quiz-panel .dock-exits .btn { flex: 1 1 auto; }

@@ -549,9 +549,14 @@ const show = (v) => {
 
     // ---- statText('rudder', t)
     {
-      const want = [[0, '35% turn when slow'], [1, '50% turn when slow'], [2, '65% turn when slow'], [3, '80% turn when slow'], [9, '80% turn when slow'], [-1, '35% turn when slow'], [NaN, '35% turn when slow'], [1.4, '50% turn when slow'], [Infinity, '35% turn when slow']];
+      // (the bare percentage, like "Reload: 1.5 s": the shipyard row reads "Turning when slow: 50%", RUDDER.stat
+      // giving the words; Stage 2 round 2, the coordinator's choice over §3.1's "50% turn when slow")
+      const want = [[0, '35%'], [1, '50%'], [2, '65%'], [3, '80%'], [9, '80%'], [-1, '35%'], [NaN, '35%'], [1.4, '50%'], [Infinity, '35%']];
       const bad = want.filter(([t, s]) => U.statText('rudder', t) !== s).map(([t, s]) => `${t}: "${U.statText('rudder', t)}" (want "${s}")`);
-      check(bad.length === 0, `statText('rudder', t): "50% turn when slow"..., clamped to the real tiers${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      check(bad.length === 0, `statText('rudder', t): "35%", "50%"..., clamped to the real tiers${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      const row = `${U.RUDDER.stat}: ${U.statText('rudder', 0)} → ${U.statText('rudder', 1)}`;
+      check(row === 'Turning when slow: 35% → 50%' && !/turn.*turn/i.test(row.replace('Turning', '')),
+        `the shipyard's rudder row says its words once: "${row}"`);
     }
   }
 
