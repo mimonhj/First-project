@@ -49,6 +49,7 @@ import {
   parseFeats,
   serializeFeats,
   FEAT_IDS,
+  MAX_FEATS,
   captainOpts,
   crewOpts,
   enemyCrewOpts,
@@ -64,6 +65,8 @@ import { createMechanics } from './mechanics.js';
 import { createTownMode } from './townMode.js';
 import {
   UPGRADES,
+  RUDDER,
+  SHIPYARD,
   LOOKS,
   defaultShipConfig,
   parseShipConfig,
@@ -111,11 +114,13 @@ const ARMORY_KEY = 'pirates-ahoy-armory'; // the tavern's crew upgrades (see arm
 const LOOK_KEY = 'pirates-ahoy-look'; // the captain's and the crew's looks (see cosmetics.js)
 const FEATS_KEY = 'pirates-ahoy-feats'; // captures, boardings, rakes, crits... (trophies, see cosmetics.js)
 const TIPS_KEY = 'pirates-ahoy-tips'; // one-time battle tips already shown (bitmask, see showTip())
+const POWDER_KEY = 'pirates-ahoy-powder'; // the special-shot recipes bought at the tavern (see specials.js, SPEC3 §10.1)
+const SETTINGS_KEY = 'pirates-ahoy-settings'; // how the ship steers on a touch screen (see settings.js, SPEC3 §3.2)
 const HELM_SCALE = 1.1; // the captain at the helm: his hands meet the Sea Biscuit's wheel at this scale (people.js WHEEL)
 const LIST_BATTERED = 0.04; // radians a battered ship lists toward the side with more hits
 const LIST_WRECKED = 0.09;
 const WRECK_SIT = 0.15; // a wreck sits this much lower in the water
-const AMMO_NAMES = { round: 'Round', chain: 'Chain', grape: 'Grape' };
+const AMMO_NAMES = { round: 'Round', chain: 'Chain', grape: 'Grape', fire: 'Fire', frost: 'Frost', stink: 'Stink' };
 // Ammo icons (gun card and the touch Ammo pill): round shot, two half-balls on a chain, a bunch of grape shot.
 const AMMO_SVG = 'viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
 const AMMO_INK = 'stroke="#1d1330" stroke-width="2" stroke-linejoin="round"';
@@ -127,11 +132,35 @@ const AMMO_ICONS = {
   grape:
     `<svg ${AMMO_SVG}><g fill="#3a3443" ${AMMO_INK}><circle cx="8" cy="15.6" r="3.6"/><circle cx="16" cy="15.6" r="3.6"/><circle cx="12" cy="18.6" r="3.6"/>` +
     '<circle cx="8.4" cy="8.6" r="3.6"/><circle cx="15.6" cy="8.6" r="3.6"/><circle cx="12" cy="12" r="3.6"/></g></svg>',
+  // The Kraken Seas' special shots (SPEC3 §2.7): a ball wrapped in flame, a spiky frost ball, a clay stinkpot with
+  // its fumes (three shapes, never colour alone).
+  fire:
+    `<svg ${AMMO_SVG}><path d="M12 2.2c.9 2.6 3.4 3.6 3.6 6.6 1.2-.7 1.7-1.9 1.6-3.2 2.2 2 3.3 4.6 3.1 7.3-.3 4.5-4 8-8.3 8s-8-3.5-8.3-8c-.2-2.6.9-5 2.8-6.6.1 1.4.7 2.6 1.7 3.2-.2-3.1 1.6-5.4 3.8-7.3z" fill="#ff7b1c" ${AMMO_INK}/>` +
+    '<circle cx="12" cy="15.4" r="4.6" fill="#3a3443" stroke="#1d1330" stroke-width="1.6"/><circle cx="10.4" cy="13.8" r="1.4" fill="#ffd23f"/></svg>',
+  frost:
+    `<svg ${AMMO_SVG}><path d="M12 1.6l1.9 4.1 4.4-1.6-1.6 4.4 4.1 1.9-4.1 1.9 1.6 4.4-4.4-1.6-1.9 4.1-1.9-4.1-4.4 1.6 1.6-4.4-4.1-1.9 4.1-1.9-1.6-4.4 4.4 1.6z" fill="#bfe9ff" ${AMMO_INK} transform="translate(0 1.4)"/>` +
+    '<circle cx="12" cy="13.4" r="3.4" fill="#e9f8ff" stroke="#1d1330" stroke-width="1.4"/></svg>',
+  stink:
+    `<svg ${AMMO_SVG}><path d="M8.6 2.6c-1.6 1.4 1.2 2.2-.2 3.8M12 1.8c-1.6 1.6 1.2 2.4-.2 4.2M15.4 2.6c-1.6 1.4 1.2 2.2-.2 3.8" fill="none" stroke="#5a8f2e" stroke-width="1.8" stroke-linecap="round"/>` +
+    `<path d="M9 7.4h6l-.6 1.6c2.6 1.2 4.2 3.6 4.2 6.4 0 3.8-2.9 6.6-6.6 6.6s-6.6-2.8-6.6-6.6c0-2.8 1.6-5.2 4.2-6.4z" fill="#b5703c" ${AMMO_INK}/>` +
+    '<path d="M7.4 14.2h9.2" stroke="#8bc34a" stroke-width="2.4"/></svg>',
 };
 // What each ammo is for, in a few words (the hint bubble when it is loaded, the Ammo button's name).
-const AMMO_DOES = { round: 'smashes her hull', chain: 'slows her down', grape: 'knocks out her crew' };
-// One-time battle tips (bits of TIPS_KEY, SPEC2 §5.5).
-const TIP = { board: 1, chain: 2, grape: 4, raiders: 8, ashore: 16, rake: 32, counter: 64, surrender: 128 };
+const AMMO_DOES = {
+  round: 'smashes her hull',
+  chain: 'slows her down',
+  grape: 'knocks out her crew',
+  fire: 'sets her on fire',
+  frost: 'freezes her sails',
+  stink: "stops her moving and shooting",
+};
+// One-time battle tips (bits of TIPS_KEY, SPEC2 §5.5; the Kraken Seas' from 256 on, SPEC3 §6.5).
+const TIP = {
+  board: 1, chain: 2, grape: 4, raiders: 8, ashore: 16, rake: 32, counter: 64, surrender: 128,
+  fire: 256, frost: 512, stink: 1024, ram: 2048, spout: 4096, rogue: 8192, grab: 16384, steer: 32768,
+};
+// Every bit a tip can have (the tips record's range).
+const TIPS_MAX = 65535;
 // Why an ammo can't be loaded yet (hint bubble), and the level that unlocks it.
 const AMMO_LOCKED = { chain: 'Chain shot unlocks after the Coast of Europe', grape: 'Grape shot unlocks after the Bali Islands' };
 
@@ -183,6 +212,7 @@ const ui = {
   banner: $('banner'),
   hint: $('hint'),
   edge: $('edge'),
+  screenFlash: $('screen-flash'),
   hitmark: $('hitmark'),
   muteBtn: $('mute-btn'),
   menuMute: $('menu-mute'),
@@ -244,6 +274,10 @@ const ui = {
   touchAct: document.querySelector('.touch .pad.act') || document.createElement('div'),
   touchAmmo: $('touch-ammo'),
   touchBoard: $('touch-board'),
+  ammoTray: $('ammo-tray'),
+  ammoCount: $('ammo-count'),
+  bossStatus: $('boss-status'),
+  steerModeBtn: $('steer-mode-btn'),
   bossCrew: $('boss-crew'),
   bossCrewFill: $('boss-crew-fill'),
   objective: $('objective'),
@@ -406,7 +440,9 @@ function saveFeats() {
   }
 }
 // The saved feats changed in another tab since this one last read or wrote them: take them, plus what this
-// tab has counted and not saved yet (its feats minus what was saved when it last read or wrote them).
+// tab has counted and not saved yet (its feats minus what was saved when it last read or wrote them). The
+// feats that mirror progress (the legend, the Kraken, quiz islands and stars, island tiers: MAX_FEATS) are not
+// counted but reached: those take the larger of the two (SPEC3 §10.2), never a sum.
 function syncFeats() {
   const raw = readRaw(FEATS_KEY);
   if (raw === null) return false;
@@ -414,7 +450,10 @@ function syncFeats() {
   if (serializeFeats(saved) === serializeFeats(featsSaved)) return false;
   const next = parseFeats(saved);
   const more = (a, b) => Math.max(0, (Number(a) || 0) - (Number(b) || 0));
-  for (const id of FEAT_IDS) next[id] = (next[id] || 0) + more(feats[id], featsSaved[id]);
+  for (const id of FEAT_IDS) {
+    if (MAX_FEATS.includes(id)) next[id] = Math.max(Number(next[id]) || 0, Number(feats[id]) || 0);
+    else next[id] = (next[id] || 0) + more(feats[id], featsSaved[id]);
+  }
   const mine = feats.prizes || {};
   const base = featsSaved.prizes || {};
   next.prizes = { ...(next.prizes || {}) };
@@ -433,6 +472,26 @@ function syncArmory() {
   const next = parseArmoryConfig(raw);
   if (serializeArmoryConfig(next) === serializeArmoryConfig(armoryCfg)) return false;
   armoryCfg = next;
+  return true;
+}
+// The powder record changed in another tab (SPEC3 §10.2): a recipe owned in either tab is owned (they only ever go
+// up). Returns whether this tab's recipes changed.
+function syncPowder() {
+  const raw = readRaw(POWDER_KEY);
+  if (raw === null) return false;
+  const merged = specials.mergePowder(state.powder, raw);
+  if (specials.serializePowder(merged) === specials.serializePowder(state.powder)) return false;
+  state.powder = merged;
+  return true;
+}
+// The settings changed in another tab: take theirs.
+function syncSettings() {
+  const raw = readRaw(SETTINGS_KEY);
+  if (raw === null) return false;
+  const next = settingsRules.parseSettings(raw);
+  if (settingsRules.serializeSettings(next) === settingsRules.serializeSettings(settings)) return false;
+  settings = next;
+  applySteerMode();
   return true;
 }
 // The look record (Polly's) changed in another tab: take it, so that a write here never drops an item
@@ -590,6 +649,7 @@ function resize() {
   framing.hud = null; // and the HUD boxes the battle camera frames around (framingHud)
   townMode.onResize(); // Polly's and the tavern frame their subject beside the panel again
   menuPin(); // the title's pinned Set sail! row may have changed height
+  placeHint(); // (the ammo tray and the ship's wheel move the hint bubble on a touch screen)
 }
 
 // The game's normal lens for the window (the shipyard view sets its own, see dockFraming()).
@@ -672,10 +732,13 @@ let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
 }
 let lookSeen = readRaw(LOOK_KEY); // the look record as this tab last read or wrote it (see syncLook)
 let armoryCfg = loadRecord(ARMORY_KEY, parseArmoryConfig, serializeArmoryConfig); // the tavern's crew upgrades
-let tips = loadInt(TIPS_KEY, 0, 255, 0); // one-time tips already shown (SPEC2 §5.5)
-// "The Kraken Seas" records (SPEC3 §10.1). Stage 0: the defaults, in memory only (nothing reads or writes
-// pirates-ahoy-settings, -island or -quiz yet; Stages 2 and 3 load them with loadRecord).
-let settings = settingsRules.defaultSettings(); // how the ship steers on a touch screen
+let tips = loadInt(TIPS_KEY, 0, TIPS_MAX, 0); // one-time tips already shown (SPEC2 §5.5, SPEC3 §6.5)
+// "The Kraken Seas" records (SPEC3 §10.1), each validated by its module (a record that needed fixing is
+// rewritten). They are read only once the Kraken Seas sail (WITH_KRAKEN): until then the game runs on the
+// defaults and never touches them. The island and the quiz are read in Stage 3 (in memory until then).
+let settings = WITH_KRAKEN
+  ? loadRecord(SETTINGS_KEY, settingsRules.parseSettings, settingsRules.serializeSettings)
+  : settingsRules.defaultSettings(); // how the ship steers on a touch screen
 let islandCfg = islandRules.defaultIsland(); // the island's buildings
 let quizRec = quizRules.defaultQuiz(); // the Riddle Bell's stars
 // Gameplay dice for hits (crits), reseeded at every level start so a level plays out the same way.
@@ -737,8 +800,9 @@ const state = {
   waveHorn: null, // { at, pitch }: the reinforcements' horn, waiting for a capture fanfare to end
   counterBanner: false, // the "Counter-board!" banner is up (it goes when the window closes)
   // "The Kraken Seas" (SPEC3; Stage 0: placeholders that nothing changes yet)
-  loads: { fire: 0, frost: 0, stink: 0 }, // special loads left this level (§2.5)
-  powder: specials.defaultPowder(), // the recipes owned (§10.1)
+  loads: { fire: 0, frost: 0, stink: 0 }, // special loads left this level (§2.5: refilled at every level start)
+  // the recipes owned (§10.1, the tavern's Powder room)
+  powder: WITH_KRAKEN ? loadRecord(POWDER_KEY, specials.parsePowder, specials.serializePowder) : specials.defaultPowder(),
   grabbed: false, // a Kraken tentacle holds your ship (§5.7.3)
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
@@ -885,6 +949,41 @@ const overboardCtx = {
 let overboard = createOverboard(scene, overboardCtx);
 // Off to the title screen or the dock: the battle's prebuilt people (hidden, but still in the scene) are
 // let go, so they don't weigh on those scenes; the next level prebuilds its own.
+// What a special shot's status looks like on a ship (statusfx.js, SPEC3 §2.7): flames, ice and the stink cloud,
+// drawn for the whole fleet in a few instanced meshes. Built only once the Kraken Seas sail (nothing can carry a
+// status before).
+const statusFxView = WITH_KRAKEN
+  ? statusFx.createStatusFx(scene, { reducedMotion: () => reducedMotion(), seaY: (x, z, t) => ocean.heightAt(x, z, t) })
+  : null;
+// The crackle of a burning ship (SPEC3 §2.7): one loop, on the nearest ship that burns from a Fire shot, its
+// distance and pan following her; it stops when her fire goes out (or the battle stops).
+const crackle = { ship: null, handle: null, until: 0 };
+function stopCrackle() {
+  if (crackle.handle) crackle.handle.stop();
+  crackle.handle = null;
+  crackle.ship = null;
+}
+function updateCrackle() {
+  let best = null;
+  let bd = Infinity;
+  if (state.mode === 'playing' && player) {
+    for (const e of enemies) {
+      if (!e.status || e.status.id !== 'fire' || e.hp <= 0 || e.sinking || e.captured || e.escaped) continue;
+      const d = Math.hypot(e.x - player.x, e.z - player.z);
+      if (d < bd) {
+        bd = d;
+        best = e;
+      }
+    }
+  }
+  const until = best ? state.time + best.status.t : 0;
+  if (best !== crackle.ship || (best && until > crackle.until + 0.25)) {
+    stopCrackle();
+    crackle.ship = best;
+    crackle.until = until;
+    if (best) crackle.handle = audio.play('crackle', sfxAt(best.x, best.z, { duration: best.status.t + 0.3 }));
+  } else if (best && crackle.handle) crackle.handle.set(sfxAt(best.x, best.z));
+}
 function releaseBattlePeople() {
   overboard.dispose();
   overboard = createOverboard(scene, overboardCtx);
@@ -910,8 +1009,9 @@ function playerStats() {
   return playerType(SHIP_TYPES.player, shipConfig);
 }
 function buildPlayerMesh(type = playerStats()) {
-  // Long grapples show as coiled grapnels on the rail (in battle and at the shipyard).
-  return buildShip('player', { type, look: shipConfig.look, upgrades: shipConfig.up, armory: { grapple: armoryCfg.up.grapple } });
+  // Long grapples show as coiled grapnels on the rail (in battle and at the shipyard); the Big rudder & wheel's
+  // tiers (shipConfig.up.rudder) and a keg for each special-shot recipe owned too (SPEC3 §2.7, §3.1).
+  return buildShip('player', { type, look: shipConfig.look, upgrades: shipConfig.up, armory: { grapple: armoryCfg.up.grapple }, powder: state.powder });
 }
 
 function createShip(typeName, kind, x, z, h) {
@@ -964,8 +1064,10 @@ function createShip(typeName, kind, x, z, h) {
     // ---- damage (SPEC2 §2.3, §2.4)
     effects: { slow: 0, slowTurn: 0, slowFull: 0, mast: 0, rudder: 0, burn: 0 }, // seconds left (chain shot, crit effects)
     crewLost: { n: 0, from: 0, at: -Infinity }, // sailors lost to shots: her tag flashes the pips from `from` down (n counts)
-    burnAcc: 0, // seconds towards the next keg-fire tick
-    burnTicks: 0, // keg-fire ticks (1 hp each) still to come
+    burnAcc: 0, // seconds towards the next burn tick
+    burnTicks: 0, // burn ticks (1 hp each) still to come: a POWDER KEG's, or a Fire shot's (one burn a ship)
+    burnRate: 0, // that burn's hp a second (its ticks come 1 / burnRate s apart)
+    burnFrom: null, // whose burn it is: 'keg' | 'fire' | null
     lastEffectAt: -Infinity, // simulated time of her last new crit effect (one per CRIT.effectGap)
     hitsBySide: { port: 0, star: 0 }, // hull hits on each side: she lists toward the side with more
     firstHole: null, // { z, y, side } of her first hole: the battered smoke rises from it
@@ -1016,6 +1118,7 @@ function removeShip(s) {
   }
   tags.remove(s);
   s.tag = null;
+  if (statusFxView) statusFxView.clear(s);
   overboard.clearSurrender(s);
   if (s.kind === 'enemy') mechanics.onRemove(s);
   disposeShip(s.mesh);
@@ -1085,6 +1188,10 @@ function clearLevelEntities() {
   clearFireQueue();
   loadingSaid.port = loadingSaid.star = false;
   resetFraming();
+  if (statusFxView) {
+    stopCrackle();
+    statusFxView.sync([], 0, 0); // (nothing burns, freezes or stinks on the next scene)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1290,10 +1397,17 @@ function startLevel(n, { retry = false } = {}) {
   state.hitStop.left = 0;
   state.flash = { text: '', until: 0 };
   state.tip = { text: '', until: 0 };
-  // New ammo this voyage: say so once the fly-in is over (one-time tips, SPEC2 §5.5).
+  // The special shots' loads (SPEC3 §2.5): 4 of each recipe owned (+ the Powder Windmill's), every level start;
+  // nothing carries over.
+  state.loads = specials.startLoads(state.powder, islandRules.tierOf ? islandRules.tierOf(islandCfg, 'windmill') : 0);
+  closeTray();
+  // New ammo this voyage: say so once the fly-in is over (one-time tips, SPEC2 §5.5); a special shot's the first
+  // level start with its recipe owned (SPEC3 §6.5).
   state.ammoTipDue = (ammoUnlocked('chain', state.unlocked) ? TIP.chain : 0) | (ammoUnlocked('grape', state.unlocked) ? TIP.grape : 0);
+  for (const id of specials.SPECIAL_IDS) if (ownsRecipe(id)) state.ammoTipDue |= TIP[id];
   state.ammoTipDue &= ~tips;
   shown.ammo = null;
+  shown.ammoId = null;
 
   loadEnvironment(n);
   const def = LEVELS[n - 1];
@@ -1323,14 +1437,15 @@ function startLevel(n, { retry = false } = {}) {
     types: SHIP_TYPES,
   };
   // Voyage III's rules also launch bombs, send ships fleeing, blow up fire ships, read and douse statuses, lead
-  // your turn and read the Lighthouse's warning bonus (SPEC3 §11.1). Stage 0: the seams; Stage 2 fills them in.
+  // your turn and read the Lighthouse's warning bonus (SPEC3 §11.1). Statuses are live (Stage 2, battle core: a
+  // ship that flees loses hers, water puts a fire out); the rest are the Stage 0 seams until the hazards' turn.
   const ctx3 = {
     ...ctx,
     launchBomb: (spec) => (spec && typeof spec === 'object' ? launchBomb(spec) : null),
-    flee: () => {},
+    flee: (e) => clearStatus(e),
     explode: () => {},
     status: (e) => (e && e.status) || null,
-    douse: () => {},
+    douse: (e) => douseShip(e),
     playerTurn,
     warnBonus,
     surrender: () => {},
@@ -1594,9 +1709,10 @@ function noMechanics() {
 
 // The two sides of a boarding, fresh (boarding.js asks for them again at the start of 'swing'):
 // { crew, crew0, blade | grit, hpFrac } for you and for her.
+// (A stinky crew fights at grit × 0.75, SPEC3 §2.2: the preview shows the better odds.)
 function boardingSides(e, kind) {
   const me = { crew: state.crew, crew0: state.crewMax, blade: state.blade, hpFrac: player ? player.hp / player.maxHp : 1 };
-  const foe = { crew: crewOf(e), crew0: e.crew0, grit: e.type.grit ?? 1, hpFrac: e.hp / e.maxHp };
+  const foe = { crew: crewOf(e), crew0: e.crew0, grit: (e.type.grit ?? 1) * specials.statusMuls(e.status).grit, hpFrac: e.hp / e.maxHp };
   return kind === 'defend' ? { att: foe, def: me, attIsPlayer: false } : { att: me, def: foe, attIsPlayer: true };
 }
 
@@ -1605,6 +1721,7 @@ const GRAPPLE_WHY = {
   busy: 'Busy!',
   none: 'Nothing to board!',
   immune: 'Too hot to board!',
+  hot: specials.WORDS3.hot, // she burns (a Fire shot): "Too hot to board! Wait for the fire to go out." (SPEC3 §2.4)
   range: 'Get closer!',
   cooldown: 'Hooks coiling…',
   crew: 'Not enough hands!',
@@ -1615,6 +1732,7 @@ function canGrapple(e) {
   if (!e || e.kind !== 'enemy' || e.hp <= 0 || e.sinking || e.captured || e.escaped || e.rise > 0) return 'none';
   if (!fighting(e) && !e.surrendered) return 'none';
   if (e.type.boardable === false) return 'immune';
+  if (specials.statusMuls(e.status).noGrapple) return 'hot';
   if (Math.hypot(e.x - player.x, e.z - player.z) > state.grappleRange + BOARD.lenFactor * e.type.len) return 'range';
   if (state.boardCooldown > 0) return 'cooldown';
   if (!e.surrendered && state.crew < CREW.minToBoard) return 'crew';
@@ -1683,6 +1801,7 @@ function boardPress() {
 // A raider in an attack slot throws its hooks at you when it can (SPEC2 §3.6). Returns whether it did.
 function raiderTry(e, dist) {
   if (!e.type.boarder || boarding.active || e.boardCooldown > 0 || !fighting(e) || e.sinking) return false;
+  if (specials.statusMuls(e.status).noBoard) return false; // a stinky crew can't throw hooks (SPEC3 §2.2)
   if (!player || player.sinking || state.clearTimer > 0 || state.deathTimer > 0 || state.intro > 0) return false;
   const def = LEVELS[state.level - 1];
   if (state.combatTime <= def.grace || dist > RAIDERS.reach || crewOf(e) < RAIDERS.minCrew) return false;
@@ -1790,6 +1909,7 @@ function checkSurrender(ship) {
   if (boarding.active && boarding.target === ship) return false; // the boarding's result decides
   ship.surrendered = true;
   ship.spectral = false;
+  clearStatus(ship); // (her fire, frost and stink go with her colours: SPEC3 §2.4)
   try {
     hoistFlag(ship.mesh, 'white');
   } catch (err) {
@@ -1822,10 +1942,10 @@ function captureShip(e, how = 'boarded', gold = captureGold(e.type.gold)) {
   e.captured = true;
   e.surrendered = false;
   e.spectral = false;
-  // The prize crew puts out a burning powder keg: nothing hurts a ship under your flag (she can't sink).
-  e.burnTicks = 0;
-  e.burnAcc = 0;
-  e.effects.burn = 0;
+  // The prize crew puts out a burning powder keg (or a Fire shot's flames), and her stink, frost and fire are
+  // gone too (SPEC3 §2.4): nothing hurts a ship under your flag (she can't sink).
+  stopBurn(e);
+  clearStatus(e);
   overboard.clearSurrender(e);
   try {
     hoistFlag(e.mesh, 'player', LOOKS.flag.find((l) => l.id === shipConfig.look.flag) || null);
@@ -1864,15 +1984,25 @@ function escapeShip(e) {
   if (!e || e.escaped || e.captured || e.hp <= 0 || e.sinking) return;
   e.escaped = true;
   e.surrendered = false;
+  clearStatus(e);
   overboard.clearSurrender(e);
   e.removeAt = state.time;
   foam(e.x, 0.6, e.z, 22, 9, 7, 0.8, 1.1);
 }
 
-// The ammo a ship fires: the player's loaded shot; everyone else always fires round shot.
+// The ammo a ship fires: the player's loaded shot; everyone else always fires round shot (enemies never fire
+// special shot, SPEC3 §2.1).
 function ammoOf(ship) {
   return ship.kind === 'player' ? state.ammo : 'round';
 }
+// An ammo's row (range, reloadMul, spreadMul, pad, top): combat.js AMMO, or a special shot's (specials.js
+// SPECIAL has the same fields, SPEC3 §2.1).
+function ammoRow(id) {
+  return AMMO[id] || specials.SPECIAL[id] || AMMO.round;
+}
+// The recipes owned (the powder record): does it own this special shot / any? (Only once the Kraken Seas sail.)
+const ownsRecipe = (id) => WITH_KRAKEN && !!state.powder && !!state.powder.own && state.powder.own[id] === 1;
+const ownsAnyRecipe = () => specials.SPECIAL_IDS.some(ownsRecipe);
 
 // An enemy's fighting crew now (SPEC2 §3.1): hull damage thins it (by half at most), grape, crits and
 // boardings kill sailors outright. (The player's crew is state.crew.)
@@ -1889,7 +2019,8 @@ function ghostActive(s) {
 // Effects of chain shot and crits (SPEC2 §2.3). They don't add up: the smallest active multiplier wins,
 // for speed (chain 0.55, mast down 0.5) and for turning (chain 0.7, rudder smashed 0.25). A special shot's
 // status joins the same rule (SPEC3 §2.2: frost 0.5 / 0.6, stink 0); the level's hazards (an ink slick, a
-// rogue wave's wobble: mechanics.shipMods) multiply on top.
+// rogue wave's wobble: mechanics.shipMods) and, for your ship, the Kraken's hold on it (krakenMods) multiply
+// on top.
 function speedMul(s) {
   const f = s.effects;
   let m = 1;
@@ -1902,7 +2033,16 @@ function turnMul(s) {
   let m = 1;
   if (f.slowTurn > 0) m = Math.min(m, EFFECTS.chain.turn);
   if (f.rudder > 0) m = Math.min(m, EFFECTS.rudder.turn);
-  return Math.min(m, specials.statusMuls(s.status).turn) * mechanics.shipMods(s).turnMul;
+  return Math.min(m, specials.statusMuls(s.status).turn) * mechanics.shipMods(s).turnMul * krakenMods(s).turnMul;
+}
+// What the Kraken does to your ship now (SPEC3 §5.7.3: a grab holds her, speed and turn 0 and 2 hp/s; phase 3
+// pulls her toward the head): kraken.playerMods() → { speedMul, turnMul, dps, vx, vz }. Nothing for any other
+// ship, or with no Kraken risen (the seam the Kraken's own stage fills in; identity until then).
+const NO_KRAKEN_MODS = Object.freeze({ speedMul: 1, turnMul: 1, dps: 0, vx: 0, vz: 0 });
+function krakenMods(s) {
+  if (!kraken || !player || s !== player || typeof kraken.playerMods !== 'function') return NO_KRAKEN_MODS;
+  const m = kraken.playerMods();
+  return m && typeof m === 'object' ? m : NO_KRAKEN_MODS;
 }
 
 // Is `e` inside the firing arc on `side` of `ship` (within `range`), taking its motion into account?
@@ -1940,8 +2080,17 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
   if (ship.reload[key] > 0 || ship.sinking || ship.hp <= 0) return false;
   if (!mayFire(ship)) return false;
   const t = ship.type;
-  const ammo = ammoOf(ship);
-  const A = AMMO[ammo];
+  // A special shot (SPEC3 §2.5): each side that fires it spends one load, here, when it really fires (so a queued
+  // Fire tap spends one only when it goes off). A side whose loaded special has no load left fires round shot and
+  // says so; the round shot is loaded at once (no AMMO_SWAP wait, no click), so the other side of a Space
+  // broadside still fires straight away, and a shot queued on the other side goes off as round shot too.
+  let ammo = ammoOf(ship);
+  if (ship.kind === 'player' && specials.isSpecial(ammo)) {
+    const r = specials.spendLoad(state.loads, ammo);
+    if (r.ok) state.loads = r.loads;
+    else ammo = outOfSpecial(ammo);
+  }
+  const A = ammoRow(ammo);
   const maxFlight = A.range / BALL_SPEED;
   const fx = fwdX(ship.h);
   const fz = fwdZ(ship.h);
@@ -2007,14 +2156,30 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
   const sz = ship.z + rightZ(ship.h) * side * t.wid * 0.5;
   const volume = Math.min(1, 0.55 + 0.12 * t.guns);
   audio.play('cannon', sfxAt(sx, sz, { volume }));
-  // Chain shot whirrs and grape shot rattles on top of the bang.
-  if (ammo !== 'round') audio.play(ammo, sfxAt(sx, sz, { volume }));
+  // Chain shot whirrs and grape shot rattles on top of the bang. (A special ball launches with the round shot's
+  // bang alone: its own sound, ignite / freeze / stink, plays where it hits, SPEC3 §11.2.)
+  if (ammo === 'chain' || ammo === 'grape') audio.play(ammo, sfxAt(sx, sz, { volume }));
   const reload = t.reload * A.reloadMul;
   ship.reload[key] = reload;
   ship.reloadMax[key] = reload;
   ship.roll -= side * 0.09;
   if (ship.kind === 'player') helm.point = visualTime + 0.6; // "Fire!"
   return true;
+}
+
+// The loaded special has no load left (SPEC3 §2.5): round shot, loaded at once (state.ammo set directly: no
+// AMMO_SWAP wait, no click), "Out of Fire shot! Round shot loaded." in the hint bubble and #game-live. A shot
+// queued on the other side with that special goes off as round shot (it is not dropped: the player's choice
+// didn't change). Returns 'round'.
+function outOfSpecial(id) {
+  if (state.ammo === id) {
+    state.ammo = 'round';
+    for (const k of ['port', 'star']) if (fireQueue[k] && fireQueue[k].ammo === id) fireQueue[k].ammo = 'round';
+    const word = specials.WORDS3.out(id);
+    flashHint(word, 2.6);
+    gameAnnounce(word);
+  }
+  return 'round';
 }
 
 // What your broadsides may aim at (SPEC3 §5.8): the enemy ships, and once the Kraken has risen its raised parts
@@ -2027,7 +2192,7 @@ function targetsFor(side = 0) {
 // What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
 // firing arc (inArc: true), failing that the nearest one roughly abeam.
 function aimTarget(side) {
-  const range = AMMO[state.ammo].range;
+  const range = ammoRow(state.ammo).range;
   let aim = null;
   let bestDist = Infinity;
   let fallback = null;
@@ -2257,9 +2422,8 @@ function applyCritEffect(s, id) {
     f.mast = Math.max(f.mast, EFFECTS.mast.time * k);
     setShipDamage(s.mesh, { mast: true }); // her top sail comes down for the time
   } else if (id === 'keg') {
-    f.burn = EFFECTS.keg.time * k;
-    s.burnTicks = Math.round(EFFECTS.keg.dps * f.burn); // 1 hp every 1/dps seconds
-    s.burnAcc = 0;
+    // (one burn a ship, SPEC3 §2.2: a Fire shot's burn with more hp still to burn keeps going instead)
+    startBurn(s, EFFECTS.keg.dps, EFFECTS.keg.time * k, 'keg');
   }
   // 'routed': its extra kills are counted with the shot's own
   return id;
@@ -2276,7 +2440,54 @@ function applySlow(s) {
   f.slowFull = f.slow;
 }
 
-// Effects wear off; a powder keg burns 1 hp at a time (simulated time).
+// A burn on a ship (SPEC3 §2.2: one burn a ship, shared by a POWDER KEG crit and a Fire shot): `rate` hp a second
+// for `time` s, 1 hp at a time. The one with more hp still to burn wins (specials.mergeBurn; a tie: the new one,
+// so a fresh hit restarts it). Returns whether this burn took hold.
+function startBurn(s, rate, time, from) {
+  const m = specials.mergeBurn({ rate: s.burnRate || 0, hp: s.burnTicks }, { rate, time });
+  if (!m.took) return false;
+  s.burnRate = m.rate;
+  s.burnTicks = m.hp; // 1 hp every 1 / rate seconds
+  s.effects.burn = m.time;
+  s.burnAcc = 0;
+  s.burnFrom = from;
+  return true;
+}
+// The fire is out (frost on a burning ship, water, a capture).
+function stopBurn(s) {
+  s.burnTicks = 0;
+  s.burnAcc = 0;
+  s.effects.burn = 0;
+  s.burnFrom = null;
+}
+// Every status gone at once (SPEC3 §2.4: a ship that strikes, is captured, escapes or flees), with a Fire shot's
+// burn (a burn can never sink a prize; a powder keg's burns on as it always has).
+function clearStatus(s) {
+  if (!s) return;
+  if (s.burnFrom === 'fire') stopBurn(s);
+  s.status = specials.newStatus();
+}
+// Water puts a fire out (SPEC3 §2.3: a rogue wave, a waterspout's core): her Fire shot's status and her burn (a
+// powder keg's too), FIRE OUT!. Returns whether a fire went out.
+function douseShip(e) {
+  if (!e || !e.status || e.hp <= 0 || e.sinking) return false;
+  const r = specials.douse(e.status, { burning: e.burnTicks > 0 });
+  e.status = r.st;
+  if (!r.doused) return false;
+  stopBurn(e);
+  if (state.mode === 'playing') pops.pop(specials.WORDS3.doused, e.x, popHeight(e) + 1.1, e.z, 'frost');
+  audio.play('sizzle', sfxAt(e.x, e.z));
+  if (e.kind === 'enemy') gameAnnounce(specials.WORDS3.live.fireOut(e.type.name));
+  return true;
+}
+// Is this ship one of the two glued in a boarding (swing..result, SPEC2 §3.4)? Is she the ship grappled, from
+// the hooks to the result (SPEC3 §2.4: a stink pauses from the grapple, so the odds "Stink, then board!" showed
+// are the odds that resolve)?
+const gluedInBoarding = (s) => boarding.locked && (s === player || s === boarding.target);
+const heldInBoarding = (s) => boarding.active && boarding.phase !== 'threat' && s === boarding.target;
+
+// Effects wear off; a burn (a powder keg, a Fire shot) burns 1 hp at a time; a special shot's status runs out
+// (simulated time). A status and its burn hold still on the ships a boarding holds (SPEC3 §2.4).
 function updateEffects(s, dt) {
   const f = s.effects;
   if (f.slow > 0) f.slow = Math.max(0, f.slow - dt);
@@ -2286,10 +2497,10 @@ function updateEffects(s, dt) {
     f.mast = Math.max(0, f.mast - dt);
     if (f.mast === 0) setShipDamage(s.mesh, { mast: false });
   }
-  if (s.burnTicks > 0) {
+  if (s.burnTicks > 0 && !(WITH_KRAKEN && gluedInBoarding(s))) {
     f.burn = Math.max(0, f.burn - dt);
     s.burnAcc += dt;
-    const every = 1 / EFFECTS.keg.dps;
+    const every = 1 / (s.burnRate || EFFECTS.keg.dps);
     while (s.burnTicks > 0 && s.burnAcc >= every - 1e-9) {
       s.burnAcc -= every;
       s.burnTicks--;
@@ -2298,8 +2509,21 @@ function updateEffects(s, dt) {
     if (s.burnTicks <= 0) {
       f.burn = 0;
       s.burnAcc = 0;
+      s.burnFrom = null;
     }
   }
+  const st = s.status;
+  if (st && (st.id !== null || st.immune > 0) && !heldInBoarding(s)) {
+    const r = specials.stepStatus(st, dt);
+    s.status = r.st;
+    if (r.ended) statusEnded(s, r.ended);
+  }
+}
+// A status has run out: a stink leaves its clothes-pegs on (no stink takes hold for a while, SPEC3 §2.2).
+function statusEnded(s, id) {
+  if (id !== 'stink' || s.hp <= 0 || s.sinking || !fighting(s)) return;
+  if (state.mode === 'playing') pops.pop(specials.WORDS3.pegs, s.x, popHeight(s) + 0.6, s.z, 'stink');
+  gameAnnounce(specials.WORDS3.live.pegs(s.type.name));
 }
 
 // A crit freezes the frame for a moment (hit-stop), at most once per CRIT.hitStop.gap; never with reduced motion.
@@ -2311,24 +2535,37 @@ function hitStop() {
   state.hitStop.left = CRIT.hitStop.time;
 }
 
-// What a ball does when it hits a ship (combat.js decides the numbers).
+// What a ball does when it hits a ship (combat.js decides the numbers). A special shot (SPEC3 §2.6) is resolved
+// as round shot, then specialShot() applies its hull factor and the status it brings; an armoured hull (the Iron
+// Turtle) takes beam hits × her armour (rakes and crits in full: combat.armourMul), CLANG!. One of the Kraken's
+// raised parts (a pseudo-target, §5.8) is hit square to the ball's flight: always beam-on, never a rake.
 function ballHit(b, s) {
   const def = LEVELS[state.level - 1];
   const r = relative(s, b.x, b.z);
   const mine = b.owner === 'player';
   const dist = Math.hypot(b.x - b.ox, b.z - b.oz);
-  const info = shotResult({
-    ammo: b.ammo,
+  const special = specials.isSpecial(b.ammo);
+  let info = shotResult({
+    ammo: special ? 'round' : b.ammo,
     base: b.dmg,
     dist,
     vx: b.vx,
     vz: b.vz,
-    target: { h: s.h, len: s.type.len, ghost: ghostActive(s), boss: !!s.type.boss },
-    along: r.along,
+    target: { h: s.pseudo ? Math.atan2(b.vx, b.vz) + Math.PI / 2 : s.h, len: s.type.len, ghost: ghostActive(s), boss: !!s.type.boss },
+    along: s.pseudo ? 0 : r.along,
     shooter: mine ? { player: true, critBase: state.critBase } : { player: false, enemyRake: def.enemyRake ?? 1 },
     rng: combatRng,
     force: mine ? forcedCrit : null,
   });
+  if (special) info = specials.specialShot(info, b.ammo);
+  const armour = s.type.armour;
+  if (typeof armour === 'number' && !s.pseudo) {
+    const k = combat.armourMul(info.aspect, armour, info.crit);
+    if (k !== 1) {
+      info.dmg *= k;
+      info.clang = true; // (her iron shrugs off half: CLANG! once a volley, sparks)
+    }
+  }
   info.owner = b.owner;
   info.ammo = b.ammo;
   info.volley = b.volley;
@@ -2444,6 +2681,16 @@ function hullHit(ship, hx, hz, amount, info, effect) {
   if (info.pointBlank && (!T || !T.blank)) {
     if (T) T.blank = true;
     pops.pop(WORDS.pointBlank, hx, py - 0.6, hz, 'info');
+  }
+  // An armoured hull took a beam hit at half (the Iron Turtle, SPEC3 §4.2): CLANG! once a volley, and sparks.
+  if (info.clang && (!T || !T.clang)) {
+    if (T) T.clang = true;
+    pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info');
+    audio.play('clang', sfxAt(hx, hz));
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * Math.PI * 2;
+      spawnParticle('glow', i % 2 ? 0xfff2a8 : 0xffffff, hx, 1.6, hz, Math.cos(a) * 5, rand(2, 5), Math.sin(a) * 5, 0.25, 0.22, GRAVITY * 0.5);
+    }
   }
   if (info.slow) {
     // shredded sailcloth flutters down
@@ -2598,6 +2845,63 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
       showBanner('Abandon ship!', 2.5);
     }
   }
+  // A special shot's status (SPEC3 §2.2), once the hull damage is done: not on a ship it sank or made strike.
+  if (info && info.status && ship.kind === 'enemy') applyShotStatus(ship, info, hx, hz);
+}
+
+// A special shot puts its status on her (SPEC3 §2.2, §2.3): once per volley per target (the first ball of a
+// volley that hits her; the rest of it only does hull damage), with its pop, sound and #game-live line.
+// Fire on a stinky ship: KA-BOOM! (+15 at once, armour or not, a soft flash); frost on a burning one: FIRE OUT!
+// SSSS!; the Molten Maw and the Phantom shrug off fire / stink: IMMUNE!; a stink in her clothes-peg window:
+// Clothes-pegs!. Fire starts (or restarts) her burn, which she shares with a powder keg's (startBurn).
+function applyShotStatus(s, info, hx, hz) {
+  const v = info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
+  const T = v ? volleyTarget(v, s) : null;
+  if (T) {
+    if (T.status) return;
+    T.status = true;
+  }
+  if (s.hp <= 0 || s.sinking || s.captured || s.escaped || s.surrendered) return;
+  const r = specials.applyStatus(s.status, info.status, { typeKey: s.typeName, boss: !!s.type.boss, burning: s.burnTicks > 0 });
+  s.status = r.st;
+  if (r.stopBurn) stopBurn(s);
+  if (r.burn) startBurn(s, r.burn.rate, r.burn.time, 'fire');
+  const ev = r.events;
+  const W = specials.WORDS3;
+  const name = s.type.name;
+  const py = popHeight(s) + 1.1;
+  if (r.pop) {
+    const style = ev.includes('immune') ? 'info' : ev.includes('kaboom') ? 'fire' : ev.includes('fireOut') ? 'frost' : ev.includes('pegs') ? 'stink' : info.status;
+    pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : '');
+  }
+  if (r.sfx) audio.play(r.sfx, sfxAt(hx, hz));
+  if (ev.includes('immune')) gameAnnounce(r.why || W.immunePop);
+  else if (ev.includes('kaboom')) gameAnnounce(W.live.kaboom(name));
+  else if (ev.includes('fireOut')) gameAnnounce(W.live.fireOut(name));
+  else if (ev.includes('pegs')) gameAnnounce(W.live.pegs(name));
+  else if (ev.includes('applied')) gameAnnounce(W.live[info.status](name));
+  if (r.burst > 0) {
+    kaboomFlash();
+    for (let i = 0; i < 16; i++) {
+      const a = (i / 16) * Math.PI * 2;
+      spawnParticle('glow', i % 2 ? 0xff7b1c : 0xc6f27a, hx, 2.2, hz, Math.cos(a) * 8, rand(2, 6), Math.sin(a) * 8, 0.45, 0.6, 0);
+    }
+    if (T) T.dmg += r.burst; // (summed into the volley's damage pop)
+    else pops.pop(String(r.burst), hx, popHeight(s), hz, 'dmg');
+    damage(s, r.burst, hx, hz, 'kaboom'); // (the cloud bursts: no armour, no hole)
+  }
+}
+// KA-BOOM!'s flash (SPEC3 §2.3, §15): a soft orange flash over the view, at most 0.25 opaque and at most one every
+// 3 s (a gentler tint under reduced motion: the class 'soft').
+const kaboomState = { at: -Infinity };
+function kaboomFlash() {
+  const now = performance.now();
+  if (now - kaboomState.at < 3000) return;
+  kaboomState.at = now;
+  const el = ui.screenFlash;
+  el.classList.toggle('soft', reducedMotion());
+  show(el, true);
+  retrigger(el, 'on');
 }
 
 // ---------------------------------------------------------------------------
@@ -2757,7 +3061,7 @@ function updateBombs(dt, frozen = false) {
 // it at a standstill (the player's from the shipyard's Big rudder & wheel, every other ship's the stock rudder's),
 // or the full rate whatever her speed (`full`: a ship escaping from land, a prize sailing off); then her chain,
 // rudder and status effects (turnMul), and for the player the boarding's lock.
-const TURN_LOW = 0.35; // the stock rudder: the share of the full turn rate at a standstill (Stage 2: RUDDER.values[0])
+const TURN_LOW = RUDDER.values[0]; // the stock rudder: the share of the full turn rate at a standstill (every enemy's)
 function turnRate(ship, { full = false } = {}) {
   const t = ship.type;
   const low = t.turnLow ?? TURN_LOW;
@@ -2784,7 +3088,13 @@ function speedCap(s) {
   if (s.onReef && s.reefIce) cap *= ICE_SLOW;
   else if (s.onReef && !s.type.shallow) cap *= REEF_SLOW;
   const mods = mechanics.shipMods(s);
-  return (cap + mods.capAdd) * speedMul(s) * mods.speedMul;
+  return (cap + mods.capAdd) * speedMul(s) * mods.speedMul * krakenMods(s).speedMul;
+}
+// How hard a ship may slow down (× her accel a second): 1.5, or a stinky ship's coast to a stop (SPEC3 §2.2:
+// statusMuls().decel, 2 × her accel).
+function decelOf(s) {
+  const d = specials.statusMuls(s.status).decel;
+  return d > 1 ? d : 1.5;
 }
 
 function updatePlayer(dt) {
@@ -2826,6 +3136,7 @@ function updateEnemy(e, dt, attacking) {
     e.speed += clamp(CAPTURE.sailSpeed - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
     return;
   }
+  const decel = decelOf(e);
   if (e.rise > 0) {
     // (Rising from the deep: she surfaces where she is, then sails.)
     e.speed = 0;
@@ -2833,7 +3144,7 @@ function updateEnemy(e, dt, attacking) {
   }
   if (e.surrendered) {
     // Struck: nobody at the helm. She keeps her heading and drifts (at most 1.5 u/s).
-    e.speed += clamp(Math.min(1.2, speedCap(e)) - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
+    e.speed += clamp(Math.min(1.2, speedCap(e)) - e.speed, -t.accel * decel * dt, t.accel * dt);
     return;
   }
   const p = player;
@@ -2967,7 +3278,7 @@ function updateEnemy(e, dt, attacking) {
 
   steerToward(e, desired, dt, escaping);
   targetSpeed = Math.min(targetSpeed, speedCap(e));
-  e.speed += clamp(targetSpeed - e.speed, -t.accel * 1.5 * dt, t.accel * dt);
+  e.speed += clamp(targetSpeed - e.speed, -t.accel * decel * dt, t.accel * dt);
 }
 
 // Push a ship out of any land it overlaps.
@@ -3075,7 +3386,7 @@ function hitsShip(b, s) {
   // One of the Kraken's raised parts (a pseudo-target, SPEC3 §5.8): kraken.js knows its shape.
   if (s.pseudo) return !!kraken && kraken.hits(s.part, b.x, b.y, b.z);
   if (s.hp <= 0 || s.captured || s.surrendered || s.escaped || s.rise > 0) return false;
-  const A = AMMO[b.ammo] || AMMO.round;
+  const A = ammoRow(b.ammo);
   if (b.y > A.top) return false;
   const r = relative(s, b.x, b.z);
   return Math.abs(r.along) < s.type.len / 2 + A.pad && Math.abs(r.lat) < s.type.wid / 2 + A.pad;
@@ -3190,7 +3501,20 @@ function emitShipFx(s, dt) {
   // (No smoke from the ship being boarded, from the hooks on: it would drift over the swing and the brawl.)
   const brawlDeck = boarding.active && boarding.target === s;
   const smoke = brawlDeck ? 0 : frac < STATES.wrecked ? 5 : frac < STATES.battered ? 3 : 0;
-  const burning = s.burnTicks > 0;
+  // (a Fire shot's burn: statusfx.js draws her flames; black smoke rises off her here, SPEC3 §2.7)
+  const fireShot = s.burnFrom === 'fire' && s.burnTicks > 0;
+  const burning = s.burnTicks > 0 && !fireShot;
+  if (fireShot) {
+    s.fireAcc = (s.fireAcc || 0) + dt * 7;
+    while (s.fireAcc >= 1) {
+      s.fireAcc -= 1;
+      const h = (s.mesh.userData.statusAnchors && s.mesh.userData.statusAnchors.holes && s.mesh.userData.statusAnchors.holes[0]) || null;
+      const along = h ? h.z : rand(-0.25, 0.25) * s.type.len;
+      const across = h ? -h.x : rand(-0.3, 0.3) * s.type.wid; // (ship-local +x is port)
+      const deck = s.mesh.position.y + (s.mesh.userData.deckY ?? 1.2) + 0.6;
+      spawnParticle('puff', 0x2e2836, s.x + fx * along + rightX(s.h) * across, deck, s.z + fz * along + rightZ(s.h) * across, rand(-0.3, 0.3), rand(2, 3), rand(-0.3, 0.3), rand(1.3, 1.9), rand(0.55, 0.85), 0, true, false, true);
+    }
+  }
   if (smoke || burning) {
     s.fxAcc += dt * (smoke + (burning ? 16 : 0));
     const lift = s.mesh.position.y;
@@ -3232,7 +3556,8 @@ function emitShipFx(s, dt) {
       spawnParticle('glow', Math.random() < 0.5 ? 0x7dffb8 : 0xc8ffe2, s.x + fx * along + rightX(s.h) * across, deck, s.z + fz * along + rightZ(s.h) * across, rand(-0.3, 0.3), rand(1.2, 2.4), rand(-0.3, 0.3), rand(0.8, 1.3), rand(0.25, 0.45), 0, false, false, true);
     }
   }
-  if (s.speed > 2) {
+  // (Frozen: her wake stops, SPEC3 §2.7.)
+  if (s.speed > 2 && !(s.status && s.status.id === 'frost')) {
     s.wakeAcc += dt * 60 * (s.speed / 18);
     // Chain shot's slow shows in her wake too: short and choppy while her rigging is torn.
     const slowed = s.effects.slow > 0;
@@ -3274,7 +3599,7 @@ function tutorialHint(dt) {
   const h = state.hint;
   h.t += dt;
   const touch = isTouch();
-  const range = AMMO[state.ammo].range;
+  const range = ammoRow(state.ammo).range;
   let text = '';
   if (h.step === 0) {
     text = touch ? 'Hold &#9664; &#9654; to steer &middot; tap <b>+ Sail</b> for speed' : 'Steer with <kbd>A</kbd> <kbd>D</kbd> &middot; more sail with <kbd>W</kbd>';
@@ -3323,8 +3648,16 @@ function tipText() {
   return state.time < state.tip.until ? state.tip.text : '';
 }
 function newAmmoTip() {
-  const id = state.ammoTipDue & TIP.chain ? 'chain' : 'grape';
+  const id = ['chain', 'grape', 'fire', 'frost', 'stink'].find((k) => state.ammoTipDue & TIP[k]) || 'grape';
   state.ammoTipDue &= ~TIP[id];
+  if (specials.isSpecial(id)) {
+    // "New: Fire shot burns for 6 s! Press 4. You can't board a burning ship." (SPEC3 §6.5)
+    const t = specials.WORDS3.tips[id];
+    if (!showTip(TIP[id], t.keys, t.touch, 7)) return;
+    const touch = isTouch();
+    showBanner(`New ammo: ${AMMO_NAMES[id]} shot!<small>It ${AMMO_DOES[id]}.</small><small>${touch ? 'Tap Ammo' : `Press <kbd>${specials.SPECIAL[id].key}</kbd>`}</small>`, 2.6);
+    return;
+  }
   const key = id === 'chain' ? 2 : 3;
   // (Each says what the new shot is for: chain slows ships down, grape knocks out their crews.)
   const does = id === 'chain' ? 'It slows ships down.' : 'It knocks out their crew.';
@@ -3394,6 +3727,7 @@ function step(dt) {
   updateBalls(dt);
   updateCoins(dt);
   updateBombs(dt, truce);
+  if (tray.open && state.time >= tray.idleUntil) closeTray(); // (3 s of play without a pick)
   if (player) emitShipFx(player, dt);
   for (const e of enemies) emitShipFx(e, dt);
   updateHints(dt);
@@ -3483,11 +3817,33 @@ function changeSail(d) {
 function unlockedAmmo() {
   return AMMO_IDS.filter((id) => ammoUnlocked(id, state.unlocked));
 }
+// Every ammo you could load now, in the R order (SPEC3 §6.1: round → chain → grape → fire → frost → stink): the
+// unlocked ones and, once the Kraken Seas sail, the special shots you own with loads left this level.
+function ammoChoices() {
+  const list = unlockedAmmo();
+  if (WITH_KRAKEN) for (const id of specials.SPECIAL_IDS) if (specialReady(id).ok) list.push(id);
+  return list;
+}
+// Can this special shot be loaded now? specials.ammoReady: { ok, reason: null | 'locked' | 'notOwned' | 'empty',
+// word } (the word says why not: "Buy Fire shot at the Salty Sparrow", "Frost shot goes on sale after Frostbite
+// Straits", "No Stink shot left this level").
+function specialReady(id) {
+  if (!WITH_KRAKEN) return { ok: false, reason: 'unknown', word: '' };
+  return specials.ammoReady(id, { powder: state.powder, loads: state.loads, unlocked: state.unlocked });
+}
 // Load another shot in both broadsides: the gun crews need at least AMMO_SWAP seconds to change it.
 // A locked one says why in the hint bubble. Returns whether that ammo is loaded now.
 function setAmmo(id) {
-  if (!AMMO_IDS.includes(id)) return false;
-  if (!ammoUnlocked(id, state.unlocked)) {
+  if (specials.isSpecial(id)) {
+    // (keys 4–6, R and the touch tray, once the Kraken Seas sail; not owned, not on sale or none left: why not)
+    if (!WITH_KRAKEN) return false;
+    const r = specialReady(id);
+    if (!r.ok) {
+      flashHint(r.word, 2);
+      return false;
+    }
+  } else if (!AMMO_IDS.includes(id)) return false;
+  else if (!ammoUnlocked(id, state.unlocked)) {
     flashHint(AMMO_LOCKED[id], 2);
     return false;
   }
@@ -3501,24 +3857,29 @@ function setAmmo(id) {
       }
     }
   }
-  audio.play('click', { pitch: id === 'round' ? 0.85 : id === 'chain' ? 1 : 1.15 });
+  audio.play('click', { pitch: id === 'round' ? 0.85 : id === 'chain' ? 1 : id === 'grape' ? 1.15 : 1.3 });
   // What it is for, in the hint bubble ("Chain shot: slows her down"). The bubble is a live region, so
   // screen readers hear it there; with no bubble (not in play) #game-live says it.
   if (state.mode === 'playing' && player && !player.sinking) flashHint(ammoHint(id), 2.6);
+  else if (specials.isSpecial(id)) gameAnnounce(`${specials.WORDS3.loaded(id, state.loads[id])}: it ${AMMO_DOES[id]}.`);
   else gameAnnounce(`${AMMO_NAMES[id]} shot loaded: it ${AMMO_DOES[id]}.`);
   return true;
 }
-// "(icon) Chain shot: slows her down".
+// "(icon) Chain shot: slows her down"; a special shot with its loads: "(icon) Fire shot: sets her on fire. 4 loads
+// left".
 function ammoHint(id) {
-  return `<span class="hint-ammo" data-ammo="${id}"><span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[id]}</span>${AMMO_NAMES[id]} shot:</span> ${AMMO_DOES[id]}`;
+  const n = specials.isSpecial(id) ? state.loads[id] || 0 : null;
+  const loads = n === null ? '' : `. ${n} ${n === 1 ? 'load' : 'loads'} left`;
+  return `<span class="hint-ammo" data-ammo="${id}"><span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[id]}</span>${AMMO_NAMES[id]} shot:</span> ${AMMO_DOES[id]}${loads}`;
 }
-// R / the touch Ammo pill: the next unlocked ammo.
+// R / the touch Ammo pill: the next ammo you can load (SPEC3 §6.1: special shots you own with loads left too).
 function cycleAmmo() {
-  const list = unlockedAmmo();
+  const list = ammoChoices();
   if (list.length < 2) {
     flashHint(AMMO_LOCKED.chain, 2);
     return state.ammo;
   }
+  // (a special shot with no load left isn't in the list: R goes on from it to round shot)
   setAmmo(list[(list.indexOf(state.ammo) + 1) % list.length]);
   return state.ammo;
 }
@@ -3546,6 +3907,10 @@ function clearSteering() {
   steerSources.right.clear();
   input.left = input.right = false;
   input.steer = null; // (a thumb slide or the wheel lets go too)
+  if (WITH_KRAKEN) {
+    endSlide();
+    wheelLetGo();
+  }
   syncHoldButtons();
 }
 // An on-screen steering button looks pressed while one of its own sources is active.
@@ -3606,6 +3971,8 @@ function closeModal(el) {
 function pauseGame() {
   state.mode = 'paused';
   clearSteering();
+  closeTray();
+  stopCrackle();
   clearFireQueue(); // a shot queued before the pause never goes off after it
   boarding.cutHold(false); // a held G (or Board) is let go too
   saveFeats();
@@ -3641,6 +4008,17 @@ function togglePause() {
 const pauseUi = { step: 'choose', to: null, askedAt: -Infinity };
 function openPause() {
   showPauseChoices();
+  // Steering: ◀ ▶ buttons / Ship's wheel (SPEC3 §3.2; touch layouts only, once the Kraken Seas sail): the first
+  // time the dialog opens on a touch screen it wears a "New!" badge (tips bit 32768), never a battle hint.
+  if (WITH_KRAKEN) {
+    const badge = ui.steerModeBtn.querySelector('.new-badge');
+    const fresh = isTouch() && !(tips & TIP.steer);
+    if (fresh) {
+      tips |= TIP.steer;
+      saveNumber(TIPS_KEY, tips);
+    }
+    if (badge) show(badge, fresh);
+  }
   openModal(ui.pause); // focus on Resume
 }
 function showPauseChoices(focus = null) {
@@ -3920,7 +4298,7 @@ window.addEventListener('keydown', (e) => {
   if (state.mode !== 'playing') return;
   skipIntro();
   // Ammo: R cycles, 1 / 2 / 3 pick (by physical key, so AZERTY works). 4 / 5 / 6 are Fire, Frost and Stink
-  // shot (SPEC3 §6.1): taken here so they never do anything else, and picked from Stage 2 on.
+  // shot (SPEC3 §6.1): taken here so they never do anything else; they pick once the Kraken Seas sail.
   const ammoKey = /^(?:Digit|Numpad)([1-6])$/.exec(e.code || '');
   if (KEYMAP[k]) steerPress(KEYMAP[k], keySource(e));
   else if (!e.repeat && (k === 'w' || k === 'arrowup')) changeSail(1);
@@ -3935,6 +4313,7 @@ window.addEventListener('keydown', (e) => {
   } else if (ammoKey) {
     const n = Number(ammoKey[1]);
     if (!e.repeat && n <= AMMO_IDS.length) setAmmo(AMMO_IDS[n - 1]);
+    else if (!e.repeat && WITH_KRAKEN) setAmmo(specials.ALL_AMMO[n - 1]);
   }
   // Holding a fire key keeps firing whenever the guns reload; a press while they load is queued or says
   // "Loading…" (fireInput).
@@ -4038,6 +4417,155 @@ for (const btn of holdButtons) {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Touch steering of the Kraken Seas (SPEC3 §3.2), only once they sail. ◀ and ▶ stay exactly as they are (tap a
+// nudge, hold a full turn); on top of them:
+// - a thumb slide: a thumb on the steering pad that slides sideways turns as far as it has slid,
+//   r = clamp(r0 + dx / 56 px, −1, 1) (turning right positive; r0 −1 if it began on ◀, +1 on ▶, 0 between them),
+//   once it has moved 12 px (a plain hold stays a full turn); input.steer = −r until it lets go; the rudder
+//   needle above the pad (#steer-needle) shows it;
+// - the ship's wheel (Pause ▸ Steering: Ship's wheel, saved in pirates-ahoy-settings): #touch-wheel takes the
+//   arrows' place; drag it sideways, input.steer = −clamp(dx / 60 px, −1, 1) (dead zone 0.1); it turns
+//   steer × 120° and springs back in 0.15 s (at once under reduced motion). It is aria-hidden: the arrows stay
+//   in the page for assistive technology (visually hidden while the wheel shows).
+// input.left / input.right stay plain booleans; playerTurn() prefers input.steer.
+// ---------------------------------------------------------------------------
+const steerPad = document.querySelector('.touch .pad.left') || document.createElement('div');
+const steerNeedle = $('steer-needle');
+const touchWheel = $('touch-wheel');
+const SLIDE = { start: 12, span: 56 }; // px: the move that starts a slide, and the slide of a full turn
+const WHEEL = { span: 60, dead: 0.1, turn: 120 }; // px for a full turn, dead zone, degrees the wheel turns
+const slide = { id: null, x0: 0, r0: 0, active: false };
+const wheel = { id: null, x0: 0, v: 0 };
+const wheelMode = () => WITH_KRAKEN && settings.steer === 'wheel';
+function showNeedle(r) {
+  const on = r !== null;
+  if (on) steerNeedle.style.setProperty('--turn', String(Math.round(r * 100) / 100));
+  if (steerNeedle.classList.contains('hidden') === on) show(steerNeedle, on);
+}
+function startSlide(e, r0) {
+  if (!WITH_KRAKEN || wheelMode() || state.mode !== 'playing') return;
+  slide.id = e.pointerId;
+  slide.x0 = e.clientX;
+  slide.r0 = r0;
+  slide.active = false;
+}
+function moveSlide(e) {
+  if (slide.id === null || e.pointerId !== slide.id || state.mode !== 'playing') return;
+  const dx = e.clientX - slide.x0;
+  if (!slide.active) {
+    if (Math.abs(dx) < SLIDE.start) return; // (a plain hold, or a wobbly one: the buttons decide)
+    slide.active = true;
+  }
+  const r = clamp(slide.r0 + dx / SLIDE.span, -1, 1);
+  input.steer = -r;
+  showNeedle(r);
+}
+function endSlide(e) {
+  if (slide.id === null || (e && e.pointerId !== slide.id)) return;
+  const was = slide.active;
+  slide.id = null;
+  slide.active = false;
+  if (was) {
+    input.steer = null;
+    showNeedle(null);
+  }
+}
+for (const btn of holdButtons) {
+  btn.addEventListener('pointerdown', (e) => startSlide(e, btn.dataset.hold === 'left' ? -1 : 1));
+  btn.addEventListener('pointermove', moveSlide);
+  for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) btn.addEventListener(type, endSlide);
+}
+// A thumb that lands between the two arrows slides from the middle (r0 = 0).
+steerPad.addEventListener('pointerdown', (e) => {
+  if (e.target !== steerPad || !WITH_KRAKEN || wheelMode() || state.mode !== 'playing') return;
+  e.preventDefault();
+  try {
+    steerPad.setPointerCapture(e.pointerId);
+  } catch {
+    // synthetic events have no capturable pointer
+  }
+  skipIntro();
+  startSlide(e, 0);
+});
+steerPad.addEventListener('pointermove', (e) => {
+  if (e.target === steerPad) moveSlide(e);
+});
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+  steerPad.addEventListener(type, (e) => {
+    if (e.target === steerPad) endSlide(e);
+  });
+}
+// The ship's wheel.
+function setWheelTurn(v, spring) {
+  wheel.v = v;
+  touchWheel.style.transition = spring && !reducedMotion() ? 'transform 0.15s ease-out' : 'none';
+  touchWheel.style.transform = `rotate(${Math.round(v * WHEEL.turn * 10) / 10}deg)`;
+}
+function wheelInput(e) {
+  if (wheel.id === null || e.pointerId !== wheel.id) return;
+  let v = clamp((e.clientX - wheel.x0) / WHEEL.span, -1, 1);
+  if (Math.abs(v) < WHEEL.dead) v = 0;
+  input.steer = state.mode === 'playing' ? -v : null;
+  setWheelTurn(v, false);
+}
+function wheelLetGo(e) {
+  if (wheel.id === null || (e && e.pointerId !== wheel.id)) return;
+  wheel.id = null;
+  input.steer = null;
+  setWheelTurn(0, true);
+}
+touchWheel.addEventListener('pointerdown', (e) => {
+  if (!wheelMode() || state.mode !== 'playing') return;
+  e.preventDefault();
+  try {
+    touchWheel.setPointerCapture(e.pointerId);
+  } catch {
+    // synthetic events have no capturable pointer
+  }
+  skipIntro();
+  wheel.id = e.pointerId;
+  wheel.x0 = e.clientX;
+  wheelInput(e);
+});
+touchWheel.addEventListener('pointermove', wheelInput);
+for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) touchWheel.addEventListener(type, wheelLetGo);
+// Brass hub, eight spokes with handles, a wooden rim (aria-hidden: the arrows stay the accessible steering).
+touchWheel.innerHTML =
+  '<svg viewBox="-66 -66 132 132" aria-hidden="true" focusable="false">' +
+  Array.from({ length: 8 }, (_, i) => {
+    const a = (i * Math.PI) / 4;
+    const x1 = Math.sin(a) * 14;
+    const y1 = -Math.cos(a) * 14;
+    const x2 = Math.sin(a) * 60;
+    const y2 = -Math.cos(a) * 60;
+    return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="spoke"/><circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="5.5" class="grip"/>`;
+  }).join('') +
+  '<circle r="44" class="rim"/><circle r="44" class="rim-in"/><circle r="15" class="hub"/><circle r="6" class="hub-in"/><circle cx="0" cy="-60" r="6.5" class="top"/></svg>';
+// The steering mode on show: the wheel in the arrows' place, or the arrows (setting changed, or at load).
+function applySteerMode() {
+  const on = wheelMode();
+  steerPad.classList.toggle('wheel-mode', on);
+  show(touchWheel, on);
+  if (!on) wheelLetGo();
+  ui.hud.classList.toggle('wheel-mode', on);
+  const btn = ui.steerModeBtn;
+  if (WITH_KRAKEN) {
+    btn.setAttribute('aria-pressed', String(on));
+    const label = btn.querySelector('.steer-label') || btn;
+    label.innerHTML = on ? 'Steering: Ship&rsquo;s wheel' : 'Steering: &#9664; &#9654; buttons';
+  }
+  placeHint();
+}
+// Pause ▸ Steering: buttons ↔ wheel, saved (with storage blocked it lasts for the visit).
+function toggleSteerMode() {
+  if (!WITH_KRAKEN) return false;
+  settings = settingsRules.parseSettings({ steer: wheelMode() ? 'buttons' : 'wheel' });
+  saveRecord(SETTINGS_KEY, settingsRules.serializeSettings, settings);
+  applySteerMode();
+  return true;
+}
+
 // On-screen sail and fire buttons. A tap acts on touch-down (no click delay in a
 // fight) and the click that follows its release is skipped, so one tap = one action.
 // Keyboard, assistive technology and scripted clicks arrive as plain clicks and act.
@@ -4045,18 +4573,122 @@ for (const btn of holdButtons) {
 const TAP_ACTIONS = {
   sailUp: () => changeSail(1),
   sailDown: () => changeSail(-1),
-  firePort: () => fireInput(-1),
-  fireStar: () => fireInput(1),
-  // The act pad: cycle the ammo; Board (grapple / heave / cut, wired with the boarding set-piece).
+  // (a fire tap closes the ammo tray)
+  firePort: () => {
+    closeTray();
+    fireInput(-1);
+  },
+  fireStar: () => {
+    closeTray();
+    fireInput(1);
+  },
+  // The act pad: cycle the ammo (once a special shot's recipe is owned: open the ammo tray); Board (grapple /
+  // heave / cut, wired with the boarding set-piece).
   ammo: () => {
-    if (state.mode === 'playing') cycleAmmo();
+    if (state.mode !== 'playing') return;
+    if (trayWanted()) {
+      if (tray.open) closeTray();
+      else openTray();
+    } else cycleAmmo();
   },
   board: () => {
     if (state.mode === 'playing') boardPress();
   },
-  // A button of the touch ammo tray (#ammo-tray, button[data-ammo], SPEC3 §6.2): picks that ammo from Stage 2 on.
-  tray: () => {},
+  // A button of the touch ammo tray (#ammo-tray, button[data-ammo], SPEC3 §6.2): one tap picks that ammo and
+  // closes the tray; one that can't be loaded says why (and the tray stays open).
+  tray: (btn) => pickFromTray(btn),
 };
+
+// ---------------------------------------------------------------------------
+// The touch ammo tray (SPEC3 §6.2): once a special shot's recipe is owned, the Ammo pill opens #ammo-tray, six
+// round buttons above the act pad (icon, name and loads: "Fire ×4"; one that can't be loaded is aria-disabled
+// with the reason as its description and a crossed icon; the loaded one is aria-pressed). Picking, any fire tap,
+// a tap anywhere else or 3 s of play without a pick close it. The game keeps running meanwhile.
+// ---------------------------------------------------------------------------
+const tray = { open: false, idleUntil: 0, built: false };
+const TRAY_IDLE = 3; // s of play
+const trayWanted = () => WITH_KRAKEN && ownsAnyRecipe();
+// Why this ammo can't be loaded now ('' if it can).
+function ammoWhyNot(id) {
+  if (specials.isSpecial(id)) {
+    const r = specialReady(id);
+    return r.ok ? '' : r.word;
+  }
+  return ammoUnlocked(id, state.unlocked) ? '' : AMMO_LOCKED[id] || '';
+}
+function buildTray() {
+  if (tray.built) return;
+  tray.built = true;
+  for (const btn of ui.ammoTray.querySelectorAll('button[data-ammo]')) {
+    const why = document.createElement('span');
+    why.className = 'sr-only';
+    why.id = `tray-why-${btn.dataset.ammo}`;
+    ui.ammoTray.appendChild(why);
+  }
+}
+function renderTray(force = false) {
+  for (const btn of ui.ammoTray.querySelectorAll('button[data-ammo]')) {
+    const id = btn.dataset.ammo;
+    const special = specials.isSpecial(id);
+    const why = ammoWhyNot(id);
+    const owned = special && ownsRecipe(id);
+    const n = owned ? state.loads[id] || 0 : null;
+    const on = state.ammo === id;
+    const key = `${why}|${n}|${on}`;
+    if (!force && btn.dataset.key === key) continue;
+    btn.dataset.key = key;
+    const name = n === null ? AMMO_NAMES[id] : specials.WORDS3.cell(id, n);
+    btn.innerHTML = `<span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[id]}</span><span class="tray-name">${name}</span>`;
+    btn.setAttribute('aria-label', `${AMMO_NAMES[id]} shot${n === null ? '' : `, ${n} ${n === 1 ? 'load' : 'loads'} left`}`);
+    btn.setAttribute('aria-pressed', String(on));
+    btn.setAttribute('aria-disabled', String(!!why));
+    btn.classList.toggle('off', !!why);
+    const whyEl = document.getElementById(`tray-why-${id}`);
+    if (whyEl) whyEl.textContent = why;
+    if (why) btn.setAttribute('aria-describedby', `tray-why-${id}`);
+    else btn.removeAttribute('aria-describedby');
+  }
+}
+function openTray() {
+  if (!trayWanted() || state.mode !== 'playing' || !player || player.sinking) return false;
+  buildTray();
+  renderTray(true);
+  tray.open = true;
+  tray.idleUntil = state.time + TRAY_IDLE;
+  show(ui.ammoTray, true);
+  ui.touchAmmo.setAttribute('aria-expanded', 'true');
+  placeHint();
+  return true;
+}
+function closeTray() {
+  if (!tray.open) return;
+  tray.open = false;
+  show(ui.ammoTray, false);
+  if (trayWanted()) ui.touchAmmo.setAttribute('aria-expanded', 'false');
+  placeHint();
+}
+function pickFromTray(btn) {
+  if (state.mode !== 'playing' || !tray.open || !btn) return;
+  const id = btn.dataset.ammo;
+  const why = ammoWhyNot(id);
+  if (why) {
+    flashHint(why, 2);
+    tray.idleUntil = state.time + TRAY_IDLE; // (still choosing)
+    return;
+  }
+  setAmmo(id);
+  closeTray();
+}
+// A tap anywhere but the tray and the Ammo pill closes the tray (that tap still does what it does).
+document.addEventListener(
+  'pointerdown',
+  (e) => {
+    if (!tray.open || !(e.target instanceof Node)) return;
+    if (ui.ammoTray.contains(e.target) || ui.touchAmmo.contains(e.target)) return;
+    closeTray();
+  },
+  { capture: true }
+);
 for (const btn of document.querySelectorAll('[data-tap]')) {
   const act = () => {
     skipIntro();
@@ -4157,6 +4789,13 @@ window.addEventListener('storage', (e) => {
   const armory = (any || e.key === ARMORY_KEY) && syncArmory(); // bought at the tavern there
   const chest = (any || e.key === PURSE_KEY || e.key === SHIP_KEY) && syncSaved();
   const dressed = (any || e.key === LOOK_KEY) && syncLook(); // bought or worn at Polly's there
+  // (the Kraken Seas' records, SPEC3 §10.2: recipes only ever go up; the steering setting is theirs)
+  const powder = WITH_KRAKEN && (any || e.key === POWDER_KEY) && syncPowder();
+  if (WITH_KRAKEN && (any || e.key === SETTINGS_KEY)) syncSettings();
+  if (powder && state.mode === 'dock') {
+    rebuildDockShip(); // (its kegs)
+    townMode.refresh();
+  }
   // A level opened (or a best voyage) there: never lower here, and the title's cards show it.
   if ((any || e.key === PROGRESS_KEY || e.key === BEST_KEY) && syncProgress() && state.mode === 'menu') renderLevelCards();
   if (state.mode === 'dock' && (counted || dressed)) townMode.refresh(); // (the wardrobe, the log, the captain)
@@ -4382,7 +5021,16 @@ const UP_ICONS = {
     `<svg viewBox="0 0 32 32"><g ${INK_SVG}><rect x="3.5" y="21" width="25" height="6.5" rx="2" fill="#d9a066"/>` +
     '<path d="M9 24.2h4M17 24.2h6" fill="none" stroke-width="1.4"/><path d="M21.5 6.5L11 19" fill="none" stroke-width="3.6" stroke="#1d1330"/>' +
     '<path d="M21.5 6.5L11 19" fill="none" stroke-width="1.6" stroke="#e0a052"/><path d="M15.8 5.2l5.6-3.2 6 6.8-4.4 4.4z" fill="#6c7688"/></g></svg>',
+  // Big rudder & wheel (SPEC3 §3.1): a ship's wheel with a gold hub
+  rudder:
+    `<svg viewBox="0 0 32 32"><g ${INK_SVG}>` +
+    '<path d="M16 2.5v27M2.5 16h27M6.5 6.5l19 19M25.5 6.5l-19 19" fill="none" stroke-width="3.2"/>' +
+    '<path d="M16 2.5v27M2.5 16h27M6.5 6.5l19 19M25.5 6.5l-19 19" fill="none" stroke="#c07b3a" stroke-width="1.4"/>' +
+    '<circle cx="16" cy="16" r="9.5" fill="none" stroke-width="4.6"/><circle cx="16" cy="16" r="9.5" fill="none" stroke="#c07b3a" stroke-width="2.4"/>' +
+    '<circle cx="16" cy="16" r="3.6" fill="#ffc93c"/></g></svg>',
 };
+// The shipyard's rows: the six upgrades, and once the Kraken Seas sail the Big rudder & wheel (SPEC3 §3.1).
+const SHIPYARD_ROWS = WITH_KRAKEN ? SHIPYARD : UPGRADES;
 
 function hexColor(n) {
   return `#${(n >>> 0).toString(16).padStart(6, '0')}`;
@@ -4618,7 +5266,7 @@ function poseDockShip(t) {
 
 function buyUpgrade(id) {
   if (state.mode !== 'dock') return false;
-  const u = UPGRADES.find((x) => x.id === id);
+  const u = SHIPYARD_ROWS.find((x) => x.id === id);
   if (!u) return false;
   if (syncSaved()) {
     // changed in another tab: show that ship first
@@ -4635,7 +5283,8 @@ function buyUpgrade(id) {
     return false;
   }
   state.purse -= cost;
-  shipConfig.up[id] = Math.min(maxTier(id), shipConfig.up[id] + 1);
+  // (the rudder's tier is a sparse field: absent at tier 0, SPEC3 §10.2)
+  shipConfig.up[id] = Math.min(maxTier(id), (shipConfig.up[id] ?? 0) + 1);
   // The ship's record first, the chest only together with it: if storage is full, the purchase lasts
   // for this visit and the gold is still in the saved chest, rather than spent on nothing (saveChest()).
   unsavedSpend += cost;
@@ -4737,7 +5386,7 @@ function setDockTab(name, focus = true) {
 function buildDockPanel() {
   if (dock.built) return;
   dock.built = true;
-  for (const u of UPGRADES) {
+  for (const u of SHIPYARD_ROWS) {
     const li = document.createElement('li');
     li.className = 'up-row';
     li.dataset.id = u.id;
@@ -4852,8 +5501,8 @@ function renderDock() {
   if (ui.dockChestGold.textContent !== gold) ui.dockChestGold.textContent = gold;
   for (const li of ui.dockUpList.children) {
     const id = li.dataset.id;
-    const u = UPGRADES.find((x) => x.id === id);
-    const tier = shipConfig.up[id];
+    const u = SHIPYARD_ROWS.find((x) => x.id === id);
+    const tier = shipConfig.up[id] ?? 0;
     const max = maxTier(id);
     const cost = nextCost(shipConfig, id);
     const pips = li.querySelector('.pips');
@@ -5208,6 +5857,36 @@ function setClass(el, key, cls, on, force) {
   }
 }
 
+// Where the hint bubble goes on a touch screen while the ammo tray is open or the ship's wheel shows (SPEC3 §6.2):
+// in portrait clear of the tray (beside it, to its left, where there is room for a bubble; else above it) and
+// above the pads (the wheel makes them taller); in landscape narrowed to end left of the tray. Otherwise the
+// stylesheet places it (the inline styles are cleared). Nothing changes before the Kraken Seas sail.
+const HINT_BESIDE = 180; // px: the least room left of the tray for the bubble to sit beside it
+function placeHint() {
+  if (!WITH_KRAKEN) return;
+  const el = ui.hint;
+  for (const k of ['bottom', 'maxWidth', 'left', 'right', 'margin']) el.style[k] = '';
+  if (!isTouch() || !(tray.open || wheelMode())) return;
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  if (H > W) {
+    const pads = document.getElementById('touch');
+    let top = pads ? pads.getBoundingClientRect().top : H;
+    const t = tray.open ? ui.ammoTray.getBoundingClientRect() : null;
+    if (t && t.left - 16 >= HINT_BESIDE) {
+      el.style.left = '8px';
+      el.style.right = 'auto';
+      el.style.margin = '0';
+      el.style.maxWidth = `${Math.floor(t.left - 16)}px`;
+    } else if (t) top = Math.min(top, t.top);
+    if (wheelMode() || (t && t.left - 16 < HINT_BESIDE)) el.style.bottom = `${Math.round(H - top + 16)}px`;
+  } else if (tray.open) {
+    const r = ui.ammoTray.getBoundingClientRect();
+    const css = parseFloat(getComputedStyle(el).maxWidth) || W;
+    el.style.maxWidth = `${Math.max(120, Math.min(css, Math.floor(2 * (r.left - 10) - W)))}px`;
+  }
+}
+
 function updateHud(force = false, dt = 0) {
   if (!player) return;
   const hpPct = (player.hp / player.maxHp) * 100;
@@ -5237,7 +5916,7 @@ function updateHud(force = false, dt = 0) {
   // Gun lights: loaded, and a pirate inside that side's firing arc (for the loaded ammo's range).
   // (Your gun crews are on the ropes during a boarding: no FIRE! light then, SPEC2 §3.4.)
   const live = !player.sinking && state.mode === 'playing' && mayFire(player);
-  const range = AMMO[state.ammo].range;
+  const range = ammoRow(state.ammo).range;
   const portIn = live && targetsFor(-1).some((e) => inArc(player, e, -1, range));
   const starIn = live && targetsFor(1).some((e) => inArc(player, e, 1, range));
   setClass(ui.gunPort, 'gp', 'ready', live && player.reload.port === 0, force);
@@ -5278,8 +5957,9 @@ function updateHud(force = false, dt = 0) {
     show(ui.touchBoard, true);
     shown.boardOn = true;
   }
-  // The loaded ammo: the gun-card cell (keyboard) and the touch Ammo pill, once chain shot is unlocked.
-  const choice = unlockedAmmo().length > 1;
+  // The loaded ammo: the gun-card cell (keyboard) and the touch Ammo pill, once chain shot is unlocked (or a
+  // special shot's recipe is owned).
+  const choice = unlockedAmmo().length > 1 || ownsAnyRecipe();
   if (force || shown.ammoOn !== choice) {
     show(ui.gunAmmo, choice);
     show(ui.touchAmmo, choice);
@@ -5290,20 +5970,42 @@ function updateHud(force = false, dt = 0) {
     show(ui.touchAct, actOn);
     shown.actOn = actOn;
   }
-  if (force || shown.ammo !== state.ammo) {
-    const name = AMMO_NAMES[state.ammo];
+  // (a special shot shows its loads: "Fire ×4", SPEC3 §2.5, §6.3; the pill opens the tray once a recipe is owned)
+  const loads = specials.isSpecial(state.ammo) ? state.loads[state.ammo] || 0 : null;
+  const choose = trayWanted();
+  const ammoKey = loads === null && !choose ? state.ammo : `${state.ammo}|${loads}|${choose}`;
+  if (force || shown.ammo !== ammoKey) {
+    const id = state.ammo;
+    const name = AMMO_NAMES[id];
     ui.ammoName.textContent = name;
-    ui.gunAmmo.dataset.ammo = state.ammo;
-    ui.ammoIcon.innerHTML = AMMO_ICONS[state.ammo];
-    ui.touchAmmo.dataset.ammo = state.ammo;
-    ui.touchAmmo.innerHTML = `<span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[state.ammo]}</span><span class="ammo-word">${name}</span>`;
-    ui.touchAmmo.setAttribute('aria-label', `Ammo: ${name.toLowerCase()} shot, ${AMMO_DOES[state.ammo]}. Change ammo`);
-    ui.gunAmmo.title = `${name} shot: ${AMMO_DOES[state.ammo]}`;
-    if (shown.ammo !== undefined && shown.ammo !== null && !force) {
+    ui.gunAmmo.dataset.ammo = id;
+    ui.ammoIcon.innerHTML = AMMO_ICONS[id];
+    ui.touchAmmo.dataset.ammo = id;
+    const word = loads === null ? name : specials.WORDS3.cell(id, loads);
+    ui.touchAmmo.innerHTML = `<span class="ammo-ico" aria-hidden="true">${AMMO_ICONS[id]}</span><span class="ammo-word">${word}</span>`;
+    const left = loads === null ? '' : `, ${loads} ${loads === 1 ? 'load' : 'loads'} left`;
+    ui.touchAmmo.setAttribute('aria-label', `Ammo: ${name.toLowerCase()} shot${left}, ${AMMO_DOES[id]}. ${choose ? 'Choose ammo' : 'Change ammo'}`);
+    // (once it opens the tray, the pill says whether the tray is open)
+    if (choose) ui.touchAmmo.setAttribute('aria-expanded', String(tray.open));
+    else ui.touchAmmo.removeAttribute('aria-expanded');
+    ui.gunAmmo.title = `${name} shot: ${AMMO_DOES[id]}${left}`;
+    if (loads === null) {
+      if (force || !ui.ammoCount.classList.contains('hidden')) show(ui.ammoCount, false);
+    } else {
+      ui.ammoCount.textContent = specials.WORDS3.count(loads);
+      show(ui.ammoCount, true);
+    }
+    // (a new ammo bumps; a load spent doesn't)
+    if (shown.ammoId !== undefined && shown.ammoId !== null && shown.ammoId !== id && !force) {
       retrigger(ui.gunAmmo, 'bump');
       retrigger(ui.touchAmmo, 'bump');
     }
-    shown.ammo = state.ammo;
+    shown.ammo = ammoKey;
+    shown.ammoId = id;
+  }
+  if (tray.open) {
+    if (state.mode !== 'playing' || player.sinking) closeTray();
+    else renderTray();
   }
 
   updateBoardHud(force, dt);
@@ -5319,6 +6021,19 @@ function updateHud(force = false, dt = 0) {
     // The order first, so a narrow bar's ellipsis cuts her name, never the order (portrait phones).
     setText(ui.bossName, 'bossName', boardHer ? `BOARD HER! — ${boss.type.name}` : boss.type.name, force);
     setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
+    // Her special-shot status (SPEC3 §6.3): shape + word beside the bar, its 8 time dots lit for the time left.
+    const st = boss.status && boss.status.id ? boss.status : null;
+    const left = st ? clamp(st.t / (st.max || st.t || 1), 0, 1) : 0;
+    const bkey = st ? `${st.id}|${Math.ceil(left * 8 - 1e-6)}` : '';
+    if (force || shown.bossStatus !== bkey) {
+      shown.bossStatus = bkey;
+      if (st) {
+        ui.bossStatus.dataset.status = st.id;
+        ui.bossStatus.textContent = specials.WORDS3.badge[st.id] || '';
+        ui.bossStatus.style.setProperty('--left', String(Math.ceil(left * 8 - 1e-6) / 8));
+      }
+      show(ui.bossStatus, !!st);
+    }
     // The boss's crew: 10 pips with the surrender notch (SPEC2 §5.3).
     const c0 = boss.crew0 || 0;
     show(ui.bossCrew, c0 > 0);
@@ -5370,6 +6085,8 @@ const BOARD_ICONS = {
   // SKIP: fast forward
   skip: `<svg ${BOARD_SVG}><g fill="#fff4d6" ${BOARD_INK}><path d="M4 6l7.5 6L4 18zM12 6l7.5 6L12 18z"/></g></svg>`,
 };
+// HOT!: a flame (a burning ship can't be grappled, SPEC3 §2.4)
+BOARD_ICONS.hot = `<svg ${BOARD_SVG}><path d="M12 2.6c1 2.8 4 4 4.2 7.4 1.3-.8 1.8-2.1 1.8-3.4 2.1 2 3 4.6 2.8 7-.4 4.2-3.9 7.4-8.8 7.4s-8.4-3.2-8.8-7.4c-.2-2.6.9-5 2.9-6.6.1 1.5.7 2.7 1.8 3.4-.2-3.4 1.8-5.8 4.1-7.8z" fill="#ff7b1c" ${BOARD_INK}/><path d="M12 12.4c.6 1.6 2.6 2.4 2.6 4.4 0 1.6-1.2 2.8-2.6 2.8s-2.6-1.2-2.6-2.8c0-1.6 1.4-2.6 2.6-4.4z" fill="#ffd23f"/></svg>`;
 BOARD_ICONS.again = BOARD_ICONS.fight;
 BOARD_ICONS.idle = BOARD_ICONS.busy = BOARD_ICONS.cool = BOARD_ICONS.hook;
 const BOARD_WORD = { take: 'Take!', capture: 'Take!', fight: 'Fight', risky: 'Risky' };
@@ -5409,14 +6126,22 @@ function boardButtonState() {
     const o = pick.odds;
     const label = pick.label;
     const tag = label === 'take' ? WORDS.take : `${WORDS[label]} −${o.attLoss}`;
+    // (a stinky crew fights worse: the odds shown are already the better ones, SPEC3 §2.2)
+    const stinky = !!(pick.target.status && pick.target.status.id === 'stink');
     return {
-      key: `t${label}${o.attLoss}${pick.target.id}`,
+      key: `t${label}${o.attLoss}${pick.target.id}${stinky ? 's' : ''}`,
       state: label,
       tag,
       word: BOARD_WORD[label] || 'Board',
-      aria: `Board ${theNameLower(pick.target.type.name)}: ${oddsWords(o)}`,
+      aria: `Board ${theNameLower(pick.target.type.name)}: ${oddsWords(o)}${stinky ? `. ${specials.WORDS3.stinkBoard}` : ''}`,
       disabled: false,
     };
+  }
+  // The nearest ship burns (a Fire shot, SPEC3 §2.4): "HOT! 4 s" with the seconds left of her fire.
+  if (pick.reason === 'hot' && pick.near && pick.near.status) {
+    const left = pick.near.status.t;
+    const n = Math.max(1, Math.ceil(left - 1e-9));
+    return { key: `hot${n}`, state: 'hot', tag: specials.WORDS3.boardHot(left), word: specials.WORDS3.boardPill, aria: `Board: too hot to board, she burns for ${n} more ${n === 1 ? 'second' : 'seconds'}`, disabled: true };
   }
   if (state.boardCooldown > 0) {
     const n = Math.ceil(state.boardCooldown);
@@ -5735,6 +6460,8 @@ function updateTagState(e) {
       e.tagCool = clamp(state.boardCooldown / BOARD.cooldown, 0, 1);
     }
   }
+  // She burns: too hot to board (SPEC3 §6.4: after the white flag, RAM! and the boarding hook).
+  if (!icon && specials.statusMuls(e.status).noGrapple) icon = 'hot';
   e.tagIcon = icon;
 }
 
@@ -5742,7 +6469,9 @@ function updateTagState(e) {
 function animateHelm(t, dt) {
   const c = player && player.captain;
   if (!c || !c.visible) return;
-  const want = player.sinking ? 0 : (input.right ? 1 : 0) - (input.left ? 1 : 0);
+  // The wheel turns with your turn (SPEC3 §3.1: −playerTurn(), so a thumb slide, the ship's wheel and a grab show
+  // at the helm). Until the Kraken Seas sail, the keys and buttons as they are pressed.
+  const want = player.sinking ? 0 : WITH_KRAKEN ? -playerTurn() : (input.right ? 1 : 0) - (input.left ? 1 : 0);
   helm.turn = (helm.turn ?? 0) + (want - (helm.turn ?? 0)) * Math.min(1, dt * 7);
   if (t < helm.cheer) animatePerson(c, t, 'cheer');
   else if (t < helm.point) animatePerson(c, t, 'point');
@@ -6650,8 +7379,12 @@ function frame() {
 
   updateCamera(dt, paused);
   camera.updateMatrixWorld();
-  // After the ships and the camera have moved: name tags, sailors going overboard, pop words.
+  // After the ships and the camera have moved: name tags, statuses on the ships, sailors going overboard, pop words.
   tags.update(enemies, camera, t, paused ? 0 : dt);
+  if (statusFxView) {
+    statusFxView.sync(enemies, t, paused ? 0 : dt);
+    if (!paused) updateCrackle();
+  }
   overboard.update(t, paused ? 0 : dt);
   pops.update(paused ? 0 : dt);
   flushGameAnnounce();
@@ -6676,6 +7409,22 @@ function frame() {
   if (paused) pausedDrawn = true;
 }
 
+// The Kraken Seas' controls (SPEC3 §3.2, §6.1), shown only once they sail: the pause dialog's Steering toggle,
+// the steering mode saved, and the help lists' new lines ("4–6 special ammo", "slide for gentle turns").
+if (WITH_KRAKEN) {
+  const btn = ui.steerModeBtn;
+  btn.innerHTML = '<span class="steer-label"></span><span class="new-badge hidden" aria-hidden="true">New!</span>';
+  show(btn, true); // (.touch-only: nothing shows on a screen without touch)
+  btn.addEventListener('click', () => toggleSteerMode());
+  for (const li of document.querySelectorAll('ul.controls:not(.touch-help) li')) {
+    if (/ammo/.test(li.textContent)) li.insertAdjacentHTML('beforeend', ' &middot; <kbd>4</kbd>&ndash;<kbd>6</kbd> special');
+  }
+  for (const ul of document.querySelectorAll('ul.controls.touch-help')) {
+    const li = ul.querySelector('li');
+    if (li) li.insertAdjacentHTML('beforeend', ' &middot; slide on them for gentle turns');
+  }
+  applySteerMode();
+}
 resize();
 updateMuteButtons();
 // The battle's live region is visually hidden (sr-only) but must not be display:none, or nothing is read.
@@ -6915,8 +7664,8 @@ window.__game = {
     summary: () => mechanics.summary(),
     bonus: () => mechanics.bonus(),
   },
-  // ---- "The Kraken Seas" test API (SPEC3 §11.3). Stage 0: placeholders with safe answers (nothing is owned, no
-  // hazard runs, no Kraken rises, nothing is saved); Stages 2 and 3 give them their full behaviour.
+  // ---- "The Kraken Seas" test API (SPEC3 §11.3). Special shots, steering and the settings are live (Stage 2,
+  // battle core); hazards, the Kraken, the island and the quiz are still placeholders with safe answers.
   specials: {
     // Special loads left this level ({ fire, frost, stink }); setLoads(o) sets them (plain integers ≥ 0).
     get loads() {
@@ -6927,15 +7676,29 @@ window.__game = {
       if (o && typeof o === 'object') state.loads = { fire: n(o.fire), frost: n(o.frost), stink: n(o.stink) };
       return { ...state.loads };
     },
-    // The recipes owned (the powder record); setPowder(p) validates it (Stage 2 saves it too).
+    // The recipes owned (the powder record); setPowder(p) validates and saves it (the loads come at the next level
+    // start: setLoads for now), and the docked ship shows its kegs.
     get powder() {
       return JSON.parse(specials.serializePowder(state.powder));
     },
     setPowder(p) {
       state.powder = specials.parsePowder(p);
+      if (WITH_KRAKEN) saveRecord(POWDER_KEY, specials.serializePowder, state.powder);
+      if (state.mode === 'dock') rebuildDockShip();
       return JSON.parse(specials.serializePowder(state.powder));
     },
+    // A ship's status record ({ id, t, max, immune }), the multipliers it puts on her, her burn.
     status: (ship) => (ship && ship.status ? { ...ship.status } : null),
+    muls: (ship) => (ship ? { ...specials.statusMuls(ship.status) } : null),
+    burn: (ship) => (ship ? { ticks: ship.burnTicks, rate: ship.burnRate, from: ship.burnFrom, left: ship.effects.burn } : null),
+    // The touch ammo tray: whether it is open; open() / close() as the Ammo pill / a tap elsewhere.
+    get tray() {
+      return { open: tray.open, wanted: trayWanted() };
+    },
+    openTray: () => openTray(),
+    closeTray: () => closeTray(),
+    // What statusfx.js drew at the last frame (instances by kind and draw calls), or null before the Kraken Seas.
+    fx: () => (statusFxView ? statusFxView.read() : null),
     crate: () => null, // pick up powder crate i (Voyage III levels)
   },
   // A thumb slide on the steering pad: x −1..1 (positive = left) sets input.steer; null lets go.
@@ -6943,10 +7706,19 @@ window.__game = {
     input.steer = x === null || x === undefined ? null : clamp(Number(x) || 0, -1, 1);
     return input.steer;
   },
+  // The player's turn input now (−1..1, positive = left) and the turn rate it gives (rad/s).
+  get turn() {
+    return { input: playerTurn(), rate: player ? turnRate(player) : 0, full: player ? turnRate(player, { full: true }) : 0 };
+  },
+  // The settings record (pirates-ahoy-settings): set(s) validates, saves and applies it (the steering mode).
   settings: {
     get: () => ({ ...settings }),
     set(s) {
       settings = settingsRules.parseSettings(s);
+      if (WITH_KRAKEN) {
+        saveRecord(SETTINGS_KEY, settingsRules.serializeSettings, settings);
+        applySteerMode();
+      }
       return { ...settings };
     },
   },

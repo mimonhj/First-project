@@ -14,7 +14,9 @@
 //   update(dt, t) → { place, arrived, moving, greet, bubble },   also drives the camera
 //   pose(viewName) → { pos, target } | null,
 //   frameBeside(panelEl, points),          lens shift so the points sit in the free area beside panelEl
-//   park(placeId | null), setPanel(view, panelEl, subject), setLineup(optsList | null), cheer(who, s),
+//   park(placeId | null), setPanel(view, panelEl, subject, { secs }), setLineup(optsList | null), cheer(who, s),
+//     (views: 'tailor', 'tavern', and the Kraken Seas' 'quiz' and 'build' (the place 'builder'); subject:
+//     'captain', 'lineup' (the tailor's), or a pose { pos, target, points } to glide to, e.g. a plot, SPEC3 §8.3)
 //   sparkle(x, y, z), simulate(seconds, input) → { x, y, z, h, place, arrived, moving, greet },
 //   get captain, get walk, get lineup, get auto, dispose()
 // }
@@ -71,6 +73,10 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   const walk = createWalk(data);
   const places = walk.places;
   const placeById = (id) => places.find((p) => p.id === id) || null;
+  // a panel view's place: the views are named as the places, but for the build view (place 'builder', SPEC3 §8.3)
+  const placeOf = (view) => placeById(view === 'build' ? 'builder' : view);
+  // the new places' panel views fit their subject (the lens backs off when it can't fit it beside the panel)
+  const FIT_VIEWS = ['quiz', 'build'];
   const rm = () => {
     try {
       return !!(typeof reducedMotion === 'function' ? reducedMotion() : reducedMotion);
@@ -674,7 +680,14 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const f = folkNow.find((q) => q.index === bubble.index);
     if (!f) return null;
     const y = walk.heightAt(f.x, f.z, cap.y) ?? cap.y;
-    return { index: bubble.index, x: f.x, y: y + 1.55, z: f.z };
+    const out = { index: bubble.index, x: f.x, y: y + 1.55, z: f.z };
+    // (who it is, for the words: the Kraken Seas' villagers and Bess and the professor say so, SPEC3 §8.4)
+    if (f.villager) {
+      out.villager = true;
+      out.home = f.home;
+    }
+    if (f.npc) out.npc = f.npc;
+    return out;
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -906,14 +919,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       box.expandByPoint(new THREE.Vector3(x - r, y, z - r));
       box.expandByPoint(new THREE.Vector3(x + r, y + hgt, z + r));
     };
-    const p = placeById(view);
+    const p = placeOf(view);
     if (!p) return null;
     if (view === 'tailor' && subject === 'lineup' && lineupSpots.length) {
       for (const q of lineupSpots) add(q.x, Number.isFinite(q.y) ? q.y : 1.3, q.z, 0.4, 1.9);
     } else if (parked) {
       add(parked.x, parked.y, parked.z, 0.5, 2.25);
-      if (view === 'tavern' && p.cam) {
-        // and the tavern's door behind him
+      if ((view === 'tavern' || FIT_VIEWS.includes(view)) && p.cam && Array.isArray(p.cam.target)) {
+        // and what the place's camera looks at beside him: the tavern's door, the Riddle Bell with Professor
+        // Barnacle, Builder Bess at her island plan
         const t = p.cam.target;
         add(t[0], 1.3, t[2], 0.9, 2.4);
       }
@@ -923,8 +937,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     return out;
   }
 
+  const isPoint = (v) => (Array.isArray(v) ? v.length >= 3 && finite(v[0], v[1], v[2]) : !!v && finite(v.x, v.y, v.z));
   function panelPose(view, subject) {
-    const p = placeById(view);
+    if (subject && typeof subject === 'object') {
+      // a pose of its own (a plot on the island): the camera there, framing its points beside the panel
+      if (!isPoint(subject.pos) || !isPoint(subject.target)) return null;
+      const pts = Array.isArray(subject.points) ? subject.points.filter(isPoint).map(vec) : [];
+      return { pos: vec(subject.pos), target: vec(subject.target), points: pts.length ? pts : [vec(subject.target)], fit: subject.fit !== false };
+    }
+    const p = placeOf(view);
     if (!p || !p.cam) return null;
     const pos = vec(p.cam.pos);
     const target = vec(p.cam.target);
@@ -935,31 +956,40 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       pos.set(c.x + Math.sin(h) * 4.6, c.y + 2.2, c.z + Math.cos(h) * 4.6);
       target.set(c.x, c.y + 0.95, c.z);
     }
-    return { pos, target, points: subjectBox(view, subject) };
+    return { pos, target, points: subjectBox(view, subject), fit: FIT_VIEWS.includes(view) };
   }
 
-  /** The panel view's camera: frame `subject` ('captain' | 'lineup') beside panelEl. */
-  function setPanel(view, panelEl, subject = 'captain') {
+  /**
+   * The panel view's camera: frame `subject` ('captain' | 'lineup' | a pose { pos, target, points }) beside
+   * panelEl. Within the same view it pans there (opts.secs, default PANEL_PAN; a cut under reduced motion).
+   */
+  function setPanel(view, panelEl, subject = 'captain', opts = {}) {
     const to = panelPose(view, subject);
     if (!to) {
       panel = null;
       return false;
     }
-    const cut = !panel || panel.view !== view || rm();
+    const cut = !panel || panel.view !== view || rm() || !!(opts && opts.cut);
+    const dur = opts && Number.isFinite(opts.secs) && opts.secs > 0 ? opts.secs : PANEL_PAN;
     const from = cut ? to : currentPanelPose();
-    panel = { view, el: panelEl || null, subject, from, to, t: cut ? PANEL_PAN : 0 };
+    // a glide to a pose of its own (across the island to a plot) arcs up over the roofs and palms on its way
+    const arc = !cut && subject && typeof subject === 'object' ? clamp(from.pos.distanceTo(to.pos) * 0.35, 0, 9) : 0;
+    panel = { view, el: panelEl || null, subject, from, to, dur, arc, t: cut ? dur : 0 };
     return true;
   }
   function currentPanelPose() {
     if (!panel) return null;
-    const u = smooth(clamp(panel.t / PANEL_PAN, 0, 1));
+    const u = smooth(clamp(panel.t / (panel.dur || PANEL_PAN), 0, 1));
     const lerp = (a, b) => a.clone().lerp(b, u);
+    const pos = lerp(panel.from.pos, panel.to.pos);
+    if (panel.arc) pos.y += Math.sin(Math.PI * u) * panel.arc;
     return {
-      pos: lerp(panel.from.pos, panel.to.pos),
+      pos,
       target: lerp(panel.from.target, panel.to.target),
       points: panel.to.points.map((q, i) => lerp(panel.from.points[i] || q, q)),
     };
   }
+  const fitBack = new THREE.Vector3();
   function updatePanelCamera(dt) {
     if (!panel) return;
     panel.t += dt;
@@ -967,7 +997,18 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     camera.position.copy(P.pos);
     camera.lookAt(P.target);
     camera.updateMatrixWorld();
-    if (panel.el) frameBeside(panel.el, P.points);
+    if (!panel.el) return;
+    let fr = frameBeside(panel.el, P.points);
+    // The new places' views (and a plot) keep their whole subject in the free area: where even the widest lens
+    // can't fit it beside the panel (a plot above a phone's bottom sheet), the camera backs off along its view.
+    if (panel.to.fit) {
+      for (let k = 0; k < 4 && fr.need > fr.max * 1.002 && fr.depth > 0; k++) {
+        fitBack.setFromMatrixColumn(camera.matrixWorld, 2); // (the camera's back)
+        camera.position.addScaledVector(fitBack, fr.depth * (fr.need / fr.max - 1) + 0.05);
+        camera.updateMatrixWorld();
+        fr = frameBeside(panel.el, P.points);
+      }
+    }
   }
 
   const fR = new THREE.Vector3();
@@ -1004,11 +1045,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     let xMax = -Infinity;
     let yMin = Infinity;
     let yMax = -Infinity;
+    let zSum = 0;
+    let zN = 0;
     for (const q of points || []) {
       const p = Array.isArray(q) ? fD.set(q[0], q[1], q[2]) : fD.copy(q);
       p.sub(camera.position);
       const z = p.dot(fF);
       if (z < 0.3) continue;
+      zSum += z;
+      zN++;
       const x = p.dot(fR) / z;
       const y = p.dot(fU) / z;
       xMin = Math.min(xMin, x);
@@ -1018,6 +1063,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     }
     const aspect = fw / fh;
     let tanV = Math.tan((40 * Math.PI) / 360);
+    let need = 0;
+    const max = Math.tan((75 * Math.PI) / 360);
     let cx = 0;
     let cy = 0;
     if (xMax > xMin && yMax > yMin) {
@@ -1025,7 +1072,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       const fillX = 0.86 - 0.12 * k;
       const fillY = 0.84 - 0.1 * k;
       tanV = Math.max((yMax - yMin) / 2 / fillY, (xMax - xMin) / 2 / (aspect * fillX));
-      tanV = clamp(tanV, Math.tan((14 * Math.PI) / 360), Math.tan((75 * Math.PI) / 360));
+      need = tanV;
+      tanV = clamp(tanV, Math.tan((14 * Math.PI) / 360), max);
       cx = (xMax + xMin) / 2;
       cy = (yMax + yMin) / 2;
     }
@@ -1033,12 +1081,13 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const offX = (cx / (tanV * aspect)) * (fw / 2) - fx;
     const offY = -(cy / tanV) * (fh / 2) - fy;
     camera.setViewOffset(fw, fh, offX, offY, W, H);
-    return { fx, fy, fw, fh, sheet };
+    // (need: the lens the points ask for, before the widest is taken; depth: how far off they are on average)
+    return { fx, fy, fw, fh, sheet, need, max, depth: zN ? zSum / zN : 0 };
   }
 
   function pose(view) {
     if (view === 'town') return { pos: camPos.toArray(), target: camLook.toArray() };
-    const p = placeById(view);
+    const p = placeOf(view);
     if (!p || !p.cam) return null;
     return { pos: [...p.cam.pos], target: [...p.cam.target] };
   }
@@ -1100,6 +1149,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const dt = 1 / 60;
     let arrived = null;
     let greet = false; // someone started a greeting meanwhile (townMode puts words in the bubble)
+    let greetBy = null; // ...and who: { index, villager?, home?, npc? }
     cam.swoop = null;
     quiet = true;
     try {
@@ -1108,13 +1158,16 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
         if (m) setMove(m);
         const r = update(dt, time + dt);
         if (r.arrived) arrived = r.arrived;
-        if (r.greet) greet = true;
+        if (r.greet) {
+          greet = true;
+          greetBy = r.greet;
+        }
       }
     } finally {
       quiet = false;
     }
     const np = walk.nearestPlace(cap.x, cap.z);
-    return { x: cap.x, y: cap.y, z: cap.z, h: cap.h, place: np ? np.place.id : null, arrived, moving: !!auto || cap.act > 0.25, greet };
+    return { x: cap.x, y: cap.y, z: cap.z, h: cap.h, place: np ? np.place.id : null, arrived, moving: !!auto || cap.act > 0.25, greet, greetBy };
   }
 
   function dispose() {
@@ -1177,6 +1230,10 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     },
     get parked() {
       return parked ? parked.id : null;
+    },
+    // a panel view's camera still on its way (a pan or a glide to a plot)
+    get panning() {
+      return !!panel && panel.t < (panel.dur || PANEL_PAN);
     },
     get speed() {
       return cap.act;

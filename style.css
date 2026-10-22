@@ -1981,3 +1981,188 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
 .lvl-7 .lvl-diff { background: #c9f6ee; }
 .lvl-8 .lvl-diff { background: #ffd6c4; }
 .lvl-9 .lvl-diff { background: #d6e0ff; }
+
+/* ---------- The Kraken Seas (SPEC3): battle core (special shots, the tray, steering) ---------- */
+/* KA-BOOM!'s flash (§2.3, §15): a soft orange wash, at most 0.25 opaque (main.js: at most one every 3 s); under
+   reduced motion a gentler, slower tint. */
+.screen-flash {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 3;
+  opacity: 0;
+  background: radial-gradient(circle at 50% 45%, rgba(255, 214, 120, 0.95), rgba(255, 123, 28, 0.85) 60%, rgba(255, 90, 31, 0.7));
+}
+.screen-flash.on { animation: kaboom-flash 0.6s ease-out both; }
+.screen-flash.soft.on { animation: kaboom-tint 1.2s ease-in-out both; }
+@keyframes kaboom-flash {
+  0% { opacity: 0; }
+  15% { opacity: 0.25; }
+  100% { opacity: 0; }
+}
+@keyframes kaboom-tint {
+  0% { opacity: 0; }
+  40% { opacity: 0.12; }
+  100% { opacity: 0; }
+}
+/* The special shot's loads after its name on the gun card: "Fire ×4" (§6.3). Below 640 px the cell keeps the
+   icon and the count. */
+.ammo-count { margin-left: 3px; font-weight: 900; color: var(--red-text); }
+/* The Board cell and pill on a burning ship: HOT! 4 s (§2.4, §6.2). */
+.board-tag[data-state="hot"] .board-word { color: var(--red-text); }
+.gun.board[data-state="hot"] .board-ico { opacity: 1; }
+#touch-board[data-state="hot"] { background: #ffe8d6; box-shadow: 0 0 0 3px #ff7b1c, 0 4px 0 3px var(--ink); }
+
+/* The touch ammo tray (§6.2): above the act pad, its right edge on the pad's, its bottom 8 px above the pad's
+   top; 2 columns × 3 rows in portrait, 3 × 2 in landscape; 52 px buttons, 44 px on short screens. It may cover
+   the minimap while it is open (the minimap is no control). */
+.ammo-tray {
+  --tray-b: 52px;
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 8px);
+  display: grid;
+  grid-template-columns: repeat(2, var(--tray-b));
+  gap: 6px;
+  padding: 0;
+  pointer-events: auto;
+  z-index: 2;
+}
+@media (orientation: landscape) {
+  .ammo-tray { grid-template-columns: repeat(3, var(--tray-b)); }
+}
+@media (max-height: 380px), (max-width: 640px) and (max-height: 500px) and (orientation: portrait) {
+  .ammo-tray { --tray-b: 44px; }
+}
+.touch .ammo-tray button {
+  position: relative;
+  width: var(--tray-b);
+  height: var(--tray-b);
+  padding: 2px 1px 1px;
+  border-radius: 14px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  font-size: 11px;
+  line-height: 1;
+  letter-spacing: 0.01em;
+  background: var(--paper);
+  box-shadow: 0 3px 0 var(--ink);
+}
+.ammo-tray .ammo-ico { width: 22px; height: 22px; }
+.ammo-tray .ammo-ico svg { width: 100%; height: 100%; display: block; }
+.ammo-tray .tray-name { display: block; white-space: nowrap; font-weight: 900; }
+@media (max-height: 380px), (max-width: 640px) and (max-height: 500px) and (orientation: portrait) {
+  .ammo-tray .ammo-ico { width: 18px; height: 18px; }
+  .touch .ammo-tray button { font-size: 10px; }
+}
+/* the loaded one: a gold ring (and aria-pressed) */
+.touch .ammo-tray button[aria-pressed="true"] { background: #fff1c2; box-shadow: 0 0 0 3px var(--gold), 0 3px 0 3px var(--ink); }
+/* one that can't be loaded: greyed, its icon crossed out (and aria-disabled, the reason as its description) */
+.touch .ammo-tray button.off { background: #e4ddd0; color: #4a4458; }
+.ammo-tray button.off .ammo-ico { position: relative; filter: grayscale(0.8); opacity: 0.6; }
+.ammo-tray button.off .ammo-ico::after {
+  content: "";
+  position: absolute;
+  left: -2px;
+  right: -2px;
+  top: 50%;
+  height: 3px;
+  margin-top: -1.5px;
+  background: var(--red-text);
+  border-radius: 2px;
+  transform: rotate(-35deg);
+}
+.ammo-tray button:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+
+/* Touch steering (§3.2): the steering pad holds the rudder needle of a thumb slide and, when it is chosen, the
+   ship's wheel in the arrows' place. */
+.pad.left { position: relative; }
+.steer-needle {
+  position: absolute;
+  left: 50%;
+  top: -14px;
+  width: 44px;
+  height: 22px;
+  margin-left: -22px;
+  border: 3px solid var(--ink);
+  border-bottom: 0;
+  border-radius: 22px 22px 0 0;
+  background: var(--paper);
+  pointer-events: none;
+  z-index: 1;
+}
+.steer-needle::after {
+  content: "";
+  position: absolute;
+  left: 50%;
+  bottom: -1px;
+  width: 4px;
+  height: 17px;
+  margin-left: -2px;
+  border-radius: 2px;
+  background: var(--fire);
+  transform-origin: 50% 100%;
+  transform: rotate(calc(var(--turn, 0) * 70deg));
+}
+.touch-wheel {
+  width: 132px;
+  height: 132px;
+  touch-action: none;
+  pointer-events: auto;
+  filter: drop-shadow(0 4px 0 var(--ink));
+}
+.touch-wheel svg { width: 100%; height: 100%; display: block; overflow: visible; }
+.touch-wheel .spoke { stroke: var(--ink); stroke-width: 9; stroke-linecap: round; }
+.touch-wheel .grip { fill: #c07b3a; stroke: var(--ink); stroke-width: 3; }
+.touch-wheel .top { fill: var(--gold); stroke: var(--ink); stroke-width: 3; }
+.touch-wheel .rim { fill: none; stroke: var(--ink); stroke-width: 13; }
+.touch-wheel .rim-in { fill: none; stroke: #c07b3a; stroke-width: 7; }
+.touch-wheel .hub { fill: #e0a052; stroke: var(--ink); stroke-width: 4; }
+.touch-wheel .hub-in { fill: var(--gold); stroke: var(--ink); stroke-width: 2; }
+@media (max-height: 500px) {
+  .touch-wheel { width: 104px; height: 104px; }
+}
+@media (max-height: 340px) {
+  .touch-wheel { width: 96px; height: 96px; }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) {
+  .touch-wheel { width: 112px; height: 112px; }
+}
+/* While the wheel shows, the arrows stay in the page for assistive technology but take no room on screen. */
+.pad.left.wheel-mode button[data-hold] {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  border: 0;
+  box-shadow: none;
+}
+/* Pause ▸ Steering (touch only): a two-state toggle with its "New!" badge inside the button the first time. */
+.btn.steer-mode { position: relative; display: inline-flex; align-items: center; gap: 8px; font-size: 18px; min-height: 44px; padding: 10px 22px 8px; }
+.btn.steer-mode[aria-pressed="true"] { background: #fff1c2; }
+.steer-mode .new-badge {
+  display: inline-block;
+  padding: 2px 7px 1px;
+  font-size: 12px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--fire);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  text-shadow: none;
+}
+@media (max-height: 500px) {
+  .btn.steer-mode { font-size: 15px; padding: 7px 16px 6px; margin: 2px 4px; }
+}
+/* On the shortest touch screens the pause dialog makes room for the Steering toggle: the sideways tip goes (the
+   help list above says the same). */
+@media (max-height: 340px) and (hover: none) and (pointer: coarse) {
+  #pause-choices:has(> #steer-mode-btn:not(.hidden)) > .tip { display: none; }
+}

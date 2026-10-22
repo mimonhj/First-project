@@ -1,11 +1,13 @@
 // The dock's other views (SPEC2 §7): walking round Sparrow's Floating Island ('town'), Polly's Plumes &
-// Trims ('tailor') and The Salty Sparrow ('tavern'), plus the Harbour menu and the All aboard? dialog.
+// Trims ('tailor') and The Salty Sparrow ('tavern'), plus the Harbour menu and the All aboard? dialog. With the
+// Kraken Seas (ctx.withKraken, SPEC3 §7, §8): Professor Barnacle's Riddle Bell ('quiz', quizPanel.js), Builder
+// Bess ('build', the place 'builder', buildPanel.js), the tavern's Powder room and the villagers' greetings.
 // DOM and glue live here (styles in town.css); the 3D captain and camera are town.js's; persistence
 // stays in main.js (ctx.look.set, ctx.wardrobe.wear/buy, ctx.armory.buy save). The shipyard panel
 // itself ('shop') stays main.js's: townMode only swaps it out and back (ctx.hideShipyard/showShipyard).
 //
 // createTownMode(ctx) → {
-//   get view ('shop' | 'town' | 'tailor' | 'tavern'), get active (view !== 'shop'),
+//   get view ('shop' | 'town' | 'tailor' | 'tavern' | 'quiz' | 'build'), get active (view !== 'shop'),
 //   ashore(), showShop(), open(placeId), back(), close(), refresh(),
 //   onKey(e, down) → handled, onPointer(type, e) → handled,
 //   update(dt, t) → handlesCamera, onResize(), onContextRestored(),
@@ -20,11 +22,30 @@
 //   rumour() → { title, lines, ammo } | null, log() → [string] (extra captain's-log lines),
 //   optional: toggleMute(), prizes() → [{ type, flag }], restyleCrew() (dress the cleaning crew on the
 //   docked ship in the saved uniform; townMode's own env.setCrewStyle call otherwise) }
+// The Kraken Seas (SPEC3 §11.1; read once, at creation): withKraken (boolean, or a function giving one: the
+//   places quiz and builder, the Powder room, the Harbour buttons and the four trophies show only when true;
+//   without it the town is exactly today's), unlocked() → the highest level reached (1..9),
+//   powder: { state() → the powder record, buy(id) → { ok, reason?, rebuilt? } | bool } (main writes the
+//     record first and the chest second; reasons 'storage' | 'owned' | 'locked' | 'poor' | 'unknown'),
+//   island: { state() → the island record, build(id) → { ok, reason?, cost? } | bool } (the same rule; main
+//     doesn't touch the 3D town: townMode's montage does env.setIsland(cfg, { built }) / setRank / setVillagers),
+//   quiz: { record(), save(rec, gold, info) → { ok, reason? } | bool } (quizPanel.js's contract),
+//   optional: hints() → lifebuoys a quiz round, rebuildShip() (the docked ship again, with a new recipe's keg)
 import { createTown } from './town.js';
 import { ITEMS, SLOTS, SLOT_NAMES, KRAKEN_ITEMS, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
 import { ARMORY, armoryMaxTier, armoryNextCost, armoryStatText, parseArmoryConfig } from './armory.js';
+import { SPECIAL_IDS, SPECIAL, RECIPES, LOADS, WORDS3, onSale, buyRecipe, parsePowder } from './specials.js';
+import { parseIsland, tierOf, perks, rank as islandRank, villagers as islandVillagers } from './island.js';
+import { createQuizPanel } from './quizPanel.js';
+import { createBuildPanel } from './buildPanel.js';
 
-const PLACES = ['shipyard', 'tailor', 'tavern', 'ship'];
+// The places (the same ids as sparrow's walk.places and the places bar's data-place buttons). The place
+// 'builder' opens the view 'build' (SPEC3 §8.3); every other view is named as its place.
+const PLACES_TODAY = ['shipyard', 'tailor', 'tavern', 'ship'];
+const PLACES_KRAKEN = ['shipyard', 'tailor', 'tavern', 'quiz', 'builder', 'ship'];
+const VIEW_OF = { builder: 'build' };
+const PLACE_OF = { build: 'builder' };
+const PANEL_VIEWS = ['tailor', 'tavern', 'quiz', 'build'];
 const INK = 'stroke="#1d1330" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"';
 const ICONS = {
   shipyard:
@@ -43,6 +64,31 @@ const ICONS = {
     `<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><g ${INK}><path d="M15.5 3v19" fill="none" stroke-width="2.2"/><path d="M16.5 4.5c5 3 7.6 8 7.8 14.5H16.5z" fill="#fffaf0"/>` +
     '<path d="M14.5 7.5c-3.6 2.6-5.4 6.3-5.6 11.5h5.6z" fill="#fffaf0"/><path d="M15.5 3l5-1.4v3z" fill="#e63946"/>' +
     '<path d="M3.5 21.5h25l-3.4 6.2H7.2z" fill="#c07b3a"/></g><path d="M3 29.5c2-1.2 4-1.2 6 0s4 1.2 6 0 4-1.2 6 0 4 1.2 6 0" fill="none" stroke="#1a64a8" stroke-width="1.8" stroke-linecap="round"/></svg>',
+  // the Riddle Bell (SPEC3 §7.1: "Quiz", bell icon)
+  quiz:
+    `<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><g ${INK}><path d="M16 4.5c-5 0-7.6 3.6-7.6 9.2v6.2L5.6 24.4h20.8l-2.8-4.5v-6.2c0-5.6-2.6-9.2-7.6-9.2z" fill="#ffc93c"/>` +
+    '<circle cx="16" cy="27" r="2.6" fill="#c07b3a"/><path d="M14.4 4.6c0-1.6.6-2.4 1.6-2.4s1.6.8 1.6 2.4" fill="none"/></g>' +
+    '<path d="M11.4 11.8c.4-2.2 1.6-3.6 3.4-4.2" fill="none" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".85"/></svg>',
+  // Builder Bess (SPEC3 §8.3: "Build", hammer icon): a hammer at a little house, apart from the shipyard's mallet
+  builder:
+    `<svg viewBox="0 0 32 32" aria-hidden="true" focusable="false"><g ${INK}><path d="M4 16.5v11h14v-11" fill="#ffe2b0"/>` +
+    '<path d="M1.6 17.2L11 7.4l9.4 9.8z" fill="#e2383d"/><path d="M8.8 27.5v-5.6h4.4v5.6" fill="#8b5a2b"/>' +
+    '<path d="M16.6 30l9.6-9.6" stroke-width="4.4"/><path d="M16.6 30l9.6-9.6" stroke="#c07b3a" stroke-width="2.1"/>' +
+    '<path d="M24.9 15.8l6.3 6.3-3.1 3.1-6.3-6.3z" fill="#93a4b8"/></g></svg>',
+};
+// The tavern's Powder room (SPEC3 §2.5): the three recipes, by the shapes their shots have on the ships
+const POWDER_ICONS = {
+  fire:
+    `<svg viewBox="0 0 32 32"><g ${INK}><path d="M16 29c-6 0-9.6-4-9.6-9.2 0-4.4 2.8-7 4.6-10.4.6 2.4 1.8 3.8 3.2 4.4C14 9 16.6 5.2 20.4 3c-.8 4 .6 6.8 2.8 9.4 1.6 1.8 2.6 4.2 2.6 7.2C25.8 25 21.8 29 16 29z" fill="#ff8a1c"/>` +
+    '<path d="M16 28c-3 0-4.8-2-4.8-4.6 0-2.4 1.6-3.8 2.6-5.6.4 1.4 1.2 2 2 2.2.2-2 1.2-3.8 3-5-.2 2.6.6 4 1.6 5.4.6 1 1 2 1 3.2 0 2.6-2.2 4.4-5.4 4.4z" fill="#ffd23c"/></g></svg>',
+  frost:
+    `<svg viewBox="0 0 32 32"><g ${INK} fill="none"><path d="M16 3v26M4.7 9.5l22.6 13M4.7 22.5l22.6-13" stroke-width="4.4"/>` +
+    '<path d="M16 3v26M4.7 9.5l22.6 13M4.7 22.5l22.6-13" stroke="#8fd3ff" stroke-width="2.2"/>' +
+    '<path d="M12.6 4.6L16 8l3.4-3.4M12.6 27.4L16 24l3.4 3.4M4.2 13.6l4.6-1.2-1.2-4.6M27.8 18.4l-4.6 1.2 1.2 4.6M7.6 24.4l1.2-4.6-4.6-1.2M24.4 7.6l-1.2 4.6 4.6 1.2" stroke-width="1.8"/></g></svg>',
+  stink:
+    `<svg viewBox="0 0 32 32"><g ${INK}><path d="M7.4 25.4c-3 0-4.8-2.2-4.8-4.6 0-2.6 2-4.4 4.4-4.6-.2-3.2 2.4-5.8 5.6-5.6 1-2.6 3.4-4.2 6.2-4 3.4.2 5.8 3 5.6 6.4 2.8.2 4.8 2.4 4.8 5.2 0 3.2-2.4 5.2-5.4 5.2z" fill="#8bc34a"/></g>` +
+    '<path d="M9.6 20.6c1.4-1.4 3-1.4 4.4 0M17.4 17.6c1.4-1.4 3-1.4 4.4 0" fill="none" stroke="#5a8f2e" stroke-width="1.8" stroke-linecap="round"/>' +
+    '<path d="M11 2.6c-1.4 1.4-1.4 2.8 0 4.2M16 1.6c-1.4 1.4-1.4 2.8 0 4.2M21 2.6c-1.4 1.4-1.4 2.8 0 4.2" fill="none" stroke="#5a8f2e" stroke-width="1.6" stroke-linecap="round"/></svg>',
 };
 const CHEST_SVG =
   '<svg class="chest-ico" viewBox="0 0 32 28" aria-hidden="true" focusable="false"><path d="M3.5 12.5C3.5 6 8 3.5 16 3.5S28.5 6 28.5 12.5z" fill="#c07b3a" />' +
@@ -71,15 +117,22 @@ const ARMORY_ICONS = {
 const LOCK_SVG =
   '<svg class="wi-lock" viewBox="0 0 12 14" aria-hidden="true" focusable="false"><path d="M3.2 6V4.4a2.8 2.8 0 0 1 5.6 0V6" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
   '<rect x="1.4" y="6" width="9.2" height="7" rx="1.6" fill="currentColor"/></svg>';
-const AMMO_NAMES = { round: 'Round shot', chain: 'Chain shot', grape: 'Grape shot' };
+const AMMO_NAMES = { round: 'Round shot', chain: 'Chain shot', grape: 'Grape shot', ...Object.fromEntries(SPECIAL_IDS.map((id) => [id, SPECIAL[id].name])) };
 // Act I has no rumours in its level data: the regulars' gossip about those seas.
 const OLD_RUMOURS = {
   'Coast of Europe': ['Corsair cutters prowl the bay below the lighthouse.', 'Turn side-on: your cannons fire sideways!'],
   'Bali Islands': ['Prahus skim right over the light coral. Your keel cannot!', 'Chain shot slows the fast ones down.'],
   'The Volcano': ['The Molten Maw is too hot to board: sink her!', 'Grape shot thins a corsair crew for a capture.'],
 };
-const PROMPT_VERB = { ship: 'All aboard', shipyard: 'Go in', tailor: 'Go in', tavern: 'Go in' };
-const WALK_NAME = { shipyard: 'the shipyard', tailor: 'the tailor', tavern: 'the tavern', ship: 'your ship' };
+const PROMPT_VERB = { ship: 'All aboard', shipyard: 'Go in', tailor: 'Go in', tavern: 'Go in', quiz: 'Play', builder: 'Build' };
+// "...press Enter to go in" (the screen reader's words for the verb)
+const VERB_SAY = { ship: 'go aboard', quiz: 'play', builder: 'build' };
+const WALK_NAME = { shipyard: 'the shipyard', tailor: 'the tailor', tavern: 'the tavern', ship: 'your ship', quiz: 'the quiz', builder: 'Builder Bess' };
+// The Kraken Seas' greetings (SPEC3 §8.4): the villagers, Builder Bess and Professor Barnacle
+const VILLAGER_LINES = { house: "Lovely house, Cap'n!", bakery: 'Fresh biscuits today!', kraken: 'The Kraken? Brrr!' };
+const NPC_LINES = { bess: ["Fancy a new house, Cap'n?", 'Hammers ready, Captain!'], barnacle: ['A riddle for you, Captain?', 'Ring the bell for a quiz!'] };
+const MONTAGE_SECS = { scaffold: 0.4, knocks: 1.2, spring: 0.5, cheer: 0.3 }; // sparrow's env.buildTimes + the cheer
+const MODIFIER_KEYS = new Set(['shift', 'control', 'alt', 'meta', 'capslock']);
 const BUY_GUARD = 400; // ms: a double-click or a held Enter buys once
 const STICK = { radius: 52, dead: 0.15, walk: 0.5, run: 0.9, runAfter: 0.5 };
 const TAP = { ms: 250, px: 10 };
@@ -94,6 +147,14 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&l
 export function createTownMode(ctx = {}) {
   const C = ctx || {};
   const U = C.ui || {};
+  // The Kraken Seas (SPEC3 §7, §8, §2.5): read once; false keeps the town exactly as it is today
+  let KRAKEN = false;
+  try {
+    KRAKEN = !!(typeof C.withKraken === 'function' ? C.withKraken() : C.withKraken);
+  } catch {
+    KRAKEN = false;
+  }
+  const PLACES = KRAKEN ? PLACES_KRAKEN : PLACES_TODAY;
   const $ = (id, tag = 'div') => document.getElementById(id) || document.createElement(tag);
   const el = {
     town: U.townScreen || $('town-screen', 'section'),
@@ -123,16 +184,27 @@ export function createTownMode(ctx = {}) {
     tPanel: $('tavern-panel'),
     tChest: $('tavern-chest', 'p'),
     tList: $('tavern-up-list', 'ul'),
+    pList: $('tavern-powder-list', 'ul'),
     tRumour: $('tavern-rumour', 'section'),
     tLog: $('tavern-log', 'section'),
     tBack: $('tavern-back-btn', 'button'),
     tLive: $('tavern-live', 'p'),
     hWalk: $('harbour-walk-btn', 'button'),
     hPlaces: { shipyard: $('harbour-shipyard-btn', 'button'), tailor: $('harbour-tailor-btn', 'button'), tavern: $('harbour-tavern-btn', 'button') },
+    quiz: $('quiz-screen', 'section'),
+    qPanel: $('quiz-panel'),
+    qLive: $('quiz-live', 'p'),
+    build: $('build-screen', 'section'),
+    bPanel: $('build-panel'),
+    bLive: $('build-live', 'p'),
     hExits: $('harbour-exits'),
     aExits: $('aboard-exits'),
     aStay: $('aboard-stay-btn', 'button'),
   };
+  if (KRAKEN) {
+    el.hPlaces.quiz = $('harbour-quiz-btn', 'button');
+    el.hPlaces.builder = $('harbour-build-btn', 'button');
+  }
   const placeBtns = {};
   for (const b of el.places.querySelectorAll('[data-place]')) placeBtns[b.dataset.place] = b;
 
@@ -153,6 +225,13 @@ export function createTownMode(ctx = {}) {
     return Number.isFinite(p) ? p : 0;
   };
   const armoryNow = () => parseArmoryConfig((C.armory && call(C.armory.config)) || null);
+  // the Kraken Seas' records, read through their modules' own rules (never trusted as given)
+  const powderNow = () => parsePowder((C.powder && call(C.powder.state && C.powder.state.bind(C.powder))) ?? null);
+  const islandNow = () => parseIsland((C.island && call(C.island.state && C.island.state.bind(C.island))) ?? null);
+  const unlockedNow = () => {
+    const u = call(C.unlocked);
+    return Number.isInteger(u) ? Math.max(1, Math.min(99, u)) : 1;
+  };
   const touch = () => {
     const t = call(C.isTouch);
     if (typeof t === 'boolean') return t;
@@ -199,6 +278,14 @@ export function createTownMode(ctx = {}) {
   let stick = null; // { id, x0, y0, mag, over, run }
   let drag = null; // { id, x, y, x0, y0, t0, moved }
   let liveTimer = 0;
+  // the Kraken Seas
+  const powderRefused = new Set(); // recipes whose record storage refused this visit (the row says why)
+  let lastPowder = '';
+  let lastPowderRef = null;
+  let lastIslandRef = null;
+  let lastQuizRef = null;
+  let plotFocus = null; // the plot the build view's camera looks at (null: Bess at her easel)
+  let montage = null; // { id, t, cfg }: a building going up; the villagers move in and everyone cheers after it
 
   // ---------------------------------------------------------------------------------------------
   // Static DOM: icons and labels on the HUD, the wardrobe groups, the tavern rows
@@ -216,11 +303,15 @@ export function createTownMode(ctx = {}) {
     b.innerHTML = `${ICONS[id]}<span class="tp-label">${esc(label)}</span>`;
     b.setAttribute('aria-label', id === 'ship' ? 'Walk to your ship and set sail' : `Walk to ${WALK_NAME[id]}`);
     b.classList.add('town-place');
+    if (KRAKEN) b.classList.remove('hidden'); // (the Riddle Bell's and Bess's buttons wait, hidden, until then)
   }
+  // the six-button bar (SPEC3 §7.1): town.css makes it icon-only, 44 × 44, on phones and short landscape
+  if (KRAKEN) el.places.classList.add('six');
   for (const [id, b] of Object.entries(el.hPlaces)) {
     const label = b.textContent.trim();
     b.innerHTML = `${ICONS[id]}<span>${esc(label)}</span>`;
     b.classList.add('harbour-place');
+    if (KRAKEN) b.classList.remove('hidden');
   }
   // keyboard help: one unbroken item per action
   el.keys.innerHTML = [
@@ -253,7 +344,7 @@ export function createTownMode(ctx = {}) {
   // ----- wardrobe -----
   const itemBtns = new Map(); // id -> button
   // the Kraken Seas trophies stay out of the wardrobe and the log until that voyage is in the game
-  const hiddenItem = (id) => !C.withKraken && KRAKEN_ITEMS.includes(id);
+  const hiddenItem = (id) => !KRAKEN && KRAKEN_ITEMS.includes(id);
   const groupEls = new Map(); // slot -> { group, buyWrap, buyBtn, why }
   let paintBtn = null;
   function buildWardrobe() {
@@ -328,14 +419,76 @@ export function createTownMode(ctx = {}) {
         '</div>';
       el.tList.appendChild(li);
     }
+    if (!KRAKEN) return;
+    // The Powder room (SPEC3 §2.5): Fire, Frost and Stink shot recipes, bought once (outside #tavern-up-list)
+    el.pList.innerHTML = '';
+    if (!el.pList.previousElementSibling || !el.pList.previousElementSibling.classList.contains('powder-h')) {
+      const h = document.createElement('h3');
+      h.className = 'tav-h powder-h';
+      h.id = 'tavern-powder-h';
+      h.textContent = 'Powder room';
+      el.pList.before(h);
+    }
+    el.pList.setAttribute('aria-labelledby', 'tavern-powder-h');
+    el.pList.removeAttribute('aria-label');
+    for (const id of SPECIAL_IDS) {
+      const li = document.createElement('li');
+      li.className = 'up-row powder-row';
+      li.dataset.powderRow = id;
+      li.innerHTML =
+        `<span class="up-ico" aria-hidden="true">${POWDER_ICONS[id] || ''}</span>` +
+        `<div class="up-head"><h3 class="up-name">${esc(SPECIAL[id].name)}</h3></div>` +
+        '<p class="up-stat"><span class="up-values"></span></p>' +
+        `<p class="up-blurb">${esc(WORDS3.blurb[id] || '')}</p>` +
+        '<div class="up-buy">' +
+        `<button type="button" class="buy-btn" data-powder="${id}" aria-describedby="tav-powder-${id}-why"></button>` +
+        `<span class="up-why" id="tav-powder-${id}-why"></span>` +
+        '</div>';
+      el.pList.appendChild(li);
+    }
+    el.pList.classList.remove('hidden');
   }
   buildTavern();
+
+  // ----- the Riddle Bell's and Builder Bess's panels (SPEC3 §7.3, §8.3; created once, with the Kraken Seas) -----
+  let quizPanel = null;
+  let buildPanel = null;
+  if (KRAKEN) {
+    quizPanel = createQuizPanel({
+      root: el.quiz,
+      ctx: {
+        quiz: C.quiz,
+        purse: C.purse,
+        unlocked: C.unlocked,
+        hints: typeof C.hints === 'function' ? C.hints : undefined,
+        island: C.island,
+        audio: C.audio,
+        reducedMotion: reduced,
+        back: () => back(),
+        react: (what, info) => quizReact(what, info),
+      },
+    });
+    buildPanel = createBuildPanel({
+      root: el.build,
+      ctx: {
+        island: C.island,
+        purse: C.purse,
+        audio: C.audio,
+        reducedMotion: reduced,
+        back: () => back(),
+        focusPlot: (id) => focusPlot(id),
+        celebrate: (id, tier) => celebrate(id, tier),
+        skipCelebration: () => skipCelebration(),
+      },
+    });
+  }
+  const panelOf = (v) => (v === 'quiz' ? quizPanel : v === 'build' ? buildPanel : null);
 
   // ---------------------------------------------------------------------------------------------
   // Announcements (polite, de-duplicated like the shipyard's)
   // ---------------------------------------------------------------------------------------------
   function liveFor() {
-    return view === 'tailor' ? el.wLive : view === 'tavern' ? el.tLive : el.live;
+    return view === 'tailor' ? el.wLive : view === 'tavern' ? el.tLive : view === 'quiz' ? el.qLive : view === 'build' ? el.bLive : el.live;
   }
   function announce(text, region = liveFor()) {
     if (!text) return;
@@ -403,6 +556,8 @@ export function createTownMode(ctx = {}) {
   }
   function hideAllScreens() {
     for (const s of [el.town, el.wardrobe, el.tavern]) show(s, false);
+    if (quizPanel) quizPanel.close();
+    if (buildPanel) buildPanel.close();
     bubble.classList.add('hidden');
   }
   function clearInput() {
@@ -468,7 +623,8 @@ export function createTownMode(ctx = {}) {
     return true;
   }
 
-  /** Open a place: 'shipyard' | 'tailor' | 'tavern' | 'ship' (the All aboard? dialog). */
+  /** Open a place: 'shipyard' | 'tailor' | 'tavern' | 'ship' (the All aboard? dialog); with the Kraken Seas also
+   * 'quiz' (the Riddle Bell's panel) and 'builder' (Builder Bess's panel, the view 'build'). */
   function open(id) {
     if (!PLACES.includes(id)) return false;
     if (view === 'shop') {
@@ -482,6 +638,8 @@ export function createTownMode(ctx = {}) {
     }
     if (id === 'ship') return openAboard();
     if (id === 'tailor') return openWardrobe();
+    if (id === 'quiz') return openQuiz();
+    if (id === 'builder') return openBuild();
     return openTavern();
   }
 
@@ -494,7 +652,7 @@ export function createTownMode(ctx = {}) {
 
   function enterPanel(id) {
     if (!ensureTown()) return false;
-    if (view === 'tailor' || view === 'tavern') leavePanel();
+    if (PANEL_VIEWS.includes(view)) leavePanel();
     closeDialogs(false);
     clearInput();
     town.exit();
@@ -502,7 +660,7 @@ export function createTownMode(ctx = {}) {
     resetLens();
     show(el.town, false);
     bubble.classList.add('hidden');
-    view = id;
+    view = VIEW_OF[id] || id;
     return true;
   }
 
@@ -537,6 +695,27 @@ export function createTownMode(ctx = {}) {
     return true;
   }
 
+  // Professor Barnacle's Riddle Bell (SPEC3 §7): the quiz panel beside the bell, the professor and the captain
+  function openQuiz() {
+    if (view === 'quiz') return true;
+    if (!quizPanel || !enterPanel('quiz')) return false;
+    quizPanel.open(); // (shows #quiz-screen, pays any owed star gold, focuses the highest open island)
+    town.setPanel('quiz', el.qPanel, 'captain');
+    renderChests(true);
+    return true;
+  }
+  // Builder Bess (SPEC3 §8.3): the build panel beside Bess and her island plan; a row in focus glides the camera
+  // to its plot (focusPlot)
+  function openBuild() {
+    if (view === 'build') return true;
+    if (!buildPanel || !enterPanel('builder')) return false;
+    plotFocus = null;
+    buildPanel.open(); // (shows #build-screen, focuses the Homes tab)
+    town.setPanel('build', el.bPanel, 'captain');
+    renderChests(true);
+    return true;
+  }
+
   /** Leave a panel view's 3D set-up and screen (no view change). */
   function leavePanel() {
     if (view === 'tailor') {
@@ -546,7 +725,12 @@ export function createTownMode(ctx = {}) {
       show(el.wardrobe, false);
       if (crewDirty) restyleCrew(); // the uniform chosen there, on the cleaning crew at last
     } else if (view === 'tavern') show(el.tavern, false);
-    else return;
+    else if (view === 'quiz') {
+      if (quizPanel) quizPanel.close();
+    } else if (view === 'build') {
+      if (buildPanel) buildPanel.close(); // (a montage still going is finished: skipCelebration)
+      plotFocus = null;
+    } else return;
     if (town) town.park(null);
     resetLens();
   }
@@ -554,8 +738,8 @@ export function createTownMode(ctx = {}) {
   /** Back to walking: from a panel (focus on its place in the bar), or from the shipyard. */
   function back() {
     if (view === 'shop') return ashore();
-    if (view === 'tailor' || view === 'tavern') {
-      const id = view;
+    if (PANEL_VIEWS.includes(view)) {
+      const id = PLACE_OF[view] || view;
       leavePanel();
       view = 'town';
       town.enter(id);
@@ -579,6 +763,9 @@ export function createTownMode(ctx = {}) {
   function close() {
     closeDialogs(false);
     if (view === 'tailor' && trial) revertTrial(false, true);
+    if (montage) finishMontage(); // (the island goes: a building going up stands; villagers set at the next dock)
+    plotFocus = null;
+    powderRefused.clear();
     trial = null;
     lineupOn = false;
     crewDirty = false; // (the island goes; the next visit dresses its crew from the saved look)
@@ -740,17 +927,18 @@ export function createTownMode(ctx = {}) {
       return;
     }
     const verb = PROMPT_VERB[id] || 'Go in';
+    const say = VERB_SAY[id] || 'go in';
     el.prompt.innerHTML = touch()
       ? `<span class="tp-name">${esc(p.name)}</span><span class="tp-sep" aria-hidden="true"> — </span><span class="tp-key">${verb}</span>`
       : `<span class="tp-name">${esc(p.name)}</span><span class="tp-sep" aria-hidden="true"> — </span><span class="tp-key"><kbd>Enter</kbd><span aria-hidden="true"> &#9166;</span></span>`;
     // its name spelled out (the visible " — " between the two parts is decoration)
-    el.prompt.setAttribute('aria-label', touch() ? `${p.name}: ${verb}` : `${p.name}: press Enter to ${verb === 'All aboard' ? 'go aboard' : 'go in'}`);
+    el.prompt.setAttribute('aria-label', touch() ? `${p.name}: ${verb}` : `${p.name}: press Enter to ${say}`);
     show(el.prompt, true);
     el.action.setAttribute('aria-disabled', 'false');
     el.action.setAttribute('aria-label', `${verb}: ${p.name}`);
     el.action.querySelector('.ta-ico').innerHTML = ICONS[id] || '';
     el.action.querySelector('.ta-label').textContent = id === 'ship' ? 'Aboard' : verb;
-    if (!force) announce(touch() ? `${p.name}. Tap ${verb}.` : `${p.name}. Press E or Enter to ${verb === 'All aboard' ? 'go aboard' : 'go in'}.`, el.live);
+    if (!force) announce(touch() ? `${p.name}. Tap ${verb}.` : `${p.name}. Press E or Enter to ${say}.`, el.live);
   }
 
   function renderChests(force = false) {
@@ -768,6 +956,9 @@ export function createTownMode(ctx = {}) {
     }
     if (view === 'tailor') renderWardrobe();
     if (view === 'tavern') renderTavern();
+    // (the quiz panel's own chest waits for its coin to land after a round: refreshed on the map and in a round)
+    if (view === 'build' && buildPanel) buildPanel.refresh();
+    if (view === 'quiz' && quizPanel && quizPanel.api.mode !== 'results') quizPanel.refresh();
   }
 
   // townsfolk farther than 40 from the lens are hidden, and those right at it (in the panel views,
@@ -777,15 +968,26 @@ export function createTownMode(ctx = {}) {
     if (env && env.cull && C.camera) call(env.cull.bind(env), C.camera.position.x, C.camera.position.z, 40, view === 'town' ? 1.0 : 2.6);
   };
 
-  // speech bubbles over the townsfolk
-  function greetLine() {
+  // speech bubbles over the townsfolk (who: town.js's greeter, { villager?, home?, npc? }, SPEC3 §8.4)
+  function greetLine(who = null) {
     const look = lookNow() || { cap: {} };
     const feats = featsNow() || {};
-    const lines = ['Ahoy, Captain!', 'Fair winds, Captain!', "Lovely day for it, Cap'n!"];
+    if (KRAKEN && who && who.npc && NPC_LINES[who.npc]) {
+      const say = NPC_LINES[who.npc];
+      return say[Math.floor(Math.random() * say.length)];
+    }
+    const villager = KRAKEN && !!(who && who.villager);
+    const lines = villager ? [VILLAGER_LINES.house, VILLAGER_LINES.house, 'Ahoy, Captain!'] : ['Ahoy, Captain!', 'Fair winds, Captain!', "Lovely day for it, Cap'n!"];
     const coat = ITEMS[`coat.${look.cap && look.cap.coat}`];
     if (coat && (coat.price || coat.trophy)) lines.push("Fine coat, Cap'n!", "Fine coat, Cap'n!", "Fine coat, Cap'n!");
-    if (look.cap && look.cap.pet && look.cap.pet !== 'none') lines.push('Is that a parrot?!', 'Is that a parrot?!', 'Is that a parrot?!');
+    const pet = look.cap && look.cap.pet;
+    if (pet === 'octopus') lines.push('Is that a baby kraken?!', 'Is that a baby kraken?!', 'Is that a baby kraken?!');
+    else if (pet && pet !== 'none') lines.push('Is that a parrot?!', 'Is that a parrot?!', 'Is that a parrot?!');
     if (feats.captures > 0) lines.push('Heard you took a prize!', 'Heard you took a prize!', 'Heard you took a prize!');
+    if (villager) {
+      if (tierOf(islandNow(), 'bakery') >= 1) lines.push(VILLAGER_LINES.bakery, VILLAGER_LINES.bakery, VILLAGER_LINES.bakery);
+      if (feats.kraken >= 1) lines.push(VILLAGER_LINES.kraken, VILLAGER_LINES.kraken, VILLAGER_LINES.kraken);
+    }
     return lines[Math.floor(Math.random() * lines.length)];
   }
   function placeBubble(at) {
@@ -1098,6 +1300,108 @@ export function createTownMode(ctx = {}) {
       li.classList.toggle('maxed', cost === null);
       li.classList.toggle('poor', cost !== null && !!reason);
     }
+    if (KRAKEN) renderPowder();
+  }
+
+  // The Powder room's rows: owned, on sale (Buy), too poor, not on sale yet (and why), or refused by storage
+  function renderPowder() {
+    const own = powderNow().own;
+    const unlocked = unlockedNow();
+    const purse = purseNow();
+    const extra = perks(islandNow()).extraLoads || 0;
+    lastPowder = JSON.stringify(own);
+    for (const li of el.pList.children) {
+      const id = li.dataset.powderRow;
+      if (!SPECIAL_IDS.includes(id)) continue;
+      const name = SPECIAL[id].name;
+      const price = RECIPES[id].price;
+      const owned = own[id] === 1;
+      const sale = onSale(id, unlocked);
+      const loads = LOADS.base + extra;
+      const vals = li.querySelector('.up-values');
+      const valHTML = `<b>${loads} loads</b> every level start${extra ? ` <span class="up-extra">(Windmill +${extra})</span>` : ''}`;
+      if (vals.innerHTML !== valHTML) vals.innerHTML = valHTML;
+      const btn = li.querySelector('.buy-btn');
+      const why = li.querySelector('.up-why');
+      let reason = '';
+      let html;
+      if (owned) {
+        html = '<span class="tick" aria-hidden="true">&#10003;</span><span class="buy-word">Owned</span>';
+        btn.setAttribute('aria-label', `${name} recipe: owned`);
+        reason = touch() ? 'Tap Ammo in battle' : `Press ${SPECIAL[id].key} in battle`;
+      } else if (!sale) {
+        html = `${LOCK_SVG}<span class="buy-word">Soon</span><span class="buy-cost"><span class="coin" aria-hidden="true"></span>${price}</span>`;
+        btn.setAttribute('aria-label', `${name} recipe, ${price} gold: not on sale yet`);
+        reason = WORDS3.locked(id);
+      } else {
+        html = `<span class="buy-word">Buy</span><span class="buy-cost"><span class="coin" aria-hidden="true"></span>${price}</span>`;
+        btn.setAttribute('aria-label', `Buy ${price} gold: ${name} recipe`);
+        if (powderRefused.has(id)) reason = "Couldn't save: your browser's storage is full or switched off";
+        else if (purse < price) reason = `Need ${price - purse} more gold`;
+      }
+      if (btn.dataset.html !== html) {
+        btn.dataset.html = html;
+        btn.innerHTML = html;
+      }
+      // (out of reach stays focusable, aria-disabled, with the reason beside it: no hidden traps)
+      btn.setAttribute('aria-disabled', String(owned || !!reason));
+      btn.classList.toggle('maxed', owned);
+      why.textContent = reason;
+      li.classList.toggle('maxed', owned);
+      li.classList.toggle('locked', !owned && !sale);
+      li.classList.toggle('poor', !owned && sale && !!reason);
+    }
+  }
+
+  /** Buy a recipe in the Powder room: main writes the powder record first and the chest second (SPEC3 §0.1). */
+  function buyPowder(id, e = null) {
+    if (!KRAKEN || view !== 'tavern' || !SPECIAL_IDS.includes(id)) return false;
+    const now = performance.now();
+    const at = e && e.timeStamp > 0 && e.timeStamp <= now ? e.timeStamp : now;
+    if (lastBuy.id === `powder.${id}` && ((e && e.detail > 1) || at - lastBuy.at < BUY_GUARD)) return false;
+    const name = SPECIAL[id].name;
+    const price = RECIPES[id].price;
+    const pre = buyRecipe(powderNow(), purseNow(), id, unlockedNow());
+    const no = (text) => {
+      announce(text, el.tLive);
+      lastBuy = { id: '', at: -Infinity };
+      return false;
+    };
+    if (!pre.ok) {
+      if (pre.reason === 'owned') return no(`You have the ${name} recipe. Its loads refill at every level start.`);
+      if (pre.reason === 'locked') return no(`${WORDS3.locked(id)}.`);
+      if (pre.reason === 'poor') return no(`The ${name} recipe costs ${price} gold. You need ${price - purseNow()} more gold.`);
+      return no(`Couldn't buy the ${name} recipe.`);
+    }
+    const r = C.powder ? call(C.powder.buy && C.powder.buy.bind(C.powder), id) : undefined;
+    const ok = r === true || (r && r.ok === true);
+    if (!ok) {
+      const reason = r && typeof r === 'object' ? r.reason : r === false ? 'storage' : null;
+      if (reason === 'storage') {
+        powderRefused.add(id);
+        renderTavern();
+        return no("Couldn't save: your browser's storage is full or switched off. Nothing was paid.");
+      }
+      renderTavern();
+      return no(`Couldn't buy the ${name} recipe.`);
+    }
+    powderRefused.delete(id);
+    lastBuy = { id: `powder.${id}`, at: performance.now() };
+    // the docked ship shows a keg for every recipe owned (ships.js `powder`): built again with the new one
+    if (!(r && r.rebuilt)) call(C.rebuildShip);
+    renderTavern();
+    renderChests();
+    renderRumour();
+    sfx('coin');
+    setTimeout(() => sfx('coin', { pitch: 1.25 }), 110);
+    if (town && town.captain.mesh) {
+      const p = town.captain.mesh.position;
+      town.sparkle(p.x, p.y + 1.9, p.z);
+      town.cheer('captain', 1.5);
+    }
+    const loads = LOADS.base + (perks(islandNow()).extraLoads || 0);
+    announce(`Bought the ${name} recipe! ${loads} loads at every level start: ${touch() ? 'tap Ammo' : `press ${SPECIAL[id].key}`} in battle.`, el.tLive);
+    return true;
   }
 
   function buyArmory(id, e = null) {
@@ -1145,6 +1449,12 @@ export function createTownMode(ctx = {}) {
     const b = e.target instanceof Element && e.target.closest('[data-armory]');
     if (b) buyArmory(b.dataset.armory, e);
   });
+  if (KRAKEN) {
+    el.pList.addEventListener('click', (e) => {
+      const b = e.target instanceof Element && e.target.closest('[data-powder]');
+      if (b) buyPowder(b.dataset.powder, e);
+    });
+  }
 
   function renderRumour() {
     const r = call(C.rumour) || null;
@@ -1152,14 +1462,19 @@ export function createTownMode(ctx = {}) {
     let lines = r && Array.isArray(r.lines) ? r.lines.filter((x) => typeof x === 'string') : [];
     if (!lines.length && title && OLD_RUMOURS[title]) lines = OLD_RUMOURS[title];
     const ammo = r && AMMO_NAMES[r.ammo] ? AMMO_NAMES[r.ammo] : null;
+    // the Powder room's tips, once that recipe is owned (SPEC3 §2.2: the only two immunities, said before a fight)
+    const own = KRAKEN ? powderNow().own : null;
+    const tips = own ? SPECIAL_IDS.filter((id) => own[id] === 1 && WORDS3.powderTip[id]).map((id) => WORDS3.powderTip[id]) : [];
+    const tipHTML = tips.map((l) => `<p class="rumour-line rumour-tip">${esc(l)}</p>`).join('');
     el.tRumour.innerHTML =
       '<h3 class="tav-h">Rumour board</h3>' +
       (title
         ? `<div class="rumour-note"><p class="rumour-title">Next voyage: <b>${esc(title)}</b></p>` +
           lines.map((l) => `<p class="rumour-line">${esc(l)}</p>`).join('') +
           (ammo ? `<p class="rumour-ammo">Bring: <b>${esc(ammo)}</b></p>` : '') +
+          tipHTML +
           '</div>'
-        : '<div class="rumour-note"><p class="rumour-line">No news today. The regulars are arguing about seagulls.</p></div>');
+        : `<div class="rumour-note"><p class="rumour-line">No news today. The regulars are arguing about seagulls.</p>${tipHTML}</div>`);
   }
 
   function renderLog() {
@@ -1189,6 +1504,119 @@ export function createTownMode(ctx = {}) {
         })
         .join('') +
       '</ul>';
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  // The Riddle Bell's and Builder Bess's 3D side (SPEC3 §7.3, §8.3)
+  // ---------------------------------------------------------------------------------------------
+  // The quiz panel's moments, on the 3D set beside it: the captain cheers a right answer and his new stars (a
+  // sparkle over his hat); sparrow's professor rings the bell / Quizzle tilts his head where it can
+  // (env.npcReact, a no-op until sparrow has it).
+  function quizReact(what, info) {
+    if (view !== 'quiz' || !town) return;
+    const env = envNow();
+    const npc = (who, act, secs) => env && typeof env.npcReact === 'function' && call(env.npcReact.bind(env), who, act, secs);
+    const sparkleCap = () => {
+      const m = town.captain.mesh;
+      if (m) town.sparkle(m.position.x, m.position.y + 2.0, m.position.z);
+    };
+    if (what === 'right') {
+      npc('barnacle', 'ring', 1.6);
+      town.cheer('captain', 1.2);
+    } else if (what === 'wrong') {
+      npc('barnacle', 'tilt', 1.2);
+    } else if (what === 'results') {
+      const stars = info && Number.isFinite(info.stars) ? info.stars : 0;
+      if (stars > 0) {
+        npc('barnacle', 'ring', 2);
+        town.cheer('captain', 1.8);
+        sparkleCap();
+      }
+    } else if (what === 'open' || what === 'map') {
+      town.setPanel('quiz', el.qPanel, 'captain'); // (the bell and the professor beside the panel again)
+    }
+  }
+
+  // A plot's box (its platform's footprint, as tall as the building that stands there now), for framing it
+  function plotBox(info) {
+    if (!info || !Number.isFinite(info.x) || !Number.isFinite(info.z)) return null;
+    const w = (Number.isFinite(info.w) ? info.w : 4) / 2;
+    const d = (Number.isFinite(info.d) ? info.d : 4) / 2;
+    const ry = Number.isFinite(info.ry) ? info.ry : 0;
+    const y0 = Number.isFinite(info.y) ? info.y : 1.3;
+    const H = Number.isFinite(info.height) ? info.height : 6;
+    const tier = Number.isInteger(info.tier) ? Math.max(0, Math.min(3, info.tier)) : 0;
+    // (as tall as what stands there: today's shack about 4.6 u, then the tiers up to the plot's full height)
+    const y1 = y0 + Math.max(3.6, [Math.min(H, 4.6), H * 0.7, H * 0.85, H][tier]);
+    const c = Math.cos(ry);
+    const sn = Math.sin(ry);
+    const out = [];
+    for (const [lx, lz] of [[-w, -d], [w, -d], [w, d], [-w, d]]) {
+      const x = info.x + lx * c + lz * sn;
+      const z = info.z - lx * sn + lz * c;
+      out.push([x, y0, z], [x, y1, z]);
+    }
+    return out;
+  }
+  /** The build view's camera glides to a plot (sparrow's plotPose), framed beside the panel; a cut under reduced
+   * motion. The lens backs off (town.js) where a phone's bottom sheet leaves too little room for it. */
+  function focusPlot(id, { cut = false } = {}) {
+    if (view !== 'build' || !town) return false;
+    const env = envNow();
+    const pose = env && typeof env.plotPose === 'function' ? call(env.plotPose.bind(env), id) : null;
+    if (!pose) return false;
+    const list = env.plots;
+    const info = Array.isArray(list) ? list.find((q) => q && q.id === id) : null;
+    const ok = town.setPanel('build', el.bPanel, { pos: pose.pos, target: pose.target, points: plotBox(info) || [pose.target], fit: true }, { secs: 0.9, cut });
+    if (ok) plotFocus = id;
+    return ok;
+  }
+  /** The build montage (buildPanel's celebrate): the building goes up on the 3D island (sparrow's scaffold, knocks
+   * and spring), the plaque gets the new rank; the villagers move in and everyone cheers when it stands. */
+  function celebrate(id, tier) {
+    const env = envNow();
+    const cfg = islandNow();
+    if (montage) finishMontage();
+    if (view === 'build' && plotFocus !== id) focusPlot(id);
+    if (env && typeof env.setIsland === 'function') call(env.setIsland.bind(env), cfg, { built: id });
+    if (env && typeof env.setRank === 'function') call(env.setRank.bind(env), islandRank(cfg).name);
+    montage = { id, tier, t: 0, cfg };
+    const T = env && env.buildTimes && typeof env.buildTimes === 'object' ? env.buildTimes : MONTAGE_SECS;
+    const secs = (Number.isFinite(T.scaffold) ? T.scaffold : MONTAGE_SECS.scaffold) + (Number.isFinite(T.knocks) ? T.knocks : MONTAGE_SECS.knocks) + (Number.isFinite(T.spring) ? T.spring : MONTAGE_SECS.spring);
+    return secs + MONTAGE_SECS.cheer;
+  }
+  function skipCelebration() {
+    const env = envNow();
+    if (env && typeof env.finishBuild === 'function') call(env.finishBuild.bind(env));
+    finishMontage();
+  }
+  // The building stands: the new villagers walk out into the town, the plot sparkles, a cheer (once)
+  function finishMontage() {
+    const M = montage;
+    if (!M) return;
+    montage = null;
+    const env = envNow();
+    const cfg = islandNow();
+    if (env && typeof env.setVillagers === 'function') call(env.setVillagers.bind(env), islandVillagers(cfg));
+    if (view !== 'build') return;
+    sfx('cheer');
+    if (env && typeof env.npcReact === 'function') call(env.npcReact.bind(env), 'bess', 'cheer', 1.6);
+    const info = Array.isArray(env && env.plots) ? env.plots.find((q) => q && q.id === M.id) : null;
+    const box = plotBox(info);
+    if (town && box) town.sparkle(info.x, box[1][1] + 0.4, info.z);
+  }
+  // sparrow's building still going up (it runs on the game's clock, which a slow frame rate stretches past the build
+  // panel's own montage window)
+  function montageRunning() {
+    const env = envNow();
+    return !!(montage && env && env.montage);
+  }
+  function stepMontage(dt) {
+    if (!montage) return;
+    montage.t += dt;
+    const env = envNow();
+    // (sparrow's own montage over, or none started: the building stands)
+    if (!env || !env.montage || montage.t > 12) finishMontage();
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1231,6 +1659,17 @@ export function createTownMode(ctx = {}) {
       if (!down && dir) held.delete(dir);
       return false; // Tab and the dialog's buttons are main's and the browser's
     }
+    // A building still going up after the build panel's own montage window (a slow frame rate): a key only skips it,
+    // as during the panel's window (a held key's auto-repeat doesn't)
+    if (down && view === 'build' && montageRunning() && !(buildPanel && buildPanel.api.celebrating) && !MODIFIER_KEYS.has(k)) {
+      e.preventDefault();
+      if (!e.repeat) skipCelebration();
+      return true;
+    }
+    // The quiz and build panels take their keys first (1–4, H, Esc a step back, Enter held once, a key during the
+    // montage only skips it): nothing they use reaches the town
+    const panelUp = panelOf(view);
+    if (panelUp && down && panelUp.active && panelUp.onKey(e, true)) return true;
     if (!down) {
       if (dir) {
         held.delete(dir);
@@ -1281,7 +1720,7 @@ export function createTownMode(ctx = {}) {
       }
       return false;
     }
-    // tailor / tavern panels
+    // tailor / tavern panels (and the quiz and build panels' Esc, should they not take it)
     if (k === 'escape') {
       e.preventDefault();
       if (!e.repeat) back();
@@ -1323,6 +1762,11 @@ export function createTownMode(ctx = {}) {
     }
     if (type === 'down') {
       if (e.pointerType === 'mouse' && e.button !== 0) return false;
+      // (a tap on the island skips a building still going up, as any tap does during the build panel's montage)
+      if (view === 'build' && montageRunning()) {
+        skipCelebration();
+        return true;
+      }
       const capture = () => {
         try {
           if (C.canvas && C.canvas.setPointerCapture) C.canvas.setPointerCapture(e.pointerId);
@@ -1363,7 +1807,7 @@ export function createTownMode(ctx = {}) {
         const dx = e.clientX - drag.x;
         const dy = e.clientY - drag.y;
         if (!drag.moved && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) > TAP.px) drag.moved = true;
-        if (drag.moved && town && view !== 'tavern') {
+        if (drag.moved && town && (view === 'town' || view === 'tailor')) {
           drag.x = e.clientX;
           drag.y = e.clientY;
           town.drag(dx, view === 'town' ? dy : 0);
@@ -1431,10 +1875,37 @@ export function createTownMode(ctx = {}) {
         if (JSON.stringify(armoryNow()) !== lastArmory) renderTavern();
       }
     }
+    if (!KRAKEN) return;
+    // the Kraken Seas' records (another tab, a test): the Powder room, the build and quiz panels follow
+    if (view === 'tavern') {
+      const ref = (C.powder && call(C.powder.state && C.powder.state.bind(C.powder))) || null;
+      if (ref !== lastPowderRef) {
+        lastPowderRef = ref;
+        if (JSON.stringify(powderNow().own) !== lastPowder) {
+          renderPowder();
+          renderRumour();
+        }
+      }
+    }
+    if (view === 'build' && buildPanel) {
+      const ref = (C.island && call(C.island.state && C.island.state.bind(C.island))) || null;
+      if (ref !== lastIslandRef) {
+        lastIslandRef = ref;
+        buildPanel.refresh();
+      }
+    }
+    if (view === 'quiz' && quizPanel) {
+      const ref = (C.quiz && call(C.quiz.record && C.quiz.record.bind(C.quiz))) || null;
+      if (ref !== lastQuizRef) {
+        lastQuizRef = ref;
+        if (quizPanel.api.mode === 'map') quizPanel.refresh();
+      }
+    }
   }
 
   function update(dt, t) {
     syncMute();
+    stepMontage(Number.isFinite(dt) ? Math.max(0, dt) : 0);
     if (view === 'shop') {
       if (town) town.update(dt, t); // the captain idles where he stood
       return false;
@@ -1457,7 +1928,7 @@ export function createTownMode(ctx = {}) {
       if (r.arrived && !activeModal()) open(r.arrived);
       if (view === 'town') {
         refreshPrompt();
-        if (r.greet) bubble.textContent = greetLine();
+        if (r.greet) bubble.textContent = greetLine(r.greet);
         placeBubble(r.bubble);
       }
     }
@@ -1467,6 +1938,14 @@ export function createTownMode(ctx = {}) {
   function onResize() {
     if (view === 'tailor' && town) town.setPanel('tailor', el.wPanel, tab === 'crew' ? 'lineup' : 'captain');
     if (view === 'tavern' && town) town.setPanel('tavern', el.tPanel, 'captain');
+    if (view === 'quiz' && town) {
+      town.setPanel('quiz', el.qPanel, 'captain');
+      if (quizPanel) quizPanel.refresh();
+    }
+    if (view === 'build' && town) {
+      if (!plotFocus || !focusPlot(plotFocus, { cut: true })) town.setPanel('build', el.bPanel, 'captain');
+      if (buildPanel) buildPanel.refresh();
+    }
     endStick();
   }
 
@@ -1474,6 +1953,11 @@ export function createTownMode(ctx = {}) {
     if (view === 'town') focus(el.town);
     else if (view === 'tailor') focus(el.wTabs[tab === 'crew' ? 1 : 0]);
     else if (view === 'tavern') focus(el.tPanel.querySelector('.buy-btn') || el.tBack);
+    else if (view === 'quiz' || view === 'build') {
+      const p = view === 'quiz' ? el.qPanel : el.bPanel;
+      const a = document.activeElement;
+      if (!(a instanceof HTMLElement && p.contains(a))) focus([...p.querySelectorAll('button')].find((b) => b.getClientRects().length) || p);
+    }
   }
 
   /** Re-read the look, feats, chest and armory now (after a change made outside the panels). */
@@ -1490,6 +1974,11 @@ export function createTownMode(ctx = {}) {
       renderLog();
       renderRumour();
     }
+    lastPowderRef = undefined;
+    lastIslandRef = undefined;
+    lastQuizRef = undefined;
+    const p = panelOf(view);
+    if (p) p.refresh();
   }
 
   el.ashore.addEventListener('click', () => {
@@ -1564,7 +2053,7 @@ export function createTownMode(ctx = {}) {
       if (r.arrived) open(r.arrived);
       refreshPrompt();
       // (a greeting started meanwhile: its words in the bubble, as update() does, never an empty bubble)
-      if (r.greet && view === 'town') bubble.textContent = greetLine();
+      if (r.greet && view === 'town') bubble.textContent = greetLine(r.greetBy);
       return r;
     },
     wardrobe: {
@@ -1576,7 +2065,29 @@ export function createTownMode(ctx = {}) {
     },
     tavern: {
       buy: (id) => buyArmory(id),
+      powder: (id) => buyPowder(id), // the Powder room (the Kraken Seas)
     },
+    // The Kraken Seas: the panels' own test hooks (quizPanel.js / buildPanel.js api), the build view's camera
+    get withKraken() {
+      return KRAKEN;
+    },
+    get places() {
+      return PLACES.slice();
+    },
+    get quiz() {
+      return quizPanel ? quizPanel.api : null;
+    },
+    get build() {
+      return buildPanel ? buildPanel.api : null;
+    },
+    get plotFocus() {
+      return view === 'build' ? plotFocus : null;
+    },
+    get montage() {
+      return montage ? { id: montage.id, tier: montage.tier, t: montage.t } : null;
+    },
+    focusPlot: (id) => focusPlot(id),
+    greetLine: (who) => greetLine(who),
   };
 
   return {
