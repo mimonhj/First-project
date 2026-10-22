@@ -16,6 +16,9 @@
 //   "Loading…" cue) or answered with "Loading…"; what each ammo is for (hints, tips), chain's badge and SLOWED!,
 //   grape's lost pips blinking red and dark, round shot's bigger hull pops; a desktop window and a phone on its
 //   side keep their chase view, even in a running fight
+// - the Kraken Seas (SPEC3 §13.2, with ?kraken=1): special shot, the ammo tray, statuses, armour, hot and stinky
+//   boarding, the rudder, the thumb slide and the wheel, the records, the rudder row, the new sounds, and the live
+//   game unchanged without ?kraken=1 (the kraken-* sections)
 // The simulation is frozen (the real-time loop is paused) and driven with G.step(1/120) like smoke.cjs;
 // crits are pinned with G.combat.seed() / forceCrit(). Run with `npm test` or `npm run test:battle`
 // (BATTLE_ONLY=damage,ammo,review4 runs some sections; BATTLE_ROOT serves another copy of the game).
@@ -3689,6 +3692,1718 @@ function ev(page, fn, arg = null) {
       check(r.frames >= 20 && r.turned > 1.5 && r.w === 0 && !r.focus && r.mine === 1,
         `${where}, a running fight with her 16 paces off the port beam and hard turns both ways: the camera keeps its chase view (framing weight ${r.w} at most) and your ship stays wholly on screen (${r.mine}) (${J(r)})`);
     }
+  });
+
+  // =========================================================================================================
+  // The Kraken Seas (SPEC3 §13.2's battle additions), with ?kraken=1 until Voyage III sails for everyone:
+  // special shot (keys 4-6, loads, R, Space with the last load, a queued tap, the launch sound, ranges and
+  // reloads), the touch ammo tray and its layout, statuses and their interactions, the bosses' halves and the
+  // two immunities, hot and stinky boarding, the Iron Turtle's armour, the rudder tiers, the thumb slide and the
+  // ship's wheel, the steering setting, the powder / settings / tips / feats records, the shipyard's rudder row,
+  // the new sounds, and the live game (no ?kraken=1) unchanged. BATTLE_ONLY=kraken-ammo,kraken-status,... runs
+  // some of them.
+  // =========================================================================================================
+  const KQ = '?quality=low&kraken=1';
+  const OWN = (fire, frost, stink) => JSON.stringify({ v: 1, own: { fire, frost, stink } });
+  const OWN_ALL = OWN(1, 1, 1);
+  const KSTORE = { 'pirates-ahoy-unlocked': '7', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '65535', 'pirates-ahoy-powder': OWN_ALL };
+  // In-page helpers for these sections (window.K, beside window.T).
+  function installKraken() {
+    const G = window.__game;
+    const K = {
+      // Every pop spawned from now on, read with K.pops() ("ON FIRE!", "FIRE OUT! SSSS!") or K.popList ({ text: its
+      // big line, sub: its second line, cls: its classes }).
+      watchPops() {
+        K.popList = [];
+        if (K.popObs) K.popObs.disconnect();
+        K.popObs = new MutationObserver(K.popRecords);
+        K.popObs.observe(document.getElementById('pops'), { childList: true, subtree: true });
+      },
+      popRecords(recs) {
+        const fresh = [];
+        for (const r of recs) {
+          const el = r.target;
+          if (r.type !== 'childList' || !el.classList) continue;
+          const pop = el.closest('.pop');
+          const text = [...r.addedNodes].map((n) => n.textContent).join('');
+          if (el.classList.contains('pop-main')) {
+            const e = { el: pop, text, sub: '', cls: '' };
+            K.popList.push(e);
+            fresh.push(e);
+          } else if (el.classList.contains('pop-sub') && text) {
+            for (let i = K.popList.length - 1; i >= 0; i--) {
+              if (K.popList[i].el === pop) {
+                K.popList[i].sub = text;
+                break;
+              }
+            }
+          }
+        }
+        for (const e of fresh) e.cls = e.el ? e.el.className : '';
+      },
+      // (the records not delivered yet: a pop spawned in this same synchronous stretch)
+      popsNow() {
+        if (K.popObs) K.popRecords(K.popObs.takeRecords());
+        return K.popList || [];
+      },
+      pops: () => K.popsNow().map((p) => (p.sub ? `${p.text} ${p.sub}` : p.text)),
+      // Every sound played from now on (the names given to audio.play), read with K.sounds.
+      spySounds() {
+        if (!K.sounds) {
+          K.sounds = [];
+          const a = G.audio;
+          const play = a.play;
+          a.play = function (name, ...rest) {
+            K.sounds.push(name);
+            return play.call(this, name, ...rest);
+          };
+        }
+        K.sounds.length = 0;
+      },
+      // Real frames (the loop running) for `seconds` of play, `hold` keeping the ships where they are each frame:
+      // the pops' rate (8 a second) fills up again, and the HUD, the tags and statusfx catch up. The mode is put back.
+      async play(seconds = 1.2, hold = () => {}) {
+        const mode = G.state.mode;
+        G.state.mode = 'playing';
+        const t0 = G.state.time;
+        let n = 0;
+        while (G.state.time - t0 < seconds && n < 400) {
+          await new Promise((r) => requestAnimationFrame(r));
+          hold();
+          n++;
+        }
+        G.state.mode = mode;
+        return n;
+      },
+      hint: () => (T.shown('hint') ? T.text('hint') : ''),
+      // One key pressed and let go (the game's own handlers); the ammo loaded afterwards.
+      press(key, code, o = {}) {
+        T.key(key, code, o);
+        T.key(key, code, { type: 'keyup' });
+        return G.combat.ammo;
+      },
+      // The balls a call fires (their ammo, and the side each flies out on: -1 port, +1 starboard).
+      shots(fn) {
+        const before = new Set(G.balls);
+        fn();
+        const p = G.player;
+        return G.balls.filter((b) => !before.has(b)).map((b) => ({ ammo: b.ammo, side: Math.sign(G.relative(p, b.ox, b.oz).lat) }));
+      },
+      // A broadside from `side` at `e` with the target NOT held (she sails as she will; her guns stay quiet), stepped
+      // until every ball of it is down. Returns her hits from the shot log.
+      fireAt(e, side = 1) {
+        const p = G.player;
+        G.combat.clearLog();
+        p.reload.port = p.reload.star = 0;
+        p.speed = 0;
+        G.playerFire(side);
+        let n = 0;
+        while (G.balls.some((b) => b.owner === 'player') && n < 600) {
+          e.reload.port = e.reload.star = 99;
+          G.step(1 / 120);
+          n++;
+        }
+        return G.combat.log.filter((l) => l.owner === 'player' && l.targetId === e.id);
+      },
+    };
+    window.K = K;
+  }
+  // A page of the game with the Kraken Seas (?kraken=1), the helpers installed. store: the records before it loads
+  // (by default: levels 1-7 open, the tutorial and every tip seen, all three recipes owned).
+  async function openK({ store = KSTORE, ...o } = {}) {
+    const r = await open({ query: KQ, store, ...o });
+    await r.page.evaluate(installKraken);
+    return r;
+  }
+  const r2 = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
+
+  // ------------------------------------------------------------------------------- kraken: special shot (keys)
+  await section('kraken-ammo', async () => {
+    const { ctx, page: kp } = await openK({ label: 'kraken-ammo' });
+    // Every level start loads 4 of each special shot whose recipe you own (the Windmill adds none at tier 0), none of
+    // one you don't; loads never carry over (spent ones come back at the next level start).
+    const loads = await ev(kp, () => {
+      const G = window.__game;
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 0, stink: 1 } });
+      T.level(1);
+      const one = G.specials.loads;
+      G.specials.setLoads({ fire: 0, frost: 0, stink: 1 });
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 1, stink: 1 } });
+      T.level(2);
+      return { one, all: G.specials.loads, saved: localStorage.getItem('pirates-ahoy-powder') };
+    });
+    check(J(loads.one) === '{"fire":4,"frost":0,"stink":4}' && J(loads.all) === '{"fire":4,"frost":4,"stink":4}' && loads.saved === OWN_ALL,
+      `kraken ammo: every level start loads 4 of each special shot whose recipe you own and none of one you don't; spent loads come back at the next level (${J(loads)})`);
+
+    // Keys 4 / 5 / 6 by the physical key (e.code: an AZERTY "(" is Digit5), the numpad too; a held key's repeat
+    // does nothing; 1 by its code goes back to round shot. Each pick says what the shot does and the loads left;
+    // the Ammo cell reads "Stink" "×4".
+    const keys = await ev(kp, async () => {
+      const G = window.__game;
+      T.level(1);
+      G.combat.setAmmo('round');
+      const seq = [];
+      const hints = [];
+      const press = (key, code, o) => {
+        seq.push(K.press(key, code, o));
+        hints.push(K.hint());
+      };
+      press('4', 'Digit4');
+      press('(', 'Digit5');
+      press('6', 'Numpad6');
+      press('4', 'Digit4', { repeat: true });
+      G.state.mode = 'paused';
+      await T.redraw();
+      const cell = { name: T.text('ammo-name'), count: T.text('ammo-count'), shown: T.shown('ammo-count'), state: document.getElementById('gun-ammo').dataset.ammo };
+      G.state.mode = 'playing';
+      press('&', 'Digit1');
+      G.state.mode = 'paused';
+      await T.redraw();
+      cell.round = { name: T.text('ammo-name'), count: T.shown('ammo-count') };
+      return { seq, hints, cell };
+    });
+    check(keys.seq.join() === 'fire,frost,stink,stink,round' && /^Fire shot: .*4 loads left$/.test(keys.hints[0]) && /^Frost shot: .*4 loads left$/.test(keys.hints[1]) && /^Stink shot: .*4 loads left$/.test(keys.hints[2]),
+      `kraken ammo: 4 / 5 (an AZERTY "(") / numpad 6 load Fire, Frost and Stink shot by the key's code, a held key's repeat does nothing, 1 goes back to round; each says what it does and the loads left (${J(keys.seq)} ${J(keys.hints.slice(0, 3))})`);
+    check(keys.cell.name === 'Stink' && keys.cell.count === '×4' && keys.cell.shown && keys.cell.state === 'stink' && keys.cell.round.name === 'Round' && keys.cell.round.count === false,
+      `kraken ammo: the Ammo cell reads "Stink" "×4" (no count for round shot) (${J(keys.cell)})`);
+
+    // Not owned, not on sale yet, none left: the key loads nothing and the hint says why.
+    const why = await ev(kp, () => {
+      const G = window.__game;
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 0, stink: 0 } });
+      T.level(1);
+      G.combat.setAmmo('round');
+      const out = {};
+      const press = (key, code) => ({ ammo: K.press(key, code), hint: K.hint() });
+      out.notOwned = press('5', 'Digit5');
+      G.state.unlocked = 6; // (the Maelstrom not beaten yet)
+      out.locked = press('6', 'Digit6');
+      G.state.unlocked = 7;
+      G.specials.setLoads({ fire: 0, frost: 0, stink: 0 });
+      out.empty = press('4', 'Digit4');
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 1, stink: 1 } });
+      return out;
+    });
+    check(why.notOwned.ammo === 'round' && why.notOwned.hint === 'Buy Frost shot at the Salty Sparrow' && why.locked.ammo === 'round' && why.locked.hint === 'Stink shot goes on sale after the Maelstrom' && why.empty.ammo === 'round' && why.empty.hint === 'No Fire shot left this level',
+      `kraken ammo: a recipe not owned, not on sale or out of loads loads nothing and says why (${J(why)})`);
+
+    // R: round -> chain -> grape -> the specials you own with loads left -> round.
+    const cyc = await ev(kp, () => {
+      const G = window.__game;
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 0, stink: 1 } });
+      T.level(1);
+      G.specials.setLoads({ fire: 2, frost: 0, stink: 0 });
+      G.combat.setAmmo('round');
+      const some = [];
+      for (let i = 0; i < 5; i++) some.push(K.press('r', 'KeyR'));
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 1, stink: 1 } });
+      G.specials.setLoads({ fire: 4, frost: 4, stink: 4 });
+      G.combat.setAmmo('round');
+      const all = [];
+      for (let i = 0; i < 6; i++) all.push(K.press('r', 'KeyR'));
+      return { some, all };
+    });
+    check(cyc.some.join() === 'chain,grape,fire,round,chain' && cyc.all.join() === 'chain,grape,fire,frost,stink,round',
+      `kraken ammo: R cycles round, chain, grape and the special shots you own with loads left (Frost not owned, Stink empty: ${cyc.some.join(', ')}; all three: ${cyc.all.join(', ')})`);
+
+    // Every broadside of a special spends one load per side: Q one, Space two.
+    const spend = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('fire');
+      p.reload.port = p.reload.star = 0;
+      const q = K.shots(() => K.press('q', 'KeyQ'));
+      const afterQ = G.specials.loads.fire;
+      p.reload.port = p.reload.star = 0;
+      const space = K.shots(() => K.press(' ', 'Space'));
+      const out = { guns: p.type.guns, q, afterQ, space, afterSpace: G.specials.loads.fire };
+      T.steps(2.5);
+      return out;
+    });
+    check(spend.q.length === spend.guns && spend.q.every((b) => b.ammo === 'fire' && b.side === -1) && spend.afterQ === 3 && spend.space.length === 2 * spend.guns && spend.space.every((b) => b.ammo === 'fire') && spend.afterSpace === 1,
+      `kraken ammo: a broadside of ${spend.guns} Fire balls spends one load (4 -> ${spend.afterQ}), Space's two broadsides two (-> ${spend.afterSpace})`);
+
+    // Space with one load left: one side fires it, the other round shot in the same step, loaded at once (no
+    // 0.5 s swap, no click); "Out of Fire shot! Round shot loaded." in the hint and #game-live.
+    await kp.evaluate(() => T.watchLive());
+    await kp.evaluate(() => T.liveQuiet());
+    const last = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('fire');
+      G.specials.setLoads({ fire: 1, frost: 4, stink: 4 });
+      p.reload.port = p.reload.star = 0;
+      K.spySounds();
+      const t0 = G.state.time;
+      const balls = K.shots(() => K.press(' ', 'Space'));
+      return {
+        port: [...new Set(balls.filter((b) => b.side < 0).map((b) => b.ammo))].join(),
+        star: [...new Set(balls.filter((b) => b.side > 0).map((b) => b.ammo))].join(),
+        n: balls.length,
+        sameStep: G.state.time === t0,
+        reload: { port: p.reload.port, star: p.reload.star, base: p.type.reload, fireMul: 1.1 },
+        ammo: G.combat.ammo,
+        loads: G.specials.loads.fire,
+        sounds: K.sounds.slice(),
+        hint: K.hint(),
+      };
+    });
+    await kp.evaluate(() => T.liveQuiet());
+    last.live = await kp.evaluate(() => T.liveLog());
+    check(last.port === 'fire' && last.star === 'round' && last.n === 6 && last.sameStep && near(last.reload.star, last.reload.base, 1e-9) && near(last.reload.port, last.reload.base * 1.1, 1e-9) && last.ammo === 'round' && last.loads === 0 && !last.sounds.includes('click'),
+      `kraken ammo: Space with one Fire load left fires it to port and round shot to starboard in the same step, loaded at once (reload ${r2(last.reload.star)} s, no swap, no click) (${J(last)})`);
+    check(last.hint === 'Out of Fire shot! Round shot loaded.' && last.live.includes('Out of Fire shot! Round shot loaded.'),
+      `kraken ammo: out of Fire shot, the hint and #game-live say "Out of Fire shot! Round shot loaded." (${J({ hint: last.hint, live: last.live })})`);
+
+    // A Fire press while the guns load is queued: it spends a load only when it fires, and an ammo change (a key or
+    // R) drops it, spending nothing.
+    const queued = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 4, frost: 4, stink: 4 });
+      G.combat.setAmmo('frost');
+      p.reload.port = 2;
+      p.reload.star = 0.3;
+      K.press('e', 'KeyE');
+      const out = { queued: G.fireQueue.star, loadsQueued: G.specials.loads.frost };
+      const balls = K.shots(() => T.steps(0.4));
+      out.fired = balls.map((b) => b.ammo).join();
+      out.loadsFired = G.specials.loads.frost;
+      p.reload.star = 0.3;
+      K.press('e', 'KeyE');
+      out.queued2 = G.fireQueue.star;
+      K.press('6', 'Digit6'); // stink: the queued Frost shot is dropped
+      out.byKey = { ammo: G.combat.ammo, balls: K.shots(() => T.steps(1)).length, loads: G.specials.loads };
+      p.reload.star = 0.3;
+      K.press('e', 'KeyE');
+      out.queued3 = G.fireQueue.star;
+      K.press('r', 'KeyR'); // stink -> round
+      out.byR = { ammo: G.combat.ammo, balls: K.shots(() => T.steps(1)).length, loads: G.specials.loads };
+      return out;
+    });
+    check(queued.queued && queued.loadsQueued === 4 && /^frost(,frost)*$/.test(queued.fired) && queued.loadsFired === 3,
+      `kraken ammo: a Fire press while the guns load is queued without spending a load, and spends one when it fires (${J({ q: queued.queued, before: queued.loadsQueued, fired: queued.fired, after: queued.loadsFired })})`);
+    check(queued.queued2 && queued.byKey.ammo === 'stink' && queued.byKey.balls === 0 && J(queued.byKey.loads) === '{"fire":4,"frost":3,"stink":4}' && queued.queued3 && queued.byR.ammo === 'round' && queued.byR.balls === 0 && J(queued.byR.loads) === '{"fire":4,"frost":3,"stink":4}',
+      `kraken ammo: an ammo change (6, then R) drops a queued shot: nothing fires and no load is spent (${J({ byKey: queued.byKey, byR: queued.byR })})`);
+
+    // The launch sound: a special ball goes off with the round shot's bang alone (its own sound plays where it hits);
+    // chain shot still whirrs at the gun.
+    const bang = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 4, frost: 4, stink: 4 });
+      const out = {};
+      for (const id of ['fire', 'frost', 'stink', 'chain']) {
+        G.combat.setAmmo(id);
+        p.reload.port = 0;
+        K.spySounds();
+        G.playerFire(-1);
+        out[id] = K.sounds.slice();
+      }
+      T.steps(2.5);
+      return out;
+    });
+    check(['fire', 'frost', 'stink'].every((id) => J(bang[id]) === '["cannon"]') && J(bang.chain) === '["cannon","chain"]',
+      `kraken ammo: a special broadside launches with the cannon's bang alone (its own sound waits for the hit); chain shot still whirrs (${J(bang)})`);
+
+    // Each special's range clamps its flight (Fire 30, Frost 28, Stink 22, against round shot's 34) and its reload
+    // is the ship's × 1.1 / 1.1 / 1.2. (Aim spread and the launch's ±3 % are pinned: Math.random() = 0.5.)
+    const reach = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 4, frost: 4, stink: 4 });
+      const far = T.spawn('privateer', 60, 0, 0);
+      const hold = T.pinner(p, far); // (she would sail into the shot's path)
+      const out = {};
+      const random = Math.random;
+      try {
+        for (const id of ['round', 'fire', 'frost', 'stink']) {
+          G.combat.setAmmo(id);
+          p.reload.star = 0;
+          const before = new Set(G.balls);
+          Math.random = () => 0.5;
+          G.fire(p, 1, far);
+          Math.random = random;
+          const mine = G.balls.filter((b) => !before.has(b));
+          out[id] = { reload: Math.round((p.reload.star / p.type.reload) * 1000) / 1000, n: mine.length, max: 0 };
+          let max = 0;
+          T.steps(2.5, () => {
+            hold();
+            for (const b of mine) max = Math.max(max, Math.hypot(b.x - b.ox, b.z - b.oz));
+          });
+          out[id].max = Math.round(max * 100) / 100;
+        }
+      } finally {
+        Math.random = random;
+      }
+      G.capture.escape(far);
+      return out;
+    });
+    // (a ball splashes down a little past the point its range ends its flight: from the gun deck to the sea, as
+    // round shot does)
+    const RANGE = { round: [34, 1], fire: [30, 1.1], frost: [28, 1.1], stink: [22, 1.2] };
+    const past = (id) => r2(reach[id].max - RANGE[id][0]);
+    check(Object.entries(RANGE).every(([id, [, mul]]) => reach[id].n === 3 && past(id) >= 0.5 && past(id) <= 3 && reach[id].reload === mul),
+      `kraken ammo: Fire, Frost and Stink shot fly 30 / 28 / 22 u (round shot 34), each splashing down ${['round', 'fire', 'frost', 'stink'].map(past).join(' / ')} u past it, and reload in 1.1 / 1.1 / 1.2 × the ship's time (${J(reach)})`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------------- kraken: statuses on a ship
+  // A page for the statuses' sections: window.__setup(type, lat, ammo) puts a ship `lat` off your starboard beam with
+  // the shot loaded, the loads topped up and the pops' rate filled up again (real frames with both ships held), and
+  // watches the pops and sounds from then on.
+  async function statusPage(label) {
+    const r = await openK({ label });
+    const setup = `(async (type, lat, ammo) => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.setAmmo(ammo);
+      G.combat.forceCrit('none');
+      const e = T.spawn(type, lat, 0, 0);
+      await K.play(1.1, T.pinner(p, e));
+      K.watchPops();
+      K.spySounds();
+      return e;
+    })`;
+    await r.page.evaluate((s) => { window.__setup = eval(s); }, setup);
+    await r.page.evaluate(() => T.watchLive());
+    return r;
+  }
+  await section('kraken-status', async () => {
+    const { ctx, page: kp } = await statusPage('kraken-status');
+    const liveQuiet = () => kp.evaluate(() => T.liveQuiet());
+
+    // Fire: a 3-gun volley puts one burn on her: 3 hp/s for 6 s, 18 in all (each ball 0.7 × round shot); ON FIRE!
+    // once, the ignite whoomph once, read out.
+    await liveQuiet();
+    const fire = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('privateer', 18, 'fire');
+      const p = G.player;
+      const hp0 = e.hp;
+      const v = T.volley(e, { seconds: 0.8 });
+      const hull = v.hits.reduce((a, l) => a + l.dmg, 0);
+      const at = v.hits.length ? v.hits[0].t : 0;
+      const out = { guns: p.type.guns, hits: v.hits.map((l) => [l.dmg, l.rangeMul, l.crit]), st: G.specials.status(e), since: G.state.time - at, burn: G.specials.burn(e) };
+      out.ignite = K.sounds.filter((s) => s === 'ignite').length;
+      out.onFire = K.pops().filter((t) => t === 'ON FIRE!').length;
+      // the rest of it, held still: what has burnt, every half second since the hit
+      const hold = T.pinner(p, e);
+      const burnt = [];
+      let endAt = null;
+      T.steps(6.6, () => {
+        hold();
+        const since = G.state.time - at;
+        if (Math.abs(since * 2 - Math.round(since * 2)) < 0.5 / 120) burnt.push([Math.round(since * 100) / 100, Math.round((hp0 - hull - e.hp) * 1000) / 1000]);
+        if (endAt === null && G.specials.status(e).id === null) endAt = G.state.time;
+      });
+      out.burnt = burnt;
+      out.total = Math.round((hp0 - hull - e.hp) * 1000) / 1000;
+      out.lasted = endAt === null ? null : Math.round((endAt - at) * 100) / 100;
+      out.after = G.specials.burn(e);
+      G.capture.escape(e);
+      return out;
+    });
+    await liveQuiet();
+    fire.live = await kp.evaluate(() => T.liveLog());
+    const steady = fire.burnt.every(([t, b]) => b >= Math.min(18, 3 * t) - 1.0001 && b <= Math.min(18, 3 * t) + 1e-9);
+    check(fire.hits.length === 3 && fire.hits.every(([d, m, c]) => near(d, 7 * m, 1e-9) && !c) && fire.st.id === 'fire' && fire.st.max === 6 && near(fire.st.t + fire.since, 6, 0.02) && fire.burn.rate === 3 && fire.burn.from === 'fire',
+      `kraken status: a 3-gun Fire volley hits for 0.7 × round shot a ball and sets her ON FIRE for 6 s at 3 hp/s (${J({ hits: fire.hits, st: fire.st, since: r2(fire.since), burn: fire.burn })})`);
+    check(fire.total === 18 && steady && near(fire.lasted, 6, 0.02) && fire.after.ticks === 0 && fire.onFire === 1 && fire.ignite === 1 && fire.live.includes('The Privateer Brig is on fire'),
+      `kraken status: one burn for the whole volley: 18 hp over 6 s, 1 hp at a time (${J(fire.burnt.filter((x, i) => i % 2 === 0))}); ON FIRE! ×${fire.onFire}, ignite ×${fire.ignite}, read out (${J(fire.live)})`);
+
+    // Frost: half her speed cap and 0.6 of her turning for 5 s; each volley adds 2 s, at most 8; then she is free.
+    const frost = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('privateer', 18, 'frost');
+      const p = G.player;
+      const out = { cap0: G.combat.effects(e).speedCap, vol: [] };
+      for (let k = 0; k < 5; k++) {
+        e.hp = e.hpLow = e.maxHp; // (five volleys would sink her)
+        const v = T.volley(e, { seconds: 0.6 });
+        const st = G.specials.status(e);
+        out.vol.push({ n: v.hits.length, at: v.hits.length ? v.hits[0].t : null, left: st.t + (G.state.time - (v.hits.length ? v.hits[0].t : 0)), max: st.max, id: st.id });
+        if (k === 0) out.fx = G.combat.effects(e);
+      }
+      const hold = T.pinner(p, e);
+      let endAt = null;
+      T.steps(8.5, () => {
+        hold();
+        if (endAt === null && G.specials.status(e).id === null) endAt = G.state.time;
+      });
+      out.lasted = endAt === null ? null : endAt - out.vol[4].at;
+      out.fxAfter = G.combat.effects(e);
+      out.frozen = K.pops().filter((t) => t === 'FROZEN!').length;
+      out.freeze = K.sounds.filter((s) => s === 'freeze').length;
+      G.capture.escape(e);
+      return out;
+    });
+    // what each volley should leave: 5 s, then + 2 s on what was left at its hit, at most 8
+    let want = 5;
+    const frostOk = frost.vol.every((v, k) => {
+      if (k > 0) want = Math.min(8, want - (v.at - frost.vol[k - 1].at) + 2);
+      return v.n === 3 && v.id === 'frost' && near(v.left, want, 0.02);
+    });
+    check(frostOk && frost.vol.some((v) => near(v.left, 8, 0.02)) && frost.vol[0].max === 5 && frost.fx.speedMul === 0.5 && frost.fx.turnMul === 0.6 && near(frost.fx.speedCap, frost.cap0 * 0.5, 1e-9),
+      `kraken status: FROZEN halves her speed cap and turns her at 0.6 for 5 s; each volley adds 2 s, at most 8 (${J(frost.vol.map((v) => r2(v.left)))}, ${J({ speedMul: frost.fx.speedMul, turnMul: frost.fx.turnMul, cap: r2(frost.fx.speedCap), cap0: r2(frost.cap0) })})`);
+    check(near(frost.lasted, 8, 0.03) && frost.fxAfter.speedMul === 1 && frost.fxAfter.turnMul === 1 && frost.frozen >= 1 && frost.freeze === 5,
+      `kraken status: the frost wears off when its time is up (${r2(frost.lasted)} s after the last volley), FROZEN! pops, a freeze sound for each volley (${J({ after: frost.fxAfter.speedMul, pops: frost.frozen, sounds: frost.freeze })})`);
+
+    // Stink: she coasts to a stop at 2 × her accel, never turns and fires nothing for 4 s (her guns loaded, you on
+    // her beam); then 10 s of clothes-pegs (a stink then: "Clothes-pegs!", no status), then it takes again.
+    await liveQuiet();
+    const stink = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('privateer', 18, 'stink');
+      const p = G.player;
+      e.speed = 6;
+      const hits = K.fireAt(e, 1);
+      const at = hits.length ? hits[0].t : 0;
+      const out = { n: hits.length, st: G.specials.status(e), since: G.state.time - at, muls: G.specials.muls(e), cap: G.combat.effects(e).speedCap, accel: e.type.accel, stinky: K.pops().filter((t) => t === 'STINKY!').length, sound: K.sounds.filter((s) => s === 'stink').length };
+      const h1 = e.h;
+      let turned = 0;
+      let drop = 0;
+      let last = e.speed;
+      let stopped = null;
+      e.reload.port = e.reload.star = 0;
+      out.speed0 = e.speed;
+      out.tryFire = G.fire(e, -1, p);
+      T.steps(3.9 - out.since, () => {
+        p.speed = 0;
+        p.reload.port = p.reload.star = 99;
+        turned = Math.max(turned, Math.abs(T.wrap(e.h - h1)));
+        drop = Math.max(drop, last - e.speed);
+        last = e.speed;
+        if (stopped === null && e.speed <= 1e-9) stopped = G.state.time - at;
+      });
+      out.turned = turned;
+      out.drop = drop;
+      out.stopped = stopped;
+      out.reloads = { ...e.reload };
+      out.still = G.specials.status(e).id;
+      T.steps(0.25, () => (p.reload.port = p.reload.star = 99));
+      out.after = G.specials.status(e);
+      e.reload.port = e.reload.star = 0;
+      out.firesAgain = G.fire(e, -1, p);
+      // a stink inside the clothes-peg window
+      G.place(e, p.x - Math.cos(p.h) * 18, p.z + Math.sin(p.h) * 18, p.h);
+      K.watchPops();
+      const v2 = T.volley(e, { seconds: 0.8 });
+      out.pegged = { n: v2.hits.length, st: G.specials.status(e), pops: K.pops().filter((t) => /Clothes-pegs/.test(t)).length };
+      // 10 s after the stink ran out it takes again
+      const hold = T.pinner(p, e);
+      T.steps(Math.max(0, out.after.immune - 0.8) + 0.3, hold); // (the volley took 0.8 s of it)
+      const v3 = T.volley(e, { seconds: 0.8 });
+      out.again = { n: v3.hits.length, st: G.specials.status(e) };
+      G.capture.escape(e);
+      return out;
+    });
+    await liveQuiet();
+    stink.live = await kp.evaluate(() => T.liveLog());
+    check(stink.n >= 1 && stink.st.id === 'stink' && stink.st.max === 4 && stink.cap === 0 && stink.muls.noFire === true && stink.tryFire === false && stink.reloads.port === 0 && stink.reloads.star === 0 && stink.turned === 0 && stink.still === 'stink',
+      `kraken status: STINKY: her speed cap is 0, she can't turn and fires nothing for 4 s with her guns loaded and you on her beam (${J({ st: stink.st, cap: stink.cap, tryFire: stink.tryFire, reloads: stink.reloads, turned: stink.turned })})`);
+    check(stink.speed0 > 0.5 && near(stink.drop, (2 * stink.accel) / 120, 1e-9) && stink.stopped !== null && stink.stopped <= stink.speed0 / (2 * stink.accel) + stink.since + 0.02,
+      `kraken status: a stinky ship coasts to a stop at 2 × her accel (${r2(stink.speed0)} u/s, ${(stink.drop * 120).toFixed(2)} u/s², stopped ${r2(stink.stopped)} s after the hit)`);
+    check(stink.after.id === null && near(stink.after.immune, 10, 0.3) && stink.firesAgain === true && stink.pegged.n >= 1 && stink.pegged.st.id === null && stink.pegged.pops >= 1 && stink.again.n >= 1 && stink.again.st.id === 'stink',
+      `kraken status: after 4 s she sails and fires again, with 10 s of clothes-pegs ("Clothes-pegs!" and no stink then); after them a stink takes again (${J({ after: stink.after, pegged: stink.pegged, again: stink.again.st.id })})`);
+    check(stink.stinky === 1 && stink.sound === 1 && stink.live.includes("The Privateer Brig stinks! She can't move"),
+      `kraken status: STINKY! pops once, the stink sound plays once, and it is read out (${J({ pops: stink.stinky, sounds: stink.sound, live: stink.live })})`);
+
+    // Fire on a stinky ship: KA-BOOM! +15 at once (on top of the hull hits), the stink ends (clothes-pegs start) and
+    // she burns; a soft flash, the blast sound.
+    await liveQuiet();
+    const boom = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('privateer', 18, 'stink');
+      T.volley(e, { seconds: 0.8 });
+      const before = G.specials.status(e).id;
+      G.combat.setAmmo('fire');
+      K.watchPops();
+      K.spySounds();
+      const hp0 = e.hp;
+      const v = T.volley(e, { seconds: 0.8 });
+      const hull = v.hits.reduce((a, l) => a + l.dmg, 0);
+      const flash = document.getElementById('screen-flash');
+      const out = { before, n: v.hits.length, st: G.specials.status(e), ticks: e.burnTicks, lost: hp0 - e.hp, hull, flash: !flash.classList.contains('hidden') && flash.classList.contains('on'), kaboom: K.popsNow().filter((p) => p.text === 'KA-BOOM!').map((p) => p.cls), blast: K.sounds.filter((s) => s === 'blast').length };
+      out.extra = Math.round((out.lost - hull - (18 - out.ticks)) * 1000) / 1000;
+      G.capture.escape(e);
+      return out;
+    });
+    await liveQuiet();
+    boom.live = await kp.evaluate(() => T.liveLog());
+    check(boom.before === 'stink' && boom.n >= 1 && boom.extra === 15 && boom.st.id === 'fire' && near(boom.st.immune, 10, 0.5) && boom.flash && boom.kaboom.length === 1 && /pop-kaboom/.test(boom.kaboom[0]) && boom.blast === 1 && boom.live.some((l) => /KA-BOOM! The Privateer Brig's stink cloud blew up/.test(l)),
+      `kraken status: Fire on a stinky ship: KA-BOOM! +${boom.extra} at once, the stink ends with clothes-pegs on and she burns; a flash, the blast, read out (${J(boom)})`);
+
+    // Frost on a burning ship: FIRE OUT! SSSS!, the fire is out (no more burn) and the frost takes hold.
+    const out = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('privateer', 18, 'fire');
+      const p = G.player;
+      T.volley(e, { seconds: 0.8 });
+      const before = { id: G.specials.status(e).id, ticks: e.burnTicks };
+      G.combat.setAmmo('frost');
+      K.watchPops();
+      K.spySounds();
+      const v = T.volley(e, { seconds: 0.8 });
+      const r = { before, n: v.hits.length, st: G.specials.status(e).id, ticks: e.burnTicks, pops: K.pops().filter((t) => /FIRE OUT/.test(t)), sizzle: K.sounds.filter((s) => s === 'sizzle').length };
+      const hp = e.hp;
+      T.steps(2, T.pinner(p, e));
+      r.burntAfter = hp - e.hp;
+      G.capture.escape(e);
+      return r;
+    });
+    check(out.before.id === 'fire' && out.before.ticks > 0 && out.n >= 1 && out.st === 'frost' && out.ticks === 0 && out.burntAfter === 0 && J(out.pops) === '["FIRE OUT! SSSS!"]' && out.sizzle === 1,
+      `kraken status: Frost on a burning ship: FIRE OUT! SSSS!, the sizzle, the burn stops and she is frozen (${J(out)})`);
+
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------ kraken: bosses and the immunities
+  await section('kraken-bosses', async () => {
+    const { ctx, page: kp } = await statusPage('kraken-bosses');
+    const liveQuiet = () => kp.evaluate(() => T.liveQuiet());
+    // Bosses shake a status off twice as fast (frost 2.5 s + 1 a volley, at most 4; fire 3 s; stink 2 s, then 20 s
+    // of clothes-pegs); the Molten Maw is immune to fire, the Phantom to stink: IMMUNE! and why, read out.
+    const boss = await ev(kp, async () => {
+      const G = window.__game;
+      const out = {};
+      let e = await window.__setup('inkheart', 22, 'frost');
+      const vol = [];
+      for (let k = 0; k < 6; k++) {
+        const v = T.volley(e, { seconds: 0.6 });
+        const at = v.hits.length ? v.hits[0].t : 0;
+        const st = G.specials.status(e);
+        vol.push({ n: v.hits.length, at, left: st.t + (G.state.time - at), max: st.max, id: st.id });
+      }
+      out.frost = vol;
+      G.state.mode = 'paused';
+      await T.redraw();
+      const bs = document.getElementById('boss-status');
+      out.badge = { shown: T.shown('boss-status'), status: bs.dataset.status, text: bs.textContent.replace(/\s+/g, ' ').trim(), left: Number(bs.style.getPropertyValue('--left')) };
+      G.state.mode = 'playing';
+      G.capture.escape(e);
+      e = await window.__setup('phantom', 22, 'fire');
+      const hp0 = e.hp;
+      const v = T.volley(e, { seconds: 0.8 });
+      const hull = v.hits.reduce((a, l) => a + l.dmg, 0);
+      const at = v.hits.length ? v.hits[0].t : 0;
+      out.fire = { n: v.hits.length, st: G.specials.status(e), since: G.state.time - at };
+      T.steps(3.5, T.pinner(G.player, e));
+      out.fire.total = Math.round((hp0 - hull - e.hp) * 1000) / 1000;
+      out.fire.after = G.specials.status(e).id;
+      G.capture.escape(e);
+      e = await window.__setup('inferno', 22, 'stink');
+      const v2 = T.volley(e, { seconds: 0.8 });
+      const at2 = v2.hits.length ? v2.hits[0].t : 0;
+      out.stink = { n: v2.hits.length, st: G.specials.status(e), since: G.state.time - at2 };
+      T.steps(2, T.pinner(G.player, e));
+      out.stink.after = G.specials.status(e);
+      G.capture.escape(e);
+      return out;
+    });
+    let bwant = 2.5;
+    const bossFrost = boss.frost.every((v, k) => {
+      if (k > 0) bwant = Math.min(4, bwant - (v.at - boss.frost[k - 1].at) + 1);
+      return v.n >= 1 && v.id === 'frost' && near(v.left, bwant, 0.02);
+    });
+    check(bossFrost && boss.frost.some((v) => near(v.left, 4, 0.02)) && boss.frost[0].max === 2.5,
+      `kraken status: a boss (the Inkheart) stays FROZEN 2.5 s, + 1 s a volley, at most 4 (${J(boss.frost.map((v) => r2(v.left)))})`);
+    check(boss.badge.shown && boss.badge.status === 'frost' && boss.badge.text === 'FROZEN' && boss.badge.left > 0 && boss.badge.left <= 1,
+      `kraken status: the boss bar shows her status badge: shape and word (${J(boss.badge)})`);
+    check(boss.fire.n >= 1 && boss.fire.st.id === 'fire' && boss.fire.st.max === 3 && near(boss.fire.st.t + boss.fire.since, 3, 0.02) && boss.fire.total === 9 && boss.fire.after === null,
+      `kraken status: a boss (the Phantom) burns for 3 s: 9 hp (${J(boss.fire)})`);
+    check(boss.stink.n >= 1 && boss.stink.st.id === 'stink' && boss.stink.st.max === 2 && near(boss.stink.st.t + boss.stink.since, 2, 0.02) && boss.stink.after.id === null && near(boss.stink.after.immune, 20 - boss.stink.since, 0.05),
+      `kraken status: a boss (the Molten Maw) stinks for 2 s, then 20 s of clothes-pegs (${J(boss.stink)})`);
+    await liveQuiet();
+    const immune = await ev(kp, async () => {
+      const G = window.__game;
+      const out = {};
+      let e = await window.__setup('inferno', 22, 'fire');
+      let v = T.volley(e, { seconds: 0.8 });
+      out.maw = { n: v.hits.length, st: G.specials.status(e), ticks: e.burnTicks, pops: K.popsNow().filter((p) => p.text === 'IMMUNE!').map((p) => p.cls) };
+      G.capture.escape(e);
+      return out;
+    });
+    await liveQuiet();
+    immune.mawLive = await kp.evaluate(() => T.liveLog());
+    const immune2 = await ev(kp, async () => {
+      const G = window.__game;
+      const e = await window.__setup('phantom', 22, 'stink');
+      const v = T.volley(e, { seconds: 0.8 });
+      const r = { n: v.hits.length, st: G.specials.status(e), pops: K.popsNow().filter((p) => p.text === 'IMMUNE!').map((p) => p.cls) };
+      G.capture.escape(e);
+      return r;
+    });
+    await liveQuiet();
+    immune2.live = await kp.evaluate(() => T.liveLog());
+    check(immune.maw.n >= 1 && immune.maw.st.id === null && immune.maw.ticks === 0 && immune.maw.pops.length === 1 && /pop-keep/.test(immune.maw.pops[0]) && immune.mawLive.includes('The Maw laughs at fire!'),
+      `kraken status: the Molten Maw shrugs off Fire shot: no burn, IMMUNE! (never dropped from a busy screen) and "The Maw laughs at fire!" (${J(immune.maw)} ${J(immune.mawLive)})`);
+    check(immune2.n >= 1 && immune2.st.id === null && immune2.pops.length === 1 && /pop-keep/.test(immune2.pops[0]) && immune2.live.includes("Ghosts can't smell!"),
+      `kraken status: the Phantom Galleon shrugs off Stink shot: IMMUNE! and "Ghosts can't smell!" (${J(immune2)})`);
+
+    await ctx.close();
+  });
+
+  // --------------------------------------------------------------------- kraken: what the statuses look like
+  await section('kraken-look', async () => {
+    const { ctx, page: kp } = await statusPage('kraken-look');
+    // What it looks like: flames, ice and the stink cloud on three ships at once (statusfx: at most 8 draw calls),
+    // their tags' status badges with the time dots, and all of it gone when the ships are.
+    const look = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.forceCrit('none');
+      // each gets her shot alone on your starboard beam (the others parked ahead, out of the line of fire), then the
+      // three are shown together
+      const spots = [[-9, 21, 0.9], [2, 29, -0.5], [10, 21, -1.2]]; // (ahead, where the chase camera sees them)
+      const ships = ['fire', 'frost', 'stink'].map((id, k) => [id, T.spawn(k === 1 ? 'corsair' : 'privateer', 18, 60 + 20 * k, 0)]);
+      for (const [id, e] of ships) {
+        G.combat.setAmmo(id);
+        T.place(e, 18, 0, 0);
+        T.volley(e, { seconds: 0.8 });
+        T.place(e, 18, 60, 0);
+      }
+      ships.forEach(([, e], k) => T.place(e, ...spots[k]));
+      const hold = T.pinner(p, ...ships.map(([, e]) => e));
+      G.state.bannerTimer = 0;
+      await K.play(0.6, hold);
+      G.state.mode = 'paused';
+      document.getElementById('banner').classList.add('hidden'); // (the level's banner would hide them in the picture)
+      await T.redraw();
+      const out = { fx: G.specials.fx(), tags: ships.map(([id, e]) => ({ want: id, st: G.specials.status(e).id, tag: (G.tagInfo(e) || {}).status })) };
+      window.__lookShips = ships.map(([, e]) => e);
+      return out;
+    });
+    await snap(kp, 'kraken-statuses.png');
+    const gone = await ev(kp, async () => {
+      const G = window.__game;
+      for (const e of window.__lookShips) G.capture.escape(e);
+      await K.play(0.5);
+      G.state.mode = 'paused';
+      await T.redraw();
+      return G.specials.fx();
+    });
+    const f = look.fx || {};
+    check(f.flames > 0 && f.chars >= 0 && f.icicles > 0 && f.plates > 0 && f.puffs > 0 && f.lines > 0 && f.calls >= 3 && f.calls <= 8 && gone && gone.calls === 0 && gone.flames === 0 && gone.icicles === 0 && gone.puffs === 0,
+      `kraken status: statusfx draws flames, ice and the stink cloud on three ships in ${f.calls} draw calls (≤ 8), and nothing once they are gone (${J({ look: look.fx, gone })})`);
+    check(look.tags.every((t) => t.st === t.want && t.tag && t.tag.id === t.want && t.tag.dots >= 1 && t.tag.dots <= 8),
+      `kraken status: each tag shows her status badge with its ring of time dots (${J(look.tags)})`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------------- kraken: the Iron Turtle's armour
+  await section('kraken-armour', async () => {
+    const { ctx, page: kp } = await openK({ label: 'kraken-armour' });
+    // Beam hits × 0.5 with CLANG! (once a volley) and its clang; a stern rake full × 2; a crit full × 1.75; a Fire
+    // shot's ball × 0.7 × 0.5 but her burn in full (18), and KA-BOOM's +15 in full.
+    const arm = await ev(kp, async () => {
+      const G = window.__game;
+      const out = {};
+      const shoot = async (turn, ammo, crit) => {
+        const p = T.level(1);
+        G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+        G.combat.setAmmo(ammo);
+        const e = T.spawn('ironclad', 18, 0, turn);
+        await K.play(1.1, T.pinner(p, e));
+        K.watchPops();
+        K.spySounds();
+        G.combat.forceCrit(crit);
+        const v = T.volley(e, { seconds: 0.8 });
+        G.combat.forceCrit('none');
+        return { e, v, r: { hits: v.hits.map((l) => [l.dmg, l.rangeMul, l.aspect, l.crit]), dhp: v.dhp, clang: K.popsNow().filter((p) => p.text === 'CLANG!').length, keep: K.popsNow().filter((p) => p.text === 'CLANG!').every((p) => /pop-keep/.test(p.cls)), clangSfx: K.sounds.filter((s) => s === 'clang').length } };
+      };
+      out.beam = (await shoot(0, 'round', 'none')).r;
+      out.stern = (await shoot(-Math.PI / 2, 'round', 'none')).r;
+      out.crit = (await shoot(0, 'round', 'crit')).r;
+      const f = await shoot(0, 'fire', 'none');
+      const hull = f.v.hits.reduce((a, l) => a + l.dmg, 0);
+      const hp0 = f.e.hp + f.v.dhp;
+      T.steps(6.5, T.pinner(G.player, f.e));
+      out.fire = { ...f.r, burn: Math.round((hp0 - hull - f.e.hp) * 1000) / 1000 };
+      const s = await shoot(0, 'stink', 'none');
+      G.combat.setAmmo('fire');
+      const hp1 = s.e.hp;
+      const k = T.volley(s.e, { seconds: 0.8 });
+      const hull2 = k.hits.reduce((a, l) => a + l.dmg, 0);
+      out.kaboom = { hits: k.hits.map((l) => [l.dmg, l.rangeMul]), extra: Math.round((hp1 - s.e.hp - hull2 - (18 - s.e.burnTicks)) * 1000) / 1000, st: G.specials.status(s.e).id };
+      return out;
+    });
+    const each = (r, f) => r.hits.length === 3 && r.hits.every(([d, m]) => near(d, f * m, 1e-9));
+    check(each(arm.beam, 5) && arm.beam.hits.every((h) => h[2] === null) && arm.beam.clang === 1 && arm.beam.keep && arm.beam.clangSfx === 1,
+      `kraken armour: an Iron Turtle takes beam hits at half (10 -> 5 a ball), CLANG! once a volley (never dropped from a busy screen) and its clang (${J(arm.beam)})`);
+    check(each(arm.stern, 20) && arm.stern.hits.every((h) => h[2] === 'stern') && arm.stern.clang === 0 && each(arm.crit, 17.5) && arm.crit.clang === 0,
+      `kraken armour: a stern rake hits her in full (× 2 = 20 a ball) and so does a crit (× 1.75), no CLANG! (${J({ stern: arm.stern, crit: arm.crit })})`);
+    check(each(arm.fire, 3.5) && arm.fire.burn === 18 && arm.kaboom.extra === 15 && arm.kaboom.st === 'fire',
+      `kraken armour: a Fire ball is halved on her beam (3.5) but her burn is not (18 hp), nor KA-BOOM's +15 (${J({ fire: arm.fire, kaboom: arm.kaboom })})`);
+    await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------- kraken: hot and stinky boarding
+  await section('kraken-board', async () => {
+    const { ctx, page: kp } = await openK({ label: 'kraken-board' });
+    // A burning ship can't be boarded: G says "Too hot to board! Wait for the fire to go out.", her tag shows the
+    // too-hot icon, the Board cell "HOT! n s" (n: the seconds of fire left) and the touch pill "Hot!"; once the fire
+    // is out she can be.
+    const hot = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.setAmmo('fire');
+      G.combat.forceCrit('none');
+      const e = T.spawn('privateer', 9, 0, 0);
+      const hold = T.pinner(p, e);
+      T.volley(e, { seconds: 0.8 });
+      const out = { st: G.specials.status(e), why: G.canGrapple(e) };
+      K.press('g', 'KeyG');
+      out.hint = K.hint();
+      out.active = G.boarding.active;
+      await K.play(0.05, hold); // (the HUD as it is drawn in play)
+      out.n = Math.ceil(G.specials.status(e).t - 1e-9);
+      out.cell = T.text('board-tag');
+      out.pill = T.text('touch-board');
+      out.aria = document.getElementById('touch-board').getAttribute('aria-label');
+      out.icon = (G.tagInfo(e) || {}).icon;
+      T.steps(6.2, hold);
+      out.after = { st: G.specials.status(e).id, why: G.canGrapple(e) };
+      await K.play(0.05, hold);
+      out.after.cell = T.text('board-tag');
+      out.after.icon = (G.tagInfo(e) || {}).icon;
+      G.capture.escape(e);
+      return out;
+    });
+    check(hot.st.id === 'fire' && hot.why === 'hot' && hot.hint === 'Too hot to board! Wait for the fire to go out.' && !hot.active,
+      `kraken board: G on a burning ship says "${hot.hint}" and throws no hooks (canGrapple: ${hot.why})`);
+    check(hot.cell === `HOT! ${hot.n} s` && hot.pill === 'Hot!' && new RegExp(`too hot to board, she burns for ${hot.n} more seconds`).test(hot.aria) && hot.icon === 'hot',
+      `kraken board: while she burns the Board cell reads "${hot.cell}", the touch pill "${hot.pill}" ("${hot.aria}") and her tag shows the too-hot icon (${hot.icon})`);
+    check(hot.after.st === null && hot.after.why === null && !/HOT/.test(hot.after.cell) && hot.after.icon !== 'hot',
+      `kraken board: once her fire is out she can be boarded again (${J(hot.after)})`);
+
+    // A stinky crew fights at grit × 0.75: the odds shown get better ("Stink, then board!"), and those are the odds
+    // that resolve: the stink holds still from the grapple to the result.
+    const stinky = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.setAmmo('stink');
+      G.combat.forceCrit('none');
+      const e = T.spawn('privateer', 9, 0, 0);
+      G.combat.setCrew(e, 3); // (a crew she will lose to: the boarding ends in a capture)
+      T.volley(e, { seconds: 0.8 });
+      const st = G.specials.status(e);
+      const odds = G.boarding.odds(e);
+      const saved = e.status;
+      e.status = { id: null, t: 0, max: 0, immune: 0 };
+      const plain = G.boarding.odds(e);
+      e.status = saved;
+      await K.play(0.05, T.pinner(p, e));
+      const aria = document.getElementById('touch-board').getAttribute('aria-label');
+      const t0 = G.specials.status(e).t;
+      K.press('g', 'KeyG');
+      const seen = [];
+      let n = 0;
+      while (G.boarding.active && n < 120 * 10) {
+        G.step(1 / 120);
+        n++;
+        const ph = G.boarding.phase;
+        if (ph && G.boarding.active && !e.captured) seen.push([ph, Math.round(G.specials.status(e).t * 1e6) / 1e6]);
+      }
+      const phases = [...new Set(seen.map((s) => s[0]))];
+      const held = [...new Set(seen.map((s) => s[1]))];
+      return { st, R: odds.R, plainR: plain.R, label: odds.label, aria, t0: Math.round(t0 * 1e6) / 1e6, phases, held, captured: e.captured, after: G.specials.status(e).id };
+    });
+    check(stinky.st.id === 'stink' && stinky.R > stinky.plainR && near(stinky.R / stinky.plainR, 4 / 3, 0.02) && /Stink, then board!/.test(stinky.aria),
+      `kraken board: a stinky crew fights at × 0.75 grit: the odds shown get better (R ${r2(stinky.plainR)} -> ${r2(stinky.R)}) and the Board button says "Stink, then board!" (${stinky.aria})`);
+    check(['hook', 'reel', 'swing', 'brawl'].every((ph) => stinky.phases.includes(ph)) && stinky.held.length === 1 && stinky.held[0] === stinky.t0 && stinky.captured && stinky.after === null,
+      `kraken board: the stink holds still (${stinky.held.join(', ')} s left) through ${stinky.phases.join(', ')}, and is gone once she is captured (${J({ t0: stinky.t0, captured: stinky.captured })})`);
+
+    // A fire ship that hasn't struck can't be boarded (her fuse could blow with the hulls glued together): "Too hot to
+    // board! Freeze her first.", the too-hot icon on her tag, the Board cell HOT!. Frost puts her fuse out for good and
+    // she strikes; then she is taken for 85 gold.
+    const fireship = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.forceCrit('none');
+      G.combat.setAmmo('frost');
+      const e = T.spawn('fireship', 12, 0, 0);
+      const hold = T.pinner(p, e);
+      await K.play(0.3, hold);
+      const out = { why: G.canGrapple(e) };
+      K.press('g', 'KeyG');
+      out.hint = K.hint();
+      out.active = G.boarding.active;
+      await K.play(0.05, hold);
+      out.cell = T.text('board-tag');
+      out.pill = T.text('touch-board');
+      out.icon = (G.tagInfo(e) || {}).icon;
+      T.volley(e, { seconds: 0.8 });
+      out.struck = { surrendered: e.surrendered, st: G.specials.status(e).id, hp: e.hp > 0 };
+      out.after = G.canGrapple(e);
+      const gold = G.state.gold;
+      K.press('g', 'KeyG');
+      out.boarding = G.boarding.kind;
+      let n = 0;
+      while (G.boarding.active && n < 120 * 10) {
+        G.step(1 / 120);
+        n++;
+      }
+      out.captured = e.captured;
+      out.gold = G.state.gold - gold;
+      return out;
+    });
+    check(fireship.why === 'immune' && fireship.hint === 'Too hot to board! Freeze her first.' && !fireship.active && /^HOT!/.test(fireship.cell) && fireship.pill === 'Hot!' && fireship.icon === 'hot',
+      `kraken board: a fire ship can't be boarded until she strikes: "${fireship.hint}", the Board cell "${fireship.cell}", the pill "${fireship.pill}", her tag's too-hot icon (${fireship.icon})`);
+    check(fireship.struck.surrendered && fireship.struck.hp && fireship.after === null && fireship.boarding === 'surrender' && fireship.captured && fireship.gold === 85,
+      `kraken board: frozen, the fire ship strikes her colours and is taken for 85 gold (${J(fireship)})`);
+
+    // A raider in reach throws its hooks; a stinky one doesn't. One whose hooks already bite drops them when a stink
+    // ball hits her (as a cut: 10 s before she tries again).
+    const raid = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.forceCrit('none');
+      const out = {};
+      const tryHooks = (r, s) => {
+        G.place(r, p.x - Math.cos(p.h) * 7, p.z + Math.sin(p.h) * 7, p.h);
+        r.boardCooldown = 0;
+        G.state.boardCooldown = 0;
+        let hooked = false;
+        T.steps(s, () => {
+          p.speed = 0;
+          if (G.boarding.active && G.boarding.target === r) hooked = true;
+          return !hooked;
+        });
+        return hooked;
+      };
+      const plain = T.spawn('raider', 7, 0, 0);
+      out.plain = tryHooks(plain, 3.5);
+      G.boarding.cancel();
+      G.capture.escape(plain);
+      const r = T.spawn('raider', 14, 0, 0);
+      G.combat.setAmmo('stink');
+      T.volley(r, { seconds: 0.8 });
+      out.st = G.specials.status(r).id;
+      out.stinky = tryHooks(r, 3.0);
+      G.boarding.cancel();
+      G.capture.escape(r);
+      // hooks biting, then a stink ball
+      const b = T.spawn('raider', 8, 0, 0);
+      b.boardCooldown = 0;
+      G.state.boardCooldown = 0;
+      out.raid = G.boarding.raid(b);
+      T.steps(2, () => G.boarding.phase !== 'threat');
+      out.phase = G.boarding.phase;
+      K.watchPops();
+      p.reload.port = p.reload.star = 0;
+      G.combat.setAmmo('stink');
+      p.reload.port = p.reload.star = 0;
+      out.fired = G.fire(p, 1, b);
+      T.steps(1, () => G.balls.some((x) => x.owner === 'player'));
+      out.after = { active: G.boarding.active, cut: (G.boarding.last || {}).cut, cooldown: Math.round(b.boardCooldown * 10) / 10, st: G.specials.status(b).id, pops: K.pops().filter((t) => /rope/i.test(t)) };
+      G.capture.escape(b);
+      return out;
+    });
+    check(raid.plain === true && raid.st === 'stink' && raid.stinky === false,
+      `kraken board: a raider 7 paces off throws her hooks; a stinky one doesn't (${J({ plain: raid.plain, st: raid.st, stinky: raid.stinky })})`);
+    check(raid.raid && raid.phase === 'threat' && raid.fired && !raid.after.active && raid.after.cut === 'hit' && raid.after.cooldown >= 9.5 && raid.after.cooldown <= 10 && raid.after.st === 'stink' && raid.after.pops.length >= 1,
+      `kraken board: a raider whose hooks bite drops them when a stink ball hits her, 10 s before she tries again (${J(raid.after)})`);
+
+    // Every status goes when she strikes (her fire too: a burn never sinks a prize), is captured or escapes.
+    const clear = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.specials.setLoads({ fire: 9, frost: 9, stink: 9 });
+      G.combat.forceCrit('none');
+      G.combat.setAmmo('fire');
+      const e = T.spawn('privateer', 18, 0, 0);
+      T.volley(e, { seconds: 0.8 });
+      const out = { before: { st: G.specials.status(e).id, ticks: e.burnTicks } };
+      G.capture.strike(e);
+      out.struck = { surrendered: e.surrendered, st: G.specials.status(e).id, ticks: e.burnTicks, from: G.specials.burn(e).from };
+      const hp = e.hp;
+      T.steps(3, T.pinner(p, e));
+      out.struck.burnt = hp - e.hp;
+      G.capture.take(e);
+      out.taken = { captured: e.captured, st: G.specials.status(e).id };
+      const f = T.spawn('privateer', 18, 0, 0);
+      G.combat.setAmmo('frost');
+      T.volley(f, { seconds: 0.8 });
+      out.frozen = G.specials.status(f).id;
+      G.capture.escape(f);
+      out.escaped = { escaped: f.escaped, st: G.specials.status(f).id, speedMul: G.combat.effects(f).speedMul };
+      return out;
+    });
+    check(clear.before.st === 'fire' && clear.before.ticks > 0 && clear.struck.surrendered && clear.struck.st === null && clear.struck.ticks === 0 && clear.struck.burnt === 0 && clear.taken.captured && clear.taken.st === null && clear.frozen === 'frost' && clear.escaped.escaped && clear.escaped.st === null,
+      `kraken board: her status goes when she strikes (her fire too: no more hull lost), when she is captured and when she escapes (${J(clear)})`);
+
+    // A burn (here a POWDER KEG crit's) holds still on the two ships glued in a boarding (swing to result).
+    const glued = await ev(kp, async () => {
+      const G = window.__game;
+      const p = T.level(1);
+      G.combat.setAmmo('round');
+      const e = T.spawn('privateer', 9, 0, 0);
+      const guns = p.type.guns;
+      p.type.guns = 1;
+      G.combat.forceCrit('keg');
+      T.volley(e, { seconds: 0.6 });
+      G.combat.forceCrit('none');
+      p.type.guns = guns;
+      const out = { burn: G.specials.burn(e) };
+      K.press('g', 'KeyG');
+      const seen = [];
+      let n = 0;
+      while (G.boarding.active && n < 120 * 10) {
+        G.step(1 / 120);
+        n++;
+        if (G.boarding.active) seen.push([G.boarding.phase, e.burnTicks]);
+      }
+      const glue = seen.filter(([ph]) => ['swing', 'brawl', 'result'].includes(ph)).map((s) => s[1]);
+      const loose = seen.filter(([ph]) => ['hook', 'reel'].includes(ph)).map((s) => s[1]);
+      out.glue = [...new Set(glue)];
+      out.loose = [loose[0], loose[loose.length - 1]];
+      out.phases = [...new Set(seen.map((s) => s[0]))];
+      return out;
+    });
+    check(glued.burn.from === 'keg' && glued.burn.ticks > 0 && glued.phases.includes('swing') && glued.phases.includes('result') && glued.glue.length === 1 && glued.loose[0] > glued.loose[1],
+      `kraken board: a burn ticks on while the hooks fly and she is reeled in, and holds still while the ships are glued (swing to result: ${glued.glue.join(', ')} hp left) (${J(glued)})`);
+    await ctx.close();
+  });
+
+  // ---------------------------------------------------------------- kraken: the rudder, the slide and the wheel
+  await section('kraken-steer', async () => {
+    const { ctx, page: kp } = await openK({ label: 'kraken-steer' });
+    // The Big rudder & wheel (§3.1): a stock ship turns at 35 % of her full rate at a standstill (0.49 rad/s); tiers
+    // 1-3 at 50 / 65 / 80 % (tier 3: 1.29 rad/s), and × 1.05 / 1.1 / 1.15 at full speed. The ship record carries
+    // the tier only from 1 up.
+    const tiers = await ev(kp, () => {
+      const G = window.__game;
+      const rows = [];
+      for (const t of [0, 1, 2, 3]) {
+        const cfg = G.shipConfig;
+        if (t) cfg.up.rudder = t;
+        else delete cfg.up.rudder;
+        G.setShipConfig(cfg);
+        const p = T.level(1);
+        p.speed = 0;
+        const slow = G.turn.rate;
+        const h0 = p.h;
+        G.input.left = true; // a held A for 1 s at a standstill
+        T.steps(1);
+        G.input.left = false;
+        const turned = Math.abs(T.wrap(p.h - h0));
+        p.speed = p.type.maxSpeed;
+        rows.push({ t, slow, fast: G.turn.rate, turned, saved: localStorage.getItem('pirates-ahoy-ship') });
+      }
+      const cfg = G.shipConfig;
+      delete cfg.up.rudder;
+      G.setShipConfig(cfg);
+      return rows;
+    });
+    const MUL = [1, 1.05, 1.1, 1.15];
+    const LOW = [0.35, 0.5, 0.65, 0.8];
+    const base = tiers[0].fast;
+    check(tiers.every((r, t) => near(r.fast, base * MUL[t], 1e-9) && near(r.slow, base * MUL[t] * LOW[t], 1e-9) && near(r.turned, r.slow, 1e-6)) && near(tiers[0].slow, 0.49, 0.002) && near(tiers[3].slow, 1.288, 0.002),
+      `kraken steer: the rudder tiers turn her at ${tiers.map((r) => r2(r.slow)).join(' / ')} rad/s at a standstill and ${tiers.map((r) => r2(r.fast)).join(' / ')} at full speed (35 / 50 / 65 / 80 %; × 1 / 1.05 / 1.1 / 1.15)`);
+    check(!/rudder/.test(tiers[0].saved) && tiers.slice(1).every((r) => new RegExp(`"rudder":${r.t}\\}`).test(r.saved)),
+      `kraken steer: the ship record names the rudder only from tier 1 up (${J(tiers.map((r) => r.saved))})`);
+
+    // input.steer (a slide or the wheel) turns in proportion and wins over a held key while it lasts; the keys and
+    // buttons still give ±1 and input.left / input.right stay plain booleans.
+    const steer = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(1);
+      p.speed = 0;
+      const turnFor = (fn) => {
+        const h0 = p.h;
+        fn(true);
+        T.steps(1);
+        fn(false);
+        return T.wrap(p.h - h0);
+      };
+      const full = turnFor((on) => (G.input.left = on));
+      const half = turnFor((on) => G.steer(on ? 0.5 : null));
+      const right = turnFor((on) => G.steer(on ? -0.25 : null));
+      G.input.left = true;
+      G.steer(-0.3);
+      const both = G.turn.input;
+      G.steer(null);
+      const keys = G.turn.input;
+      G.input.left = false;
+      return { full, half, right, both, keys, bools: typeof G.input.left === 'boolean' && typeof G.input.right === 'boolean' };
+    });
+    check(steer.full > 0.4 && near(steer.half / steer.full, 0.5, 1e-6) && near(steer.right / steer.full, -0.25, 1e-6) && near(steer.both, -0.3, 1e-9) && steer.keys === 1 && steer.bools,
+      `kraken steer: input.steer 0.5 turns her half as fast as a held key, -0.25 a quarter the other way, and it wins over a held key while it lasts (${J(steer)})`);
+
+    // A lava bomb is lobbed where you will be, following your turn now (playerTurn(): a slide too). Math.random
+    // pinned to 0: the warning's shortest, no scatter.
+    const bomb = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(3);
+      p.speed = 8;
+      const out = {};
+      const random = Math.random;
+      try {
+        Math.random = () => 0;
+        for (const [name, set] of [['straight', () => {}], ['slide', () => G.steer(0.5)], ['key', () => (G.input.left = true)]]) {
+          set();
+          const w = G.turn.input * G.turn.rate;
+          const b = G.launchBomb();
+          const tt = b.T * 0.6;
+          let px;
+          let pz;
+          if (Math.abs(w) < 1e-4) {
+            px = p.x + Math.sin(p.h) * p.speed * tt;
+            pz = p.z + Math.cos(p.h) * p.speed * tt;
+          } else {
+            px = p.x + (p.speed / w) * (Math.cos(p.h) - Math.cos(p.h + w * tt));
+            pz = p.z + (p.speed / w) * (Math.sin(p.h + w * tt) - Math.sin(p.h));
+          }
+          out[name] = { w: Math.round(w * 1e4) / 1e4, miss: Math.round(Math.hypot(b.tx - px, b.tz - pz) * 1e6) / 1e6 };
+          G.steer(null);
+          G.input.left = false;
+        }
+      } finally {
+        Math.random = random;
+      }
+      T.level(1); // (its bombs go with it)
+      return out;
+    });
+    check(bomb.straight.w === 0 && bomb.slide.w > 0 && near(bomb.key.w, 2 * bomb.slide.w, 1e-3) && Object.values(bomb).every((b) => b.miss < 1e-6),
+      `kraken steer: a lava bomb lands where your turn takes you, a thumb slide's half turn too (${J(bomb)})`);
+    await ctx.close();
+
+    // On a phone: slide a thumb on the steering pad. A plain hold (or a wobble under 12 px) is a full turn as before;
+    // past 12 px the turn follows the thumb (r = r0 + dx / 56), the rudder needle shows it, letting go ends it.
+    const { ctx: tctx, page: tp } = await openK({ width: 390, height: 844, touch: true, label: 'kraken-steer touch' });
+    const slide = await ev(tp, () => {
+      const G = window.__game;
+      T.level(1);
+      const pad = document.querySelector('#touch .pad.left');
+      const L = pad.querySelector('[data-hold="left"]');
+      const R = pad.querySelector('[data-hold="right"]');
+      const at = (el) => {
+        const b = el.getBoundingClientRect();
+        return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      };
+      const ptr = (el, type, x, y, id) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, pointerType: 'touch', isPrimary: true, clientX: x, clientY: y }));
+      const needle = () => ({ shown: T.shown('steer-needle'), turn: document.getElementById('steer-needle').style.getPropertyValue('--turn') });
+      const out = {};
+      const a = at(L);
+      ptr(L, 'pointerdown', a.x, a.y, 11);
+      out.hold = { input: G.turn.input, steer: G.input.steer, left: G.input.left };
+      ptr(L, 'pointermove', a.x + 8, a.y, 11);
+      out.small = { input: G.turn.input, steer: G.input.steer };
+      ptr(L, 'pointermove', a.x + 28, a.y, 11);
+      out.slide = { input: G.turn.input, steer: G.input.steer, left: G.input.left, needle: needle() };
+      ptr(L, 'pointermove', a.x + 300, a.y, 11);
+      out.far = G.input.steer;
+      ptr(L, 'pointerup', a.x + 300, a.y, 11);
+      out.up = { steer: G.input.steer, left: G.input.left, input: G.turn.input, needle: needle() };
+      const b = at(R);
+      ptr(R, 'pointerdown', b.x, b.y, 12);
+      ptr(R, 'pointermove', b.x - 42, b.y, 12);
+      out.fromRight = G.input.steer;
+      ptr(R, 'pointerup', b.x - 42, b.y, 12);
+      const m = { x: (a.x + b.x) / 2, y: a.y };
+      ptr(pad, 'pointerdown', m.x, m.y, 13);
+      ptr(pad, 'pointermove', m.x - 14, m.y, 13);
+      out.middle = G.input.steer;
+      ptr(pad, 'pointerup', m.x - 14, m.y, 13);
+      out.afterMiddle = G.input.steer;
+      return out;
+    });
+    check(slide.hold.input === 1 && slide.hold.steer === null && slide.hold.left === true && slide.small.input === 1 && slide.small.steer === null,
+      `kraken steer: a thumb held on ◀ (or wobbling under 12 px) turns her fully, as before (${J({ hold: slide.hold, small: slide.small })})`);
+    check(near(slide.slide.steer, 0.5, 1e-9) && near(slide.slide.input, 0.5, 1e-9) && slide.slide.left === true && slide.slide.needle.shown && slide.slide.needle.turn === '-0.5' && slide.far === -1 && slide.up.steer === null && slide.up.left === false && slide.up.input === 0 && !slide.up.needle.shown,
+      `kraken steer: sliding 28 px right from ◀ eases the turn to half (steer ${slide.slide.steer}, the needle at ${slide.slide.needle.turn}), further turns right (${slide.far}), letting go ends it (${J(slide.up)})`);
+    check(near(slide.fromRight, -0.25, 1e-9) && near(slide.middle, 0.25, 1e-9) && slide.afterMiddle === null,
+      `kraken steer: from ▶ 42 px left is a quarter turn right (${slide.fromRight}); a thumb landing between the arrows slides from the middle (${slide.middle})`);
+
+    // The ship's wheel (the setting): it replaces ◀ ▶; drag it sideways (60 px a full turn, a 0.1 dead zone; it turns
+    // 120° at most and springs back); the keys steer as before. The setting is saved and comes back at the next visit.
+    const wheel = await ev(tp, async () => {
+      const G = window.__game;
+      T.level(1);
+      const set = G.settings.set({ v: 1, steer: 'wheel' });
+      const saved = localStorage.getItem('pirates-ahoy-settings');
+      G.state.mode = 'paused';
+      await T.redraw();
+      G.state.mode = 'playing';
+      const w = document.getElementById('touch-wheel');
+      const L = document.querySelector('[data-hold="left"]');
+      const box = w.getBoundingClientRect();
+      const cx = box.left + box.width / 2;
+      const cy = box.top + box.height / 2;
+      const ptr = (type, x) => w.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 21, pointerType: 'touch', isPrimary: true, clientX: x, clientY: cy }));
+      const out = { set: set.steer, saved, shown: T.shown('touch-wheel'), size: Math.round(box.width), arrows: Math.round(L.getBoundingClientRect().width) };
+      ptr('pointerdown', cx);
+      ptr('pointermove', cx + 3);
+      out.dead = G.input.steer;
+      ptr('pointermove', cx + 30);
+      out.half = { steer: G.input.steer, input: G.turn.input, rot: w.style.transform };
+      ptr('pointermove', cx - 90);
+      out.full = { steer: G.input.steer, rot: w.style.transform };
+      ptr('pointerup', cx - 90);
+      out.up = { steer: G.input.steer, rot: w.style.transform, spring: /0\.15s/.test(w.style.transition) };
+      T.key('a', 'KeyA');
+      out.key = { left: G.input.left, input: G.turn.input };
+      T.key('a', 'KeyA', { type: 'keyup' });
+      out.keyUp = { left: G.input.left, input: G.turn.input };
+      return out;
+    });
+    check(wheel.set === 'wheel' && wheel.saved === '{"v":1,"steer":"wheel"}' && wheel.shown && wheel.size >= 96 && wheel.arrows <= 1,
+      `kraken steer: the wheel setting is saved and the ship's wheel (${wheel.size} px) takes the arrows' place (${J({ saved: wheel.saved, arrows: wheel.arrows })})`);
+    check(wheel.dead === 0 && near(wheel.half.steer, -0.5, 1e-9) && near(wheel.half.input, -0.5, 1e-9) && wheel.half.rot === 'rotate(60deg)' && wheel.full.steer === 1 && wheel.full.rot === 'rotate(-120deg)' && wheel.up.steer === null && wheel.up.rot === 'rotate(0deg)' && wheel.up.spring,
+      `kraken steer: the wheel: a 3 px nudge is in the dead zone, 30 px right is a half turn right (60°), 90 px left a full turn left (-120°, at most), and it springs back when let go (${J({ dead: wheel.dead, half: wheel.half, full: wheel.full, up: wheel.up })})`);
+    check(wheel.key.left === true && wheel.key.input === 1 && wheel.keyUp.left === false && wheel.keyUp.input === 0,
+      `kraken steer: with the wheel shown the keys steer as before (${J({ key: wheel.key, up: wheel.keyUp })})`);
+    await tp.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
+    await tp.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+    await tp.evaluate(installHelpers);
+    const again = await ev(tp, async () => {
+      const G = window.__game;
+      T.level(1);
+      G.state.mode = 'paused';
+      await T.redraw();
+      return { steer: G.settings.get().steer, wheel: T.shown('touch-wheel') };
+    });
+    check(again.steer === 'wheel' && again.wheel, `kraken steer: the next visit starts with the ship's wheel (${J(again)})`);
+    await tctx.close();
+
+    // Pause ▸ Steering on a phone, at the five touch sizes: the toggle is the last choice, at least 44 px, with its
+    // New! badge inside it the first time; the panel doesn't scroll. A tap saves the wheel and the wheel shows when
+    // you resume; the hint bubble keeps clear of it. On a desktop there is no toggle.
+    for (const [w, h] of [[390, 844], [360, 640], [320, 480], [568, 320], [844, 390]]) {
+      const { ctx: pc, page: pp } = await openK({ width: w, height: h, touch: true, label: `kraken-steer ${w}x${h}`, store: { ...KSTORE, 'pirates-ahoy-tips': '255' } });
+      await ev(pp, () => {
+        T.level(1);
+        window.__game.togglePause();
+      });
+      await frames(pp, 2);
+      const pz = await pp.evaluate(() => {
+        const btn = document.getElementById('steer-mode-btn');
+        const panel = document.querySelector('#pause-screen .panel');
+        const R = (el) => {
+          const b = el.getBoundingClientRect();
+          return { l: b.left, t: b.top, r: b.right, b: b.bottom, w: b.width, h: b.height };
+        };
+        const choices = [...document.querySelectorAll('#pause-choices button')].filter((b) => b.offsetParent).map((b) => b.id);
+        const badge = btn.querySelector('.new-badge');
+        const box = R(btn);
+        const hit = document.elementFromPoint(box.l + box.w / 2, box.t + box.h / 2);
+        return { choices, box, badge: badge && !badge.classList.contains('hidden') && badge.getClientRects().length ? R(badge) : null, pressed: btn.getAttribute('aria-pressed'), scroll: panel.scrollHeight > panel.clientHeight + 1, H: innerHeight, uncovered: !!hit && (hit === btn || btn.contains(hit)), tip: !!(window.__game.tips & 32768) };
+      });
+      check(pz.choices.join() === 'resume-btn,quit-dock-btn,quit-menu-btn,steer-mode-btn' && pz.box.h >= 44 && pz.box.b <= pz.H && pz.uncovered && !pz.scroll && pz.badge && pz.badge.l >= pz.box.l && pz.badge.r <= pz.box.r && pz.badge.t >= pz.box.t && pz.badge.b <= pz.box.b && pz.tip && pz.pressed === 'false',
+        `kraken steer ${w}x${h}: Pause lists Steering last (${Math.round(pz.box.w)}x${Math.round(pz.box.h)} px, uncovered), its New! badge inside it the first time, no panel scroll (${J({ choices: pz.choices, badge: !!pz.badge, scroll: pz.scroll, tip: pz.tip })})`);
+      await pp.tap('#steer-mode-btn');
+      const set = await pp.evaluate(() => {
+        const btn = document.getElementById('steer-mode-btn');
+        return { saved: localStorage.getItem('pirates-ahoy-settings'), text: btn.textContent.replace(/\s+/g, ' '), pressed: btn.getAttribute('aria-pressed'), focus: document.activeElement && document.activeElement.id };
+      });
+      const resumed = await ev(pp, async () => {
+        const G = window.__game;
+        G.togglePause();
+        G.state.mode = 'playing';
+        G.combat.setAmmo('round');
+        G.state.unlocked = 7;
+        G.combat.setAmmo('chain'); // (says what chain shot does in the hint bubble)
+        G.state.mode = 'paused';
+        await T.redraw();
+        const r = document.getElementById('hint').getBoundingClientRect();
+        const pads = [...document.querySelectorAll('#touch .pad')].map((p) => p.getBoundingClientRect()).filter((p) => p.width && p.height);
+        const wheel = document.getElementById('touch-wheel').getBoundingClientRect();
+        const hits = (a, b) => a.left < b.right - 0.5 && b.left < a.right - 0.5 && a.top < b.bottom - 0.5 && b.top < a.bottom - 0.5;
+        return { wheel: T.shown('touch-wheel'), hint: T.shown('hint'), clear: !pads.some((p) => hits(r, p)) && !hits(r, wheel) };
+      });
+      check(set.saved === '{"v":1,"steer":"wheel"}' && /Steering: Ship.s wheel/.test(set.text) && set.pressed === 'true' && set.focus === 'steer-mode-btn' && resumed.wheel && resumed.hint && resumed.clear,
+        `kraken steer ${w}x${h}: a tap on the toggle saves the ship's wheel (aria-pressed, focus kept); resumed, the wheel shows and the hint bubble keeps clear of it (${J({ set, resumed })})`);
+      await pc.close();
+    }
+    const { ctx: dc, page: dp } = await openK({ label: 'kraken-steer desktop', store: { ...KSTORE, 'pirates-ahoy-tips': '255', 'pirates-ahoy-settings': '{"v":1,"steer":"wheel"}' } });
+    const desk = await ev(dp, () => {
+      T.level(1);
+      window.__game.togglePause();
+      return { choices: [...document.querySelectorAll('#pause-choices button')].filter((b) => b.offsetParent).map((b) => b.id), tip: !!(window.__game.tips & 32768), wheel: T.shown('touch-wheel') };
+    });
+    check(desk.choices.join() === 'resume-btn,quit-dock-btn,quit-menu-btn' && !desk.tip && !desk.wheel,
+      `kraken steer: a desktop's pause has no Steering toggle (nor its badge), and no wheel shows (${J(desk)})`);
+    await dc.close();
+  });
+
+  // -------------------------------------------------------------------------------- kraken: the touch ammo tray
+  await section('kraken-tray', async () => {
+    // Tap a button the way a finger does (pointerdown, then pointerup: the game acts on the press).
+    const tapIn = `(el) => {
+      for (const type of ['pointerdown', 'pointerup']) el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 31, pointerType: 'touch', isPrimary: true }));
+    }`;
+    // With no recipe owned the Ammo pill cycles exactly as today (no tray).
+    const { ctx: nc, page: np } = await openK({ width: 390, height: 844, touch: true, label: 'kraken-tray none', store: { ...KSTORE, 'pirates-ahoy-powder': OWN(0, 0, 0) } });
+    await ev(np, () => T.level(1));
+    await np.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await np.tap('#touch-ammo');
+    const none = await np.evaluate(() => {
+      const G = window.__game;
+      G.state.mode = 'paused';
+      return { ammo: G.combat.ammo, tray: G.specials.tray, shown: T.shown('ammo-tray'), expanded: document.getElementById('touch-ammo').getAttribute('aria-expanded') };
+    });
+    check(none.ammo === 'chain' && !none.tray.open && !none.tray.wanted && !none.shown && none.expanded === null,
+      `kraken tray: with no recipe owned a tap on Ammo cycles to the next shot as today, no tray (${J(none)})`);
+    await nc.close();
+
+    // Fire and Frost owned (Stink on sale, not bought): a tap on Ammo opens the tray (the game runs on); six buttons
+    // in the R order, "Fire ×4", the loaded one pressed, Stink disabled with its reason (a tap says it, the tray
+    // stays); a tap on Frost loads it and closes the tray.
+    const { ctx: tc, page: tp } = await openK({ width: 390, height: 844, touch: true, label: 'kraken-tray', store: { ...KSTORE, 'pirates-ahoy-powder': OWN(1, 1, 0) } });
+    await ev(tp, () => T.level(1));
+    await tp.evaluate((s) => { window.__tap = eval(s); }, tapIn);
+    await tp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    const t0 = await tp.evaluate(() => window.__game.state.time);
+    await tp.tap('#touch-ammo');
+    const opened = await tp.evaluate((t0) => {
+      const G = window.__game;
+      G.state.mode = 'paused';
+      const btns = [...document.querySelectorAll('#ammo-tray button[data-ammo]')];
+      const why = (b) => {
+        const id = b.getAttribute('aria-describedby');
+        return id ? (document.getElementById(id) || {}).textContent || '' : '';
+      };
+      return {
+        open: G.specials.tray.open,
+        shown: T.shown('ammo-tray'),
+        ran: G.state.time > t0,
+        expanded: document.getElementById('touch-ammo').getAttribute('aria-expanded'),
+        group: [document.getElementById('ammo-tray').getAttribute('role'), document.getElementById('ammo-tray').getAttribute('aria-label')],
+        rows: btns.map((b) => ({ id: b.dataset.ammo, text: b.textContent.replace(/\s+/g, ' ').trim(), label: b.getAttribute('aria-label'), pressed: b.getAttribute('aria-pressed'), disabled: b.getAttribute('aria-disabled'), why: why(b), off: b.classList.contains('off') })),
+      };
+    }, t0);
+    const row = (id) => opened.rows.find((r) => r.id === id) || {};
+    check(opened.open && opened.shown && opened.ran && opened.expanded === 'true' && opened.group.join() === 'group,Choose ammo' && opened.rows.map((r) => r.id).join() === 'round,chain,grape,fire,frost,stink',
+      `kraken tray: once a recipe is owned a tap on Ammo opens the tray ("Choose ammo", six shots in the R order) and the game runs on (${J({ open: opened.open, expanded: opened.expanded, group: opened.group, ids: opened.rows.map((r) => r.id) })})`);
+    check(row('round').pressed === 'true' && row('fire').text === 'Fire ×4' && row('fire').label === 'Fire shot, 4 loads left' && row('fire').disabled === 'false' && row('stink').disabled === 'true' && row('stink').why === 'Buy Stink shot at the Salty Sparrow' && row('stink').off,
+      `kraken tray: the loaded shot is pressed, "Fire ×4" ("Fire shot, 4 loads left"), and Stink shot not bought is disabled with its reason and a crossed icon (${J([row('round'), row('fire'), row('stink')])})`);
+    const pick = await ev(tp, () => {
+      const tap = window.__tap;
+      const G = window.__game;
+      const out = {};
+      // (a frame of the paused game in between closed it: open it again, as the Ammo pill does)
+      if (!G.specials.tray.open) tap(document.getElementById('touch-ammo'));
+      tap(document.querySelector('#ammo-tray [data-ammo="stink"]'));
+      out.stink = { open: G.specials.tray.open, ammo: G.combat.ammo, hint: K.hint() };
+      tap(document.querySelector('#ammo-tray [data-ammo="frost"]'));
+      out.frost = { open: G.specials.tray.open, ammo: G.combat.ammo, mode: G.state.mode, pill: T.text('touch-ammo') };
+      return out;
+    });
+    await tp.evaluate(() => T.redraw());
+    pick.frost.pill = await tp.evaluate(() => T.text('touch-ammo'));
+    check(pick.stink.open && pick.stink.ammo === 'round' && pick.stink.hint === 'Buy Stink shot at the Salty Sparrow' && !pick.frost.open && pick.frost.ammo === 'frost' && pick.frost.mode === 'playing' && pick.frost.pill === 'Frost ×4',
+      `kraken tray: a tap on a disabled shot says why and keeps the tray open; a tap on Frost loads it and closes the tray, the pill reads "${pick.frost.pill}" (${J(pick)})`);
+
+    // It closes on a fire tap, on a tap anywhere else, and after 3 s of play without a pick; it never pauses. A tray
+    // pick drops a queued Fire tap (no load spent).
+    const closes = await ev(tp, () => {
+      const tap = window.__tap;
+      const G = window.__game;
+      const p = G.player;
+      const pill = document.getElementById('touch-ammo');
+      const out = {};
+      tap(pill);
+      out.reopened = { open: G.specials.tray.open, pressed: document.querySelector('#ammo-tray [data-ammo="frost"]').getAttribute('aria-pressed') };
+      p.reload.port = p.reload.star = 0;
+      tap(document.querySelector('[data-tap="firePort"]'));
+      out.fire = !G.specials.tray.open;
+      // (a Fire button worked by the keyboard or a switch: a plain click, no pointer down, closes it too)
+      out.fireClick = ['firePort', 'fireStar'].map((side) => {
+        tap(pill);
+        p.reload.port = p.reload.star = 0;
+        document.querySelector(`[data-tap="${side}"]`).click();
+        return !G.specials.tray.open;
+      });
+      tap(pill);
+      tap(document.querySelector('[data-tap="sailUp"]'));
+      out.elsewhere = !G.specials.tray.open;
+      tap(pill);
+      const t = G.state.time;
+      T.steps(2.9);
+      out.at29 = G.specials.tray.open;
+      T.steps(0.2);
+      out.at31 = G.specials.tray.open;
+      out.mode = G.state.mode;
+      out.ran = Math.round((G.state.time - t) * 100) / 100;
+      // a queued Fire tap, then a pick from the tray
+      G.specials.setLoads({ fire: 4, frost: 4, stink: 0 });
+      G.combat.setAmmo('frost');
+      p.reload.port = 5;
+      p.reload.star = 0.3;
+      tap(document.querySelector('[data-tap="fireStar"]'));
+      out.queued = G.fireQueue.star;
+      tap(pill);
+      tap(document.querySelector('#ammo-tray [data-ammo="round"]'));
+      out.picked = G.combat.ammo;
+      out.balls = K.shots(() => T.steps(1)).length;
+      out.dropped = !G.fireQueue.star;
+      out.loads = G.specials.loads.frost;
+      return out;
+    });
+    check(closes.reopened.open && closes.reopened.pressed === 'true' && closes.fire && closes.fireClick.every(Boolean) && closes.elsewhere && closes.at29 && !closes.at31 && closes.mode === 'playing' && closes.ran === 3.1,
+      `kraken tray: the loaded shot shows pressed; a fire tap (or a plain click on Fire) closes the tray, so does a tap elsewhere and 3 s of play without a pick; it never pauses (${J(closes)})`);
+    check(closes.queued && closes.picked === 'round' && closes.dropped && closes.balls === 0 && closes.loads === 4,
+      `kraken tray: a pick from the tray drops a Fire tap queued while the guns load: nothing fires, no load is spent (${J({ queued: closes.queued, picked: closes.picked, balls: closes.balls, loads: closes.loads })})`);
+    await tc.close();
+
+    // The layout with the tray open at the touch sizes (§6.2): 2 × 3 in portrait, 3 × 2 in landscape, right-aligned
+    // with the act pad and 8 px above it, 44 px buttons on small and short screens, 52 px elsewhere (844x390: 52
+    // where it clears the top HUD row, else 44); no tray button over the fire, steering, sail or act pad, the hint
+    // bubble or the gun card; no page scroll.
+    const trayProbe = () => {
+      const R = (el) => {
+        if (!el || !el.getClientRects().length) return null;
+        const b = el.getBoundingClientRect();
+        return b.width && b.height ? { l: b.left, t: b.top, r: b.right, b: b.bottom } : null;
+      };
+      const tray = [...document.querySelectorAll('#ammo-tray button[data-ammo]')].map(R);
+      const others = {
+        fire: R(document.querySelector('#touch .pad.right')),
+        steer: R(document.querySelector('#touch .pad.left')),
+        sail: R(document.querySelector('#touch .pad.mid')),
+        act: R(document.querySelector('#touch .pad.act')),
+        hint: R(document.getElementById('hint')),
+        guns: R(document.querySelector('#hud .hud-bottom .card.guns')),
+        top: R(document.querySelector('#hud .hud-top')),
+      };
+      const hit = (a, b) => !!(a && b && a.l < b.r - 0.5 && b.l < a.r - 0.5 && a.t < b.b - 0.5 && b.t < a.b - 0.5);
+      const over = Object.keys(others).filter((k) => tray.some((t) => hit(t, others[k])));
+      const all = tray.filter(Boolean).reduce((a, t) => ({ l: Math.min(a.l, t.l), t: Math.min(a.t, t.t), r: Math.max(a.r, t.r), b: Math.max(a.b, t.b) }), { l: 1e9, t: 1e9, r: -1e9, b: -1e9 });
+      return {
+        n: tray.filter(Boolean).length,
+        sizes: [...new Set(tray.filter(Boolean).map((t) => Math.round(Math.min(t.r - t.l, t.b - t.t))))],
+        cols: new Set(tray.filter(Boolean).map((t) => Math.round(t.l))).size,
+        rows: new Set(tray.filter(Boolean).map((t) => Math.round(t.t))).size,
+        gap: others.act ? Math.round(others.act.t - all.b) : null,
+        right: others.act ? Math.round(others.act.r - all.r) : null,
+        over,
+        hint: !!others.hint,
+        scroll: document.documentElement.scrollHeight > innerHeight + 1 || document.documentElement.scrollWidth > innerWidth + 1,
+      };
+    };
+    for (const [w, h] of [[320, 480], [360, 480], [360, 640], [390, 844], [568, 320], [640, 360], [844, 390], [1024, 600], [1280, 720]]) {
+      const { ctx: lc, page: lp } = await openK({ width: w, height: h, touch: true, label: `kraken-tray ${w}x${h}` });
+      const r = await ev(lp, async (probe) => {
+        const G = window.__game;
+        T.level(1);
+        G.combat.setAmmo('round');
+        const open = G.specials.openTray();
+        G.combat.setAmmo('chain'); // (its hint shows while the tray is open)
+        await K.play(0.05); // (drawn in play: a paused game closes the tray)
+        return { open, ...eval(`(${probe})`)() };
+      }, trayProbe.toString());
+      const small = (w <= 360 && h === 480) || h <= 360;
+      const sizeOk = w === 844 && h === 390 ? r.sizes.length === 1 && [44, 52].includes(r.sizes[0]) : J(r.sizes) === J([small ? 44 : 52]);
+      const portrait = h > w;
+      check(r.open && r.n === 6 && sizeOk && r.cols === (portrait ? 2 : 3) && r.rows === (portrait ? 3 : 2) && r.gap === 8 && r.right === 0 && r.over.length === 0 && r.hint && !r.scroll,
+        `kraken tray ${w}x${h}: the open tray is ${r.cols} × ${r.rows} of ${J(r.sizes)} px buttons, 8 px above the act pad and right-aligned with it, over nothing it mustn't cover (${J(r)})`);
+      if (w === 390) {
+        // (drawn in play: a paused game closes the tray)
+        await lp.evaluate(() => {
+          window.__game.state.mode = 'playing';
+          window.__game.specials.openTray();
+          window.__game.combat.setAmmo('grape'); // (the hint beside the open tray)
+        });
+        await snap(lp, 'kraken-tray-390x844.png');
+        await lp.evaluate(() => { window.__game.state.mode = 'paused'; });
+      }
+      await lc.close();
+    }
+  });
+
+  // ---------------------------------------------------------------------------- kraken: the records it saves
+  await section('kraken-saves', async () => {
+    // At load a record that needed fixing is rewritten in its clean form (the powder record: each recipe 0 or 1,
+    // unknown fields dropped; the steering setting), and the tips record keeps bits above 255.
+    const junk = {
+      'pirates-ahoy-unlocked': '7',
+      'pirates-ahoy-tutorial-done': '1',
+      'pirates-ahoy-powder': '{"v":7,"own":{"frost":2,"stink":1,"junk":1},"x":1}',
+      'pirates-ahoy-settings': '{"steer":"wheel","v":3,"extra":true}',
+      'pirates-ahoy-tips': '33023',
+    };
+    const { ctx, page: sp } = await openK({ label: 'kraken-saves', store: junk });
+    const rec = await sp.evaluate(() => {
+      const G = window.__game;
+      return { powder: localStorage.getItem('pirates-ahoy-powder'), settings: localStorage.getItem('pirates-ahoy-settings'), tips: G.tips, rawTips: localStorage.getItem('pirates-ahoy-tips'), mem: G.specials.powder, steer: G.settings.get().steer };
+    });
+    check(rec.powder === OWN(0, 0, 1) && J(rec.mem) === rec.powder && rec.settings === '{"v":1,"steer":"wheel"}' && rec.steer === 'wheel' && rec.tips === 33023 && rec.rawTips === '33023',
+      `kraken saves: at load the powder and settings records are fixed and rewritten clean, and the tips keep bits above 255 (${J(rec)})`);
+    // Garbage given to setPowder / settings.set is refused field by field, never thrown.
+    const set = await sp.evaluate(() => {
+      const G = window.__game;
+      const out = {};
+      for (const [k, v] of [['array', [1, 1, 1]], ['proto', JSON.parse('{"__proto__":{"own":{"fire":1}},"own":{"stink":1}}')], ['string', '{"v":1,"own":{"fire":1,"frost":1,"stink":1}}'], ['float', { v: 1, own: { fire: 1.5, frost: 1, stink: -1 } }], ['null', null]]) {
+        try {
+          out[k] = J(G.specials.setPowder(v).own);
+        } catch (e) {
+          out[k] = `threw ${e.message}`;
+        }
+      }
+      function J(o) {
+        return JSON.stringify(o);
+      }
+      out.settings = [G.settings.set({ steer: 'tiller' }).steer, G.settings.set('{"v":1,"steer":"wheel"}').steer, G.settings.set(null).steer];
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 0, stink: 0 } });
+      G.settings.set({ v: 1, steer: 'wheel' });
+      return out;
+    });
+    check(set.array === '{"fire":0,"frost":0,"stink":0}' && set.proto === '{"fire":0,"frost":0,"stink":1}' && set.string === '{"fire":1,"frost":1,"stink":1}' && set.float === '{"fire":0,"frost":1,"stink":0}' && set.null === '{"fire":0,"frost":0,"stink":0}' && J(set.settings) === '["buttons","wheel","buttons"]',
+      `kraken saves: setPowder and settings.set keep only what is valid, field by field, and never throw (${J(set)})`);
+
+    // Two tabs: a recipe bought in the other tab shows here and none is ever lost; the steering setting follows the
+    // other tab; feats that mirror progress (legend) merge by the larger, the counters as saved.
+    const other = await ctx.newPage();
+    watch(other, 'kraken-saves tab B');
+    await other.goto(base + KQ, { waitUntil: 'domcontentloaded', timeout: 120000 });
+    await other.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+    await sp.evaluate(() => window.__game.setFeats({ captures: 2, legend: 0 }));
+    await other.evaluate(() => {
+      const G = window.__game;
+      G.specials.setPowder({ v: 1, own: { fire: 0, frost: 1, stink: 1 } });
+      G.settings.set({ v: 1, steer: 'buttons' });
+      const f = JSON.parse(localStorage.getItem('pirates-ahoy-feats'));
+      f.legend = 1;
+      f.captures = 5;
+      localStorage.setItem('pirates-ahoy-feats', JSON.stringify(f));
+    });
+    await sp.waitForFunction(() => window.__game.specials.powder.own.frost === 1 && window.__game.settings.get().steer === 'buttons' && window.__game.feats.legend === 1, null, { timeout: 10000 }).catch(() => {});
+    const tabs = await sp.evaluate(() => ({ own: window.__game.specials.powder.own, steer: window.__game.settings.get().steer, feats: window.__game.feats, saved: localStorage.getItem('pirates-ahoy-powder') }));
+    check(J(tabs.own) === '{"fire":1,"frost":1,"stink":1}' && tabs.steer === 'buttons' && tabs.feats.legend === 1 && tabs.feats.captures === 5,
+      `kraken saves: two tabs: the recipes merge upward (Fire kept here), the steering setting follows the other tab, legend merges by the larger (${J({ own: tabs.own, steer: tabs.steer, legend: tabs.feats.legend, captures: tabs.feats.captures })})`);
+    await ctx.close();
+
+    // With storage switched off the game runs from the defaults, and the steering setting works for the visit.
+    const { ctx: bc, page: bp } = await (async () => {
+      const c = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+      await c.addInitScript(() => {
+        Object.defineProperty(window, 'localStorage', { configurable: true, get() { throw new DOMException('The operation is insecure.', 'SecurityError'); } });
+      });
+      const p = await c.newPage();
+      watch(p, 'kraken-saves blocked');
+      await p.goto(base + KQ, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await p.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+      await p.evaluate(installHelpers);
+      await p.evaluate(installKraken);
+      return { ctx: c, page: p };
+    })();
+    const blocked = await ev(bp, async () => {
+      const G = window.__game;
+      G.state.tutorialDone = true;
+      T.level(1);
+      const out = { powder: G.specials.powder.own, loads: G.specials.loads };
+      out.set = G.settings.set({ v: 1, steer: 'wheel' }).steer;
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.wheel = T.shown('touch-wheel');
+      out.own = G.specials.setPowder({ v: 1, own: { fire: 1, frost: 0, stink: 0 } }).own;
+      return out;
+    });
+    check(J(blocked.powder) === '{"fire":0,"frost":0,"stink":0}' && J(blocked.loads) === '{"fire":0,"frost":0,"stink":0}' && blocked.set === 'wheel' && blocked.wheel && blocked.own.fire === 1,
+      `kraken saves: with storage switched off it starts from the defaults (no recipes), and the ship's wheel works for the visit (${J(blocked)})`);
+    await bc.close();
+  });
+
+  // ------------------------------------------------------------------------- kraken: the shipyard's rudder row
+  await section('kraken-dock', async () => {
+    // The shipyard's 7th row, Big rudder & wheel: three tiers for 120 / 300 / 550 (970 in all), each saved in the
+    // ship record (up.rudder 1..3) with the chest; "Turning when slow: 35% → next: 50%".
+    const { ctx, page: dp } = await openK({ label: 'kraken-dock', store: { ...KSTORE, 'pirates-ahoy-purse': '2000' } });
+    const buy = await dp.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      const rows = [...document.querySelectorAll('#dock-up-list .up-row')].map((li) => li.dataset.id);
+      const text = () => (document.querySelector('#dock-up-list .up-row[data-id="rudder"]') || { textContent: '' }).textContent.replace(/\s+/g, ' ').trim();
+      const out = { rows, t0: text(), buys: [] };
+      for (let k = 0; k < 4; k++) {
+        const before = G.state.purse;
+        const ok = G.dock.buy('rudder');
+        out.buys.push({ ok, cost: before - G.state.purse, tier: G.shipConfig.up.rudder ?? 0, saved: localStorage.getItem('pirates-ahoy-ship'), chest: localStorage.getItem('pirates-ahoy-purse'), text: text() });
+      }
+      // the docked ship is rebuilt when the recipes change (her powder kegs)
+      const ship = G.dock.ship;
+      G.specials.setPowder({ v: 1, own: { fire: 1, frost: 1, stink: 0 } });
+      out.rebuilt = G.dock.ship !== ship;
+      return out;
+    });
+    await dp.evaluate(() => {
+      const row = document.querySelector('#dock-up-list .up-row[data-id="rudder"]');
+      if (row) row.scrollIntoView({ block: 'center' });
+    });
+    await frames(dp, 3);
+    await snap(dp, 'kraken-dock-rudder.png');
+    const costs = buy.buys.map((b) => b.cost);
+    check(buy.rows.join() === 'guns,shot,crew,hull,sails,carpenter,rudder' && /Turning when slow: 35% → next: 50%/.test(buy.t0) && /120/.test(buy.t0),
+      `kraken dock: the shipyard lists the Big rudder & wheel 7th: "${buy.t0}"`);
+    check(J(costs) === '[120,300,550,0]' && buy.buys.map((b) => b.ok).join() === 'true,true,true,false' && buy.buys.map((b) => b.tier).join() === '1,2,3,3' && buy.buys.slice(0, 3).every((b, k) => new RegExp(`"rudder":${k + 1}\\}`).test(b.saved)) && J(buy.buys.map((b) => b.chest)) === '["1880","1580","1030","1030"]',
+      `kraken dock: its three tiers cost 120 / 300 / 550, each saved in the ship record with the chest; a fourth is refused (${J(buy.buys.map((b) => ({ ok: b.ok, cost: b.cost, tier: b.tier, chest: b.chest })))})`);
+    check(/80%/.test(buy.buys[2].text) && !/next/.test(buy.buys[2].text) && /Turning when slow: 50% → next: 65%/.test(buy.buys[0].text) && buy.rebuilt,
+      `kraken dock: the row follows the tiers ("${buy.buys[0].text}" … "${buy.buys[2].text}"); the docked ship is rebuilt with her powder kegs when the recipes change (${buy.rebuilt})`);
+    await ctx.close();
+
+    // Storage full when the ship record is written: the rudder is yours for the visit and its gold stays in the saved
+    // chest until the ship record saves (the shipyard's own rule, SPEC3 §10.2).
+    const { ctx: fc, page: fp } = await openK({ label: 'kraken-dock full', store: { 'pirates-ahoy-purse': '500', 'pirates-ahoy-unlocked': '3' } });
+    const full = await fp.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      const real = Storage.prototype.setItem;
+      Storage.prototype.setItem = function (k, v) {
+        if (k === 'pirates-ahoy-ship') throw new DOMException('full', 'QuotaExceededError');
+        return real.call(this, k, v);
+      };
+      let out;
+      try {
+        const ok = G.dock.buy('rudder');
+        out = { ok, purse: G.state.purse, chest: localStorage.getItem('pirates-ahoy-purse'), tier: G.shipConfig.up.rudder, ship: localStorage.getItem('pirates-ahoy-ship') };
+      } finally {
+        Storage.prototype.setItem = real;
+      }
+      G.dock.paint('hull', 'royal');
+      out.after = { chest: localStorage.getItem('pirates-ahoy-purse'), ship: localStorage.getItem('pirates-ahoy-ship') };
+      return out;
+    });
+    check(full.ok && full.purse === 380 && full.chest === '500' && full.tier === 1 && !/rudder/.test(full.ship || '') && full.after.chest === '380' && /"rudder":1/.test(full.after.ship || ''),
+      `kraken dock: storage full: the rudder lasts the visit and its gold stays in the saved chest until the ship record saves (${J(full)})`);
+    await fc.close();
+  });
+
+  // ---------------------------------------------------------------------------------- kraken: the new sounds
+  await section('kraken-audio', async () => {
+    // Offline renders of every Kraken Seas sound (special shot, the new ships, Voyage III's hazards, the Kraken, the
+    // Riddle Bell, building, crates): finite, stereo, not silent, never over full scale.
+    const KRAKEN_SFX = ['ignite', 'crackle', 'sizzle', 'freeze', 'stink', 'blast', 'clang', 'ram', 'mortar', 'fuse', 'spout', 'horn', 'rogue', 'surf', 'ink', 'krakenRise', 'slam', 'grab', 'gurgle', 'sneeze', 'bell', 'bonk', 'squawk', 'build', 'crate', 'tentacle', 'geyser'];
+    const { ctx, page: ap } = await openK({ label: 'kraken-audio' });
+    const sound = await ap.evaluate(async (names) => {
+      const M = await import('/src/audio.js');
+      const out = { missing: names.filter((n) => !M.SFX_NAMES.includes(n)), bad: [], peaks: {} };
+      for (const sfx of names) {
+        if (out.missing.includes(sfx)) continue;
+        const r = await M.__audioTest.renderOffline({ sfx, seconds: 1.5, music: false, ambience: false });
+        let peak = 0;
+        let finite = true;
+        const loud = [0, 0];
+        r.channels.forEach((ch, c) => {
+          for (const v of ch) {
+            if (!Number.isFinite(v)) finite = false;
+            else {
+              const a = Math.abs(v);
+              if (a > peak) peak = a;
+              if (a > 1e-3 && c < 2) loud[c]++;
+            }
+          }
+        });
+        out.peaks[sfx] = Math.round(peak * 1000) / 1000;
+        if (!finite || r.channels.length !== 2 || peak <= 0.01 || peak > 1 || !loud[0] || !loud[1]) out.bad.push(`${sfx} (${r.channels.length} ch, peak ${peak}, finite ${finite})`);
+      }
+      return out;
+    }, KRAKEN_SFX);
+    check(sound.missing.length === 0 && sound.bad.length === 0,
+      `kraken audio: offline renders of the ${KRAKEN_SFX.length} Kraken Seas sounds are finite, stereo and not silent (${sound.bad.length ? 'bad: ' + sound.bad.join(', ') : J(sound.peaks)}${sound.missing.length ? '; missing: ' + sound.missing : ''})`);
+    await ctx.close();
+  });
+
+  // -------------------------------------------------------- kraken: the live game (no ?kraken=1) unchanged
+  await section('kraken-live', async () => {
+    // Until Voyage III sails for everyone (voyage.js WITH_KRAKEN), a page without ?kraken=1 is today's game, even with
+    // the new records already stored: six levels, no recipes or loads (the powder and settings records are neither
+    // read nor rewritten), keys 4-6 do nothing, R cycles round, chain and grape, the help lists and the pause dialog
+    // as today, the Ammo pill cycles (no tray), a thumb slide is a plain hold, no wheel, no statusfx, and the shipyard
+    // has its six rows.
+    const store = { 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255', 'pirates-ahoy-powder': OWN_ALL, 'pirates-ahoy-settings': '{"v":1,"steer":"wheel"}', 'pirates-ahoy-purse': '2000' };
+    const { ctx, page: lp } = await open({ label: 'kraken-live', store });
+    if (await lp.evaluate(() => window.__game.voyage.WITH_KRAKEN)) {
+      console.log('     (Voyage III sails for everyone now: no hidden Kraken Seas to check)');
+      await ctx.close();
+      return;
+    }
+    const desk = await ev(lp, () => {
+      const G = window.__game;
+      const out = { levels: G.LEVELS.length, powder: G.specials.powder.own, steer: G.settings.get().steer, stored: [localStorage.getItem('pirates-ahoy-powder'), localStorage.getItem('pirates-ahoy-settings')] };
+      out.help = [...document.querySelectorAll('ul.controls')].map((u) => u.textContent).join(' | ');
+      T.level(3);
+      out.loads = G.specials.loads;
+      G.combat.setAmmo('round');
+      const keys = [];
+      for (const [k, c] of [['4', 'Digit4'], ['5', 'Digit5'], ['6', 'Numpad6']]) {
+        T.key(k, c);
+        T.key(k, c, { type: 'keyup' });
+        keys.push(G.combat.ammo + (T.shown('hint') ? ':' + T.text('hint') : ''));
+      }
+      out.keys = keys;
+      out.r = [];
+      for (let i = 0; i < 4; i++) {
+        T.key('r', 'KeyR');
+        T.key('r', 'KeyR', { type: 'keyup' });
+        out.r.push(G.combat.ammo);
+      }
+      out.fx = G.specials.fx();
+      out.tray = G.specials.tray;
+      out.flash = T.shown('screen-flash');
+      G.togglePause();
+      out.pause = [...document.querySelectorAll('#pause-choices button')].filter((b) => b.offsetParent).map((b) => b.id);
+      G.togglePause();
+      return out;
+    });
+    const shop = await lp.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('menu');
+      const rows = [...document.querySelectorAll('#dock-up-list .up-row')].map((li) => li.dataset.id);
+      const before = G.state.purse;
+      const ok = G.dock.buy('rudder');
+      return { rows, ok, spent: before - G.state.purse, ship: localStorage.getItem('pirates-ahoy-ship'), tips: G.tips };
+    });
+    check(desk.levels === 6 && J(desk.powder) === '{"fire":0,"frost":0,"stink":0}' && J(desk.loads) === '{"fire":0,"frost":0,"stink":0}' && desk.steer === 'buttons' && desk.stored[0] === OWN_ALL && desk.stored[1] === '{"v":1,"steer":"wheel"}',
+      `kraken live: without ?kraken=1 there are six levels and the stored powder and steering records are neither read nor rewritten (${J({ levels: desk.levels, powder: desk.powder, loads: desk.loads, steer: desk.steer, stored: desk.stored })})`);
+    check(J(desk.keys) === '["round","round","round"]' && desk.r.join() === 'chain,grape,round,chain' && !/special|slide/.test(desk.help) && desk.fx === null && !desk.tray.wanted && !desk.tray.open && !desk.flash && desk.pause.join() === 'resume-btn,quit-dock-btn,quit-menu-btn',
+      `kraken live: keys 4-6 do nothing, R cycles round, chain and grape, the help lists and the pause dialog are today's, no statusfx (${J({ keys: desk.keys, r: desk.r, fx: desk.fx, tray: desk.tray, pause: desk.pause })})`);
+    check(shop.rows.join() === 'guns,shot,crew,hull,sails,carpenter' && shop.ok === false && shop.spent === 0 && !/rudder/.test(shop.ship || '') && shop.tips === 255,
+      `kraken live: the shipyard has its six rows and no rudder for sale (${J(shop)})`);
+    await ctx.close();
+
+    const { ctx: tc, page: tp } = await open({ width: 390, height: 844, touch: true, label: 'kraken-live touch', store });
+    const touch = await ev(tp, async () => {
+      const G = window.__game;
+      T.level(3);
+      G.combat.setAmmo('round');
+      const tap = (el) => {
+        for (const type of ['pointerdown', 'pointerup']) el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 41, pointerType: 'touch', isPrimary: true }));
+      };
+      const pill = document.getElementById('touch-ammo');
+      tap(pill);
+      const out = { ammo: G.combat.ammo, tray: G.specials.tray.open, expanded: pill.getAttribute('aria-expanded'), trayShown: T.shown('ammo-tray') };
+      const L = document.querySelector('[data-hold="left"]');
+      const b = L.getBoundingClientRect();
+      const ptr = (type, x) => L.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: 42, pointerType: 'touch', isPrimary: true, clientX: x, clientY: b.top + b.height / 2 }));
+      ptr('pointerdown', b.left + b.width / 2);
+      ptr('pointermove', b.left + b.width / 2 + 40);
+      out.slide = { steer: G.input.steer, input: G.turn.input, needle: T.shown('steer-needle') };
+      ptr('pointerup', b.left + b.width / 2 + 40);
+      G.state.mode = 'paused';
+      await T.redraw();
+      out.wheel = T.shown('touch-wheel');
+      out.arrows = Math.round(L.getBoundingClientRect().width);
+      G.state.mode = 'playing';
+      G.togglePause();
+      out.pause = [...document.querySelectorAll('#pause-choices button')].filter((x) => x.offsetParent).map((x) => x.id);
+      out.toggle = T.shown('steer-mode-btn');
+      G.togglePause();
+      out.help = [...document.querySelectorAll('ul.controls')].map((u) => u.textContent).join(' | ');
+      out.tips = G.tips;
+      return out;
+    });
+    check(touch.ammo === 'chain' && !touch.tray && !touch.trayShown && touch.expanded === null && touch.slide.steer === null && touch.slide.input === 1 && !touch.slide.needle && !touch.wheel && touch.arrows >= 44,
+      `kraken live: on a phone the Ammo pill cycles (no tray), a thumb slide on ◀ is a plain hold, and the arrows stay (no wheel, though one is stored) (${J({ ammo: touch.ammo, tray: touch.tray, slide: touch.slide, wheel: touch.wheel, arrows: touch.arrows })})`);
+    check(touch.pause.join() === 'resume-btn,quit-dock-btn,quit-menu-btn' && !touch.toggle && !/special|slide/.test(touch.help) && touch.tips === 255,
+      `kraken live: on a phone the pause dialog has no Steering toggle (nor its New! badge) and the help is today's (${J({ pause: touch.pause, toggle: touch.toggle, tips: touch.tips })})`);
+    await tc.close();
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

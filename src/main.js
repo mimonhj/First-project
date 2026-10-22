@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
 import { buildShip, animateShip, disposeShip, projectileMesh, addHole, clearHoles, setShipDamage, hoistFlag } from './ships.js';
 import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
-import { toon, noOutline, gradientMap } from './style.js';
+import { toon, noOutline, gradientMap, setOutline } from './style.js';
 import { createAudio } from './audio.js';
 import { buildPerson, animatePerson, disposePerson, releaseSharedPeople } from './people.js';
 import * as sparrow from './env/sparrow.js';
@@ -213,6 +213,7 @@ const ui = {
   hint: $('hint'),
   edge: $('edge'),
   screenFlash: $('screen-flash'),
+  edgeArrow: $('edge-arrow'),
   hitmark: $('hitmark'),
   muteBtn: $('mute-btn'),
   menuMute: $('menu-mute'),
@@ -1017,7 +1018,7 @@ function buildPlayerMesh(type = playerStats()) {
 function createShip(typeName, kind, x, z, h) {
   const isPlayer = kind === 'player' && typeName === 'player';
   const type = isPlayer ? playerStats() : SHIP_TYPES[typeName];
-  const mesh = isPlayer ? buildPlayerMesh(type) : buildShip(typeName);
+  const mesh = isPlayer ? buildPlayerMesh(type) : takePrebuilt(typeName) || buildShip(typeName);
   const crew0 = isPlayer ? 0 : Math.max(0, Math.floor(type.crew || 0));
   const ship = {
     id: nextShipId++,
@@ -1124,6 +1125,311 @@ function removeShip(s) {
   disposeShip(s.mesh);
 }
 
+// The next wave's ship models, built ahead and kept out of the scene, one a frame from 2 s after a wave spawns
+// (SPEC3 §14, PERF-4: a wave of three new models never stalls the frame it sails in). createShip takes one when it
+// is there. (Once the Kraken Seas sail; buildShip rolls Math.random for its flags and sails, so today's voyage
+// keeps today's order of rolls.)
+const prebuilt = { queue: [], at: Infinity, meshes: new Map() };
+function queuePrebuild(index) {
+  prebuilt.queue.length = 0;
+  prebuilt.at = Infinity;
+  if (!WITH_KRAKEN) return;
+  const wave = LEVELS[state.level - 1].waves[index];
+  if (!wave) return;
+  // (models already built and not yet taken count: a wave never builds more than it needs)
+  const have = new Map();
+  for (const [t, list] of prebuilt.meshes) have.set(t, list.length);
+  for (const t of wave) {
+    if (have.get(t) > 0) have.set(t, have.get(t) - 1);
+    else if (SHIP_TYPES[t] && t !== 'player') prebuilt.queue.push(t);
+  }
+  prebuilt.at = state.time + 2;
+}
+// One model a frame (frame(), while the battle runs).
+function prebuildStep() {
+  if (!prebuilt.queue.length || state.mode !== 'playing' || state.time < prebuilt.at) return;
+  const t = prebuilt.queue.shift();
+  try {
+    const mesh = buildShip(t);
+    if (!prebuilt.meshes.has(t)) prebuilt.meshes.set(t, []);
+    prebuilt.meshes.get(t).push(mesh);
+  } catch (err) {
+    console.warn('prebuild:', err);
+  }
+}
+function takePrebuilt(typeName) {
+  const list = prebuilt.meshes.get(typeName);
+  return list && list.length ? list.shift() : null;
+}
+function clearPrebuilt() {
+  for (const list of prebuilt.meshes.values()) for (const mesh of list) disposeShip(mesh);
+  prebuilt.meshes.clear();
+  prebuilt.queue.length = 0;
+  prebuilt.at = Infinity;
+}
+
+// ---------------------------------------------------------------------------
+// Powder crates (SPEC3 §2.5): def.crates of them bob on a Voyage III level, at the env's crateSpots in their order.
+// Sail within LOADS.crateReach of one (from your hull) and it is yours: +1 load of the special you own with the
+// fewest loads ("+1 FROST SHOT!"), or +20 gold with no recipe owned. A keg with iron hoops, an orange diamond
+// bobbing over it (the minimap draws an orange diamond too) and a soft ring on the water (pulsing under 1 Hz).
+// ---------------------------------------------------------------------------
+const crates = [];
+let crateParts = null;
+function crateLook() {
+  if (crateParts) return crateParts;
+  const paint = (g, hex) => {
+    const c = new THREE.Color(hex);
+    const n = g.attributes.position.count;
+    const a = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      a[i * 3] = c.r;
+      a[i * 3 + 1] = c.g;
+      a[i * 3 + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(a, 3));
+    return g;
+  };
+  const staves = [];
+  for (let i = 0; i <= 8; i++) {
+    const y = -0.65 + (1.3 * i) / 8;
+    staves.push(new THREE.Vector2(0.52 + 0.18 * Math.sin((Math.PI * i) / 8), y));
+  }
+  const body = paint(new THREE.LatheGeometry(staves, 18), 0xb7793a);
+  const lid = paint(new THREE.CircleGeometry(0.52, 18).rotateX(-Math.PI / 2).translate(0, 0.65, 0), 0x8a5626);
+  const hoops = [-0.36, 0.36].map((y) => paint(new THREE.TorusGeometry(0.66, 0.055, 6, 20).rotateX(Math.PI / 2).translate(0, y, 0), 0x3a2a2a));
+  const band = paint(new THREE.TorusGeometry(0.71, 0.07, 6, 20).rotateX(Math.PI / 2), 0xff8a1f); // (the powder's orange band)
+  const kegGeo = mergeCrateParts([body, lid, ...hoops, band]); // (all indexed)
+  const kegMat = setOutline(new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradientMap(3) }), true);
+  const gemGeo = new THREE.OctahedronGeometry(0.42, 0).scale(1, 1.45, 1);
+  const gemMat = toon(0xff9f1c, { emissive: 0xff6a00, emissiveIntensity: 0.55, outline: false });
+  const ringGeo = new THREE.RingGeometry(1.7, 2.15, 40).rotateX(-Math.PI / 2);
+  const ringMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xffb03a, transparent: true, opacity: 0.45, depthWrite: false }));
+  crateParts = { kegGeo, kegMat, gemGeo, gemMat, ringGeo, ringMat };
+  return crateParts;
+}
+// (Lathe, circle and torus share position, normal and uv: one vertex-coloured mesh for the keg.)
+function mergeCrateParts(parts) {
+  let verts = 0;
+  let idx = 0;
+  for (const g of parts) {
+    verts += g.attributes.position.count;
+    idx += g.index.count;
+  }
+  const out = new THREE.BufferGeometry();
+  for (const [name, size] of [['position', 3], ['normal', 3], ['uv', 2], ['color', 3]]) {
+    const a = new Float32Array(verts * size);
+    let o = 0;
+    for (const g of parts) {
+      a.set(g.attributes[name].array, o);
+      o += g.attributes[name].count * size;
+    }
+    out.setAttribute(name, new THREE.BufferAttribute(a, size));
+  }
+  const index = new Uint32Array(idx);
+  let io = 0;
+  let base = 0;
+  for (const g of parts) {
+    for (let i = 0; i < g.index.count; i++) index[io++] = g.index.array[i] + base;
+    base += g.attributes.position.count;
+  }
+  out.setIndex(new THREE.BufferAttribute(index, 1));
+  return out;
+}
+function placeCrates(def) {
+  clearCrates();
+  const n = WITH_KRAKEN ? Math.max(0, Math.floor(Number(def.crates) || 0)) : 0;
+  const spots = env && Array.isArray(env.crateSpots) ? env.crateSpots.filter((s) => s && Number.isFinite(s.x) && Number.isFinite(s.z)) : [];
+  if (!n || !spots.length) return;
+  const P = crateLook();
+  for (let i = 0; i < Math.min(n, spots.length); i++) {
+    const s = spots[i];
+    const g = new THREE.Group();
+    g.name = 'powder-crate';
+    const keg = new THREE.Mesh(P.kegGeo, P.kegMat);
+    const gem = new THREE.Mesh(P.gemGeo, P.gemMat);
+    const ring = new THREE.Mesh(P.ringGeo, P.ringMat);
+    ring.renderOrder = 4;
+    g.add(keg, gem, ring);
+    g.scale.setScalar(1.25);
+    scene.add(g);
+    crates.push({ i, x: s.x, z: s.z, mesh: g, keg, gem, ring, taken: false, spin: i * 1.7 });
+  }
+}
+function clearCrates() {
+  for (const c of crates) scene.remove(c.mesh);
+  crates.length = 0;
+}
+// Is your hull within reach of this crate? (from the keel line, as a capsule: a ship of any length reaches it)
+function crateInReach(c, p) {
+  const r = p.type.wid / 2;
+  const half = Math.max(0, p.type.len / 2 - r);
+  const ax = p.x - fwdX(p.h) * half;
+  const az = p.z - fwdZ(p.h) * half;
+  const dx = fwdX(p.h) * half * 2;
+  const dz = fwdZ(p.h) * half * 2;
+  const L = dx * dx + dz * dz;
+  const k = L > 1e-9 ? clamp(((c.x - ax) * dx + (c.z - az) * dz) / L, 0, 1) : 0;
+  return Math.hypot(c.x - (ax + dx * k), c.z - (az + dz * k)) - r < specials.LOADS.crateReach;
+}
+function pickCrate(c) {
+  if (!c || c.taken) return null;
+  c.taken = true;
+  scene.remove(c.mesh);
+  const r = specials.crateLoad(state.loads, state.powder);
+  const W = specials.WORDS3;
+  let word;
+  if (r.id) {
+    state.loads = r.loads;
+    word = W.crate(r.id);
+    pops.pop(word, c.x, 3.2, c.z, r.id);
+  } else {
+    state.gold += r.gold;
+    word = W.crateGold(r.gold);
+    pops.pop(word, c.x, 3.2, c.z, 'gold');
+  }
+  audio.play('crate', sfxAt(c.x, c.z));
+  for (let k = 0; k < 12; k++) {
+    spawnParticle('glow', k % 2 ? 0xffb03a : 0xffffff, c.x + rand(-1, 1), rand(1, 2.5), c.z + rand(-1, 1), rand(-2, 2), rand(2, 5), rand(-2, 2), rand(0.4, 0.7), rand(0.25, 0.45), 0);
+  }
+  foam(c.x, 0.5, c.z, 8, 2, 3, 0.5, 0.7);
+  gameAnnounce(`Powder crate! ${word}`);
+  return { id: r.id, gold: r.gold || 0 };
+}
+// Simulation: you sail into a crate (step()).
+function updateCrates() {
+  if (!crates.length || !player || player.sinking || player.hp <= 0 || state.intro > 0) return;
+  for (const c of crates) if (!c.taken && crateInReach(c, player)) pickCrate(c);
+}
+// The look: they bob on the swell, turn slowly, the diamond floats (frame()).
+function syncCrates(t) {
+  for (const c of crates) {
+    if (c.taken) continue;
+    const y = ocean.heightAt(c.x, c.z, t);
+    c.mesh.position.set(c.x, y, c.z);
+    c.keg.position.y = 0.25;
+    c.keg.rotation.set(0.12 * Math.sin(t * 1.3 + c.spin), t * 0.4 + c.spin, 0.1 * Math.cos(t * 1.1 + c.spin));
+    c.gem.position.y = 2.3 + (reducedMotion() ? 0 : 0.22 * Math.sin(t * Math.PI + c.spin)); // (0.5 Hz)
+    c.gem.rotation.y = reducedMotion() ? 0 : t * 1.2;
+    c.ring.position.y = 0.12;
+  }
+  if (crateParts) crateParts.ringMat.opacity = 0.35 + 0.15 * Math.sin(t * 2 * Math.PI * 0.6);
+}
+
+// ---------------------------------------------------------------------------
+// Voyage III's telegraphs drawn by main (SPEC3 §4.2, §5.3; kid rule: every threat ≥ 1.5 s with a shape, a sound and
+// a word): a lit fire ship's red danger ring (r 6, its disc fills as she arms), the waterspouts' wind, the rogue
+// wave's arrow at the screen edge it comes from, and the one-time tips (RAM!, waterspout, rogue wave).
+// ---------------------------------------------------------------------------
+const fireRings = new Map(); // fire ship id → her ring (a warning zone)
+function syncFireRings(t) {
+  const list = hazardVis ? hazardVis.fireRings : [];
+  const live = new Set();
+  for (const r of list) {
+    live.add(r.id);
+    let z = fireRings.get(r.id);
+    if (!z) {
+      z = buildZone('fireship', r.r || mechanics3.FIRESHIP.ring);
+      scene.add(z);
+      fireRings.set(r.id, z);
+    }
+    z.position.set(r.x, ocean.heightAt(r.x, r.z, t) + 0.3, r.z);
+    z.userData.disc.scale.setScalar(Math.max(0.05, Math.min(1, r.k)));
+  }
+  for (const [id, z] of fireRings) {
+    if (live.has(id)) continue;
+    scene.remove(z);
+    fireRings.delete(id);
+  }
+}
+// The waterspouts' whistling wind (audio.js `spout`, a loop): one voice on the nearest forming or active spout,
+// louder as you near it.
+const spoutWind = { id: null, handle: null };
+function clearHazardCues() {
+  if (spoutWind.handle) spoutWind.handle.stop();
+  spoutWind.handle = null;
+  spoutWind.id = null;
+  for (const z of fireRings.values()) scene.remove(z);
+  fireRings.clear();
+  show(ui.edgeArrow, false);
+  shown.edgeArrow = false;
+}
+function hazardCues() {
+  const v = hazardVis;
+  if (!v || !player || state.mode !== 'playing') {
+    if (spoutWind.handle || shown.edgeArrow) clearHazardCues();
+    return;
+  }
+  // The nearest spout's wind.
+  let near = null;
+  let nd = Infinity;
+  for (const sp of v.spouts) {
+    if (sp.state === 'collapsing') continue;
+    const d = Math.hypot(sp.x - player.x, sp.z - player.z);
+    if (d < nd) {
+      nd = d;
+      near = sp;
+    }
+  }
+  if (!near || nd > 90) {
+    if (spoutWind.handle) {
+      spoutWind.handle.stop();
+      spoutWind.handle = null;
+      spoutWind.id = null;
+    }
+  } else if (near.id !== spoutWind.id || !spoutWind.handle) {
+    if (spoutWind.handle) spoutWind.handle.stop();
+    const left = Math.max(1, (near.T - near.t) + (near.state === 'forming' ? mechanics3.SPOUTS.life : 0) + mechanics3.SPOUTS.collapse);
+    spoutWind.id = near.id;
+    spoutWind.handle = audio.play('spout', sfxAt(near.x, near.z, { duration: left }));
+  } else if (spoutWind.handle && spoutWind.handle.set) spoutWind.handle.set(sfxAt(near.x, near.z));
+  // The rogue wave's arrow at the screen edge it comes from, for its warning.
+  const w = v.rogue;
+  const warn = !!(w && w.warning);
+  if (warn) placeEdgeArrow(w);
+  if (warn !== !!shown.edgeArrow) {
+    show(ui.edgeArrow, warn);
+    shown.edgeArrow = warn;
+  }
+}
+// One-time tips (SPEC3 §6.5, bits 2048 / 4096 / 8192): the first ram wind-up, the first forming waterspout, the
+// first rogue-wave warning. Simulated time (step()), looked at 10 times a second until all three are seen.
+const HAZARD_TIPS = TIP.ram | TIP.spout | TIP.rogue;
+function hazardTips(dt) {
+  if (!WITH_KRAKEN || (tips & HAZARD_TIPS) === HAZARD_TIPS || !player || state.intro > 0) return;
+  state.hazardTipT = (state.hazardTipT || 0) - dt;
+  if (state.hazardTipT > 0) return;
+  state.hazardTipT = 0.1;
+  const v = mechanics.visuals();
+  if (!(tips & TIP.ram) && v.rams.some((r) => r.state === 'windup')) showTip(TIP.ram, 'RAM! Turn away from her bow!');
+  if (!(tips & TIP.spout) && v.spouts.some((sp) => sp.state === 'forming')) showTip(TIP.spout, 'Waterspout! Keep clear of the twister');
+  if (!(tips & TIP.rogue) && v.rogue && v.rogue.warning) showTip(TIP.rogue, 'ROGUE WAVE! Turn your bow or stern to it');
+}
+// Where the arrow goes: the crest's bearing from the view (0 = straight ahead, up the screen), on the edge of the
+// view, pointing in at you.
+const edgeV = new THREE.Vector3();
+function placeEdgeArrow(w) {
+  edgeV.set(w.x, 0, w.z).applyMatrix4(camera.matrixWorldInverse);
+  const a = Math.atan2(edgeV.x, -edgeV.z);
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const dx = Math.sin(a);
+  const dy = -Math.cos(a);
+  const mx = W / 2 - 44;
+  const my = H / 2 - 56;
+  const k = Math.min(Math.abs(dx) > 1e-6 ? mx / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-6 ? my / Math.abs(dy) : Infinity);
+  // (kept clear of the top HUD row and of the gun card or the touch pads at the bottom)
+  const x = Math.round(W / 2 + dx * k);
+  const y = Math.round(clamp(H / 2 + dy * k, Math.min(110, H / 2), Math.max(H / 2, H - (isTouch() ? 250 : 150))));
+  const deg = Math.round(((a * 180) / Math.PI + 180) % 360);
+  const key = `${x},${y},${deg}`;
+  if (shown.edgeArrowAt === key) return;
+  shown.edgeArrowAt = key;
+  ui.edgeArrow.style.left = `${x}px`;
+  ui.edgeArrow.style.top = `${y}px`;
+  ui.edgeArrow.style.setProperty('--turn', `${deg}deg`);
+}
+
 const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.2, 20);
 const coinMat = toon(0xffc93c, { emissive: 0x6b4a00, emissiveIntensity: 0.5 });
 const bombGeo = new THREE.IcosahedronGeometry(1.1, 1);
@@ -1142,7 +1448,29 @@ function zoneMaterials(ring, disc) {
   };
 }
 const ZONE_MATS = { lava: zoneMaterials(0xff3b1f, 0xff5a1f), lightning: zoneMaterials(0xe8f6ff, 0x8fd0ff) };
+// Voyage III's warning rings (SPEC3 §4.2, §5.3): a mortar shell's orange, an ink pot's violet (bright enough on the
+// Deep's night sea), a sea geyser's white-blue bubbles, the Kraken's slam violet, and a lit fire ship's red danger
+// ring. They throb slower than lava's (≤ 1 Hz, SPEC3 §15). Made on first use once the Kraken Seas sail (three's
+// materials roll Math.random for their ids: today's voyage keeps today's rolls).
+let ZONE_MATS3 = null;
+const ZONE3_KINDS = ['shell', 'ink', 'geyser', 'slam', 'fireship'];
+function zoneMats3() {
+  if (!ZONE_MATS3) {
+    ZONE_MATS3 = {
+      shell: zoneMaterials(0xff8a1f, 0xffa23f),
+      ink: zoneMaterials(0xa070ff, 0x3a1260),
+      geyser: zoneMaterials(0xe8fbff, 0x7fd8ff),
+      slam: zoneMaterials(0xc06aff, 0x6a2bb0),
+      fireship: zoneMaterials(0xff2a1f, 0xff6a2a),
+    };
+    Object.assign(ZONE_MATS, ZONE_MATS3);
+  }
+  return ZONE_MATS3;
+}
+// Is this one of Voyage III's bombs, with its own ring, look and flat damage? (Once the Kraken Seas sail.)
+const isBomb3 = (kind) => WITH_KRAKEN && ZONE3_KINDS.includes(kind);
 function buildZone(kind = 'lava', radius = BOMB_RADIUS) {
+  if (isBomb3(kind)) zoneMats3();
   const M = ZONE_MATS[kind] || ZONE_MATS.lava;
   const g = new THREE.Group();
   const ring = new THREE.Mesh(zoneRingGeo, M.ring);
@@ -1188,6 +1516,11 @@ function clearLevelEntities() {
   clearFireQueue();
   loadingSaid.port = loadingSaid.star = false;
   resetFraming();
+  clearCrates();
+  clearPrebuilt();
+  clearHazardCues();
+  hazardVis = null;
+  if (WITH_KRAKEN) envFrame.hazards = null;
   if (statusFxView) {
     stopCrackle();
     statusFxView.sync([], 0, 0); // (nothing burns, freezes or stinks on the next scene)
@@ -1306,9 +1639,14 @@ function spawnWave(index) {
     fresh.push(e);
   });
   state.wave = index;
+  // The next wave's ship models are built ahead, hidden, one a frame (PERF-4: reinforcements never stall a frame).
+  queuePrebuild(index + 1);
   let hands = 0;
+  // Your crew patches the hull: today's share, or the Biscuit Bakery's (SPEC3 §8.1: 45 / 55 / 65 %).
+  const perks = islandPerks();
+  const patch = perks && Number.isFinite(perks.wavePatch) ? perks.wavePatch : WAVE_REPAIR;
   if (index > 0 && player && !player.sinking) {
-    player.hp = Math.min(player.maxHp, player.hp + player.maxHp * WAVE_REPAIR);
+    player.hp = Math.min(player.maxHp, player.hp + player.maxHp * patch);
     // Fresh hands come aboard with the reinforcements (never above the full crew).
     const before = state.crew;
     state.crew = clamp(state.crew + CREW.waveRefill, 1, state.crewMax);
@@ -1322,7 +1660,8 @@ function spawnWave(index) {
     else audio.play('wave', { pitch });
     const label = boss ? `${SHIP_TYPES[boss].name} appears!` : 'Reinforcements!';
     const crewLine = hands > 0 ? ` &middot; ${hands} more ${hands === 1 ? 'hand' : 'hands'} aboard` : '';
-    showBanner(`${label}<small>${describeWave(wave)}</small><small>Your crew patches the hull${crewLine}</small>`, 3);
+    const patchLine = patch !== WAVE_REPAIR ? `Your crew patches ${Math.round(patch * 100)}% of the hull` : 'Your crew patches the hull';
+    showBanner(`${label}<small>${describeWave(wave)}</small><small>${patchLine}${crewLine}</small>`, 3);
   }
   // The level's mechanics may place a new ship (a galleon at a convoy start, the Phantom rising beside the
   // eye, with her own banner): after the banner above, so theirs wins.
@@ -1370,6 +1709,7 @@ function startLevel(n, { retry = false } = {}) {
   state.hint = { step: 0, t: 0, offBeam: 0, hits: 0, text: '' };
   if (!retry) state.bombWarned = false;
   state.goldAtLevelStart = state.gold;
+  state.flagshipDown = false; // (level 9: the sea geysers run until the Inkheart falls)
   clearSteering();
   // People built with share: true (overboard sailors, boarding parties) belong to one level's looks.
   if (n !== lastLevelStarted) releaseSharedPeople();
@@ -1437,22 +1777,32 @@ function startLevel(n, { retry = false } = {}) {
     types: SHIP_TYPES,
   };
   // Voyage III's rules also launch bombs, send ships fleeing, blow up fire ships, read and douse statuses, lead
-  // your turn and read the Lighthouse's warning bonus (SPEC3 §11.1). Statuses are live (Stage 2, battle core: a
-  // ship that flees loses hers, water puts a fire out); the rest are the Stage 0 seams until the hazards' turn.
+  // your turn and read the Lighthouse's warning bonus (SPEC3 §11.1). Their clocks wait through the fly-in and a
+  // boarding's truce (hold, as the level's bombs do); a shark rams and a ketch lobs only while she holds an attack
+  // slot (attacking); struck ships are taken when the Inkheart falls (capture).
   const ctx3 = {
     ...ctx,
+    // (the fire ship's hiss rises to her blast: it lasts her arming time)
+    sfx: (name, x, z) => audio.play(name, sfxAt(x, z, name === 'fuse' ? { duration: mechanics3.FIRESHIP.arm } : undefined)),
     launchBomb: (spec) => (spec && typeof spec === 'object' ? launchBomb(spec) : null),
-    flee: (e) => clearStatus(e),
-    explode: () => {},
+    flee: (e) => fleeShip(e),
+    explode: (x, z, r) => explodeFx(x, z, r),
     status: (e) => (e && e.status) || null,
     douse: (e) => douseShip(e),
     playerTurn,
     warnBonus,
-    surrender: () => {},
+    surrender: (e) => strikeColours(e, { quiet: true }),
+    hold: () => state.intro > 0 || boarding.truce,
+    attacking: (e) => attackSet.has(e),
+    boarding: () => boarding.active,
+    capture: (e) => captureShip(e, 'auto'),
+    turnRate: (s) => turnRate(s),
   };
-  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), mechanics3.createMechanics3(ids, ctx3)]);
+  m3 = mechanics3.createMechanics3(ids, ctx3);
+  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3]);
   spawnWave(0);
   mechanics.init();
+  placeCrates(def); // (Voyage III: the powder crates, SPEC3 §2.5)
   // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
   const types = [...new Set(def.waves.flat())];
   overboard.prepare(types.flatMap((t) => [enemyCrewOpts(t, 1), enemyCrewOpts(t, 2)]));
@@ -1535,6 +1885,18 @@ function finishLevel() {
   const mech = Math.max(0, Math.round(Number(mechanics.bonus()) || 0));
   const mechLines = (mechanics.summary() || []).filter((l) => typeof l === 'string' && l);
   state.gold += def.bonus + prize + mech;
+  // The island pays too (SPEC3 §8.1, every cleared level, finales included): the Market Hall's share of the gold
+  // won on the level (≤ 300) and the villagers' gift (≤ 240), added before the level's gold is banked.
+  const islandLines = [];
+  if (WITH_KRAKEN) {
+    const base = Math.max(0, state.gold - state.goldAtLevelStart);
+    const market = Math.max(0, Math.round(Number(islandRules.market(islandCfg, base)) || 0));
+    const gift = Math.max(0, Math.round(Number(islandRules.gift(islandCfg)) || 0));
+    const pct = islandRules.perks(islandCfg).marketPct;
+    if (gift > 0) islandLines.push(`Villagers' gift <b>+${gift}</b>`);
+    if (market > 0) islandLines.push(`Market Hall +${pct}% <b>+${market}</b>`);
+    state.gold += market + gift;
+  }
   show(ui.banner, false);
   show(ui.hint, false);
   pops.clear(); // (a last "CAPTURED! +625 GOLD" still rising must not sit over the end screen)
@@ -1551,7 +1913,8 @@ function finishLevel() {
     if (state.level < LEVELS.length) raiseProgress(state.level + 1);
     const isBest = raiseBest(state.gold);
     ui.wonGold.textContent = state.gold;
-    ui.wonChest.innerHTML = banked;
+    // (a finale has no summary card: the island's lines go above the banked line)
+    ui.wonChest.innerHTML = (islandLines.length ? `${islandLines.join(' &middot; ')}<br>` : '') + banked;
     show(ui.wonBest, isBest);
     // The finale's own words; with more voyage after it (the Molten Maw opens the Far Seas) the first button
     // sails on, gold and all (Enter does the same), and the main menu steps back.
@@ -1574,6 +1937,7 @@ function finishLevel() {
     for (const line of mechLines) extra.push(esc(line));
     if (mech) extra.push(`Treasure bonus: <b>+${mech}</b> gold`);
     if (state.plundered) extra.push(`Raiders grabbed: <b>${state.plundered}</b> gold`);
+    extra.push(...islandLines);
     ui.levelSummary.innerHTML =
       `Ships sunk: <b>${state.sunk}</b> &middot; Captured: <b>${state.captures}</b> &middot; Level bonus: <b>+${def.bonus}</b> gold<br>` +
       (extra.length ? `${extra.join(' &middot; ')}<br>` : '') +
@@ -1631,6 +1995,16 @@ function exitVoyage() {
   showMenu();
 }
 
+// What hurt you most on a Voyage III level, and how to beat it (the shipwreck card's tip).
+const SINK_TIPS = {
+  shell: 'Tip: mortar shells land inside the orange circles. Steer out of them, or close in on the Bomb Ketch!',
+  ink: 'Tip: ink pots land inside the violet circles. Keep moving!',
+  geyser: 'Tip: sea geysers burst inside the bubbling circles. Steer out of them!',
+  spout: 'Tip: keep clear of the waterspouts. Their swirl pulls you in!',
+  rogue: 'Tip: turn your bow or your stern to a rogue wave. Side-on, it hurts!',
+  ram: 'Tip: when a Shark Raider winds up (RAM!), turn away from her bow!',
+  fireship: 'Tip: sink a fire ship far away, or freeze her with Frost shot, before she reaches you!',
+};
 function playerSunk() {
   boarding.cancel('player');
   state.mode = 'over';
@@ -1645,6 +2019,7 @@ function playerSunk() {
   if (worst && worst[0] === 'lava') tip = 'Tip: lava lands inside the red circles. Steer out of them!';
   else if (worst && worst[0] === 'lightning') tip = 'Tip: lightning strikes inside the white circles. Steer out of them!';
   else if (worst && worst[0] === 'maelstrom') tip = 'Tip: keep clear of the whirlpool\'s eye. Sail across the current, not into it!';
+  else if (worst && SINK_TIPS[worst[0]]) tip = SINK_TIPS[worst[0]];
   else if (worst && SHIP_TYPES[worst[0]]) {
     tip = `Tip: the ${SHIP_TYPES[worst[0]].name.replace(/^The /, '')} did the most damage. Keep moving, and fire when the FIRE! light is on.`;
   }
@@ -1663,9 +2038,10 @@ function launchVy(t) {
   return clamp((0.8 - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
 }
 
-// Still in the fight: afloat, and not captured, escaped or surrendered.
+// Still in the fight: afloat, and not captured, escaped, surrendered or fleeing (the Kraken Crew when the Inkheart
+// falls, SPEC3 §4.2).
 function fighting(e) {
-  return e.hp > 0 && !e.captured && !e.escaped && !e.surrendered;
+  return e.hp > 0 && !e.captured && !e.escaped && !e.surrendered && !e.fleeing;
 }
 
 // Position of a point relative to `ship`: distance along the bow and to starboard.
@@ -1703,6 +2079,10 @@ let mechanics = noMechanics();
 function noMechanics() {
   return mechanics3.composeMechanics([createMechanics([], {}), mechanics3.createMechanics3([], {})]);
 }
+// The level's Voyage III part on its own (its test hooks, wave() and spout(), are not composed: __game.mechanics3),
+// and the ships holding an attack slot this step (step() fills it; a shark rams and a ketch lobs only from one).
+let m3 = null;
+const attackSet = new Set();
 // Raider pacing lives in combat.js RAIDERS: gap (after any boarding, the breather before the next raider throws
 // its hooks, on top of its own cooldown) and sheer (a beaten-off raider circles wide until its own boarding
 // cooldown is down to this, then closes in again).
@@ -1732,6 +2112,9 @@ function canGrapple(e) {
   if (!e || e.kind !== 'enemy' || e.hp <= 0 || e.sinking || e.captured || e.escaped || e.rise > 0) return 'none';
   if (!fighting(e) && !e.surrendered) return 'none';
   if (e.type.boardable === false) return 'immune';
+  // A fire ship that hasn't struck: her fuse could blow with the hulls glued together ("Too hot to board! Freeze
+  // her first.", SPEC3 §4.2). Frozen, she strikes her colours and is boarded like any struck ship.
+  if (e.type.fireship && !e.surrendered) return 'immune';
   if (specials.statusMuls(e.status).noGrapple) return 'hot';
   if (Math.hypot(e.x - player.x, e.z - player.z) > state.grappleRange + BOARD.lenFactor * e.type.len) return 'range';
   if (state.boardCooldown > 0) return 'cooldown';
@@ -1795,8 +2178,13 @@ function boardPress() {
     return boarding.start({ kind: 'counter', enemy: ct, getSides: () => boardingSides(ct, 'counter') });
   }
   const r = grapple();
-  if (!r.ok && GRAPPLE_WHY[r.reason]) flashHint(GRAPPLE_WHY[r.reason], 2);
+  if (!r.ok && GRAPPLE_WHY[r.reason]) flashHint(grappleWhy(r.reason, r.reason === 'immune' ? boardPick().near : null), 2);
   return r.ok;
+}
+// The words for why G can't board: a fire ship that hasn't struck says how to beat her (SPEC3 §4.2).
+function grappleWhy(reason, near = null) {
+  if (reason === 'immune' && near && near.type.fireship && !near.surrendered) return specials.WORDS3.hotShip;
+  return GRAPPLE_WHY[reason] || GRAPPLE_WHY.none;
 }
 // A raider in an attack slot throws its hooks at you when it can (SPEC2 §3.6). Returns whether it did.
 function raiderTry(e, dist) {
@@ -1906,6 +2294,13 @@ boarding.onEnd((ev) => {
 function checkSurrender(ship) {
   if (!ship || ship.kind !== 'enemy' || ship.surrendered || ship.captured || ship.escaped || ship.hp <= 0 || ship.sinking) return false;
   if (ship.type.boardable === false || crewOf(ship) > ship.strikeAt) return false;
+  return strikeColours(ship);
+}
+// She strikes her colours (the surrender notch, or a frozen fire ship giving up, SPEC3 §4.2: mechanics3's
+// ctx.surrender, without the crew test). quiet: no banner, tip or #game-live line of her own (mechanics3 says "The
+// fire ship gives up!" itself).
+function strikeColours(ship, { quiet = false } = {}) {
+  if (!ship || ship.kind !== 'enemy' || ship.surrendered || ship.captured || ship.escaped || ship.hp <= 0 || ship.sinking) return false;
   if (boarding.active && boarding.target === ship) return false; // the boarding's result decides
   ship.surrendered = true;
   ship.spectral = false;
@@ -1916,6 +2311,7 @@ function checkSurrender(ship) {
     console.warn('white flag:', err);
   }
   overboard.showSurrender(ship, [enemyCrewOpts(ship.typeName, 1), enemyCrewOpts(ship.typeName, 2)]);
+  if (quiet) return true;
   const name = theName(ship.type.name);
   // (A struck ship in reach is the one the Board button takes: it reads "Take!" then.)
   const tipped = showTip(
@@ -1966,6 +2362,7 @@ function captureShip(e, how = 'boarded', gold = captureGold(e.type.gold)) {
   featsDirty = true;
   saveFeats();
   mechanics.onCapture(e);
+  if (e.type.flagship) flagshipDown();
   e.removeAt = state.time + CAPTURE.sailAway;
   e.speed = Math.min(e.speed, 2);
   if (e.type.boss) state.lastBossCaptured = e.type.name;
@@ -1988,6 +2385,51 @@ function escapeShip(e) {
   overboard.clearSurrender(e);
   e.removeAt = state.time;
   foam(e.x, 0.6, e.z, 22, 9, 7, 0.8, 1.1);
+}
+
+// The Kraken Crew's flagship has fallen (sunk or captured, SPEC3 §4.2): on a level whose flagship mechanic runs
+// (level 9), the sea geysers stop for good, those still bubbling too (mechanics3 sends her crew fleeing and fades
+// the ink slicks itself).
+function flagshipDown() {
+  const def = LEVELS[state.level - 1];
+  if (!def || !(def.mechanics || []).includes('flagship') || state.flagshipDown) return;
+  state.flagshipDown = true;
+  state.nextBomb = Infinity;
+  for (let i = bombs.length - 1; i >= 0; i--) {
+    if (bombs[i].kind !== 'geyser') continue;
+    removeBomb(bombs[i]);
+    bombs.splice(i, 1);
+  }
+}
+
+// The Inkheart has fallen and her crew run (SPEC3 §4.2, mechanics3's ctx.flee): out of the fight at once (fighting()
+// is false, no attack slot, no shooting, no boarding, never captured), her statuses gone; mechanics3 steers her for
+// the nearest edge of the sea and lets her go with a foam puff (escapeShip) 5 s later. No loot, no penalty, no feat.
+function fleeShip(e) {
+  if (!e || e.kind !== 'enemy' || e.fleeing || e.captured || e.escaped || e.hp <= 0 || e.sinking) return;
+  // (A ship a boarding holds, reel to result, is never asked: mechanics3's fighting() leaves her out until it lets
+  // her go. A raider whose hooks still bite drops them and runs.)
+  if (boarding.active && boarding.target === e) boarding.cancel('flee');
+  e.fleeing = true;
+  clearStatus(e);
+  e.tagIcon = null;
+}
+
+// A fire ship blows up (SPEC3 §4.2, mechanics3's ctx.explode): its look and sound only (mechanics3 deals the
+// damage): a fireball and smoke the size of her danger ring, a shake close by (never under reduced motion), the
+// `blast` sound and a soft flash over the view (≤ 0.25 opaque, at most one every 3 s, shared with KA-BOOM!'s).
+function explodeFx(x, z, r = 6) {
+  const R = Number.isFinite(r) && r > 0 ? r : 6;
+  audio.play('blast', sfxAt(x, z));
+  for (let i = 0; i < 22; i++) {
+    const a = (i / 22) * Math.PI * 2;
+    const v = R * rand(1.1, 1.8);
+    spawnParticle('glow', i % 3 ? 0xff7b1c : 0xffd23f, x, 1.6, z, Math.cos(a) * v, rand(3, 9), Math.sin(a) * v, rand(0.45, 0.7), rand(0.6, 1.0), GRAVITY * 0.4);
+  }
+  puff(x, 2, z, 12, 0x4a4250, R * 0.8, 6, 1.4, 1.8, 1.2, true);
+  foam(x, 0.5, z, 18, R, 8, 0.7, 1.0);
+  if (player && Math.hypot(player.x - x, player.z - z) < 30) shakeCamera(0.7);
+  if (player && Math.hypot(player.x - x, player.z - z) < 45) kaboomFlash();
 }
 
 // The ammo a ship fires: the player's loaded shot; everyone else always fires round shot (enemies never fire
@@ -2685,7 +3127,7 @@ function hullHit(ship, hx, hz, amount, info, effect) {
   // An armoured hull took a beam hit at half (the Iron Turtle, SPEC3 §4.2): CLANG! once a volley, and sparks.
   if (info.clang && (!T || !T.clang)) {
     if (T) T.clang = true;
-    pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info');
+    pops.pop(specials.WORDS3.clang, hx, py + 0.2, hz, 'info', 'keep'); // (never dropped: it says why she took half)
     audio.play('clang', sfxAt(hx, hz));
     for (let i = 0; i < 10; i++) {
       const a = (i / 10) * Math.PI * 2;
@@ -2817,6 +3259,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
       helm.cheer = visualTime + 1.5;
       overboard.clearSurrender(ship);
       mechanics.onSink(ship);
+      if (ship.type.flagship) flagshipDown();
       // A ship drops her gold once: any of her coins still afloat from an earlier sinking go first (a ship
       // only sinks twice when a test puts her back afloat; point-blank broadsides now sink a cutter outright).
       for (let i = coins.length - 1; i >= 0; i--) {
@@ -2825,7 +3268,8 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
           coins.splice(i, 1);
         }
       }
-      for (let i = 0; i < ship.type.gold; i++) {
+      // (A fire ship that blew up leaves nothing to pick up, SPEC3 §4.2: mechanics3 marks her exploded.)
+      for (let i = 0; i < (ship.exploded ? 0 : ship.type.gold); i++) {
         const a = (i / ship.type.gold) * Math.PI * 2;
         const mesh = new THREE.Mesh(coinGeo, coinMat);
         scene.add(mesh);
@@ -2872,7 +3316,8 @@ function applyShotStatus(s, info, hx, hz) {
   const py = popHeight(s) + 1.1;
   if (r.pop) {
     const style = ev.includes('immune') ? 'info' : ev.includes('kaboom') ? 'fire' : ev.includes('fireOut') ? 'frost' : ev.includes('pegs') ? 'stink' : info.status;
-    pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : '');
+    // (IMMUNE! is never dropped from a crowded volley: it says why the shot did nothing, SPEC3 §0.1)
+    pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : ev.includes('immune') ? 'keep' : '');
   }
   if (r.sfx) audio.play(r.sfx, sfxAt(hx, hz));
   if (ev.includes('immune')) gameAnnounce(r.why || W.immunePop);
@@ -2911,7 +3356,8 @@ function kaboomFlash() {
 // ---------------------------------------------------------------------------
 function bombSpec(def) {
   const B = def.bombs || {};
-  const kind = B.kind === 'lightning' ? 'lightning' : 'lava';
+  // (Voyage III's level 9 bombs are sea geysers: out of the sea, no projectile, SPEC3 §5.3)
+  const kind = B.kind === 'lightning' ? 'lightning' : B.kind === 'geyser' ? 'geyser' : 'lava';
   const warn = Array.isArray(B.warn) && B.warn.length === 2 ? B.warn : [2.4, 3.2];
   return { kind, radius: B.radius ?? BOMB_RADIUS, damage: B.damage ?? BOMB_DAMAGE, warn, spread: B.spread ?? 9 };
 }
@@ -2919,9 +3365,16 @@ function bombSpec(def) {
 // shells, ink pots and the Kraken's slams. A kind with a `from` point is lobbed from there (lava from the
 // volcano by default); the others strike out of the sea or the sky after their warning.
 const BOMB_KINDS = ['lava', 'lightning', 'geyser', 'shell', 'ink', 'slam'];
-// Every hazard warning gets the Lighthouse's extra seconds (SPEC3 §8.1). Stage 0: none yet.
+// Every hazard warning gets the Lighthouse's extra seconds (SPEC3 §8.1: +0.3 / +0.6 / +0.9 s by its tier): lava,
+// lightning, geysers, mortar shells, ink pots, forming spouts, rogue waves. None before the Kraken Seas sail.
 function warnBonus() {
-  return 0;
+  if (!WITH_KRAKEN) return 0;
+  const w = islandRules.perks(islandCfg).warnBonus;
+  return Number.isFinite(w) && w > 0 ? w : 0;
+}
+// The island's perks in battle (SPEC3 §8.1), today's numbers until the Kraken Seas sail.
+function islandPerks() {
+  return WITH_KRAKEN ? islandRules.perks(islandCfg) : null;
 }
 // launchBomb(): the level's own bombs (def.bombs, aimed where you will be). launchBomb(spec): a bomb of any kind
 // at a given spot: { kind, from: { x, y, z } | null, tx, tz, radius, damage, warn: s | [a, b] }. Returns the bomb
@@ -2956,9 +3409,28 @@ function launchBomb(spec = null) {
   if (!state.bombWarned) {
     state.bombWarned = true;
     if (B.kind === 'lightning') showBanner('Lightning!<small>Steer out of the white circle</small>', 2.5);
-    else showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
+    else if (B.kind === 'geyser') {
+      showBanner('Sea geyser!<small>Steer out of the bubbling circle</small>', 2.5);
+      gameAnnounce('Sea geyser! Steer out of the bubbling circle.');
+    } else showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
   }
   return bomb;
+}
+// A mortar shell or an ink pot leaves the mortar of the ship that lobbed it (mechanics3 gives her position as
+// `from`; ships.js userData.mortar knows the muzzle): the mortar hops and blows a smoke ring (SPEC3 §4.3).
+function mortarMuzzle(from) {
+  const e = enemies.find((s) => s.hp > 0 && Math.abs(s.x - from.x) < 1e-6 && Math.abs(s.z - from.z) < 1e-6);
+  const m = e && e.mesh && e.mesh.userData.mortar;
+  if (!m || !m.muzzle) return from;
+  try {
+    m.fire(visualTime);
+  } catch (err) {
+    console.warn('mortar:', err);
+  }
+  // (from her simulated pose, not her model's last drawn one: the shell leaves her deck whatever the frame rate)
+  const c = Math.cos(e.h);
+  const sn = Math.sin(e.h);
+  return { x: e.x + m.muzzle.x * c + m.muzzle.z * sn, y: m.muzzle.y + (e.mesh.position.y || 0), z: e.z - m.muzzle.x * sn + m.muzzle.z * c };
 }
 // Put a bomb's warning zone on the sea (and its projectile in the air, when it is lobbed). `T`: the warning's
 // length as decided by launchBomb (else from `warn`, plus the Lighthouse's bonus).
@@ -2972,25 +3444,31 @@ function placeBomb(spec) {
   const radius = num(spec.radius, BOMB_RADIUS);
   const damage = num(spec.damage, BOMB_DAMAGE);
   const v = env.volcano;
-  const src = spec.from && Number.isFinite(spec.from.x) && Number.isFinite(spec.from.z) ? spec.from : kind === 'lava' && v ? { x: v.x, y: v.craterY, z: v.z } : null;
+  let src = spec.from && Number.isFinite(spec.from.x) && Number.isFinite(spec.from.z) ? spec.from : kind === 'lava' && v ? { x: v.x, y: v.craterY, z: v.z } : null;
+  const potted = isBomb3(kind) && (kind === 'shell' || kind === 'ink'); // (the Bomb Ketch's shells, the Inkheart's ink pots)
+  if (src && potted) src = mortarMuzzle(src);
   const zone = buildZone(kind, radius);
   scene.add(zone);
+  // A geyser's bubbling rises to its fwoosh, which lands on the eruption (audio.js `geyser`, given the warning).
+  if (isBomb3(kind) && kind === 'geyser') audio.play('geyser', sfxAt(tx, tz, { duration: T }));
   if (!src) {
     const bomb = { kind, mesh: null, zone, tx, tz, t: 0, T, radius, damage, whistle: null };
     bombs.push(bomb);
     return bomb;
   }
-  const mesh = new THREE.Mesh(bombGeo, bombMat);
+  const mesh = potted ? projectileMesh(kind) : new THREE.Mesh(bombGeo, bombMat);
   scene.add(mesh);
-  const whistle = audio.play('bombWhistle', sfxAt(tx, tz, { duration: T }));
-  const H = kind === 'lava' ? 30 + Math.random() * 15 : num(spec.H, 12);
+  // (Ink pots fly in pairs with the Inkheart's own "pthoo": no whistle each.)
+  const whistle = potted && kind === 'ink' ? null : audio.play('bombWhistle', sfxAt(tx, tz, { duration: T }));
+  const H = kind === 'lava' ? 30 + Math.random() * 15 : num(spec.H, potted ? (kind === 'shell' ? 14 : 10) : 12);
   const bomb = { kind, mesh, zone, sx: src.x, sy: num(src.y, 2), sz: src.z, tx, tz, t: 0, T, H, radius, damage, whistle };
   bombs.push(bomb);
   return bomb;
 }
 
 function bombPos(b, u) {
-  if (b.kind === 'lightning') return { x: b.tx, y: 0, z: b.tz };
+  // (lightning, and anything else with no projectile: a geyser, a slam, strikes where its circle is)
+  if (b.kind === 'lightning' || !b.mesh) return { x: b.tx, y: 0, z: b.tz };
   return {
     x: b.sx + (b.tx - b.sx) * u,
     y: b.sy * (1 - u) + 4 * b.H * u * (1 - u),
@@ -3013,6 +3491,8 @@ function updateBombs(dt, frozen = false) {
           const r = Math.random() * b.radius;
           spawnParticle('glow', Math.random() < 0.5 ? 0xe8f6ff : 0x8fd0ff, b.tx + Math.cos(a) * r, 0.6, b.tz + Math.sin(a) * r, 0, rand(1, 3), 0, 0.25, 0.3, 0);
         }
+      } else if (isBomb3(b.kind)) {
+        bombWarning(b, u, dt);
       } else if (Math.random() < dt * 20) {
         const p = bombPos(b, u);
         spawnParticle('glow', Math.random() < 0.5 ? 0xff7b1c : 0xffd23f, p.x, p.y, p.z, rand(-1, 1), rand(-1, 1), rand(-1, 1), 0.5, 0.5, 0);
@@ -3035,22 +3515,96 @@ function updateBombs(dt, frozen = false) {
       foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
       puff(b.tx, 1, b.tz, 10, 0xff7b1c, 7, 9, 0.6, 0.7, GRAVITY, false, 'glow');
       puff(b.tx, 1, b.tz, 6, foamColor, 5, 4, 0.9, 1.4, 2, true, 'glow'); // steam
+    } else if (isBomb3(b.kind)) {
+      bombImpact(b, radius);
     } else {
-      // Voyage III's kinds (Stage 2 gives each its own look and sound): a splash for now.
       if (b.whistle) b.whistle.stop(0.03);
       audio.play('splash', sfxAt(b.tx, b.tz));
       foam(b.tx, 0.5, b.tz, 16, 8, 12, 0.7, 1.0);
     }
+    // Lava and lightning hit hardest at the centre; Voyage III's rings do their number to any ship inside (SPEC3
+    // §4.2: "12 damage to any ship inside" the mortar's ring).
+    const flat = isBomb3(b.kind);
     const ships = player ? [player, ...enemies] : enemies;
     for (const s of ships) {
       if (s.hp <= 0 || s.captured || s.escaped) continue;
       const d = Math.hypot(s.x - b.tx, s.z - b.tz);
       const reach = radius + s.type.wid * 0.4;
-      if (d < reach) damage(s, Math.round(dmg * (1 - (0.5 * d) / reach)), b.tx, b.tz, source);
+      if (d >= reach) continue;
+      if (flat && b.kind === 'geyser') s.liftAt = visualTime; // (she bobs up on the column: a look only)
+      damage(s, flat ? Math.round(dmg) : Math.round(dmg * (1 - (0.5 * d) / reach)), b.tx, b.tz, source);
+    }
+    // An ink pot leaves an ink slick where it lands (SPEC3 §4.2; mechanics3 slows the ships in it).
+    if (flat && b.kind === 'ink') mechanics.addSlick(b.tx, b.tz);
+    if (flat && (b.kind === 'ink' || b.kind === 'geyser')) {
+      if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) shakeCamera(0.3);
+      removeBomb(b);
+      bombs.splice(i, 1);
+      continue;
     }
     if (player && Math.hypot(player.x - b.tx, player.z - b.tz) < 25) shakeCamera(0.5);
     removeBomb(b);
     bombs.splice(i, 1);
+  }
+}
+
+// Voyage III's warnings while they count down (SPEC3 §4.2, §5.3; the shells and pots in the air trail sparks or
+// ink): a mortar shell's ring ticks with fuse sparks, an ink pot's ring bubbles ink, a geyser's ring bubbles white
+// faster as it nears. Particles only (gameplay never reads them).
+function bombWarning(b, u, dt) {
+  const k = b.kind;
+  if (b.mesh && Math.random() < dt * 18) {
+    const p = bombPos(b, u);
+    if (k === 'ink') spawnParticle('puff', 0x3a1a5a, p.x, p.y, p.z, rand(-0.4, 0.4), 0.6, rand(-0.4, 0.4), 0.8, 0.45, 0, true, false, true);
+    else spawnParticle('glow', Math.random() < 0.5 ? 0xffb03a : 0xffe27a, p.x, p.y, p.z, rand(-1.5, 1.5), rand(0, 2), rand(-1.5, 1.5), 0.35, 0.35, 0);
+  }
+  const R = b.radius ?? BOMB_RADIUS;
+  if (k === 'shell') {
+    if (Math.random() < dt * 10) {
+      const a = Math.random() * Math.PI * 2;
+      spawnParticle('glow', Math.random() < 0.5 ? 0xffd23f : 0xff8a1f, b.tx + Math.cos(a) * R, 0.5, b.tz + Math.sin(a) * R, 0, rand(1.5, 3), 0, 0.3, 0.35, GRAVITY * 0.3);
+    }
+  } else if (k === 'ink') {
+    if (Math.random() < dt * 9) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * R;
+      spawnParticle('glow', Math.random() < 0.6 ? 0x8a5ad8 : 0x4a2a7a, b.tx + Math.cos(a) * r, 0.4, b.tz + Math.sin(a) * r, 0, rand(0.8, 1.6), 0, 0.4, rand(0.25, 0.45), 0);
+    }
+  } else if (k === 'geyser' || k === 'slam') {
+    if (Math.random() < dt * (8 + 22 * u)) {
+      const a = Math.random() * Math.PI * 2;
+      const r = Math.sqrt(Math.random()) * R * 0.9;
+      const col = k === 'slam' ? (Math.random() < 0.5 ? 0xc06aff : 0xe8d0ff) : Math.random() < 0.6 ? 0xffffff : 0xbff4ff;
+      spawnParticle('glow', col, b.tx + Math.cos(a) * r, 0.35, b.tz + Math.sin(a) * r, 0, rand(1, 2.5 + 3 * u), 0, 0.35, rand(0.2, 0.4), 0);
+    }
+  }
+}
+// What a Voyage III bomb does when it lands, besides its damage: a mortar shell bursts orange with a boom, an ink
+// pot splats dark violet, a geyser throws up a white water column (its `geyser` sound, started with the warning,
+// lands now).
+function bombImpact(b, R) {
+  if (b.whistle) b.whistle.stop(0.03);
+  const x = b.tx;
+  const z = b.tz;
+  if (b.kind === 'shell') {
+    audio.play('bombBoom', sfxAt(x, z));
+    foam(x, 0.5, z, 16, R * 1.4, 11, 0.7, 1.0);
+    puff(x, 1, z, 10, 0xff8a1f, R * 1.3, 8, 0.6, 0.6, GRAVITY, false, 'glow');
+    puff(x, 1.5, z, 6, 0x5a5060, R, 4, 1.0, 1.3, 1.5, true); // smoke
+  } else if (b.kind === 'ink') {
+    audio.play('splash', sfxAt(x, z));
+    foam(x, 0.5, z, 10, R, 7, 0.6, 0.8);
+    for (let i = 0; i < 14; i++) {
+      const a = (i / 14) * Math.PI * 2;
+      spawnParticle('puff', i % 2 ? 0x2a1240 : 0x5a2a8a, x, 0.8, z, Math.cos(a) * rand(3, 6), rand(3, 6), Math.sin(a) * rand(3, 6), rand(0.5, 0.8), rand(0.45, 0.7), GRAVITY);
+    }
+  } else if (b.kind === 'geyser') {
+    foam(x, 0.5, z, 26, R * 0.5, 24, 0.9, 1.3); // the column
+    foam(x, 0.5, z, 14, R * 1.3, 8, 0.7, 1.0); // its skirt
+    puff(x, 2, z, 8, 0xe8fbff, R * 0.6, 14, 0.8, 1.0, GRAVITY, false, 'glow');
+  } else {
+    audio.play('splash', sfxAt(x, z));
+    foam(x, 0.5, z, 16, R * 1.6, 12, 0.7, 1.0);
   }
 }
 
@@ -3175,6 +3729,20 @@ function updateEnemy(e, dt, attacking) {
     } else if (r.dist > t.engage + 8) {
       desired = toPlayer;
       targetSpeed = t.maxSpeed;
+    } else if (t.ram) {
+      // A Shark Raider (SPEC3 §4.2) charges bow first: she comes at you head-on, so a charge can line up within
+      // her reach (mechanics3 steers the wind-up and the surge itself), and sheers off once she is close (the
+      // cooldown after a charge), then comes round again.
+      if (r.dist > 13) {
+        desired = toPlayer;
+        targetSpeed = t.maxSpeed * 0.7;
+      } else {
+        const a1 = wrapAngle(toPlayer + Math.PI / 2);
+        const a2 = wrapAngle(toPlayer - Math.PI / 2);
+        desired = Math.abs(wrapAngle(a1 - e.h)) < Math.abs(wrapAngle(a2 - e.h)) ? a1 : a2;
+        desired += Math.sign(wrapAngle(desired - toPlayer)) * 0.7;
+        targetSpeed = t.maxSpeed * 0.8;
+      }
     } else if (t.boarder && e.boardCooldown > RAIDERS.sheer && boarding.counterTarget !== e) {
       // A raider whose ropes were just cut (or who was beaten off) sheers away and circles wide for a while.
       // (Not while her lines are still on you in the counter-board window: she holds alongside for it.)
@@ -3273,8 +3841,8 @@ function updateEnemy(e, dt, attacking) {
     desired = e.escapeH;
     targetSpeed = t.maxSpeed;
   }
-  // Stay inside the sea.
-  if (Math.hypot(e.x, e.z) > env.worldRadius - 15) desired = Math.atan2(-e.x, -e.z);
+  // Stay inside the sea (a ship fleeing the Deep makes for its edge).
+  if (Math.hypot(e.x, e.z) > env.worldRadius - 15 && !e.fleeing) desired = Math.atan2(-e.x, -e.z);
 
   steerToward(e, desired, dt, escaping);
   targetSpeed = Math.min(targetSpeed, speedCap(e));
@@ -3307,12 +3875,16 @@ function moveShip(s, dt) {
   if (!boarding.moves(s)) {
     s.x += fwdX(s.h) * s.speed * dt;
     s.z += fwdZ(s.h) * s.speed * dt;
-    // A level's current (the maelstrom) carries every ship along.
+    // A level's current (the maelstrom) carries every ship along; a waterspout pulls and flings, a rogue wave and
+    // a ram push (Voyage III's drift, SPEC3 §5.3).
     const d = mechanics.drift(s);
     if (d) {
       s.x += d.vx * dt;
       s.z += d.vz * dt;
     }
+    // A waterspout's core spins her round (mechanics3 shipMods().spin, rad/s).
+    const spin = mechanics.shipMods(s).spin;
+    if (spin) s.h = wrapAngle(s.h + spin * dt);
   }
   resolveLand(s, dt);
 
@@ -3339,8 +3911,8 @@ function moveShip(s, dt) {
 
 // Ships bump each other instead of overlapping.
 function separateShips(dt) {
-  // (Prizes sailing off and escaped ships no longer collide.)
-  const all = enemies.filter((e) => e.sinking < 1.5 && !e.captured && !e.escaped);
+  // (Prizes sailing off, escaped ships and the Kraken Crew fleeing the Deep no longer collide.)
+  const all = enemies.filter((e) => e.sinking < 1.5 && !e.captured && !e.escaped && !e.fleeing);
   if (player) all.push(player);
   for (let i = 0; i < all.length; i++) {
     for (let j = i + 1; j < all.length; j++) {
@@ -3703,13 +4275,14 @@ function step(dt) {
   if (truce) state.nextBomb += dt;
   if (player) updatePlayer(dt);
   // The nearest pirates get the attack slots (ships escaping from land, and treasure galleons, don't count).
-  const attackers = new Set(
-    enemies
-      .filter((e) => fighting(e) && !e.type.merchant && player && e.escapeUntil <= state.time)
-      .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
-      .slice(0, def.maxAttackers)
-  );
-  for (const e of enemies) updateEnemy(e, dt, attackers.has(e));
+  attackSet.clear();
+  for (const e of enemies
+    .filter((e) => fighting(e) && !e.type.merchant && player && e.escapeUntil <= state.time)
+    .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
+    .slice(0, def.maxAttackers)) {
+    attackSet.add(e);
+  }
+  for (const e of enemies) updateEnemy(e, dt, attackSet.has(e));
   // The boarding set-piece (simulated time): phases, the reel, the glued pair (it moves those two ships).
   boarding.step(dt);
   // The counter-board window has closed (or a counter-board started, or she sank or struck): its banner and
@@ -3726,8 +4299,10 @@ function step(dt) {
   separateShips(dt);
   updateBalls(dt);
   updateCoins(dt);
+  updateCrates();
   updateBombs(dt, truce);
   if (tray.open && state.time >= tray.idleUntil) closeTray(); // (3 s of play without a pick)
+  hazardTips(dt);
   if (player) emitShipFx(player, dt);
   for (const e of enemies) emitShipFx(e, dt);
   updateHints(dt);
@@ -6143,6 +6718,10 @@ function boardButtonState() {
     const n = Math.max(1, Math.ceil(left - 1e-9));
     return { key: `hot${n}`, state: 'hot', tag: specials.WORDS3.boardHot(left), word: specials.WORDS3.boardPill, aria: `Board: too hot to board, she burns for ${n} more ${n === 1 ? 'second' : 'seconds'}`, disabled: true };
   }
+  // The nearest ship is a fire ship that hasn't struck (SPEC3 §4.2): "HOT!" until frost makes her give up.
+  if (pick.reason === 'immune' && pick.near && pick.near.type.fireship && !pick.near.surrendered) {
+    return { key: 'hotship', state: 'hot', tag: 'HOT!', word: specials.WORDS3.boardPill, aria: 'Board: too hot to board, freeze her first', disabled: true };
+  }
   if (state.boardCooldown > 0) {
     const n = Math.ceil(state.boardCooldown);
     return { key: `cool${n}`, state: 'cool', tag: `${n} s`, word: `${n} s`, aria: `Board: hooks coiling, ${n} ${n === 1 ? 'second' : 'seconds'}`, disabled: true };
@@ -6260,6 +6839,7 @@ function updateBoardHud(force, dt) {
 }
 
 // Minimap rotates with the ship so "up" is always the bow.
+const BOMB_MAP = { shell: '#ff9f1c', ink: '#b48aff', geyser: '#bff4ff', slam: '#c06aff' };
 function drawMinimap() {
   if (!mm) return;
   const S = ui.minimap.width;
@@ -6306,6 +6886,11 @@ function drawMinimap() {
       mm.fillStyle = '#123050';
       mm.arc(x, y, Math.max(3, r), 0, Math.PI * 2);
       mm.fill();
+    } else if (m.kind === 'slick') {
+      // an ink slick (Voyage III): a dark blob
+      mm.fillStyle = 'rgba(29, 12, 48, 0.75)';
+      mm.arc(x, y, Math.max(3, r), 0, Math.PI * 2);
+      mm.fill();
     }
   }
   for (const r of reefs) {
@@ -6328,6 +6913,59 @@ function drawMinimap() {
     mm.lineWidth = 2;
     mm.stroke();
   }
+  // Voyage III (SPEC3 §6.3): waterspouts as white swirls (dashed while forming), the rogue wave as a teal line
+  // with an arrow the way it rolls.
+  for (const m of marks) {
+    if (m.kind === 'spout') {
+      const [x, y] = toMap(m.x, m.z);
+      const r = Math.max(4, (m.r || 6) * scale * 1.4);
+      mm.strokeStyle = '#1d1330';
+      mm.lineWidth = 4;
+      mm.setLineDash(m.forming ? [3, 3] : []);
+      mm.beginPath();
+      mm.arc(x, y, r, 0.3, Math.PI * 1.7);
+      mm.stroke();
+      mm.strokeStyle = '#ffffff';
+      mm.lineWidth = 2;
+      mm.stroke();
+      mm.beginPath();
+      mm.arc(x, y, r * 0.5, Math.PI * 1.3, Math.PI * 2.9);
+      mm.stroke();
+      mm.setLineDash([]);
+    } else if (m.kind === 'rogue' && Number.isFinite(m.h)) {
+      const ux = Math.sin(m.h);
+      const uz = Math.cos(m.h);
+      const half = m.r || 60;
+      const [x1, y1] = toMap(m.x + uz * half, m.z - ux * half);
+      const [x2, y2] = toMap(m.x - uz * half, m.z + ux * half);
+      const [cx0, cy0] = toMap(m.x, m.z);
+      const [ax, ay] = toMap(m.x + ux * 14, m.z + uz * 14);
+      mm.lineCap = 'round';
+      for (const [col, wd] of [['#1d1330', 5], ['#3fd8d0', 3]]) {
+        mm.strokeStyle = col;
+        mm.lineWidth = wd;
+        mm.beginPath();
+        mm.moveTo(x1, y1);
+        mm.lineTo(x2, y2);
+        mm.moveTo(cx0, cy0);
+        mm.lineTo(ax, ay);
+        mm.stroke();
+      }
+      // the arrowhead
+      const ang = Math.atan2(ay - cy0, ax - cx0);
+      mm.fillStyle = '#3fd8d0';
+      mm.strokeStyle = '#1d1330';
+      mm.lineWidth = 1.5;
+      mm.beginPath();
+      mm.moveTo(ax + Math.cos(ang) * 6, ay + Math.sin(ang) * 6);
+      mm.lineTo(ax + Math.cos(ang + 2.4) * 6, ay + Math.sin(ang + 2.4) * 6);
+      mm.lineTo(ax + Math.cos(ang - 2.4) * 6, ay + Math.sin(ang - 2.4) * 6);
+      mm.closePath();
+      mm.fill();
+      mm.stroke();
+      mm.lineCap = 'butt';
+    }
+  }
   mm.fillStyle = '#f2d98a';
   for (const col of colliders) {
     const [x, y] = toMap(col.x, col.z);
@@ -6345,7 +6983,8 @@ function drawMinimap() {
   mm.lineWidth = 2;
   for (const b of bombs) {
     const [x, y] = toMap(b.tx, b.tz);
-    mm.strokeStyle = b.kind === 'lightning' ? '#e8f6ff' : '#ff3b1f';
+    // (mortar shells orange, ink pots violet, geysers white-blue, SPEC3 §6.3)
+    mm.strokeStyle = BOMB_MAP[b.kind] || (b.kind === 'lightning' ? '#e8f6ff' : '#ff3b1f');
     mm.beginPath();
     mm.arc(x, y, Math.max(3, (b.radius ?? BOMB_RADIUS) * scale), 0, Math.PI * 2);
     mm.stroke();
@@ -6355,10 +6994,27 @@ function drawMinimap() {
     const [x, y] = toMap(co.x, co.z);
     mm.fillRect(x - 1.5, y - 1.5, 3, 3);
   }
+  // Powder crates: small orange diamonds.
+  for (const cr of crates) {
+    if (cr.taken) continue;
+    const [x, y] = toMap(cr.x, cr.z);
+    mm.fillStyle = '#ff9f1c';
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 1.5;
+    mm.beginPath();
+    mm.moveTo(x, y - 5);
+    mm.lineTo(x + 4, y);
+    mm.lineTo(x, y + 5);
+    mm.lineTo(x - 4, y);
+    mm.closePath();
+    mm.fill();
+    mm.stroke();
+  }
   for (const e of targetsFor()) {
     // Ships still fighting (red, the boss orange) and struck ones (white: board them to take them).
     const struck = e.surrendered && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
-    if (!fighting(e) && !struck) continue;
+    const fleeing = !!e.fleeing && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
+    if (!fighting(e) && !struck && !fleeing) continue;
     let [x, y] = toMap(e.x, e.z);
     // Pin off-map enemies to the rim so you can always find them.
     const dx = x - c;
@@ -6375,6 +7031,18 @@ function drawMinimap() {
     if (e.type.merchant) mm.rect(x - r - 1.5, y - r - 1.5, 2 * r + 3, 2 * r + 3); // treasure galleons: gold squares
     else mm.arc(x, y, r + 1.5, 0, Math.PI * 2);
     mm.fill();
+    if (fleeing) {
+      // a ship fleeing the Deep: hollow (SPEC3 §6.3)
+      mm.fillStyle = fill;
+      mm.beginPath();
+      mm.arc(x, y, r, 0, Math.PI * 2);
+      mm.fill();
+      mm.fillStyle = '#2f8fd8';
+      mm.beginPath();
+      mm.arc(x, y, r - 2, 0, Math.PI * 2);
+      mm.fill();
+      continue;
+    }
     mm.fillStyle = fill;
     mm.beginPath();
     if (e.type.merchant) mm.rect(x - r, y - r, 2 * r, 2 * r);
@@ -6404,6 +7072,11 @@ let visualTime = 0;
 // What env.update(t, dt, ctx) gets besides the visual time: the simulated time (moving obstacles are
 // placed by it) and the camera.
 const envFrame = { simTime: 0, camera };
+// What Voyage III's rules show this frame (mechanics.visuals(): waterspouts, the rogue wave, ink slicks, rams
+// winding up, lit fire ships, shells in the air), worked out once a frame: the envs draw the spouts, the wave and
+// the slicks from it (envFrame.hazards), main the tags' RAM! chevrons, the fire ships' rings and flames, the edge
+// arrow and the minimap. null before the Kraken Seas sail.
+let hazardVis = null;
 
 function syncShip(s, t) {
   const wy = ocean.heightAt(s.x, s.z, t);
@@ -6426,7 +7099,7 @@ function syncShip(s, t) {
   const lean = level === 2 ? LIST_WRECKED : level === 1 ? LIST_BATTERED : 0;
   const listTo = lean * (s.hitsBySide.star >= s.hitsBySide.port ? 1 : -1);
   s.list += (listTo - s.list) * 0.05;
-  const low = (level === 2 ? WRECK_SIT : 0) + (s.rise > 0 ? 2 * s.rise : 0); // a Phantom rising: 6 u down at rise 3
+  const low = (level === 2 ? WRECK_SIT : 0) + (s.rise > 0 ? 2 * s.rise : 0) - geyserLift(s, t); // a Phantom rising: 6 u down at rise 3
   s.mesh.position.set(s.x, wy - sink * 1.5 - low, s.z);
   s.mesh.rotation.set(0, 0, 0);
   s.mesh.rotation.y = s.h;
@@ -6440,6 +7113,14 @@ function syncShip(s, t) {
   }
 }
 
+// A sea geyser bursting under a ship bobs her up 1 u for a moment (SPEC3 §5.3: a look only; none under reduced
+// motion).
+function geyserLift(s, t) {
+  if (!(s.liftAt >= 0) || reducedMotion()) return 0;
+  const k = (t - s.liftAt) / 1.2;
+  return k > 0 && k < 1 ? Math.sin(Math.PI * k) : 0;
+}
+
 // What each enemy's tag shows this frame (tags.js draws it): crew pips (a brawl ticks them down one by one)
 // and the surrender notch, the hull bar throbbing on a wreck, and an icon: a white flag when struck, the
 // odds on the ship G would board (green tick / gold cutlasses / red "!"), the hook recharging after a boarding.
@@ -6451,6 +7132,8 @@ function updateTagState(e) {
   e.strikeAt = combat.strikeAt(e.crew0);
   e.tagPulse = e.hp > 0 && e.hp / e.maxHp < STATES.wrecked;
   let icon = e.surrendered ? 'white' : null;
+  // A Shark Raider winding up or surging: the RAM! chevrons (SPEC3 §6.4: after the white flag, before the hook).
+  if (!icon && hazardVis && hazardVis.rams.length && hazardVis.rams.some((r) => r.id === e.id)) icon = 'ram';
   const v = boardView;
   if (!icon && !boarding.active) {
     if (boarding.counterTarget === e) icon = boardOdds(e, 'counter').label;
@@ -6462,6 +7145,12 @@ function updateTagState(e) {
   }
   // She burns: too hot to board (SPEC3 §6.4: after the white flag, RAM! and the boarding hook).
   if (!icon && specials.statusMuls(e.status).noGrapple) icon = 'hot';
+  // A fire ship that hasn't struck: too hot to board (SPEC3 §4.2), her flames up the rigging while she is lit.
+  if (e.type.fireship) {
+    if (!icon && !e.surrendered && !e.fleeing && e.hp > 0) icon = 'hot';
+    const fuse = e.mesh.userData.fuse;
+    if (fuse) fuse.lit = !!(hazardVis && hazardVis.fireRings.length && hazardVis.fireRings.some((r) => r.id === e.id));
+  }
   e.tagIcon = icon;
 }
 
@@ -7349,6 +8038,8 @@ function frame() {
   }
   // The ship G would board now (tags, the Board cell and button read it).
   if (!paused) boardView = state.mode === 'playing' && player && !player.sinking ? boardPick() : null;
+  // Voyage III's hazards and new ships as they stand (tags, rings, the envs, the minimap read it).
+  if (WITH_KRAKEN && !paused) hazardVis = player && (state.mode === 'playing' || state.mode === 'paused') ? mechanics.visuals() : null;
   for (const e of enemies) {
     if (!paused) e.flash = Math.max(0, e.flash - dt);
     syncShip(e, t);
@@ -7372,9 +8063,22 @@ function frame() {
     b.zone.position.set(b.tx, ocean.heightAt(b.tx, b.tz, t) + 0.25, b.tz);
     b.zone.userData.disc.scale.setScalar(Math.max(0.05, u));
   }
-  for (const M of Object.values(ZONE_MATS)) {
+  for (const M of [ZONE_MATS.lava, ZONE_MATS.lightning]) {
     M.ring.opacity = 0.65 + 0.25 * Math.sin(t * 12);
     M.disc.opacity = 0.25 + 0.1 * Math.sin(t * 12);
+  }
+  if (WITH_KRAKEN) {
+    // (Voyage III's rings throb under 1 Hz, SPEC3 §15)
+    for (const M of Object.values(zoneMats3())) {
+      M.ring.opacity = 0.7 + 0.2 * Math.sin(t * 5);
+      M.disc.opacity = 0.28 + 0.08 * Math.sin(t * 5);
+    }
+    syncFireRings(t);
+    syncCrates(t);
+    if (!paused) {
+      prebuildStep();
+      hazardCues();
+    }
   }
 
   updateCamera(dt, paused);
@@ -7396,6 +8100,8 @@ function frame() {
   clouds.update(paused ? 0 : dt, focusX, focusZ);
   if (env && !paused) {
     envFrame.simTime = state.time;
+    // (the envs draw Voyage III's spouts, rogue waves and ink slicks from mechanics.visuals(), SPEC3 §11.1)
+    if (WITH_KRAKEN) envFrame.hazards = hazardVis;
     env.update(t, dt, envFrame);
   }
   if (state.mode === 'dock' && t < dock.cheerUntil) for (const p of dock.cheering) animatePerson(p, t, 'cheer');
@@ -7412,6 +8118,9 @@ function frame() {
 // The Kraken Seas' controls (SPEC3 §3.2, §6.1), shown only once they sail: the pause dialog's Steering toggle,
 // the steering mode saved, and the help lists' new lines ("4–6 special ammo", "slide for gentle turns").
 if (WITH_KRAKEN) {
+  // The rogue wave's warning arrow (SPEC3 §6.3): a teal arrow with "WAVE!", placed by placeEdgeArrow().
+  ui.edgeArrow.innerHTML =
+    '<span class="ea-arrow"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 8h-4v9H9v-9H5z"/></svg></span><span class="ea-word">WAVE!</span>';
   const btn = ui.steerModeBtn;
   btn.innerHTML = '<span class="steer-label"></span><span class="new-badge hidden" aria-hidden="true">New!</span>';
   show(btn, true); // (.touch-only: nothing shows on a screen without touch)
@@ -7699,7 +8408,17 @@ window.__game = {
     closeTray: () => closeTray(),
     // What statusfx.js drew at the last frame (instances by kind and draw calls), or null before the Kraken Seas.
     fx: () => (statusFxView ? statusFxView.read() : null),
-    crate: () => null, // pick up powder crate i (Voyage III levels)
+    // Pick up powder crate i now (Voyage III levels, as if you sailed into it): { id, gold } (id: the special that
+    // got a load, or null and 20 gold with none owned), or null (no such crate, or it is taken).
+    crate(i) {
+      if (!player || player.sinking) return null;
+      const c = crates[Math.floor(Number(i))];
+      return c && !c.taken ? pickCrate(c) : null;
+    },
+    // The level's powder crates: where they bob and whether they are taken.
+    get crates() {
+      return crates.map((c) => ({ i: c.i, x: c.x, z: c.z, taken: c.taken }));
+    },
   },
   // A thumb slide on the steering pad: x −1..1 (positive = left) sets input.steer; null lets go.
   steer(x) {
@@ -7726,8 +8445,20 @@ window.__game = {
     get state() {
       return mechanics.state.m3;
     },
-    wave: () => null, // a rogue wave now, from `angle`
-    spout: () => null, // a waterspout forming at (x, z)
+    // A rogue wave now, coming from bearing `angle` (heading convention; env.rogueDirs' when not a number), and a
+    // waterspout forming now at (x, z) (it stays put): their mechanics.visuals() entries (any level).
+    wave: (angle) => (m3 && typeof m3.wave === 'function' ? m3.wave(angle) : null),
+    spout: (x, z) => (m3 && typeof m3.spout === 'function' ? m3.spout(x, z) : null),
+    // What the rules show now (mechanics.visuals(): spouts, rogue, slicks, rams, fireRings, shells).
+    visuals: () => mechanics.visuals(),
+    // Does she hold one of the attack slots this step?
+    attacking: (e) => attackSet.has(e),
+    // The prebuilt next-wave models waiting ({ type: count }) and the types still to build.
+    get prebuilt() {
+      const out = {};
+      for (const [t, list] of prebuilt.meshes) if (list.length) out[t] = list.length;
+      return { ready: out, queue: [...prebuilt.queue] };
+    },
   },
   kraken: {
     get state() {

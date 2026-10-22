@@ -677,3 +677,284 @@ Browser jobs ran one at a time, with SCREENSHOT_DIR set to scratch. Logs are in 
 - At walk speed (stick under half), a few runs reach the far end up to 0.2 s later than the old code, because he now slides to the line first instead of the walk sliding him diagonally.
 - walking (a) in the ashore suite is still 0.97 s against its 1 s limit, the same value as the first pass, at a pier spot far from any bridge. It could still flake.
 - Nothing is committed. Notes are in /home/user/First-project/.dock-harness/mouthfix/PROGRESS.md (fixer pass 2 section). The mirrors mk3 and mk3old are in .dock-harness/mouthfix (gitignored). The working tree also has changes I don't own: src/main.js, style.css, tests/battle.cjs and an untracked tests/voyage3.cjs. I left them alone.
+
+## Round R3
+
+**Coordinator test run:** npm test on a snapshot of the round 3 files (identical to the committed ones), started 2026-10-22 11:32:45 UTC: 19 suites, 1,959 checks passed, 0 failed (battle 277 with the 12 new kraken-* sections), exit 0. tests/voyage3.cjs (39 checks) and the opt-in tests/balance.cjs are not in npm test yet (3C adds them).
+
+### 2A-2
+
+2A part 2 (Voyage III seas) is finished and published in src/main.js and style.css. index.html and voyage.js did not need changes. With ?kraken=1, levels 7 (Turtle Atolls) and 8 (Cape of Storms) play to the end, and every new ship and hazard works with its warning:
+- Shark Raider ram: 1.5 s wind-up, RAM! pop, growl, RAM chevrons on her tag.
+- Bomb Ketch mortar: an orange ring for 2.2 s; the shell leaves her mortar, which hops and puffs.
+- Iron Turtle: CLANG! on beam hits, and that pop is never dropped.
+- Fire ship: flames and a red danger ring that fills over 1.6 s as she arms. She can't be boarded until she strikes ("Too hot to board! Freeze her first.", Board cell HOT!, too-hot tag icon). If she blows up she drops no coins. Frost makes her strike, and then she can be boarded.
+- Waterspouts: drawn by the env, a wind sound, white swirls on the minimap, pull, spin and core damage.
+- Rogue waves: 4 s warning with the WAVE! arrow at the screen edge, a teal line on the minimap, and side-on/bow/stern results.
+- Powder crates, ink pots and slicks, and level 9's sea geysers.
+- When the Inkheart falls her crew flee, and the geysers stop for good.
+
+Also done: the island perks (Bakery hull patch, Lighthouse warning bonus, villagers' gift and Market Hall lines on the level card), the next wave's ship models built ahead one per frame, the minimap additions of §6.3, and __game.mechanics3 (wave, spout and more).
+
+Without ?kraken=1 the game is unchanged. A seeded replay of all six levels is bit-identical to HEAD (58/58 samples). battle.cjs passed 182/0, levels.cjs 73/0 and smoke.cjs 94/0, with no test edits.
+
+**Files:** src/main.js, style.css
+
+**Brief, item by item**
+
+- Real composeMechanics instances. startLevel keeps m3 = createMechanics3(ids, ctx3) and composes it with createMechanics(ids, ctx). ctx3 is now complete:
+- hold: fly-in or truce
+- attacking: a module-level attackSet that step() fills; it replaces the local attackers
+- boarding, capture (captureShip 'auto') and turnRate
+- flee: fleeShip
+- explode: explodeFx, look and sound only
+- surrender: strikeColours(e, {quiet})
+- douse
+- sfx: the 'fuse' sound is given the 1.6 s arm time
+Verified by p1 'hold' and p2 play-throughs.
+- step's mechanics.step was already there. updateEnemy uses the composed steer for rams, mortars, fire ships and fleeing ships. Fleeing ships are exempt from the 'stay inside the sea' turn. A ram-type ship heads at you from beyond 13 u and sheers off inside it, so a charge can line up. Verified: p1 ram (1.5 s wind-up, then the crunch) and p2 L7 (6 wind-ups).
+- moveShip applies the composed drift (spout pull and fling, ram and wave pushes) and the spout spin via shipMods().spin. separateShips skips fleeing ships, and fighting() is now also false for a fleeing ship. Verified: p1 spout (pulled 2 u, spun, core damage) and p1 flee.
+- Fire ship: canGrapple answers 'immune' until she strikes. grappleWhy gives WORDS3.hotShip. The Board cell and pill read HOT! / Hot!, and the tag shows the too-hot icon. fuse.lit is set from visuals().fireRings, and a red ring of r 6 is drawn whose disc fills as she arms. She drops no coins when ship.exploded is set. Verified by p1 fireship: immune, lit, ring, HOT!, hint, blast for 16 damage with 0 coins, and frost makes her strike so canGrapple returns null.
+- Armour: 2A-1's armourMul is unchanged. The CLANG! and IMMUNE! pops now pass the 'keep' mod (2E's round-2 request). Verified by the p1 ironclad check (CLANG! seen).
+- Crates: def.crates of them are placed at env.crateSpots in their order. Each is a keg with an orange diamond and a ring. One is picked up when your hull capsule comes within LOADS.crateReach. crateLoad gives +1 load, or +20 gold when you own no recipe; pop, 'crate' sound and #game-live line. Test hooks: __game.specials.crate(i) and .crates. Verified: p1 crate 2/2.
+- launchBomb(spec) handles the new kinds geyser, shell, ink and slam. bombSpec supports the 'geyser' level bombs. The Lighthouse warnBonus comes from island perks. Shells and ink pots leave mortarMuzzle(): userData.mortar.fire(visualTime), muzzle placed from the ship's simulated pose. They fly as projectileMesh('shell'|'ink'). Geysers play their sound at the warning. New kinds deal flat damage, and an ink pot leaves a slick through mechanics.addSlick. Each kind has its own zone colours, warning particles and impact look. Verified by p1 mortar (from 0.32 u, T 2.2, 12 damage), p1 geyser (T ≥ 1.8) and p2 (every bomb warned ≥ 1.8 s).
+- envFrame.hazards = mechanics.visuals() before env.update (hazardVis, once a frame). Atolls draws the spouts, cape the rogue wave, deep the slicks; checked in the p1 screenshots.
+- spawnWave: WAVE_REPAIR becomes island perks.wavePatch, and the banner reads 'Your crew patches 55% of the hull' when the Bakery is built. The next wave's models are prebuilt, one per frame, from 2 s after a wave spawns. This is gated on WITH_KRAKEN because buildShip rolls Math.random. Verified by the p1 prebuild and gift checks.
+- finishLevel adds the Market Hall share and the villagers' gift to state.gold before banking. Their lines go in #level-summary, or in #won-chest on a finale. Verified by p1: 'Villagers' gift +38 · Market Hall +10% +161'.
+- drawMinimap (§6.3): ink slicks as dark blobs, spouts as white swirls (dashed while forming), the rogue wave as a teal line with an arrow, bomb rings by kind, crates as orange diamonds, fleeing ships hollow. The Kraken's marks belong to part 3. Looked at in the screenshots.
+- __game.mechanics3: state, wave(angle), spout(x, z), visuals(), attacking(e), prebuilt.
+- Stage 1 hooks applied. Not applied, because they belong to the Kraken part (3): the clear-check gating, dread, setDread/setDawn, krakenArena and setMusicPhase.
+- 1B: ctx3 members, fighting/separateShips, m3 test hooks, envFrame.hazards, spin, exploded coins, shell/ink kinds and slicks, RAM icon, fire rings and fuse, 'immune' grapple, geysers stop at the fall
+- 1H: fuse.lit, mortar.fire and muzzle, projectileMesh shell/ink
+- 1K: hazards, minimap swirls, spout wind loop, crates in order
+- 1L: hazards, the wave hook
+- 1M: hazards (slicks)
+- 1J: spout loop, geyser sound
+- One-time tips 2048 (ram), 4096 (spout) and 8192 (rogue) fire from step(), checked every 0.1 s. Shipwreck tips added for shell, ink, geyser, spout, rogue, ram and fireship.
+- Exit check: with ?kraken=1 the p2 bot played L7 to levelDone in 64 s with no healing, and L8 to levelDone in 70 s, healed 62 (a CHEAT mode tops the hull back up to 40%). Every new enemy appeared, and every warning lasted at least 1.5 s. L9's ship phase reaches 'won', since there is no Kraken yet.
+- Without the flag: the seeded replay is IDENTICAL to HEAD, and battle 182/0, levels 73/0, smoke 94/0, all with HEAD's test files.
+
+**API notes**
+
+What main.js has now (beyond 2A-1's battle core):
+- m3: the level's createMechanics3 instance, a module-level `let`.
+- attackSet: a module-level Set that step() fills (it replaces the local `attackers`).
+- hazardVis: mechanics.visuals(), worked out once a frame and only when WITH_KRAKEN. The tags, fire rings, edge arrow and envFrame.hazards read it.
+- fleeShip(e): sets e.fleeing, cancels a boarding whose target she is, clears her status. fighting() is false for a fleeing ship and separateShips skips her.
+- strikeColours(ship, { quiet }): checkSurrender calls it after its crew test. quiet skips the banner, tip and #game-live line.
+- explodeFx(x, z, r): blast sound, fireball, shake, and the shared ≤0.25 flash at most once per 3 s.
+- flagshipDown(): on a level with the 'flagship' mechanic it sets state.flagshipDown, nextBomb = Infinity, and removes geyser bombs still warning.
+- grappleWhy(reason, near).
+- Bombs:
+  - isBomb3(kind) = WITH_KRAKEN && shell/ink/geyser/slam/fireship.
+  - zoneMats3() builds ZONE_MATS3 lazily, because three.js materials roll Math.random for their uuids. Building them at module init broke the seeded replay.
+  - mortarMuzzle(from) finds the lobbing ship by her exact x/z.
+  - bombWarning and bombImpact draw the new kinds' looks.
+  - New kinds do flat damage. A geyser lifts the ships it hits 1 u (s.liftAt, a look only).
+- Crates: placeCrates, updateCrates (in step()), pickCrate, syncCrates. Only with WITH_KRAKEN and def.crates.
+- Prebuild: queuePrebuild, prebuildStep (in frame()), takePrebuilt (used by createShip), clearPrebuilt.
+- Island: islandPerks() / warnBonus() read islandRules.perks(islandCfg) only with WITH_KRAKEN. islandCfg is still the default until 3A loads the record; __game.island.set changes it.
+- Edge arrow: #edge-arrow is filled at init when WITH_KRAKEN (.ea-arrow svg + .ea-word "WAVE!"). placeEdgeArrow sets left/top and --turn.
+- The style.css block at the end styles .edge-arrow: fixed, a ≤1 Hz throb, still under reduced motion.
+
+Test API:
+- __game.mechanics3: { state, wave(angle), spout(x, z), visuals(), attacking(e), prebuilt: { ready, queue } }
+- __game.specials.crate(i) → { id, gold } | null; it works with the loop frozen.
+- __game.specials.crates → [{ i, x, z, taken }]
+- __game.canGrapple(fireship) === 'immune'
+- G.state.flash.text holds the G hint
+- G.state.flagshipDown
+
+Deviations and choices:
+1. A Shark Raider's approach lives in main's updateEnemy (`t.ram` branch), not in mechanics3.steer. mechanics3 returns null while her ram is idle or cooling, and main's default AI circled her broadside, so she never lined up a charge (hook request below).
+2. The new bomb kinds do flat damage (§4.2 "12 damage to any ship inside"). Lava and lightning keep their falloff.
+3. Ink pots fly without a whistle (two at once with the Inkheart's 'pthoo').
+4. The edge arrow is clamped clear of the top HUD row and of the gun card or touch pads.
+5. Prebuilding is gated on WITH_KRAKEN: buildShip rolls Math.random, so today's seeded replay keeps today's order of rolls. At go-live it applies to every level.
+6. Everything not meant for the live game sits behind WITH_KRAKEN or isBomb3. Without the flag the only differences are behaviour-neutral (fighting() reads e.fleeing, which is never set; the frame pulses lava and lightning explicitly).
+
+**Hook requests applied / rejected**
+
+- 2E round 2 → main.js: onArmourHit passes 'keep' on the CLANG! pop, and the status-hit pop uses mod 'kaboom' / 'keep' (immune) / ''. Applied.
+- 1B: all ctx3 members (hold, attacking via a module attackSet, boarding, capture, turnRate, flee, explode, douse, surrender). fighting() && !e.fleeing and the separateShips skip. m3 kept and __game.mechanics3.wave/spout wired. envFrame.hazards. moveShip spin. No coins for an exploded ship. updateBombs shell/ink kinds and addSlick. RAM tag icon, fireRings and fuse. canGrapple 'immune' for a fire ship that has not struck. Geysers stop at the flagship's fall. Applied. Not applied (Kraken part 3): the L9 clear check waiting for the Kraken, and starting the dread on krakenDue.
+- 1H: fire ship fuse.lit, mortar.fire(t) with the muzzle position (computed from the ship's simulated pose, not the mesh matrix, so a frozen-loop test doesn't lob from the origin), projectileMesh('shell'|'ink'). Applied. buildPlayerMesh powder was done by 2A-1.
+- 1K: hazards to env.update, white spout swirls on the minimap, the spout wind loop, crates at crateSpots in order. Applied.
+- 1L: envFrame.hazards and __game.mechanics3.wave. Applied.
+- 1M: envFrame.hazards (slicks). Applied. setDread/setDawn and krakenArena are the Kraken part.
+- 1J: the spout loop (one voice on the nearest spout, distance follows it), the geyser sound when the warning appears (duration = warning). Applied. setMusicPhase is the Kraken part. fire()'s chain/grape sound rule and the crackle loop were done by 2A-1.
+- Coordinator: wavePatch, gift and Market lines, warnBonus for the bombs. Applied, reading islandCfg; 3A loads the island record. tests/ashore.cjs's lighthouse, bakery and gift checks match: lava spec 2.4 + 0.9, 'Your crew patches 55% of the hull', 'Villagers' gift +240' and 'Market Hall +10% +300'. Those checks have not been run against this build; they need 3A's townMode ctx/island record.
+- Rejected: none.
+
+**Hook requests raised**
+
+- src/mechanics3.js (2E or 3B), createMechanics3().steer(e): give a ram ship her approach too, so all ram steering lives in one tuned table. While R.phase is 'idle' and she is attacking: { h: toward you, speed: 0.7 × her max } until she is 13 u away. While R.phase is 'cool': sheer off broadside at 0.8 × max. For example, add RAM.approach: { near: 13, speed: 0.7, sheer: 0.8 }. Why: steer() returns null outside the wind-up and the surge, and main's default AI circles a ship broadside at her engage distance, so a shark never brings you into her 0.35 rad bow cone and the charge never happens. main.js does this itself for now (updateEnemy, the `t.ram` branch). It can be removed once mechanics3 steers her.
+- src/env/cape.js (3E): when a rogue crest passes the chase camera, the wave fills the view and hides the ship for a moment. In p1-rogue-crest-1280x720.png SPLASH! pops over a screen of wave. 1L already reported this. Raise the wave's camera-duck margin (createRogueView, the `cap` line).
+
+**Live game unchanged**
+
+Every new path is behind WITH_KRAKEN (true only with ?kraken=1) or isBomb3(kind), which needs WITH_KRAKEN:
+- ctx3's members are used only by mechanics3. Without the flag mechanics3 has no ids and no new ship types, so they never fire.
+- Crates, prebuilding, hazardVis, envFrame.hazards, fire rings, spout wind, edge arrow, hazard tips, island perks/gift/Market, and the new bomb looks, sounds, flat damage and slicks are all gated. The Voyage III zone materials are created lazily, because three.js uuids roll Math.random.
+- Code that runs without the flag gives today's results:
+  - fighting() also reads e.fleeing, which is never set.
+  - The attack-slot Set is filled in the same sorted order.
+  - The ram steering branch needs t.ram.
+  - Spin is 0 from the identity shipMods.
+  - The coin loop is unchanged unless ship.exploded.
+  - checkSurrender → strikeColours keeps the same checks and order.
+  - The frame pulses lava and lightning materials as before.
+  - geyserLift() returns 0, and the bombPos change only affects bombs with no mesh.
+- Proof:
+  - The seeded 6-level replay on HEAD vs the published files is IDENTICAL, 58/58 samples, with 0 page errors.
+  - battle.cjs 182/0, levels.cjs 73/0 and smoke.cjs 94/0 pass with no test edits; draw calls match the earlier smoke figures.
+  - index.html and voyage.js are byte-identical to HEAD.
+- Publishing:
+  - Published atomically with cp to a temp name + mv; copies are in .dock-harness/kraken2/R3-2A-2/published/.
+  - Live main.js md5 0cd149a2…, style.css 4ad5f850…; both equal the dev copy.
+
+**Verification**
+
+All browser runs used NODE_PATH=/opt/node22/lib/node_modules, SwiftShader chromium and ?quality=low, one job at a time. Probes are in /tmp/claude-0/-home-user-First-project/7f649d8c-67e4-5236-a80e-5e9eae321fb4/scratchpad/kraken/build2/R3-2A-2/.
+- node --input-type=module --check on main.js: OK after every edit.
+- p1-seas.cjs (?kraken=1, loop frozen and stepped):
+  - 1280x720: 29 PASS / 0 FAIL, no page errors. Covers hold; 2 crates; ram 1.5 s wind-up, crunch, tip, RAM icon; spout harmless forming, pull, core damage, tip, minimap; crate +1 load and +20 gold; mortar shell T 2.2 from the deck, 12 damage; rogue 4 s warning, side-on 10 damage, the WAVE! arrow on the correct (port) edge; fire ship immune/lit/ring/fuse/HOT!/hint/blast with 0 coins/frost strike → boardable; ironclad CLANG!; flee + geysers stop + gone after 5 s; L9 geyser bombs; prebuild; Bakery 55%, Lighthouse +0.9 s, gift and Market lines.
+  - 390x844 touch: 29/29.
+  - Re-run after the muzzle fix (ONLY=mortar,crate): 4/4, shell from 0.32 u.
+- p2-play.cjs (bot):
+  - L7: levelDone after 64.2 s, healed 0. 6 spouts formed, each forming 3 s. 6 ram wind-ups. Shells warned 2.2 s.
+  - L8: levelDone after 70.5 s, healed 62. 2 rogue waves warned 4 s. 2 fire ships lit and blew. 5 shells.
+  - L9 (ship phase): 'won' after 89.8 s. 10 geysers (≥1.88 s warning), 10 ink pots (1.8 s).
+  - No page errors.
+- p3-draws.cjs (1280x720, quality=low): level starts L7 113, L8 116, L9 140 (budget ≤310). Busy L7 79, L8 133 with a rogue wave, a fire ring, a shell and an Iron Turtle (budget ≤450).
+- sameprobe.cjs (seeded Math.random, 45 s of each of levels 1–6, no flag):
+  - First run against the mirror: DIFFERENT. randdiff.cjs and balldiff.cjs traced it to 60 extra Math.random calls at page load: three.js uuids of 15 materials created at module init.
+  - Fixed with lazy ZONE_MATS3. Then live (HEAD) vs mirror: IDENTICAL 58/58.
+  - Final: HEAD basemirror vs published repo (v2): IDENTICAL 58/58, 0 errors. Live vs live control: IDENTICAL.
+- Existing suites on .dock-harness/kraken2/R3-2A-2/suite (published v1 files, the HEAD versions of the tests, no edits):
+  - tests/battle.cjs: 182 passed, 0 failed (06:46–07:06)
+  - tests/levels.cjs: 73 passed, 0 failed (07:06–07:15)
+  - tests/smoke.cjs: 94 PASS, 0 FAIL, 'All checks passed'. Draw calls per level start 298, 231, 107, 237, 193, 228; dock 297 of 450.
+  - v2 changed only flag-gated code (mortarMuzzle, the keg merge); the sameprobe confirms v2.
+- Screenshots looked at with Read: p1-ram, p1-spout, p1-mortar, p1-fireship-lit, p1-rogue-warn, p1-rogue-crest, p1-geyser-ink, p1-crate at 1280x720; p1-rogue-warn and p1-fireship-lit at 390x844; p2-end-L8; p3-busy8.
+- The full npm test was not run (the coordinator's job).
+
+**Open issues**
+
+- Kraken part (2A part 3), still to do:
+- Level 9 ends at Victory once the Inkheart's crew are gone; the clear check does not yet wait for the Kraken (kraken.over, struck ships taken first).
+- No dread on mechanics.krakenDue, no setDread/setDawn, krakenView or setMusicPhase.
+- The 'slam' bomb kind has its ring colour and a generic splash only.
+- The minimap has no Kraken marks.
+- The krakenMods dps and pull are not applied.
+- Balance is for 3B. With the dumb p2 bot:
+- The Iron Turtle dealt 148 damage on L8 and the Inkheart 219 on L9, both needing the heal-to-40% cheat.
+- L7 cost 73 hull with no heal.
+- In my probes a Shark Raider winds up about every 10 s once she can line up (6 wind-ups, 1 crunch on L7).
+- The ram approach rule is in main.js updateEnemy until mechanics3 owns it (hook request).
+- The spout wind loop starts on the nearest spout. If audio was still locked when that spout appeared (a no-op handle), the wind starts only when the nearest spout changes. 2A-1's crackle loop has the same limitation.
+- Island perks read islandCfg, which stays at the defaults until 3A loads pirates-ahoy-island. So in today's ?kraken=1 game the gift and Market are 0 and the warning bonus is 0, unless __game.island.set changes it.
+- The crate is a keg with a floating orange diamond and a pulsing ring. It is small at long range, which 3E could polish. The busy-scene draw calls were measured from one camera angle only.
+
+### 2C
+
+2C has finished the round's battle tests. All three suites are published (copied to a temp name, then moved into place), and each passes on the repo as it stands now, which includes 2A-2's published main.js v2 from 07:28.
+
+- **tests/battle.cjs v3** (sha1 fd01e329): 12 new kraken-* sections added before the final no-page-errors check, covering SPEC3 §13.2's battle additions. Existing sections are untouched (the diff against HEAD is 1,715 lines added, 0 removed). Run of the 12 sections: **96 passed, 0 failed**, about 6 min.
+- **tests/voyage3.cjs v3** (sha1 2cab62b2), new. It covers levels 7 to 9 starting with ?kraken=1, special shot working there, and every new enemy and hazard on levels 7 and 8 with their warning times. I also added a level 9 'deep' section for the ship phase 2A-2 has landed: geysers, ink pots and slicks, a skiff boarding you, and the Inkheart's fall. Full run: **39 passed, 0 failed**, about 2.6 min.
+- **tests/balance.cjs v1** (sha1 193d24e6), new and opt-in, not in npm test. The Act I and Act II bots sail with every recipe owned and the Windmill at tier 3. "Volcano > Europe" and "Maelstrom > Doubloon Bay" are compared on median damage over 5 runs per level. Full run: **13 passed, 0 failed**, about 50 s.
+
+**Every new check fails on a broken copy.** I broke hard-linked copies of the game (the repo files were never touched) and ran the matching sections against each:
+- battle.cjs and voyage3.cjs: 83 mutations, all caught. Two had slipped through at first (a scripted click on the Fire button, and the shipyard rudder row); I tightened both checks, re-ran those two mutations and they are caught now.
+- balance.cjs: 4 mutations, all caught.
+- The new level 9 section: 11 mutations, all caught. One (the geysers stopping at the Inkheart's fall) slipped through at first because the test level ended right after the fall, which clears the bombs anyway. I now read the geyser count straight after the hit.
+
+**No check showed a real bug in 2A's work.** The full npm test was not run, as the brief asked.
+
+**Two balance observations for Stage 3 (not failures):**
+- With all specials owned, one single run in six had the Maelstrom hurting less than Doubloon Bay (66 vs 76). That is why balance.cjs compares medians: over 5 runs, the Maelstrom's median is 119 to 138 against Doubloon Bay's 66 to 68.
+- In one run the Act II bot timed out on its first try at the Maelstrom, then won the second try in 65 s.
+
+**Note for the npm test budget:** the new battle.cjs sections add about 6 minutes to npm test.
+
+**Files:** tests/battle.cjs, tests/voyage3.cjs, tests/balance.cjs
+
+**Brief, item by item**
+
+- Special shots and loads (battle.cjs kraken-ammo, 12 checks): keys 4/5/6 by e.code (AZERTY and numpad too); a held key's repeat does nothing; 1 goes back to round shot; the Ammo cell's text; the 'not owned / not on sale / none left' reasons; R cycling; one load per broadside; Space with one load left (special on one side, round on the other, same step, no swap delay); the 'Out of ...' hint and #game-live; a queued tap spends only when it fires and an ammo change drops it; launch sounds; ranges and reloads. Verified on the repo plus 13 mutations caught.
+- Statuses and their interactions (kraken-status 10, kraken-bosses 6, kraken-look 2): one 18 hp burn per volley; frost halves speed and turn rate for 5 s, +2 s a volley, up to 8; stink stops her and her guns, then the clothes-pegs immunity; KA-BOOM; FIRE OUT; bosses get half; the Maw is immune to fire and the Phantom to stink; IMMUNE/CLANG pops use the 'keep' mod; the tag badge; statusfx instance counts and draw calls; screenshot kraken-statuses.png looked at. Verified, 16 mutations caught.
+- Armour (kraken-armour, 3 checks): the Iron Turtle's beam takes half with CLANG!, a stern rake takes full ×2, and fire's burn ignores the armour. Verified, 4 mutations caught.
+- Hot and stinky boarding (kraken-board, 11 checks): a burning ship refuses the grapple (hint, HOT! Board cell, tag icon); a stinky raider's hooks drop; the burn pauses during a boarding; statuses clear on strike and capture; a fire ship is refused with 'Too hot to board! Freeze her first.' until frozen, then strikes and is taken for 85 gold. Verified, 8 mutations caught.
+- Steering (kraken-steer, 22 checks): the rudder tiers at speed 0 and at full speed; a 12 px thumb slide gives proportional input.steer while a plain hold gives ±1 and input.left/right stay true/false; the wheel setting replaces the arrow buttons, is saved, and keyboard steering is unchanged; launchBomb's aim uses playerTurn(). Verified, 9 mutations caught.
+- The touch tray (kraken-tray, 15 checks): it opens only once a recipe is owned; one tap picks; it closes on a fire tap or a plain click on either Fire button, a tap elsewhere, or 3 s of play; it never pauses; a pick drops a queued shot; the open-tray layout at the 10 sizes (2×3 or 3×2, 44/52 px, 8 px above the act pad); kraken-tray-390x844.png looked at. Verified, 5 mutations caught.
+- Powder and settings saves (kraken-saves, 4 checks): the records and the order they are written in, garbage input cleaned, two tabs, blocked storage. Verified, 4 mutations caught.
+- The shipyard's rudder row (kraken-dock, 4 checks): listed 7th, tiers cost 120/300/550 each saved with the chest, the row follows the tiers, storage full is handled; kraken-dock-rudder.png looked at. Verified, 4 mutations caught.
+- New sounds (kraken-audio, 1 check): offline renders of every new SFX. Verified, 1 mutation caught.
+- The live game without ?kraken=1 (kraken-live, 5 checks plus the shared no-page-errors check): see live_unchanged. Verified, 4 mutations caught.
+- voyage3.cjs, what was already there: nine levels; the L7-L9 definitions; each start's music, first wave, 4 loads of each special shot, open water for every spawn and crate spot, and draw calls (108 / 116 / 141, each ≤ 310); specials on the new ships; the 568x320 banners. Verified, 39/0 on the final run.
+- voyage3.cjs, levels 7-8 (each new enemy and hazard, warnings ≥ 1.5 s): waterspouts (form 3 s, pull 2 u/s, core spin and 4 hp/s, fling, WHOOSH, put out fire, tip and sound); the Shark Raider's ram (1.505 s wind-up, RAM! chevrons, 10 and 8 damage, CRUNCH!); powder crates; rogue waves (4 s warning with horn, edge arrow and banner; side-on 10, bow-in 0, stern-on surf; puts out fire); fire ships (lit 1.6 s before the blast, sunk while lit: a blast and no coins); the Bomb Ketch mortar (2.2 s, 4.5 u ring, 12 damage). Verified, 10 V-* mutations caught.
+- voyage3.cjs, new 'deep' section (level 9 before the rise): geysers (no projectile, 1.8-2.2 s ring of 4.5 u, sound and banner, 10 damage measured by hurtBy source, the lift, none 3 u outside the ring); ink pots (2 every 10 s, 1.8 s rings, 8 damage, 7 u slick at 0.6× top speed); a skiff hooks you; the Inkheart's fall (geysers stop, crew flee and escape, slicks fade); deep-hazards.png looked at. Verified 7/0 on the repo several times, 11 mutations caught.
+- balance.cjs (opt-in): Act I and Act II bots with every recipe and Windmill 3 (7 loads each): every level cleared on all 5 runs, specials fired in every run, every level fights back, median order holds, never inside land. Verified 13/0 on three runs of the median version, 4 mutations caught (windmill loads ignored, specials refused, the hard levels made harmless, levels 3+ never clear).
+- Not done (not in this round's brief; round 5 / Stage 3): the finale (Kraken rise, targets, grab, retry, the Pearl); the 'Voyage III · The Kraken Seas' cards, the save migration and the Maelstrom Victory to level 7 (they need Voyage III live); the bot v3 L7-L9 clears with and without specials; draw calls in the busiest sampled play and the Kraken fight (≤ 450).
+
+**API notes**
+
+No game APIs added (I edit only test files). The tests use the published __game API: specials.{loads,setLoads,powder,setPowder,status,muls,burn,tray,openTray,closeTray,fx,crate,crates}, steer(x), turn, settings.{get,set}, mechanics3.{visuals,spout,wave,state}, launchBomb(spec), place, damage, fighting, tagInfo, canGrapple, boarding.*, capture.*, dock.*, island.set, state.{nextBomb,flagshipDown,hurtBy,loads}, audio.play (wrapped to record sound names), and window.__tap.
+
+Test hooks inside my files:
+- battle.cjs: window.K, installed beside the existing window.T: pop watcher, sound spy, key press, shot capture, fireAt. Constants KQ='?quality=low&kraken=1' and KSTORE.
+- voyage3.cjs: window.T (level(n) parks the level's own ships with rise=1e6; spawn; pinner; volley; play; redraw; watchPops) and an ev() wrapper that unfreezes the game for one evaluate.
+- Filters: BATTLE_ONLY=kraken-ammo,...; VOYAGE3_ONLY=levels,starts,specials,banner,atolls,cape,deep; BALANCE_ONLY=act1,act2 and BALANCE_RUNS=n (default 5). *_ROOT serves another copy of the game; SCREENSHOT_DIR moves the screenshots.
+
+Where my tests differ from SPEC3 (the code wins):
+- Hazard damage is read from state.hurtBy by source, not from the hull, because the hull regrows.
+- #game-live is throttled to one text per 1.5 s of real time, so the deep section waits out the throttle before the ink pots.
+- After the Inkheart's fall every fighting ship flees. Without the Kraken (round 5) the level clears and its clearProjectiles removes all bombs, so geyser removal by flagshipDown is checked straight after the hit.
+- balance.cjs compares medians over 5 runs rather than single runs: single runs can invert the order (see open_issues).
+
+**Hook requests applied / rejected**
+
+- None were addressed to my files: the stage1-reports 'All hook requests, by target file' list and stage2-reports have no requests for tests/battle.cjs, tests/voyage3.cjs or tests/balance.cjs (the only test-file request is for tests/ashore.cjs, which is 2D's). Nothing rejected.
+
+**Hook requests raised**
+
+- package.json (owner 3C, Stage 3): add "test:balance": "node tests/balance.cjs" (opt-in, NOT in scripts.test, about 50 s), add "test:voyage3": "node tests/voyage3.cjs", and add voyage3 to scripts.test when Voyage III goes live (about 2.6 min now). Why: the suites exist but are not wired into npm scripts; I may not edit package.json.
+
+**Live game unchanged**
+
+I edited only test files (tests/battle.cjs additions, plus the new tests/voyage3.cjs and tests/balance.cjs). No game file, vendor/ or package.json was touched, so the live game is byte-for-byte what 2A-2 published. Every edit was published with cp to a temp name and mv, so each file was importable at all times.
+
+The kraken-live section checks the game without ?kraken=1, and the dock checks run with ?kraken=1 too. Even with a full powder record, a wheel setting and every tip bit stored, the game without the flag shows:
+- six levels, no powder and no loads, steering 'buttons';
+- keys 4-6 load nothing and R cycles chain/grape/round;
+- no special or slide lines in the help, statusfx null, no tray, no pause toggle;
+- shipyard rows exactly guns, shot, crew, hull, sails, carpenter, with a rudder Buy refused and no gold spent;
+- the tips record stays 255;
+- on touch, Ammo cycles with no tray or aria-expanded, a slide only gives input 1 (no needle), and there is no wheel.
+
+All 96 kraken-* checks pass on the current repo.
+
+**Verification**
+
+All runs used NODE_PATH=/opt/node22/lib/node_modules, SwiftShader Chromium and tests/server.cjs, one browser job at a time.
+
+Final runs on the published files:
+- `BATTLE_ONLY=<the 12 kraken-* sections> node tests/battle.cjs`: 96 passed, 0 failed, exit 0. Per section: ammo 12, status 10, bosses 6, look 2, armour 3, board 11, steer 22, tray 15, saves 4, dock 4, audio 1, live 5, plus no page errors.
+- `node tests/voyage3.cjs`: 39 passed, 0 failed, exit 0.
+- `node tests/balance.cjs`: 13 passed, 0 failed, exit 0. Median damage: act1 35/108/118, act2 68/30/138. The median version also passed twice from the dev copy (13/0 each). The six earlier single-run versions: 5 passed 13/0, one failed 12/1 (Maelstrom 66 < Doubloon Bay 76), which led to the median comparison.
+- Earlier in the session: kraken-tray + kraken-dock 20/0 before v3; deep section 7/0 on the repo four times (v10a, v10b, v11, v12); voyage3 v1 full 33/0.
+
+Mutation proofs (tools/mutate.cjs: unlinks and rewrites the file in a hard-linked copy of the repo, so the repo is never written; results in scratch mutlogs/results.json):
+- battle.cjs + voyage3.cjs: 83 mutations, all CAUGHT after the y-fire and d-rows re-runs.
+- balance.cjs: 4/4 CAUGHT (BALANCE_RUNS=1).
+- Deep section: 11/11 CAUGHT after the D-fallgeysers fix.
+
+Screenshots I looked at: deep-hazards.png (1280x720), kraken-statuses.png, kraken-tray-390x844.png (portrait touch), kraken-dock-rudder.png, cape-rogue.png, plus atolls/cape/deep/atolls-spout earlier per PROGRESS.md.
+
+Diff: `git diff HEAD --numstat tests/battle.cjs` = 1715 added, 0 removed. The full npm test was not run, as instructed.
+
+**Open issues**
+
+- Balance (for Stage 3, not a failure): with every recipe and Windmill 3, single runs of the Act II bot can invert Voyage II's order. One of 6 single runs had the Maelstrom at 66 vs Doubloon Bay 76. Over 5 runs the medians are Maelstrom 119-138 vs Doubloon Bay 66-68, so balance.cjs compares medians. In one run the bot timed out (900 s) on its first Maelstrom try and won the second in 65 s; balance.cjs now logs the ships left when a try times out. Specials narrow Voyage II's margin, so Stage 3's 24-seed medians should include them.
+- Level 9 with ?kraken=1 today: when the Inkheart falls every fighting ship flees, so the level clears and goes to 'won' 2.5 s later; the level clear removes all bombs. This is expected until the Kraken rise (round 5) keeps the level going. My deep section stops before the rise.
+- Not covered yet (round 5 / Stage 3): the finale and Kraken checks; the Voyage III cards, save migration and the Maelstrom-to-level-7 flow (need Voyage III live); bot v3 L7-L9 clears with and without specials; draw calls in the busiest sampled play and the Kraken fight (≤ 450); kraken-rise.png and kraken-fight.png.
+- npm test time: battle.cjs is in npm test, so the 12 kraken-* sections add about 6 min to it (nothing in my files changes npm test's order).

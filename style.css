@@ -2166,3 +2166,59 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
 @media (max-height: 340px) and (hover: none) and (pointer: coarse) {
   #pause-choices:has(> #steer-mode-btn:not(.hidden)) > .tip { display: none; }
 }
+
+/* ------------------------------------------------------------------------------------------------------------
+   Voyage III seas (SPEC3 §5.3, §6.3): the rogue wave's warning arrow at the screen edge it comes from, a teal arrow
+   with "WAVE!" (shape + word, not colour alone). main.js places it (left/top) and turns the arrow to point in at
+   you (--turn); the word stays upright. It throbs gently (under 1 Hz), and keeps still under reduced motion.
+   ------------------------------------------------------------------------------------------------------------ */
+.edge-arrow {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  z-index: 6;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.edge-arrow .ea-arrow {
+  display: block;
+  width: 52px;
+  height: 52px;
+  transform: rotate(var(--turn, 180deg));
+  animation: ea-throb 1.25s ease-in-out infinite;
+}
+.edge-arrow .ea-arrow svg {
+  width: 100%;
+  height: 100%;
+  fill: #3fd8d0;
+  stroke: var(--ink);
+  stroke-width: 1.6;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+.edge-arrow .ea-word {
+  padding: 1px 8px 0;
+  font-size: 18px;
+  line-height: 1.2;
+  letter-spacing: 0.04em;
+  color: #fff;
+  background: var(--teal-text);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  text-shadow: none;
+}
+@keyframes ea-throb {
+  0%, 100% { scale: 1; }
+  50% { scale: 1.12; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .edge-arrow .ea-arrow { animation: none; }
+}
+@media (max-width: 420px), (max-height: 420px) {
+  .edge-arrow .ea-arrow { width: 42px; height: 42px; }
+  .edge-arrow .ea-word { font-size: 15px; }
+}
