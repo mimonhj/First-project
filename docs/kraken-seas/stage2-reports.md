@@ -543,3 +543,137 @@ Not run: the full npm test (the coordinator's job).
 - Until 3A lands the ctx and the §11.2 row-3 pieces, the suite runs only on a patched mirror (scratch R2-2D/mkmirror.sh) and 9 tagged checks fail on it: governor, lighthouse, bakery, gift, tabs-island ×2, tabs-quiz ×2, plus mouth for town.js. Use ASHORE_PENDING=<tags> to report them as PEND. After 3A, run it on the repo and drop the tags as each piece lands.
 - Timing: draws takes 9–12 min, and the rest about 10 min on this machine when another browser job runs at the same time. Under that load Playwright taps took up to about 6 s to become actionable, and a tap's click can land after page.tap returns; press() now absorbs both. Expected checks that fail as a 'never shown' control wait up to 30 s each, so a broken copy can take 3–5 min (k-view2: 323 s).
 - The mutation proofs ran on mirrors built before 2E's final sparrow.js and pops.js (mk/mk3/mkfix/mkcss, which share the final town.css). The checks themselves were re-verified on mkF, the mirror of the final files.
+
+## Hotfix: the captain pinned at a rope bridge mouth (live game)
+
+Found by 2D's ashore suite (walking (b) [mouth]) and confirmed live without `?kraken=1` (3 of 720 runs; a held stick stalled 8.23 s). Fixed in src/town.js with checks in tests/town.cjs by a fixer, attacked by a skeptic (4 findings, all real), fixed again. Committed on its own, tested on 80b2ea3 plus these two files: 19 suites, 1,864 checks passed, 0 failed (town 135).
+
+### First pass
+
+The fix is published to src/town.js and three new checks are in tests/town.cjs. Both files went in by cp to a temp name + mv. Nothing is committed, and every suite I ran passes on the published tree.
+
+How I reproduced it (live game, no ?kraken=1): before each run the town clock moves on 21 s so greetings are due again. The captain is placed 0.6 u before the plazaS1 mouth. The townsfolk clock then runs forward, with the captain hidden from them, until the bucket carrier stands at a chosen point of her way, heading a chosen way. Then W or the stick (0.09, 0.88) is held.
+- Old town.js wedges in 12/66 runs of the small grid and 172/396 of the larger one.
+- The reported case reproduces exactly: she is at (5.6, -14.8) coming off the bridge; with the stick he stalls 8.13 s and ends at (7.63, -14.15).
+
+Why the squeeze-past never starts (from instrumented traces):
+- She waits about 0.67 u ahead on the bridge's line (the LOOK-2 rule). His steps into her slide him sideways at 11-50% of a step.
+- Some of those slide steps are over the 30% "stuck" mark, so cap.stuck keeps dropping back and only reaches 0.25 s after he has slid out of the mouth into the corner where the rope meets the plaza edge.
+- In the corner the rope, not she, stops him, so the people-free move is no better and the squeeze-past never fires. A slightly-off stick then creeps him along the rope away from the mouth.
+- In some runs the squeeze-past fired on a 0.0004 u people-free creep and wasted repeated 0.8 s passes still pinned in the corner.
+- The same corner holds him for ever with nobody about if he walks up 0.3-0.45 u to one side of a mouth.
+
+The fix, in stepWalk only. It applies only when walking by hand onto a bridge: his push within 45° of the way onto it, the bridge end within 1 u and in a straight walk, not yet 0.5 u past the end, and not off to one side pushing more than 15° further away from the line.
+- **Nobody slides him off the line there.** People are not obstacles for him, as sparrow.js already does for villagers near bridges, so he walks through them as the squeeze-past would after 0.25 s.
+- **Pushed into the rope beside a mouth, he slides onto the line.** This is checked before the squeeze-past and only when the people-free move is stuck too. He slides along the rope to the bridge's middle line, on his own deck, for at most 0.6 s, then turns straight onto the bridge and his own push takes him over.
+- **Turning away stops it at once.** Letting go, turning more than 45° away, leaning more than 15° away, a tap-to-walk, enter or exit all end the slide, with no turning arc carrying him onto the bridge.
+- enter() now also resets cap.stuck and cap.pass.
+
+Why not the prototype (fixmouth.py) as it was: my new checks show it fails at the yard bridge's plaza mouth. Its 0.6 s steer also left him up to 0.49 u further onto the bridge after he turned back, let go or tapped away.
+
+### Skeptic
+
+- **F1 (major)** The slide along the rope steps past the bridge's middle line and shakes him left and right for up to 0.6 s, on any phone once the stick is held fully. Phone, portrait 390x844. The child comes up 0.3 to 0.9 u to one side of a mouth (plazaS1, plazaYard, tavernTower, plazaGarden, either end) and holds the stick fully toward the bridge. After 0.5 s townMode switches to a sprint (4.6 u/s). The funnel takes him along the rope at full speed. It only stops when he is within 0.03 u of the middle line (Math.abs(side) < 0.03), but a step is 0.077 u at 60 fps, 0.153 u at 30 fps, and 0.1 u when jogging at 30 fps. Unless a step happens to land in that band, he steps past the line, the funnel points him back, and he swaps sides every frame with his body turning back and forth. This lasts until funnel.t runs out (0.6 s). Only then does he walk onto the bridge. The old code never did this; it just stood still. Fix: Stop the funnel from overshooting. Either cap that frame's sideways move at the distance left to the line (place him on the line), or end the funnel once Math.abs(side) <= cap.speed*dt or once side changes sign since it started. Cap its speed at a jog. Then the switch onto the bridge happens in one frame.
+- **F2 (major)** At about 10 fps or lower (dt clamped at 0.1) with the full stick, the shake never ends and he never gets onto the bridge, including a case the old code crossed. A slow phone, or long frame hitches, so dt is clamped at MAX_FRAME_DT = 0.1, and the stick is held fully (sprint, 0.46 u a step). Starting in the corner beside a mouth, the funnel swings him across the line (e.g. side 0.391 and -0.069). Its 0.6 s ends after an even number of steps, so he is back at 0.391, outside the 0.25 rope band. The walk stops him there; cap.stuck reaches 0.25 s; the funnel starts again. This repeats for ever, with no stall over 0.3 s, so the stuck and squeeze-past logic never sees it. At tavernTower< (the tower end), 0.5 aside with the push 5° toward the line, the old code slides him on in 1.3-1.4 s at every frame rate. The new code at 10 fps never crosses. Fix: The same fix as F1: no overshoot, end the funnel on reaching or crossing the line. Also, when the funnel ends on t <= 0 off the line, do not start it again straight away (e.g. a cooldown, or end on the line). Add a check that steps town.update at dt 0.1 and 1/30 with run:true from the corner beside every mouth. It must get over and make at most 2 reversals.
+- **F3 (minor)** An old stall remains at the edge of the 1 u zone: a slightly-off push creeps him along the rope out of MOUTH.near before the 0.25 s stuck timer fires, and he stays pinned for ever. The captain walks up to a mouth 0.85-1.0 u to one side, or 0.7 u with the push leaning 5-10° outward. That is under the 15° away-guard, so the zone still applies. He hits the plaza edge beside the mouth. The slightly-off push slides him along the rope away from the mouth at 8-17% of a step. This counts as stuck, but in the 0.25 s before cap.stuck fires he moves past d = 1.0 from the link's end, so mouthAhead() returns null. No slide happens, and he creeps to the lantern post at (4.31, -14.15), or to (7.63, -14.15), the spot in the child's report. He stays pressed there for as long as the stick is held. The old code does exactly the same. Fix: Fix the mouth when the creep starts rather than when the 0.25 s timer fires. For example, remember the mouthAhead() result on the first stuck frame and use it when cap.stuck fires, or allow MOUTH.near plus about 0.3 for a captain already pressed into the rope (people-free move also stuck). Extend check 2 to 0.85 aside and 5-10° off-straight pushes.
+- **F4 (minor)** The new regression checks can't catch F1 or F2: they only step at 60 Hz at a jog, and check 1's 'deterministic' runs vary. All three new town.cjs checks step G.town.simulate(), a fixed 1/60 s step, with { x: 0, z: 1 } or a 0.885 stick, so he only ever jogs. They never use the sprint a phone stick gives after 0.5 s, and never a 30 fps or 10 fps frame. The fixer's probe6 and the ashore walking (b) [mouth] check have the same limits (simulate in 2x1/60 steps, jog). So the suite stays green while the slide jitters at 30/60 fps with a sprint and locks at 10 fps. Check 1's comment says each run is deterministic, but other townsfolk are not controlled. On the old code the count changes between runs (fixer: 10/18 and 8/18; my run: 9/18). It still always fails on old. Fix: Add a variant of check 2 that drives town.update(dt) directly at dt 1/30 and 0.1 with { x, z, run: t >= 0.5 }, from 0.3 to 0.7 aside and 0.4 back. Assert he gets over within 3 s with at most 2 direction reversals. Soften the 'deterministic' wording, or set the other walkers aside in check 1.
+
+The repo was read only. All experiments ran one browser job at a time under /tmp/claude-0/-home-user-First-project/7f649d8c-67e4-5236-a80e-5e9eae321fb4/scratchpad/kraken/build2/mouthfix/verify/. Copies used: new (published town.js, md5 802da8aa), old (HEAD town.js), newdbg (adds a funnel getter), and mkn (kraken mirror built with mkmirror.sh). Logs are in verify/logs/, screenshots in verify/shots/, and notes in /home/user/First-project/.dock-harness/mouthfix/PROGRESS.md.
+
+Checked and working:
+- **Same push, old and new code, people set aside.** 2128 jog runs at 60 and 30 fps: every mouth, both ends, along -0.4 and 0.2, 0.3 to 0.95 aside, pushes from 20° away to 40° toward the line. The new code is never worse than the old and gets over in 716 cases where the old one stalled. With a sprint, 60 and 30 fps also show no regression; the only regressions are at 10 fps (F2).
+- **Inside the zone** (side at most 0.7, push no more than 10° away), the only stalls left are identical to the old code: props in the way, such as the bench by the garden bridge, where walk.clear fails as it should.
+- **Never steered where he didn't want to go.** Turning away (more than 45°) or leaning more than 15° away ends the slide in the same frame with no turning arc. Letting go, tap-to-walk, enter and exit clear it too. Auto-walks never use the zone. walk.move bounds every step, so he never went through a rope or off a deck: the biggest height step per frame was 0.15, under CLIMB.
+- **Walking through people near a mouth.** The only standing townsfolk near a mouth are the woman on the bench by the yard bridge (the bench blocks him anyway) and one at (4.8, -19.6) by the far end of Polly's bridge, which a captain inside the zone can't reach in practice.
+- **With townsfolk walking.** Without ?kraken=1: 256 crossings at 30 fps (keys, stick, full-stick sprint, tap), 0 bad, longest stall 0.4 s. With ?kraken=1 (8 villagers, 390x844 touch): 144 crossings, 0 bad, longest stall 0.23 s.
+- **Real input.** Touch stick on the 390x844 phone page: plazaS1> 0.3 aside, where the old code stays stuck 6.2 s, now gets over at 2.0 s. Keys at 1280x720: 3 of 3 runs get over with no jitter.
+- **The new checks fail on the old code** in my own run (9/18 and 4/16), as the fixer says.
+
+Not a problem, but invalid runs in my own harness, fixed and not counted:
+- Touches that landed on the 'Go in' prompt.
+- Start points off the walk area.
+- A stale hold.yaw left over after enter(). This is old behaviour, not part of this fix.
+
+### Second pass
+
+Second pass on the bridge-mouth fix. I re-checked all four skeptic findings and all four were real. Each is now fixed in src/town.js (stepWalk / mouthAhead), and each has a check in tests/town.cjs. Both files were published by copying to a temp name and then mv. Nothing is committed.
+
+How I re-checked: I built a Node harness that loads the real src/town.js against the live walk data, with no browser and no townsfolk (scratch …/mouthfix/p2/nh/). It reproduces the skeptic's browser numbers exactly. On the first-pass code, F1 at plazaS1>, 0.4 back and 0.5 aside, at 30 fps sprint gives 15 reversals. F2 at tavernTower<, 0.2 past the end, 0.5 aside, 5° toward the line, at 10 fps gives 50 reversals and he never gets over; the old code got over in 1.4 s.
+
+F1 and F2 (the slide overshot the line):
+- While sliding along the rope, his step is now capped at the distance left to the line (`step = min(cap.speed*dt, funnelLeft)`). He lands on the line instead of stepping past it.
+- On the next frame the existing `|side| < 0.03` test ends the slide, and the snap turns him straight onto the bridge with no turning arc. I tried ending the slide on the landing frame itself, but that skipped the snap and let him arc across the mouth, so I took it out.
+- The stuck tests (by hand and auto-walk) and the people-free move now compare against the capped step. Away from a slide the step is exactly `vx*dt` as before.
+
+F3 (he crept out of reach before the 0.25 s stuck timer fired):
+- When he is pressed into the rope (the people-free move is stuck too), the slide now starts from up to MOUTH.near + MOUTH.creep, 1.3 u from the mouth.
+- The rule that lets him walk through people at a mouth still uses 1.0 u.
+- MOUTH.secs went from 0.6 to 1.0, so a walk-speed slide can cover 1.3 u.
+
+F4 (the checks only ran at 60 Hz and a jog):
+- The check 1 comment no longer calls the runs deterministic.
+- Two new checks were added to the review4-world section (listed under changed checks).
+
+Old-vs-new grids in Node, people set aside:
+- **Jog, 3720 runs at 60/30/10 fps:** 0 regressions, 1479 runs fixed. Runs with 3 or more reversals: 0 (first pass 578).
+- **Sprint, 4960 runs at 60/30/20/10 fps:** 0 regressions (first pass 5). Runs with 3 or more reversals: 6, max 4; the old code already had 2 to 3 reversals in those same runs (first pass: 1116 runs, max 31).
+- **Overshoot to the far side of the mouth:** same as the old code (first pass: 100 runs over 0.3 u).
+- **Never steered (14400 runs):** after a real turn, letting go or a tap, the slide toward that mouth never carried on. Standing still never moved him.
+- **Stalls still left:** all the same as the old code. They are pushes more than 15° away from the line (deliberate), the garden-bridge bench, a 40° push that crosses the mouth into the far corner, and starts more than 1 u out pushing 10° away.
+
+**Checks**
+
+- No existing assertion changed. I changed two comments and added two checks.
+- Check 1 comment (bucket carrier): 'Each run is deterministic' became 'Each run meets her the same way ... (The other townsfolk are wherever their rounds have taken them by then, so runs are alike, not identical.)'. The assertion is the same.
+- Check 2 comment now also describes the new 0.85-aside runs. The check 2 and check 3 assertions are the same; the shared evaluate just also collects out.far.
+- Header comment: the bridge-mouth line now says 'at a phone's frame rate too'.
+- NEW check (review4-world, after check 2): from 0.85 aside of each mouth, where the corner is on the walk, pushing straight or leaning 5° or 10° away from the line, he must get over within 5 s. Requires at least 24 runs.
+- NEW check (review4-world, after check 3): drives town.update(dt) at 1/30 and 0.1 with run: t >= 0.5, folk set aside. Starts are 8 mouths × (0.2 past the end at 0.3/0.5/0.7 aside, 0.4 before it at 0.3/0.5 aside) × both sides × pushes straight or 5° toward the line. Each run must get over within 3 s with at most 2 turn-backs (a step over 0.02 u opposite the one before). Requires at least 240 runs.
+- Proof the new checks fail without this fix, same new tests/town.cjs, TOWN_ONLY=review4-world:
+- Old HEAD town.js: 10 passed, 4 failed (bucket carrier 9/18, corner 4/16, 0.85-aside 0/33, frame rate 175/292).
+- First-pass town.js: 12 passed, 2 failed (0.85-aside 27/33, frame rate 161/292 with up to 17 turn-backs).
+- Final town.js: 14 passed, 0 failed (0.85-aside 33/33, frame rate 292/292, at most 1 turn-back).
+
+**Verification**
+
+Browser jobs ran one at a time, with SCREENSHOT_DIR set to scratch. Logs are in /tmp/claude-0/-home-user-First-project/7f649d8c-67e4-5236-a80e-5e9eae321fb4/scratchpad/kraken/build2/mouthfix/p2/logs/.
+
+**Unit test, on the repo after publishing**
+- node tests/walk.test.cjs: "All walk checks passed (106)".
+
+**Full town suite, on the repo after publishing**
+- NODE_PATH=/opt/node22/lib/node_modules SCREENSHOT_DIR=<scratch> node tests/town.cjs: "town.cjs: 135 passed, 0 failed", "All town checks passed", exit 0, 10m43s. That is the earlier 133 plus the 2 new checks. Log: town-full-repo.log.
+
+**review4-world section only** (TOWN_ONLY=review4-world, the new tests/town.cjs served on each tree)
+- Dev tree (final town.js): "14 passed, 0 failed".
+- Old tree (HEAD town.js): "10 passed, 4 failed".
+- First-pass tree: "12 passed, 2 failed".
+- Logs: town-r4w-{dev,old,first}.log.
+
+**Ashore suite, walking section**
+- Mirror: .dock-harness/mouthfix/mk3, built from git archive 80b2ea3 plus the published town.js plus the patched main.js (patchmain2.py). It differs from the first pass's mk2 only in town.js.
+- Command: ASHORE_ROOT=.dock-harness/mouthfix/mk3 ASHORE_ONLY=walking node tests/ashore.cjs.
+- Result: "ashore.cjs: 7 passed, 0 failed", exit 0.
+  - walking (b): 240/240 across, longest stall 0.4 s.
+  - porter check: 1.7 to 2.0 s.
+  - walking (a): 0.97 s.
+
+**Probes on mk3, no kraken**
+- probe6 (R2-2D/probe6.cjs, 30 moments): "runs 720, bad 0, worst stall 0.4".
+- Skeptic's folk probe (verify/probes/vp.cjs + s5-folk.cjs, 6 moments, key/stick/sprint/tap):
+  - dt 1/30: 192 runs, 0 bad, worst stall 0.4.
+  - dt 0.1: 192 runs, 0 bad, worst stall 0.4.
+  - The same probe on the old town.js at 1/30: 2 bad, worst stall 2.03 s.
+
+**Node harness** (p2/nh, the real town.js on the live walk data dump, folk off)
+- Grids in logs g-jog-*, g-run-*, g-walk-*, f-run-* and nev2-*. Numbers are in the summary.
+
+**Open issues**
+
+- Already there before this fix: small zigzags (0.03-0.04 u a frame) show up while walking along a bridge with townsfolk on it, mostly with the stick or a tap, well away from the mouths. The folk probe at 1/30 found them in 9 of 192 runs on the new code and 12 of 192 on the old code. This code takes the same path as before there, but it is visible.
+- A deliberate behaviour change from F3: because the slide now reaches up to 1.3 u, a captain walking straight at a bridge's direction and pressed into the edge up to 1.3 u beside its mouth now slides onto that bridge. Before, he stayed pressed against the edge. One case seen: walking east along the south edge of the plaza onto the yard bridge. Turning away, letting go or a tap still stops the slide at once.
+- Probe artefact, not a game bug: the HOLD_TURN rule keeps the camera from when the stick was first pushed. If the camera swings while the stick is held and the input then changes by less than 0.35 rad, the game still reads it as a push onto the bridge, and the slide can carry on. I saw this in 7 runs at 10 fps in my never-steered probe; the town.cjs checks avoid it.
+- Still stalls, same as the old code: pushing more than 15° away from the line (deliberate), the bench by the garden bridge, a 40° push that crosses the mouth into the far corner, and starts more than 1 u out pushing 10° away.
+- At walk speed (stick under half), a few runs reach the far end up to 0.2 s later than the old code, because he now slides to the line first instead of the walk sliding him diagonally.
+- walking (a) in the ashore suite is still 0.97 s against its 1 s limit, the same value as the first pass, at a pier spot far from any bridge. It could still flake.
+- Nothing is committed. Notes are in /home/user/First-project/.dock-harness/mouthfix/PROGRESS.md (fixer pass 2 section). The mirrors mk3 and mk3old are in .dock-harness/mouthfix (gitignored). The working tree also has changes I don't own: src/main.js, style.css, tests/battle.cjs and an untracked tests/voyage3.cjs. I left them alone.

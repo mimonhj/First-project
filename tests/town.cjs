@@ -18,8 +18,9 @@
 //   M mutes; screenshots town.png, tailor.png, tavern.png
 // - the Stage 4 review's fixes (review4, review4-world): E at a door and focus off the HUD buttons, held Enter /
 //   Space (tavern door, gangplank, Back to town), the prompt's focus and name, try-on scrolling, simulate()'s
-//   greeting; the rope bridges, walkers waiting for the captain, the market awnings, the seam planks, and what
-//   tavern buys, Go ashore and Polly's crew clicks rebuild
+//   greeting; the rope bridges and their mouths (never pinned beside one, at a phone's frame rate too, never steered
+//   onto one), walkers waiting for the captain, the market awnings, the seam planks, and what tavern buys, Go ashore
+//   and Polly's crew clicks rebuild
 // Walking is stepped with __game.town.simulate() (fixed steps, no rendering) inside one evaluate, so the real
 // loop never moves the captain in between; keys go through the game's own handlers. Run with `npm test` or
 // `npm run test:town` (TOWN_ONLY=ashore,walk,places,touch,wardrobe,tavern,records,layout,draws,review4,review4-world
@@ -1625,6 +1626,359 @@ function installHelpers() {
     const stuck = meet.filter((r) => r.reached === null);
     check(meet.length === 10 && stuck.length === 0 && meet.some((r) => r.close < 0.9),
       `walking into a townsperson on a narrow rope bridge never walls the captain in: W held from the stalls to the pier, ${meet.length - stuck.length} of ${meet.length} runs get across (slowest ${Math.max(...meet.map((r) => r.reached ?? 99))} s), and some met the porter head-on (closest ${Math.min(...meet.map((r) => r.close))} u) (${J(stuck.length ? stuck : meet.slice(0, 3))})`);
+
+    // ...nor pins him against the rope beside a bridge's mouth (found live, without the Kraken Seas): the bucket carrier
+    // walks Polly's rope bridge (plazaS1) from the plaza and back, and a captain meeting her at its plaza mouth was slid
+    // aside, out of the mouth, into the corner where the rope meets the plaza's edge, where a held key or stick kept him
+    // pressed (crept along the rope) for ever: the walk, not she, stopped him there, so he never squeezed past. Each run
+    // meets her the same way: the town's clock on 21 s (greetings due again), the captain put 0.6 before the mouth on
+    // the bridge's line, then the townsfolk's clock on (the captain hidden from them) until she stands at a given point
+    // of her way heading a given way; W held, or the stick a little off straight either way, until he is over. (The
+    // other townsfolk are wherever their rounds have taken them by then, so runs are alike, not identical.)
+    const wedge = await wp.evaluate(async () => {
+      const G = window.__game;
+      const env = G.env;
+      const tw = T.town();
+      let t = null;
+      const upd = env.update;
+      env.update = function (tt, ...rest) {
+        t = tt;
+        return upd.call(this, tt, ...rest);
+      };
+      await new Promise((r) => requestAnimationFrame(() => requestAnimationFrame(r)));
+      env.update = upd;
+      if (!Number.isFinite(t)) t = 100;
+      const ctxOf = () => ({ simTime: G.state.time, camera: G.camera });
+      const step = (dt, inp) => {
+        G.town.simulate(dt, inp);
+        t += dt;
+        env.update(t, dt, ctxOf());
+      };
+      // (env.update takes its own dt from its clock: that clock only ever runs on)
+      const tick = (dt) => {
+        t += dt;
+        env.update(t, dt, ctxOf());
+      };
+      const link = env.walk.links.find((l) => l.id === 'plazaS1');
+      const a = link.pts[0];
+      const b = link.pts[link.pts.length - 1];
+      const mid = link.pts[Math.floor(link.pts.length / 2)];
+      const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+      const ux = (b[0] - a[0]) / L;
+      const uz = (b[2] - a[2]) / L;
+      // her: whoever walks the bridge's middle
+      env.setCaptain(null, null);
+      let who = null;
+      for (let k = 0; k < 3000 && who === null; k++) {
+        tick(0.02);
+        for (const f of env.folk()) if (Math.hypot(f.x - mid[0], f.z - mid[2]) < 0.3) who = f.index;
+      }
+      const her = () => env.folk().find((f) => f.index === who) || null;
+      // the townsfolk's clock on until she is at (x, z) heading sgn in z (+1: off the bridge, onto the plaza)
+      const meet = (x, z, sgn) => {
+        env.setCaptain(null, null);
+        let prev = her();
+        for (let k = 0; k < 4000; k++) {
+          tick(0.01);
+          const f = her();
+          if (f && prev && Math.hypot(f.x - x, f.z - z) < 0.05 && Math.sign(f.z - prev.z) === sgn) {
+            let d = Math.hypot(f.x - x, f.z - z);
+            for (let j = 0; j < 100; j++) {
+              tick(0.0005);
+              const g = her();
+              const e = g ? Math.hypot(g.x - x, g.z - z) : 9;
+              if (e >= d) break;
+              d = e;
+            }
+            return true;
+          }
+          prev = f;
+        }
+        return false;
+      };
+      const runs = [];
+      // her way: from the plaza (6.4, -13.55) to the bridge's first plank (5.6, -14.8), across the corner beside the
+      // mouth, and on along the bridge; and back
+      const spots = [[5.6, -14.8, 1], [5.6, -14.86, 1], [5.9, -14.331, 1], [5.9, -14.331, -1], [5.8, -14.488, 1], [6.0, -14.175, -1]];
+      const sticks = [['W', { x: 0, z: 1 }], ['stick', { x: 0.09, z: 0.88 }], ['stick left', { x: -0.09, z: 0.88 }]];
+      for (const [x, z, sgn] of spots) {
+        for (const [name, inp] of sticks) {
+          G.town.simulate(21, { x: 0, z: 0 });
+          const st = tw.walk.snap(a[0] - ux * 0.6, a[2] - uz * 0.6, 0.5) || { x: a[0], z: a[2] };
+          tw.enter({ x: st.x, z: st.z, h: Math.atan2(ux, uz) });
+          tw.recenter();
+          if (!who || !meet(x, z, sgn)) {
+            runs.push({ her: [x, z, sgn], name, met: false });
+            continue;
+          }
+          let along = -1;
+          let k = 0;
+          let still = 0;
+          let stall = 0;
+          let close = 9;
+          let last = T.pos();
+          for (; k < 8 * 30 && along <= 1.02; k++) {
+            step(1 / 30, inp);
+            const c = T.pos();
+            along = ((c.x - a[0]) * ux + (c.z - a[2]) * uz) / L;
+            if (Math.hypot(c.x - last.x, c.z - last.z) < 0.004) still += 1 / 30;
+            else still = 0;
+            stall = Math.max(stall, still);
+            last = c;
+            const f = her();
+            if (f) close = Math.min(close, Math.hypot(f.x - c.x, f.z - c.z));
+          }
+          G.town.simulate(0.1, { x: 0, z: 0 });
+          if (G.town.view !== 'town') G.town.back();
+          runs.push({ her: [x, z, sgn], name, met: true, over: along > 1.02, secs: +(k / 30).toFixed(2), stall: +stall.toFixed(2), close: +close.toFixed(2), at: [+last.x.toFixed(2), +last.z.toFixed(2)] });
+        }
+      }
+      return runs;
+    });
+    const wedged = wedge.filter((r) => !r.met || !r.over || r.stall > 1);
+    check(wedge.length === 18 && wedged.length === 0 && wedge.some((r) => r.close < 0.9),
+      `walking onto a rope bridge past a townsperson at its mouth never pins the captain against the rope beside it: the bucket carrier met at Polly's bridge's plaza mouth at 6 points of her way, W held or the stick a little off straight either way: ${wedge.length - wedged.length} of ${wedge.length} runs over the bridge within 8 s, never stalled over 1 s (slowest ${Math.max(...wedge.map((r) => r.secs ?? 99))} s, longest stall ${Math.max(...wedge.map((r) => r.stall ?? 99))} s, closest ${Math.min(...wedge.map((r) => r.close ?? 9))} u) (${J(wedged.length ? wedged.slice(0, 6) : wedge.slice(0, 2))})`);
+
+    // ...and the same for a captain who comes up to a mouth a little to one side, with nobody about: pushed into the
+    // rope beside any of the 8 bridge mouths (0.45 to either side of the mouth, 0.2 past the bridge's end), W held
+    // slides him along the rope onto the bridge's line and he walks over; and from further off (0.85 aside, where the
+    // corner is on the walk), pushing straight onto the bridge or leaning 5° or 10° away from its line, though the lean
+    // creeps him along the rope away from the mouth before he counts as stuck (he crept out of reach, to the lantern
+    // post or the spot of the child's report, and stayed pressed there). But the mouths never steer him onto a bridge
+    // he isn't walking onto: standing still there he stays put; after pushing onto the bridge 0.45 s, turning back,
+    // turning along the deck's edge, letting go and then walking along the edge, or a tap-to-walk away, he never gets
+    // further onto the bridge than he was, give or take the arc of his turn (0.2; a run that had already walked onto
+    // the bridge by itself set aside); walking, or
+    // tapping to walk, along the plaza's edge past the mouths of Polly's bridge and the yard bridge, he walks by.
+    // (The townsfolk set aside, as for TOWN-3.)
+    const mouths = await wp.evaluate(() => {
+      const G = window.__game;
+      const env = G.env;
+      const tw = T.town();
+      const folk = env.folk;
+      env.folk = () => [];
+      const out = { over: [], far: [], still: [], turns: [], by: [] };
+      try {
+        const ms = [];
+        for (const l of env.walk.links) {
+          for (const pts of [l.pts, [...l.pts].reverse()]) {
+            const a = pts[0];
+            const b = pts[pts.length - 1];
+            const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+            const n = Math.hypot(pts[1][0] - a[0], pts[1][2] - a[2]);
+            // u: the way onto the bridge at its end; q: across it
+            const ux = (pts[1][0] - a[0]) / n;
+            const uz = (pts[1][2] - a[2]) / n;
+            ms.push({ id: `${l.id}${pts === l.pts ? '>' : '<'}`, a, b, L, ux, uz, qx: -uz, qz: ux });
+          }
+        }
+        // how far onto the bridge (x, z) is past its end (-9 when not within 0.6 of its line)
+        const onto = (m, x, z) => (Math.abs((x - m.a[0]) * m.qx + (z - m.a[2]) * m.qz) < 0.6 ? (x - m.a[0]) * m.ux + (z - m.a[2]) * m.uz : -9);
+        const place = (x, z, h) => {
+          const q = tw.walk.snap(x, z, 1) || { x, z };
+          tw.enter({ x: q.x, z: q.z, h });
+          tw.recenter();
+        };
+        // a held input that walks him the world way (wx, wz) under the camera as it is now
+        const way = (wx, wz) => {
+          const yaw = tw.camera.yaw;
+          const fx = Math.sin(yaw);
+          const fz = Math.cos(yaw);
+          return { x: -fz * wx + fx * wz, z: fx * wx + fz * wz };
+        };
+        const at = (m, along, side) => [m.a[0] + m.ux * along + m.qx * side, m.a[2] + m.uz * along + m.qz * side];
+        for (const m of ms) {
+          for (const side of [0.45, -0.45]) {
+            // over: W held from the corner beside the mouth
+            const [x0, z0] = at(m, 0.2, side);
+            place(x0, z0, Math.atan2(m.ux, m.uz));
+            let k = 0;
+            let along = 0;
+            for (; k < 5 * 30 && along <= 1.02; k++) {
+              G.town.simulate(1 / 30, { x: 0, z: 1 });
+              const c = T.pos();
+              along = ((c.x - m.a[0]) * (m.b[0] - m.a[0]) + (c.z - m.a[2]) * (m.b[2] - m.a[2])) / (m.L * m.L);
+            }
+            const c1 = T.pos();
+            out.over.push({ m: m.id, side, over: along > 1.02, secs: +(k / 30).toFixed(2), at: [+c1.x.toFixed(2), +c1.z.toFixed(2)] });
+            if (G.town.view !== 'town') G.town.back();
+            // still: standing in the corner
+            place(x0, z0, Math.atan2(m.ux, m.uz));
+            const p0 = T.pos();
+            G.town.simulate(3, { x: 0, z: 0 });
+            const p1 = T.pos();
+            out.still.push({ m: m.id, side, moved: +Math.hypot(p1.x - p0.x, p1.z - p0.z).toFixed(3) });
+            // turns: pushing onto the bridge 0.45 s, then back / along the edge / let go and along / a tap away
+            for (const then of ['back', 'along', 'let go', 'tap']) {
+              place(x0, z0, Math.atan2(m.ux, m.uz));
+              G.town.simulate(0.45, { x: 0, z: 1 });
+              const c0 = T.pos();
+              const was = onto(m, c0.x, c0.z);
+              const sx = Math.sign(side);
+              let inp = then === 'back' ? way(-m.ux, -m.uz) : then === 'along' ? way(m.qx * sx, m.qz * sx) : { x: 0, z: 0 };
+              if (then === 'tap') {
+                const [tx, tz] = at(m, -1.5, 1.5 * sx);
+                G.town.walkTo(tx, tz);
+              }
+              let most = -9;
+              for (let i = 0; i < 60; i++) {
+                if (then === 'let go' && i === 15) inp = way(m.qx * sx, m.qz * sx);
+                G.town.simulate(1 / 30, inp);
+                const c = T.pos();
+                most = Math.max(most, onto(m, c.x, c.z));
+              }
+              tw.cancelAuto();
+              if (G.town.view !== 'town') G.town.back();
+              out.turns.push({ m: m.id, side, then, was: +was.toFixed(2), most: +most.toFixed(2) });
+            }
+          }
+        }
+        // far: 0.85 aside (where that is on the walk), pushing straight onto the bridge or leaning 5° / 10° away
+        for (const m of ms) {
+          for (const sg of [1, -1]) {
+            for (const ang of [0, -5, -10]) {
+              const [x0, z0] = at(m, 0.2, 0.85 * sg);
+              const q = tw.walk.snap(x0, z0, 0.15);
+              if (!q) continue;
+              const a = (ang * Math.PI) / 180;
+              const wx = m.ux * Math.cos(a) - m.qx * sg * Math.sin(a);
+              const wz = m.uz * Math.cos(a) - m.qz * sg * Math.sin(a);
+              tw.enter({ x: q.x, z: q.z, h: Math.atan2(wx, wz) });
+              tw.recenter();
+              const inp = way(wx, wz);
+              let k = 0;
+              let along = 0;
+              for (; k < 5 * 30 && along <= 1.02; k++) {
+                G.town.simulate(1 / 30, inp);
+                const c = T.pos();
+                along = ((c.x - m.a[0]) * (m.b[0] - m.a[0]) + (c.z - m.a[2]) * (m.b[2] - m.a[2])) / (m.L * m.L);
+              }
+              const c1 = T.pos();
+              out.far.push({ m: m.id, side: 0.85 * sg, ang, over: along > 1.02, secs: +(k / 30).toFixed(2), at: [+c1.x.toFixed(2), +c1.z.toFixed(2)] });
+              if (G.town.view !== 'town') G.town.back();
+            }
+          }
+        }
+        // by: along the plaza's edge past two mouths, both ways (clear of the lantern post by Polly's bridge)
+        for (const [id, from, to] of [['plazaS1>', -1.0, 2.0], ['plazaS1>', 2.0, -1.0], ['plazaYard>', -1.4, 2.0], ['plazaYard>', 2.0, -1.4]]) {
+          const m = ms.find((q) => q.id === id);
+          const sx = Math.sign(to - from);
+          for (const how of ['walk', 'tap']) {
+            const [x0, z0] = at(m, 0.15, from);
+            const [x1, z1] = at(m, 0.15, to);
+            place(x0, z0, Math.atan2(m.qx * sx, m.qz * sx));
+            if (how === 'tap') G.town.walkTo(x1, z1);
+            let most = -9;
+            for (let i = 0; i < 75; i++) {
+              G.town.simulate(1 / 30, how === 'walk' ? { x: 0, z: 1 } : { x: 0, z: 0 });
+              const c = T.pos();
+              most = Math.max(most, onto(m, c.x, c.z));
+            }
+            const c = T.pos();
+            tw.cancelAuto();
+            out.by.push({ m: id, from, to, how, most: +most.toFixed(2), past: +(((c.x - m.a[0]) * m.qx + (c.z - m.a[2]) * m.qz) * sx).toFixed(2) });
+          }
+        }
+      } finally {
+        env.folk = folk;
+      }
+      return out;
+    });
+    const notOver = mouths.over.filter((r) => !r.over);
+    check(mouths.over.length === 16 && notOver.length === 0,
+      `pushed into the rope beside a rope bridge's mouth (nobody about), W held slides the captain onto the bridge's line and over: ${mouths.over.length - notOver.length} of ${mouths.over.length} runs (8 mouths, either side) over within 5 s (slowest ${Math.max(...mouths.over.map((r) => r.secs))} s) (${J(notOver.slice(0, 6))})`);
+    const farNot = mouths.far.filter((r) => !r.over);
+    check(mouths.far.length >= 24 && farNot.length === 0,
+      `pushed into the rope 0.85 beside a rope bridge's mouth (nobody about), straight onto the bridge or leaning 5° or 10° away from its line, the captain gets over, not crept away along the rope and pinned: ${mouths.far.length - farNot.length} of ${mouths.far.length} runs over within 5 s (slowest ${Math.max(...mouths.far.filter((r) => r.over).map((r) => r.secs))} s) (${J(farNot.slice(0, 6))})`);
+    const moved = mouths.still.filter((r) => r.moved > 0.01);
+    const further = mouths.turns.filter((r) => r.was <= 0.5 && r.most > r.was + 0.2);
+    const notBy = mouths.by.filter((r) => r.most > 0.3 || r.past < 0.8);
+    check(mouths.still.length === 16 && moved.length === 0 && mouths.turns.length === 64 && mouths.turns.filter((r) => r.was <= 0.5).length >= 56 && further.length === 0 && mouths.by.length === 8 && notBy.length === 0,
+      `a rope bridge's mouth never steers the captain onto a bridge he isn't walking onto: standing still in the corner beside it he stays put (${mouths.still.length} runs, most moved ${Math.max(...mouths.still.map((r) => r.moved))} u); after pushing onto it, turning back, along the edge, letting go or a tap away never takes him further onto it than the arc of his turn (${mouths.turns.filter((r) => r.was <= 0.5).length} runs, ${further.length} further, at most ${Math.max(...mouths.turns.filter((r) => r.was <= 0.5).map((r) => +(r.most - r.was).toFixed(2)))} u); walking or tapping along the plaza's edge past two mouths he walks by (${mouths.by.length} runs, at most ${Math.max(...mouths.by.map((r) => r.most))} past the bridge's end, at least ${Math.min(...mouths.by.map((r) => r.past))} past the mouth) (${J([...moved, ...further, ...notBy].slice(0, 6))})`);
+
+    // ...and so at a phone's frame rate, the stick held fully (a sprint after 0.5 s, as the touch stick gives): the
+    // slide along the rope stops on the bridge's line, never a step past it (pulled back the next frame, he shook from
+    // side to side every frame for up to 0.6 s, and at 10 fps for ever, never getting on). The town's own frame,
+    // town.update(dt), at 30 and at 10 fps (dt 0.1, the game's longest frame), from beside each of the 8 mouths (0.3,
+    // 0.5 and 0.7 aside 0.2 past the bridge's end, 0.3 and 0.5 aside 0.4 before it; either side), pushing straight onto
+    // the bridge or 5° toward its line: over within 3 s, turning back on his own way (a step over 0.02 the opposite way
+    // of the step before) at most twice. (The townsfolk set aside, as above.)
+    const fps = await wp.evaluate(() => {
+      const G = window.__game;
+      const env = G.env;
+      const tw = T.town();
+      const folk = env.folk;
+      env.folk = () => [];
+      const runs = [];
+      try {
+        const way = (wx, wz) => {
+          const yaw = tw.camera.yaw;
+          const fx = Math.sin(yaw);
+          const fz = Math.cos(yaw);
+          return { x: -fz * wx + fx * wz, z: fx * wx + fz * wz };
+        };
+        for (const l of env.walk.links) {
+          for (const pts of [l.pts, [...l.pts].reverse()]) {
+            const id = `${l.id}${pts === l.pts ? '>' : '<'}`;
+            const a = pts[0];
+            const b = pts[pts.length - 1];
+            const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+            const n = Math.hypot(pts[1][0] - a[0], pts[1][2] - a[2]);
+            const ux = (pts[1][0] - a[0]) / n;
+            const uz = (pts[1][2] - a[2]) / n;
+            for (const dt of [1 / 30, 0.1]) {
+              for (const [along, side] of [[0.2, 0.3], [0.2, 0.5], [0.2, 0.7], [-0.4, 0.3], [-0.4, 0.5]]) {
+                for (const sg of [1, -1]) {
+                  for (const ang of [0, 5]) {
+                    // (across the bridge: q = (-uz, ux); the push turned ang degrees toward the line)
+                    const q = tw.walk.snap(a[0] + ux * along - uz * side * sg, a[2] + uz * along + ux * side * sg, 0.15);
+                    if (!q) continue;
+                    const r = (ang * Math.PI) / 180;
+                    const wx = ux * Math.cos(r) + uz * sg * Math.sin(r);
+                    const wz = uz * Math.cos(r) - ux * sg * Math.sin(r);
+                    tw.enter({ x: q.x, z: q.z, h: Math.atan2(wx, wz) });
+                    tw.recenter();
+                    // (one still frame: a held input's camera forgotten, as after letting go)
+                    tw.setMove({ x: 0, z: 0 });
+                    tw.update(1 / 60);
+                    const inp = way(wx, wz);
+                    let last = T.pos();
+                    let prev = null;
+                    let back = 0;
+                    let over = false;
+                    let k = 0;
+                    for (; k * dt < 3 && !over; k++) {
+                      tw.setMove({ ...inp, run: k * dt >= 0.5 });
+                      tw.update(dt);
+                      const c = T.pos();
+                      const mx = c.x - last.x;
+                      const mz = c.z - last.z;
+                      const mv = Math.hypot(mx, mz);
+                      if (mv > 0.02) {
+                        if (prev && mx * prev.x + mz * prev.z < -0.5 * mv * prev.m) back++;
+                        prev = { x: mx, z: mz, m: mv };
+                      }
+                      last = c;
+                      over = ((c.x - a[0]) * (b[0] - a[0]) + (c.z - a[2]) * (b[2] - a[2])) / (L * L) > 1.02;
+                    }
+                    tw.setMove({ x: 0, z: 0 });
+                    tw.update(1 / 60);
+                    if (G.town.view !== 'town') G.town.back();
+                    runs.push({ m: id, fps: Math.round(1 / dt), along, side: side * sg, ang, over, secs: +(k * dt).toFixed(2), back, at: [+last.x.toFixed(2), +last.z.toFixed(2)] });
+                  }
+                }
+              }
+            }
+          }
+        }
+      } finally {
+        env.folk = folk;
+      }
+      return runs;
+    });
+    const shaky = fps.filter((r) => !r.over || r.back > 2);
+    check(fps.length >= 240 && shaky.length === 0,
+      `at a phone's frame rate (30 and 10 fps), the stick held fully (a sprint after 0.5 s), pushed into the rope beside a rope bridge's mouth the captain slides onto its line and over without shaking from side to side: ${fps.length - shaky.length} of ${fps.length} runs (8 mouths, either side, 0.3 to 0.7 aside) over within 3 s turning back at most twice (slowest ${Math.max(...fps.filter((r) => r.over).map((r) => r.secs))} s, most turns back ${Math.max(...fps.map((r) => r.back))}) (${J(shaky.slice(0, 6))})`);
 
     // LOOK-4: the places-bar walks to the tavern (from the spawn, Polly's and the shipyard) at 1280x720: the fruit
     // stall's awning by the tavern door (it filled the lower right quarter as he reached the door) stays under 18% of

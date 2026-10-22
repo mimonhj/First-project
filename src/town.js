@@ -54,6 +54,14 @@ const CAM = {
   swoop: 0.8, // seconds from the shipyard view to behind the captain
 };
 const GREET = { dist: 2.2, seconds: 2, every: 20, bubble: 2.6 };
+// A rope bridge's mouth, walking onto the bridge by hand (his push at most 45° off the way onto it, and off its
+// middle line not leaning more than 15° further off it; within `near` of its end, the walk link's end just inside
+// the deck it starts from, and short of `into` past it): nobody there slides him off its line, and pushed into the
+// rope beside the mouth (he came up a little to one side) he slides along it onto the line (for at most `secs`; he
+// stops on the line, never past it) and walks on onto the bridge from there. Pressed into the rope, a push a little
+// off straight creeps him along it, away from the mouth, before he counts as stuck: for that slide the mouth is
+// near up to `creep` further off.
+const MOUTH = { near: 1.0, creep: 0.3, cos: Math.SQRT1_2, away: Math.sin(Math.PI / 12), into: 0.5, secs: 1.0 };
 const PANEL_PAN = 0.6; // seconds for the tailor's camera to pan between the captain and the line-up
 const SWAY = { amp: 1.1, rate: 0.45 }; // the podium pose: turning slowly to show off the outfit
 const LINEUP_SEEDS = [1, 2, 3];
@@ -72,6 +80,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   const data = walkData && typeof walkData === 'object' ? walkData : {};
   const walk = createWalk(data);
   const places = walk.places;
+  // Each rope bridge's two mouths: its end { x, z } and the way onto it (ux, uz: a unit vector).
+  const mouths = [];
+  for (const l of Array.isArray(data.links) ? data.links : []) {
+    if (!l || !Array.isArray(l.pts) || l.pts.length < 2 || !l.pts.every((p) => Array.isArray(p) && finite(p[0], p[2]))) continue;
+    for (const [a, b] of [[l.pts[0], l.pts[1]], [l.pts[l.pts.length - 1], l.pts[l.pts.length - 2]]]) {
+      const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+      if (L > 1e-6) mouths.push({ x: a[0], z: a[2], ux: (b[0] - a[0]) / L, uz: (b[2] - a[2]) / L });
+    }
+  }
   const placeById = (id) => places.find((p) => p.id === id) || null;
   // a panel view's place: the views are named as the places, but for the build view (place 'builder', SPEC3 §8.3)
   const placeOf = (view) => placeById(view === 'build' ? 'builder' : view);
@@ -158,6 +175,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   // does turn it.
   let hold = null; // { yaw, x, z }
   let auto = null; // { pts, i, place, open, pass, stuck, repaths }
+  let funnel = null; // sliding along the rope onto a bridge's middle line: { x, z, ux, uz, t } (see MOUTH)
+  let snapMove = false; // the way he walks turns at once this step (onto or off a slide along the rope)
   let arrivedNow = null;
   let active = false;
   let parked = null; // { x, y, z, h0, h, held } on the podium / the tavern porch
@@ -312,6 +331,9 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     cap.speed = 0;
     cap.act = 0;
     cap.blocked = 0;
+    cap.stuck = 0;
+    cap.pass = 0;
+    funnel = null;
     parked = null;
     panel = null;
     setLineup(null);
@@ -350,6 +372,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     active = false;
     tellEnv(false);
     cancelAuto();
+    funnel = null;
     input.x = 0;
     input.z = 0;
     input.run = false;
@@ -378,6 +401,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     if (!pts.length) return false;
     const end = pts[pts.length - 1];
     auto = { pts, i: Math.min(1, pts.length - 1), place, open, pass: 0, stuck: 0, repaths: 0, end };
+    funnel = null;
     ringGroup.position.set(end.x, (walk.heightAt(end.x, end.z, cap.y) ?? cap.y) + 0.04, end.z);
     ringGroup.visible = true;
     return true;
@@ -530,11 +554,38 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     return folkNow;
   }
 
+  // The rope bridge whose mouth he is walking onto at (x, z), pushing the way (wx, wz) (see MOUTH): its end within
+  // `near` and in a straight walk from him (on the deck he stands on, nothing in between), short of MOUTH.into
+  // past it; the nearest such mouth, or null.
+  function mouthAhead(x, z, wx, wz, near = MOUTH.near) {
+    const w = Math.hypot(wx, wz);
+    if (!(w > 1e-6)) return null;
+    let best = null;
+    for (const m of mouths) {
+      const d = Math.hypot(m.x - x, m.z - z);
+      if (d > near || (best && d >= best.d)) continue;
+      if ((wx * m.ux + wz * m.uz) / w < MOUTH.cos) continue;
+      if ((x - m.x) * m.ux + (z - m.z) * m.uz >= MOUTH.into) continue;
+      // (aside of its line and pushing on away from it: he is going by, not onto it)
+      const side = (x - m.x) * m.uz - (z - m.z) * m.ux;
+      const lean = (wx * m.uz - wz * m.ux) / w;
+      if (Math.abs(side) >= 0.05 && side * lean > 0 && Math.abs(lean) > MOUTH.away) continue;
+      if (d > 1e-3 && !walk.clear({ x, z }, m)) continue;
+      best = { m, d };
+    }
+    return best ? best.m : null;
+  }
+
   function stepWalk(dt) {
     let want = 0;
     let dir = cap.move;
+    let push = null; // the way he is told to walk by hand: { x, z }
+    let funnelLeft = Infinity; // sliding along the rope onto a bridge's line: how far the line is
     const mag = Math.hypot(input.x, input.z);
-    if (mag <= 0.01) hold = null;
+    if (mag <= 0.01) {
+      hold = null;
+      funnel = null;
+    }
     if (mag > 0.01) {
       if (auto) cancelAuto();
       if (!hold || Math.abs(wrap(Math.atan2(input.x, input.z) - Math.atan2(hold.x, hold.z))) > HOLD_TURN) hold = { yaw: cam.yaw, x: input.x, z: input.z };
@@ -543,8 +594,26 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       // right = (-cos yaw, sin yaw), as for the ships
       const wx = -fz * input.x + fx * input.z;
       const wz = fx * input.x + fz * input.z;
+      push = { x: wx, z: wz };
       dir = Math.atan2(wx, wz);
       want = input.run ? SPEED.sprint : Math.min(1, mag) < 0.5 ? SPEED.walk : SPEED.jog;
+      if (funnel) {
+        // sliding along the rope onto a bridge's middle line (see MOUTH) while he still pushes onto the bridge: on
+        // the line he turns onto the bridge at once (no arc past the line into the rope across the mouth), and
+        // turned away he goes his own way at once (no arc on into the mouth)
+        funnel.t -= dt;
+        const w = Math.hypot(wx, wz);
+        const dx = funnel.x - cap.x;
+        const dz = funnel.z - cap.z;
+        const side = dz * funnel.ux - dx * funnel.uz; // (his side of the line, as in mouthAhead)
+        const lean = (wx * funnel.uz - wz * funnel.ux) / w;
+        if ((wx * funnel.ux + wz * funnel.uz) / w < MOUTH.cos || (side * lean > 0 && Math.abs(lean) > MOUTH.away) || funnel.t <= 0 || Math.abs(side) < 0.03) funnel = null;
+        else {
+          dir = Math.atan2(dx, dz);
+          funnelLeft = Math.hypot(dx, dz);
+        }
+        snapMove = true;
+      }
     } else if (auto) {
       let tgt = auto.pts[auto.i];
       let d = Math.hypot(tgt.x - cap.x, tgt.z - cap.z);
@@ -571,7 +640,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       }
     }
     // the way he walks swings round to the input quickly; from a standstill it is the input at once
-    if (want > 0) cap.move = cap.speed < 0.3 ? dir : turnToward(cap.move, dir, STEER * dt);
+    if (want > 0) cap.move = cap.speed < 0.3 || snapMove ? dir : turnToward(cap.move, dir, STEER * dt);
+    snapMove = false;
     const rate = want > cap.speed ? ACCEL : DECEL;
     cap.speed += clamp(want - cap.speed, -rate * dt, rate * dt);
     if (cap.speed < 1e-3 && want === 0) cap.speed = 0;
@@ -579,18 +649,26 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const vz = Math.cos(cap.move) * cap.speed;
     let moved = 0;
     if (cap.speed > 0) {
+      // how far he means to go this step: sliding along the rope onto a bridge's line, he stops on the line (a step
+      // past it, pulled back the next, would shake him from side to side every frame at a phone's frame rate)
+      const step = Math.min(cap.speed * dt, funnelLeft);
+      const k = step < cap.speed * dt ? step / (cap.speed * dt) : 1;
+      const sx = vx * dt * k;
+      const sz = vz * dt * k;
       const passing = auto ? auto.pass > 0 : cap.pass > 0;
-      const dyn = passing ? [] : folkNow;
+      // (walking by hand onto a rope bridge, at its mouth nobody slides him off its line into the rope beside it: he
+      // walks on through them, as he would squeeze past them after a moment anyway)
+      const dyn = passing || (!auto && push && mouthAhead(cap.x, cap.z, push.x, push.z)) ? [] : folkNow;
       const from = { x: cap.x, z: cap.z, y: cap.y };
-      let res = walk.move(from, vx * dt, vz * dt, RADIUS, dyn);
+      let res = walk.move(from, sx, sz, RADIUS, dyn);
       moved = Math.hypot(res.x - cap.x, res.z - cap.z);
       if (auto) {
         // stuck behind someone: squeeze past them; stuck on the walk itself: find the way again
-        if (moved < cap.speed * dt * 0.3) auto.stuck += dt;
+        if (moved < step * 0.3) auto.stuck += dt;
         else auto.stuck = Math.max(0, auto.stuck - dt);
         if (auto.pass > 0) auto.pass -= dt;
         if (auto.stuck > 0.4) {
-          const free = walk.move(from, vx * dt, vz * dt, RADIUS, []);
+          const free = walk.move(from, sx, sz, RADIUS, []);
           if (Math.hypot(free.x - cap.x, free.z - cap.z) > moved + 1e-4) {
             auto.pass = 1;
             res = free;
@@ -608,14 +686,23 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       } else {
         // walking by hand into someone (a porter on a narrow rope bridge waits for him, so neither would
         // ever move): after a moment he squeezes past them, as an auto-walk does; once he is by, they go on
-        if (moved < cap.speed * dt * 0.3) cap.stuck += dt;
+        if (moved < step * 0.3) cap.stuck += dt;
         else cap.stuck = Math.max(0, cap.stuck - dt);
         if (cap.stuck > 0.25) {
-          const free = walk.move(from, vx * dt, vz * dt, RADIUS, []);
-          if (Math.hypot(free.x - cap.x, free.z - cap.z) > moved + 1e-4) {
+          const free = walk.move(from, sx, sz, RADIUS, []);
+          const freeMoved = Math.hypot(free.x - cap.x, free.z - cap.z);
+          // ...unless the walk itself stops him, whoever is about: pushed into the rope beside a rope bridge's mouth
+          // (he came up to it a little to one side), he slides along the rope onto the bridge's middle line, on the
+          // deck he stands on, and walks on onto the bridge from there (from a little further off too: see MOUTH.creep)
+          const m = push && freeMoved < step * 0.3 ? mouthAhead(cap.x, cap.z, push.x, push.z, MOUTH.near + MOUTH.creep) : null;
+          if (m && Math.abs((cap.x - m.x) * m.uz - (cap.z - m.z) * m.ux) >= 0.05) {
+            // (to the point of the middle line straight across from him: along the rope, on the deck he stands on)
+            const al = clamp((cap.x - m.x) * m.ux + (cap.z - m.z) * m.uz, 0, MOUTH.into);
+            funnel = { x: m.x + m.ux * al, z: m.z + m.uz * al, ux: m.ux, uz: m.uz, t: MOUTH.secs };
+          } else if (freeMoved > moved + 1e-4) {
             cap.pass = 0.8;
             res = free;
-            moved = Math.hypot(res.x - cap.x, res.z - cap.z);
+            moved = freeMoved;
           }
           cap.stuck = 0;
         }
