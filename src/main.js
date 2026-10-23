@@ -278,6 +278,10 @@ const ui = {
   ammoTray: $('ammo-tray'),
   ammoCount: $('ammo-count'),
   bossStatus: $('boss-status'),
+  // (SPEC3 §6.3) the Kraken's two notches on the boss bar, the grab strip, the shipwreck card's checkpoint button
+  bossNotches: $('boss-notches'),
+  grabStrip: $('grab-strip'),
+  krakenRetry: $('kraken-retry-btn'),
   steerModeBtn: $('steer-mode-btn'),
   bossCrew: $('boss-crew'),
   bossCrewFill: $('boss-crew-fill'),
@@ -827,6 +831,15 @@ let volleyId = 0;
 // checkpoint taken at its rise (session memory only, §5.7.6).
 let kraken = null;
 let krakenCheckpoint = null;
+// Its model (krakenView.js: built one part a frame from the level start, so the rise never stalls), the level 9
+// sequence main runs round it (§5.7.1: 'dread' → 'rise' → 'fight' → 'gone' → 'over'; null before), its raised
+// parts wrapped as pseudo-ships for the guns (§5.8: one wrapper per part id per rise, updated in place), and this
+// frame's visuals() (the view and the minimap read the same snapshot).
+let kView = null;
+const kseq = { stage: null, t: 0, short: false, grabs: 0, grabAcc: 0, offAt: 0, baby: false, pearl: 0, music: -1, phaseSeen: 0 };
+const krakenParts = new Map();
+const krakenList = [];
+let krakenVis = null;
 
 // ---------------------------------------------------------------------------
 // Particles: two instanced pools (lit puffs and unlit glows/foam), no outlines.
@@ -1502,6 +1515,7 @@ function clearProjectiles(enemyOnly = false) {
 function clearLevelEntities() {
   boarding.clear();
   boardView = null;
+  disposeKraken(); // (level 9's Kraken and its model, if one was there)
   for (const e of enemies) removeShip(e);
   if (player) removeShip(player);
   clearProjectiles();
@@ -1683,7 +1697,7 @@ function controlsLine() {
 }
 
 let lastLevelStarted = 0;
-function startLevel(n, { retry = false } = {}) {
+function startLevel(n, { retry = false, fromKraken = false } = {}) {
   if (activeModal() && !state.contextLost) closeModal(modal);
   closeDock();
   clearLevelEntities();
@@ -1710,6 +1724,11 @@ function startLevel(n, { retry = false } = {}) {
   if (!retry) state.bombWarned = false;
   state.goldAtLevelStart = state.gold;
   state.flagshipDown = false; // (level 9: the sea geysers run until the Inkheart falls)
+  // "Try again from the Kraken" (SPEC3 §5.7.6): the plunder from its rise (the caller set state.gold), the level's
+  // own start as it was; any other start forgets the checkpoint.
+  const cp = fromKraken && WITH_KRAKEN && krakenCheckpoint && krakenCheckpoint.level === n ? krakenCheckpoint : null;
+  if (cp) state.goldAtLevelStart = cp.goldAtLevelStart;
+  else krakenCheckpoint = null;
   clearSteering();
   // People built with share: true (overboard sailors, boarding parties) belong to one level's looks.
   if (n !== lastLevelStarted) releaseSharedPeople();
@@ -1800,9 +1819,18 @@ function startLevel(n, { retry = false } = {}) {
   };
   m3 = mechanics3.createMechanics3(ids, ctx3);
   mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3]);
-  spawnWave(0);
+  if (cp) {
+    // (from the Kraken: no ships and no geysers, only the Kraken rising at once, its short rise)
+    state.wave = def.waves.length - 1;
+    state.nextBomb = Infinity;
+    flagshipDown();
+  } else spawnWave(0);
   mechanics.init();
-  placeCrates(def); // (Voyage III: the powder crates, SPEC3 §2.5)
+  if (!cp) placeCrates(def); // (Voyage III: the powder crates, SPEC3 §2.5)
+  // Level 9's Kraken (SPEC3 §5.7): it waits for the Inkheart's fall (from the checkpoint: it rises after the
+  // fly-in); its model builds one part a frame from now.
+  createKrakenFor(def);
+  if (cp && kraken) kseq.stage = 'retry';
   // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
   const types = [...new Set(def.waves.flat())];
   overboard.prepare(types.flatMap((t) => [enemyCrewOpts(t, 1), enemyCrewOpts(t, 2)]));
@@ -1816,7 +1844,7 @@ function startLevel(n, { retry = false } = {}) {
   });
   snapCamera();
   state.intro = retry ? 0 : INTRO_TIME;
-  state.introRate = 1;
+  state.introRate = cp ? 2 : 1; // (from the Kraken: a brief fly-in)
 
   state.mode = 'playing';
   pausedDrawn = false;
@@ -1824,10 +1852,17 @@ function startLevel(n, { retry = false } = {}) {
   show(ui.hud, true);
   show(ui.hint, false);
   audio.setScene(def.scene);
+  if (cp && kraken) {
+    audio.setMusicPhase?.(1);
+    audio.setScene('kraken');
+    kseq.music = 1;
+  }
   if (!retry) audio.play('wave');
   const m = def.env.meta;
   const firstVoyage = n === 1 && !state.tutorialDone;
-  if (retry) {
+  if (cp && kraken) {
+    showBanner(`Try again!<small>The Kraken rises!</small>`, 2);
+  } else if (retry) {
     showBanner(`Try again!<small>${describeWave(def.waves[0])}</small>`, 2);
   } else {
     // (A level whose mechanic names a key has touch wording too: def.mechanicTouch.)
@@ -1897,6 +1932,9 @@ function finishLevel() {
     if (market > 0) islandLines.push(`Market Hall +${pct}% <b>+${market}</b>`);
     state.gold += market + gift;
   }
+  // The Kraken's Pearl (SPEC3 §5.7.1, §6.6), already in the plunder: said on the Victory card. The checkpoint goes.
+  if (kraken && kseq.pearl > 0) islandLines.unshift(`The Kraken's Pearl <b>+${String(kseq.pearl).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}</b>`);
+  if (kraken) krakenCheckpoint = null;
   show(ui.banner, false);
   show(ui.hint, false);
   pops.clear(); // (a last "CAPTURED! +625 GOLD" still rising must not sit over the end screen)
@@ -2004,6 +2042,8 @@ const SINK_TIPS = {
   rogue: 'Tip: turn your bow or your stern to a rogue wave. Side-on, it hurts!',
   ram: 'Tip: when a Shark Raider winds up (RAM!), turn away from her bow!',
   fireship: 'Tip: sink a fire ship far away, or freeze her with Frost shot, before she reaches you!',
+  slam: 'Tip: when a violet ring bubbles up round you, steer out of it before the tentacle slams down!',
+  grab: 'Tip: when a tentacle grabs you, hold G (or CUT!) to cut it loose. A shot on it, or Stink shot, makes it let go!',
 };
 function playerSunk() {
   boarding.cancel('player');
@@ -2023,10 +2063,15 @@ function playerSunk() {
   else if (worst && SHIP_TYPES[worst[0]]) {
     tip = `Tip: the ${SHIP_TYPES[worst[0]].name.replace(/^The /, '')} did the most damage. Keep moving, and fire when the FIRE! light is on.`;
   }
+  // After the Kraken's rise: "Try again from the Kraken" first (SPEC3 §5.7.6; Enter does it too).
+  const fromKraken = !!(kraken && krakenCheckpoint && krakenCheckpoint.level === state.level && kseq.stage && kseq.stage !== 'dread');
+  show(ui.krakenRetry, fromKraken);
   ui.overSummary.innerHTML =
     `${SHIP_TYPES.player.name} went down near ${placeName(meta)}.` +
     (tip ? `<br>${tip}` : '') +
-    '<br><small>Trying again restores the gold you had when the level started.</small>';
+    (fromKraken
+      ? '<br><small>Try again from the Kraken with the plunder you had when it rose, or the whole level.</small>'
+      : '<br><small>Trying again restores the gold you had when the level started.</small>');
   show(ui.over, true);
 }
 
@@ -2034,8 +2079,10 @@ function playerSunk() {
 // Combat
 // ---------------------------------------------------------------------------
 // Vertical launch speed needed for a ball in flight for `t` seconds to come down at deck height.
-function launchVy(t) {
-  return clamp((0.8 - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
+// (aimY: the height to come down through at the end of the flight; deck height for a ship, higher for the Kraken's
+// eye, SPEC3 §5.8)
+function launchVy(t, aimY = 0.8) {
+  return clamp((aimY - BALL_Y - 0.5 * GRAVITY * t * t) / t, 1, 11);
 }
 
 // Still in the fight: afloat, and not captured, escaped, surrendered or fleeing (the Kraken Crew when the Inkheart
@@ -2105,10 +2152,12 @@ const GRAPPLE_WHY = {
   range: 'Get closer!',
   cooldown: 'Hooks coiling…',
   crew: 'Not enough hands!',
+  monster: krakenRules.KRAKEN.words.noBoard, // "You can't board a sea monster!" (the Kraken's parts, SPEC3 §5.7.2)
 };
 function canGrapple(e) {
   if (state.mode !== 'playing' || state.intro > 0 || state.clearTimer > 0 || state.deathTimer > 0) return 'busy';
   if (!player || player.sinking || player.hp <= 0 || boarding.active) return 'busy';
+  if (e && e.pseudo) return 'monster';
   if (!e || e.kind !== 'enemy' || e.hp <= 0 || e.sinking || e.captured || e.escaped || e.rise > 0) return 'none';
   if (!fighting(e) && !e.surrendered) return 'none';
   if (e.type.boardable === false) return 'immune';
@@ -2173,6 +2222,16 @@ function boardPress() {
     return false;
   }
   if (state.intro > 0) return false; // the key fast-forwards the fly-in instead
+  // A Kraken tentacle holds you: G / CUT! cuts it (3 presses, or hold it); with nothing grabbing you in its fight,
+  // there is nothing to board but a sea monster (SPEC3 §5.7.3).
+  if (kraken && state.grabbed) {
+    kraken.cut();
+    return true;
+  }
+  if (krakenFighting() && !(boardView || boardPick()).target) {
+    flashHint(GRAPPLE_WHY.monster, 2);
+    return false;
+  }
   const ct = boarding.counterTarget;
   if (ct && state.clearTimer <= 0 && state.deathTimer <= 0) {
     return boarding.start({ kind: 'counter', enemy: ct, getSides: () => boardingSides(ct, 'counter') });
@@ -2432,6 +2491,289 @@ function explodeFx(x, z, r = 6) {
   if (player && Math.hypot(player.x - x, player.z - z) < 45) kaboomFlash();
 }
 
+// ---------------------------------------------------------------------------
+// The Kraken (SPEC3 §5.7, §5.8): level 9's finale, once the Kraken Seas sail. kraken.js is the beast's rules
+// (simulated time), krakenView.js its model; main runs the sequence round them (§5.7.1), wraps its raised parts
+// as targets for your guns, applies its hold on your ship, and shows the boss bar, the grab strip and the
+// checkpoint. Nothing here runs on a level without a Kraken (kraken stays null).
+// ---------------------------------------------------------------------------
+const KR = krakenRules.KRAKEN;
+// What kraken.js asks of the game (§11.1).
+function krakenCtx() {
+  return {
+    player: () =>
+      player && !player.sinking ? { x: player.x, z: player.z, h: player.h, speed: player.speed, len: player.type.len, wid: player.type.wid } : null,
+    damage: (amount, x, z, source) => {
+      if (player && !player.sinking) damage(player, amount, x, z, source);
+    },
+    land: (x, z, r) => colliders.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + (Number(r) || 0)),
+    world: { x: 0, z: 0, r: env ? env.worldRadius : 140 },
+    rng: () => combatRng(),
+    warnBonus: () => warnBonus(),
+    inkSlick: (x, z) => {
+      if (typeof mechanics.addSlick === 'function') mechanics.addSlick(x, z);
+    },
+    pop: (text, x, y, z, style) => pops.pop(text, x, y, z, style),
+    announce: (text) => gameAnnounce(text),
+    // (the tentacle's rising tone is told how long its warning lasts, so its surge comes with the slam)
+    sfx: (name, x, z, o) => audio.play(name, sfxAt(x, z, o && o.duration > 0 ? { duration: o.duration } : undefined)),
+    tables: { STATUS: specials.STATUS, INK: mechanics3.INK, RAIDERS, WORDS3: specials.WORDS3 },
+    // the Pearl's gold goes into this level's plunder, so finishLevel banks it (§5.7.1 step 5)
+    pearl: (gold) => {
+      const g = Math.max(0, Math.round(Number(gold) || 0));
+      state.gold += g;
+      kseq.pearl += g;
+    },
+  };
+}
+// A level with a Kraken (def.kraken): the beast waits (idle) until the sequence raises it, and its model builds
+// one part a frame from now (frame(): prepare(), during the fly-in and the first wave).
+function createKrakenFor(def) {
+  disposeKraken();
+  if (!WITH_KRAKEN || !def || !def.kraken || typeof krakenRules.createKraken !== 'function') return;
+  try {
+    kraken = krakenRules.createKraken(krakenCtx());
+  } catch (err) {
+    console.warn('kraken:', err);
+    kraken = null;
+    return;
+  }
+  try {
+    kView = krakenView.createKrakenView(scene, { reducedMotion, foamColor, seaY: (x, z, t) => ocean.heightAt(x, z, t) });
+  } catch (err) {
+    console.warn('kraken view:', err);
+    kView = null;
+  }
+}
+function disposeKraken() {
+  if (kraken) kraken.dispose();
+  kraken = null;
+  if (kView) kView.dispose();
+  kView = null;
+  krakenParts.clear();
+  krakenList.length = 0;
+  krakenVis = null;
+  Object.assign(kseq, { stage: null, t: 0, short: false, grabs: 0, grabAcc: 0, offAt: 0, baby: false, pearl: 0, music: -1, phaseSeen: 0 });
+  state.grabbed = false;
+  if (ui.grabStrip && !ui.grabStrip.classList.contains('hidden')) show(ui.grabStrip, false);
+  shown.grab = '';
+}
+// The fight is on: from the rise until it is driven off.
+const krakenFighting = () => !!kraken && (kseq.stage === 'rise' || kseq.stage === 'fight');
+
+// Your guns' targets (§5.8): each raised part as a pseudo-ship, one wrapper per part id per rise, updated in
+// place each step (a volley's per-target sums are keyed by it). hp: the part's own (a tentacle's) or the bar, so
+// fighting() holds while it is up. `mesh` is a stand-in for the portrait framing (where its pops start).
+function syncKrakenTargets() {
+  krakenList.length = 0;
+  for (const w of krakenParts.values()) w.hp = 0;
+  if (!kraken) return;
+  for (const p of kraken.targets()) {
+    let w = krakenParts.get(p.id);
+    if (!w) {
+      w = {
+        pseudo: true,
+        part: p.id,
+        partKind: p.kind,
+        kind: 'kraken',
+        typeName: 'kraken',
+        id: `kraken-${p.id}`,
+        x: p.x,
+        z: p.z,
+        h: 0,
+        speed: 0,
+        hp: 0,
+        maxHp: KR.hp,
+        y0: 0,
+        y1: 0,
+        aimY: 0.8,
+        type: { len: 2, wid: 2, name: 'The Kraken' },
+        mesh: { position: { y: 0 }, userData: { deckY: 4 } },
+        status: null,
+      };
+      krakenParts.set(p.id, w);
+    }
+    w.x = p.x;
+    w.z = p.z;
+    w.hp = p.hp > 0 ? p.hp : 0;
+    w.y0 = p.y0;
+    w.y1 = p.y1;
+    w.type.len = w.type.wid = 2 * p.r;
+    // (the guns aim a ball to come down through the part: an eye's middle, a head's or a tentacle's lower half)
+    w.aimY = p.kind === 'eye' ? clamp((p.y0 + p.y1) / 2, 0.8, 5) : clamp(p.y0 + 1.6, 0.8, 3);
+    w.mesh.userData.deckY = Math.max(1, p.y1 - 2.2);
+    krakenList.push(w);
+  }
+}
+
+// The level 9 sequence (§5.7.1), every simulation step on a level with a Kraken: the Inkheart falls and her crew
+// are gone (mechanics.krakenDue) → 4 s of dread → the rise (any key or tap skips it) → the fight → driven off →
+// the Pearl taken (kraken.over; step()'s clear check waits for it).
+function stepKraken(dt, def) {
+  if (!kraken) return;
+  if (kseq.stage === 'retry') {
+    // (from the checkpoint: the sea already dark, the Kraken rises as soon as the brief fly-in is over)
+    if (state.intro > 0) return;
+    if (env && typeof env.setDread === 'function') env.setDread(1);
+    startRise(true);
+    return;
+  }
+  if (!kseq.stage) {
+    if (state.intro > 0) return;
+    // (a struck ship nobody boarded is taken once the fight is over, as at a level clear: an Inkheart that struck
+    // falls then, SPEC3 §4.2; a boarding of her plays out its result first)
+    const last = state.wave === def.waves.length - 1;
+    if (last && !enemies.some(fighting)) {
+      for (const e of enemies) {
+        if (!e.surrendered || e.captured || e.hp <= 0 || e.sinking) continue;
+        if (boarding.active && boarding.target === e) continue;
+        captureShip(e, 'auto');
+      }
+    }
+    if (mechanics.krakenDue) startDread();
+    return;
+  }
+  kseq.t += dt;
+  if (kseq.stage === 'dread') {
+    if (kseq.t >= KR.dread) startRise(false);
+    return;
+  }
+  // the phase this sequence last saw: a ball's hit (after this step) can move the Kraken on a phase too
+  const phaseWas = kseq.phaseSeen || kraken.phase;
+  kraken.step(dt);
+  syncKrakenTargets();
+  const grabbed = kraken.grabbed;
+  if (grabbed && !state.grabbed) {
+    kseq.grabs++;
+    kseq.grabAcc = 0;
+    if (!(tips & TIP.grab)) showTip(TIP.grab, 'GRABBED! Hold <kbd>G</kbd> to cut it loose', 'GRABBED! Hold <b>CUT!</b> to cut it loose', KR.grab.max);
+  }
+  state.grabbed = grabbed;
+  if (kseq.stage === 'rise' && !kraken.rising) {
+    kseq.stage = 'fight';
+    kseq.t = 0;
+  }
+  if (kseq.stage === 'fight' && kraken.phase > phaseWas && phaseWas > 0) {
+    const n = kraken.phase;
+    const line = n === 2 ? 'It can grab you now! Steer out of the red rings' : 'Shoot its big eye!';
+    showBanner(`${KR.words.phases[n - 1] || ''}!<small>${line}</small>`, 2.4);
+  }
+  kseq.phaseSeen = kraken.phase;
+  if (kraken.done && (kseq.stage === 'fight' || kseq.stage === 'rise')) krakenDrivenOff();
+  if (kseq.stage === 'gone') {
+    // a baby kraken pops up and climbs aboard (the pet.octopus trophy)
+    if (!kseq.baby && state.time - kseq.offAt >= 1.6) babyKraken();
+    if (kraken.over) kseq.stage = 'over';
+  }
+}
+
+// The dread (§5.7.1 step 2): the sea darkens and goes quiet, a heartbeat under a low drone; your crew patches the
+// hull as at reinforcements and three more hands come aboard. The geysers have stopped for good.
+function startDread() {
+  kseq.stage = 'dread';
+  kseq.t = 0;
+  flagshipDown();
+  clearProjectiles(true); // (enemy shots, geysers and ink pots still in the air fizzle out)
+  if (env && typeof env.setDread === 'function') env.setDread(1);
+  audio.setMusicPhase?.(0);
+  audio.setScene('kraken');
+  kseq.music = 0;
+  let hands = 0;
+  if (player && !player.sinking) {
+    const perks = islandPerks();
+    const patch = perks && Number.isFinite(perks.wavePatch) ? perks.wavePatch : WAVE_REPAIR;
+    player.hp = Math.min(player.maxHp, player.hp + player.maxHp * patch);
+    const before = state.crew;
+    state.crew = clamp(state.crew + 3, 1, state.crewMax);
+    hands = state.crew - before;
+  }
+  const crewLine = hands > 0 ? ` &middot; ${hands} more ${hands === 1 ? 'hand' : 'hands'} aboard` : '';
+  showBanner(`Something stirs in the deep…<small>Your crew patches the hull${crewLine}</small>`, KR.dread);
+  gameAnnounce('Something stirs in the deep. Your crew patches the hull.');
+}
+
+// The rise (§5.7.1 step 3): 40 u ahead the sea bulges and one great eye opens; any key or tap skips it. The
+// checkpoint is taken here (§5.7.6). short: the rise again after "Try again from the Kraken" (3 s).
+function startRise(short = false) {
+  if (!kraken || !kraken.rise(undefined, undefined, { short })) return false;
+  kseq.stage = 'rise';
+  kseq.t = 0;
+  kseq.short = short;
+  krakenParts.clear();
+  krakenList.length = 0;
+  krakenCheckpoint = { level: state.level, gold: state.gold, goldAtLevelStart: state.goldAtLevelStart };
+  const B = KR.words.banner;
+  const how = B.how + (ownsRecipe('stink') ? B.howStink : '');
+  showBanner(`${B.rise}<small>${how}</small>`, short ? KR.shortRise : KR.rise);
+  gameAnnounce(`${B.rise} ${how}`);
+  audio.setMusicPhase?.(1);
+  kseq.music = 1;
+  return true;
+}
+// Any key or tap during the rise ends it (like the level's fly-in).
+function skipRise() {
+  if (kraken && kseq.stage === 'rise' && kraken.rising) kraken.skip();
+}
+
+// Driven off (§5.7.1 step 5): it sinks sulking, the sky eases to dawn, the Pearl bobs up (kraken.js); the feat
+// is saved at once.
+function krakenDrivenOff() {
+  kseq.stage = 'gone';
+  kseq.offAt = state.time;
+  state.grabbed = false;
+  krakenList.length = 0;
+  if (env && typeof env.setDawn === 'function') env.setDawn(1);
+  audio.setMusicPhase?.(4);
+  kseq.music = 4;
+  showBanner(`${KR.words.banner.off}<small>Grab the Kraken's Pearl!</small>`, 3);
+  helm.cheer = visualTime + 2.5;
+  feats.kraken = 1;
+  featsDirty = true;
+  saveFeats();
+}
+// A baby kraken pops up beside your ship and climbs aboard onto your captain's shoulder ("It seems to like you!").
+function babyKraken() {
+  kseq.baby = true;
+  if (!player || player.sinking) return;
+  const side = rightX(player.h);
+  const sz = rightZ(player.h);
+  foam(player.x + side * 4, 0.4, player.z + sz * 4, 10, 2, 4, 0.5, 0.8);
+  pops.pop('A baby kraken!', player.x, popHeight(player) + 0.6, player.z, 'kraken');
+  pops.pop('It seems to like you!', player.x, popHeight(player) - 0.4, player.z, 'info', 'keep');
+  gameAnnounce('A baby kraken climbs aboard. It seems to like you!');
+  audio.play('splash', sfxAt(player.x + side * 4, player.z + sz * 4));
+  // (the captain at the helm wears it from now on this level; the wardrobe's trophy is the feat just saved)
+  const h = player.mesh.userData.helm;
+  if (!h) return;
+  try {
+    const person = buildPerson({ ...captainOpts(look), pet: 'octopus', scale: HELM_SCALE });
+    person.position.set(h.x, h.y, h.z);
+    person.rotation.y = h.h;
+    person.name = 'helm-captain';
+    if (player.captain) {
+      if (player.captain.parent) player.captain.parent.remove(player.captain);
+      disposePerson(player.captain);
+    }
+    player.mesh.add(person);
+    player.captain = person;
+    person.visible = !helm.hidden;
+    helm.cheer = visualTime + 2;
+  } catch (err) {
+    console.warn('baby kraken:', err);
+  }
+}
+
+// "Try again from the Kraken" (§5.7.6): the level again from its rise, with the plunder from then; the level's own
+// start stays the gold banked from when the Kraken is driven off.
+function retryFromKraken() {
+  const cp = krakenCheckpoint;
+  if (!cp || state.mode !== 'over') return false;
+  blurActive();
+  state.gold = cp.gold;
+  startLevel(cp.level, { fromKraken: true });
+  return true;
+}
+
 // The ammo a ship fires: the player's loaded shot; everyone else always fires round shot (enemies never fire
 // special shot, SPEC3 §2.1).
 function ammoOf(ship) {
@@ -2586,7 +2928,7 @@ function fire(ship, side, target = null, { spread = 0.02, lead = 1, rangeErr = 1
       y: BALL_Y,
       z,
       vx: dx * BALL_SPEED + svx,
-      vy: launchVy(flight) * rand(0.97, 1.03),
+      vy: launchVy(flight, target && target.pseudo ? target.aimY : undefined) * rand(0.97, 1.03),
       vz: dz * BALL_SPEED + svz,
     });
     // Cartoon muzzle blast: a fiery flash and a big puff of smoke.
@@ -2628,8 +2970,13 @@ function outOfSpecial(id) {
 // as pseudo-targets (Stage 2). aimTarget, playerFire, rakeCue, the FIRE! light, the tutorial, the minimap, the
 // chase camera and the portrait framing all read this one list. side: −1 port, +1 starboard, 0 either.
 function targetsFor(side = 0) {
-  return enemies;
+  if (!krakenList.length) return enemies;
+  krakenAll.length = 0;
+  for (const e of enemies) krakenAll.push(e);
+  for (const w of krakenList) krakenAll.push(w);
+  return krakenAll;
 }
+const krakenAll = []; // (enemies and the Kraken's raised parts, reused)
 
 // What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
 // firing arc (inArc: true), failing that the nearest one roughly abeam.
@@ -3165,16 +3512,44 @@ function splinters(hx, hz, n = 7) {
 // A hit on one of the Kraken's raised parts (a pseudo-target, SPEC3 §5.8): kraken.js decides what it does to its
 // bar ({ dmg, word }); the word pops and the damage counts in the volley's pops and HIT mark. Nothing else of
 // damage() applies: no hole (no hull mesh), no feats, no hit flash, no 'hit' sound, no surrender.
-// (Stage 0: no Kraken rises yet, so this is never reached.)
+// A special ball also puts its status on the Kraken (§5.7.5), once per volley, with its word, sound and line.
 function damagePseudo(t, amount, x, z, info) {
   const r = kraken ? kraken.hit(t.part, info || { dmg: amount }) : null;
   if (!r) return;
   const hx = x ?? t.x;
   const hz = z ?? t.z;
   const py = (info && info.y) || 3;
-  if (r.word) pops.pop(r.word, hx, py + 2.4, hz, 'kraken');
+  if (r.word) pops.pop(r.word, hx, py + 2.4, hz, 'kraken', r.word === KR.words.bullseye ? 'eye' : '');
+  // (a squelch of violet spray where the ball went in)
+  puff(hx, py, hz, 4, 0x7a4f86, 2.2, 3, 0.55, 0.5, GRAVITY * 0.5, false, 'glow');
   const v = info && info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
   const dmg = Math.max(0, Number(r.dmg) || 0);
+  if (info && info.status && kraken) {
+    const T = v ? volleyTarget(v, kraken) : null; // (once per volley for the whole beast)
+    if (!T || !T.status) {
+      if (T) T.status = true;
+      const word = kraken.special(t.part, info.status);
+      if (word) {
+        const W = specials.WORDS3;
+        const is = (k) => word === W[k] || word === KR.words[k];
+        const style = is('kaboom') ? 'fire' : is('fireOut') ? 'frost' : is('pegs') ? 'stink' : info.status;
+        pops.pop(word, hx, py + 3.4, hz, style, is('kaboom') ? 'kaboom' : 'keep');
+        if (info.status === 'fire' || info.status === 'frost') audio.play(info.status === 'fire' ? 'ignite' : 'freeze', sfxAt(hx, hz));
+        // (#game-live; its sneeze says itself)
+        const live = is('fireOut')
+          ? W.live.fireOut('The Kraken')
+          : is('pegs')
+            ? "Clothes-pegs! The Kraken won't sneeze again for a while"
+            : is('kaboom')
+              ? W.live.kaboom('The Kraken')
+              : info.status === 'fire' || info.status === 'frost'
+                ? W.live[info.status]('The Kraken')
+                : '';
+        if (live) gameAnnounce(live);
+        if (is('kaboom')) kaboomFlash();
+      }
+    }
+  }
   if (v) {
     const T = volleyTarget(v, t);
     T.dmg += dmg;
@@ -3197,7 +3572,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
   if (ship.kind === 'player' && state.clearTimer > 0) return; // the level is already won
   const hx = x ?? ship.x;
   const hz = z ?? ship.z;
-  const quiet = source === 'fire';
+  const quiet = source === 'fire' || source === 'grab'; // (a keg burning, a Kraken's squeeze)
   let amt = amount;
   let effect = null;
   if (info) {
@@ -3238,7 +3613,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
   if (ship.kind === 'player') {
     state.hurtBy[source] = (state.hurtBy[source] || 0) + amt;
     state.lastHit = state.time;
-    shakeCamera(0.4);
+    if (source !== 'grab') shakeCamera(0.4);
     state.ghostHold = 0.45;
     retrigger(ui.hullCard, 'hurt');
     if (state.edgeCooldown <= 0) {
@@ -3660,6 +4035,16 @@ function updatePlayer(dt) {
   p.h = wrapAngle(p.h + turn * rate * dt);
   const target = Math.min(SAIL_LEVELS[state.sail] * speedCap(p), boarding.speedCap);
   p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
+  // A Kraken tentacle holds her (SPEC3 §5.7.3): dead in the water, unable to turn (playerTurn), its squeeze
+  // 2 hp/s (1 hp every 0.5 s, quiet: the strip and the creaking hull say it).
+  if (kraken && state.grabbed) {
+    p.speed = 0;
+    kseq.grabAcc += Math.max(0, Number(krakenMods(p).dps) || 0) * dt;
+    if (kseq.grabAcc >= 1) {
+      kseq.grabAcc -= 1;
+      damage(p, 1, p.x, p.z, 'grab');
+    }
+  }
 
   // (No repairs while a boarding is on: every hand is on the ropes or fighting.)
   if (state.time - state.lastHit > (t.regenDelay ?? REGEN_DELAY) && p.hp < p.maxHp && !boarding.active) {
@@ -3705,7 +4090,9 @@ function updateEnemy(e, dt, attacking) {
   const def = LEVELS[state.level - 1];
   let desired = e.h;
   let targetSpeed = t.maxSpeed * 0.6;
-  // A level mechanic may sail her instead (a treasure galleon running for her escape gate).
+  // A level mechanic may sail her instead (a treasure galleon running for her escape gate; a Shark Raider's whole
+  // course while she holds an attack slot: her approach bow first, the wind-up, the charge and the sheer-off,
+  // mechanics3 RAM.approach).
   const steered = mechanics.steer(e, dt);
   if (steered) {
     desired = steered.h;
@@ -3729,20 +4116,6 @@ function updateEnemy(e, dt, attacking) {
     } else if (r.dist > t.engage + 8) {
       desired = toPlayer;
       targetSpeed = t.maxSpeed;
-    } else if (t.ram) {
-      // A Shark Raider (SPEC3 §4.2) charges bow first: she comes at you head-on, so a charge can line up within
-      // her reach (mechanics3 steers the wind-up and the surge itself), and sheers off once she is close (the
-      // cooldown after a charge), then comes round again.
-      if (r.dist > 13) {
-        desired = toPlayer;
-        targetSpeed = t.maxSpeed * 0.7;
-      } else {
-        const a1 = wrapAngle(toPlayer + Math.PI / 2);
-        const a2 = wrapAngle(toPlayer - Math.PI / 2);
-        desired = Math.abs(wrapAngle(a1 - e.h)) < Math.abs(wrapAngle(a2 - e.h)) ? a1 : a2;
-        desired += Math.sign(wrapAngle(desired - toPlayer)) * 0.7;
-        targetSpeed = t.maxSpeed * 0.8;
-      }
     } else if (t.boarder && e.boardCooldown > RAIDERS.sheer && boarding.counterTarget !== e) {
       // A raider whose ropes were just cut (or who was beaten off) sheers away and circles wide for a while.
       // (Not while her lines are still on you in the counter-board window: she holds alongside for it.)
@@ -3885,6 +4258,14 @@ function moveShip(s, dt) {
     // A waterspout's core spins her round (mechanics3 shipMods().spin, rad/s).
     const spin = mechanics.shipMods(s).spin;
     if (spin) s.h = wrapAngle(s.h + spin * dt);
+    // The Kraken's last stand pulls your ship toward its head (SPEC3 §5.7.3: 2 u/s within 50 u).
+    if (kraken && s === player) {
+      const km = krakenMods(s);
+      if (km.vx || km.vz) {
+        s.x += km.vx * dt;
+        s.z += km.vz * dt;
+      }
+    }
   }
   resolveLand(s, dt);
 
@@ -4296,6 +4677,7 @@ function step(dt) {
   serviceFireQueue(); // (the reloads just ticked down: a queued shot goes the moment its side is loaded)
   for (const e of enemies) moveShip(e, dt);
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
+  if (kraken) stepKraken(dt, def); // (level 9: the Inkheart's fall, the dread, the rise, the Kraken, SPEC3 §5.7.1)
   separateShips(dt);
   updateBalls(dt);
   updateCoins(dt);
@@ -4348,7 +4730,8 @@ function step(dt) {
   const alive = enemies.filter(fighting).length;
   if (state.wave < def.waves.length - 1 && alive <= def.nextWaveAt) {
     spawnWave(state.wave + 1);
-  } else if (alive === 0 && state.wave === def.waves.length - 1) {
+  } else if (alive === 0 && state.wave === def.waves.length - 1 && (!kraken || kraken.over)) {
+    // (level 9 clears once the Kraken is driven off and its Pearl taken, SPEC3 §5.7.1)
     state.clearTimer = 2.5;
     clearProjectiles(true); // enemy shots and lava still in the air fizzle out
     // Ships that struck their colours and were never boarded are yours anyway (SPEC2 §3.1).
@@ -4362,7 +4745,9 @@ function step(dt) {
     }
     const won = isFinale(state.level);
     audio.play(won ? 'victory' : 'levelClear');
-    const bossLine = state.lastBossCaptured
+    const bossLine = kraken
+      ? '<small>The Kraken is driven off!</small>'
+      : state.lastBossCaptured
       ? `<small>${theName(state.lastBossCaptured)} is yours!</small>`
       : state.lastBossSunk
         ? `<small>${state.lastBossSunk} is sunk!</small>`
@@ -4371,7 +4756,7 @@ function step(dt) {
     const onward = won && state.level < LEVELS.length; // a finale with the Far Seas still to come
     showBanner(
       won
-        ? `Victory!${bossLine}${struckLine}<small>${onward ? 'The Old World is yours' : 'The seas are yours'}</small>`
+        ? `Victory!${bossLine}${struckLine}<small>${def.victoryLine ?? (onward ? 'The Old World is yours' : 'The seas are yours')}</small>`
         : `Level cleared!${bossLine}${struckLine}<small>Grab the loot</small>`,
       2.5
     );
@@ -4780,6 +5165,7 @@ ui.recoverBtn.addEventListener('click', continueAfterRecovery);
 // Any input during the fly-in fast-forwards it to the chase camera.
 function skipIntro() {
   if (state.mode === 'playing' && state.intro > 0.5) state.introRate = Math.max(state.introRate, state.intro / 0.5);
+  if (kraken && state.mode === 'playing') skipRise(); // (and the Kraken's rise, SPEC3 §5.7.1)
 }
 
 const KEYMAP = {
@@ -4852,7 +5238,11 @@ window.addEventListener('keydown', (e) => {
       else showMenu();
     }
     else if (state.mode === 'levelDone') nextLevel();
-    else if (state.mode === 'over') retryLevel();
+    else if (state.mode === 'over') {
+      // (after the Kraken's rise the first button tries again from there, SPEC3 §5.7.6)
+      if (!ui.krakenRetry.classList.contains('hidden') && retryFromKraken()) return;
+      retryLevel();
+    }
     else if (boarding.phase === 'brawl') boarding.skip();
     else skipIntro();
     return;
@@ -4885,6 +5275,7 @@ window.addEventListener('keydown', (e) => {
     // skip the brawl. Holding G during a raider's threat cuts the ropes after RAIDERS.cutHold s.
     if (!e.repeat) boardPress();
     boarding.cutHold(true);
+    if (kraken) kraken.cutHold(true); // (a tentacle holding you: held 0.8 s it cuts loose)
   } else if (ammoKey) {
     const n = Number(ammoKey[1]);
     if (!e.repeat && n <= AMMO_IDS.length) setAmmo(AMMO_IDS[n - 1]);
@@ -4906,7 +5297,10 @@ window.addEventListener('keydown', (e) => {
 
 window.addEventListener('keyup', (e) => {
   if (state.mode === 'dock') townMode.onKey(e, false); // (a walking key let go)
-  if (e.key.toLowerCase() === 'g' || e.code === 'KeyG') boarding.cutHold(false);
+  if (e.key.toLowerCase() === 'g' || e.code === 'KeyG') {
+    boarding.cutHold(false);
+    if (kraken) kraken.cutHold(false);
+  }
   const src = keySource(e);
   for (const dir of ['left', 'right']) if (steerSources[dir].has(src)) steerRelease(dir, src);
 });
@@ -4915,6 +5309,7 @@ window.addEventListener('keyup', (e) => {
 window.addEventListener('blur', () => {
   clearSteering();
   boarding.cutHold(false);
+  if (kraken) kraken.cutHold(false);
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -5303,7 +5698,10 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
 // cuts the ropes (a tap still counts as one of the three cuts). Pointer capture: sliding off still lets go.
 {
   const btn = ui.touchBoard;
-  const release = () => boarding.cutHold(false);
+  const release = () => {
+    boarding.cutHold(false);
+    if (kraken) kraken.cutHold(false);
+  };
   btn.addEventListener('pointerdown', (e) => {
     try {
       btn.setPointerCapture(e.pointerId);
@@ -5311,6 +5709,7 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
       // synthetic events have no capturable pointer
     }
     boarding.cutHold(true);
+    if (kraken) kraken.cutHold(true); // (CUT! held on a tentacle, SPEC3 §5.7.3)
   });
   btn.addEventListener('pointerup', release);
   btn.addEventListener('pointercancel', release);
@@ -5329,6 +5728,11 @@ $('leave-no-btn').addEventListener('click', cancelLeave);
 $('next-btn').addEventListener('click', nextLevel);
 ui.act2Btn.addEventListener('click', nextLevel); // "Sail on to the Far Seas" (the won screen, when a level follows)
 $('retry-btn').addEventListener('click', retryLevel);
+ui.krakenRetry.addEventListener('click', retryFromKraken); // "Try again from the Kraken" (SPEC3 §5.7.6)
+// A tap anywhere on the sea during the Kraken's rise skips it (as any key does; the buttons skip it themselves).
+ui.canvas.addEventListener('pointerdown', () => {
+  if (kraken && state.mode === 'playing' && !activeModal()) skipRise();
+});
 $('menu-btn').addEventListener('click', () => {
   showMenu();
   titleShown();
@@ -5619,8 +6023,11 @@ function announce(text) {
 
 // Big battle events for screen readers (#game-live: new ammo, ammo loaded, captures, boardings...), at most
 // one every 1.5 s: a message that comes sooner waits (the newest one wins), a repeat is read again.
-const gameLive = { at: -Infinity, pending: '' };
+const gameLive = { at: -Infinity, pending: '', log: [] };
 function gameAnnounce(text) {
+  // (the last 40 asked for, said or waiting, for the tests: they step the game faster than the 1.5 s)
+  gameLive.log.push(text);
+  if (gameLive.log.length > 40) gameLive.log.shift();
   const now = performance.now();
   if (now - gameLive.at < 1500) {
     gameLive.pending = text;
@@ -6585,11 +6992,28 @@ function updateHud(force = false, dt = 0) {
 
   updateBoardHud(force, dt);
 
-  const boss = enemies.find((e) => e.type.boss && e.hp > 0 && !e.captured && !e.escaped);
-  if (force || shown.boss !== !!boss) {
-    show(ui.boss, !!boss);
-    shown.boss = !!boss;
+  // The Kraken's bar (SPEC3 §5.7.1, §6.3): THE KRAKEN with two notches (its three phases), from its rise until
+  // it is driven off; its status badge as a boss's. Else a boss ship's.
+  const kbar = kraken && krakenFighting() ? kraken.bar : null;
+  const boss = kbar ? null : enemies.find((e) => e.type.boss && e.hp > 0 && !e.captured && !e.escaped);
+  if (force || shown.boss !== !!(boss || kbar)) {
+    show(ui.boss, !!(boss || kbar));
+    shown.boss = !!(boss || kbar);
   }
+  if (kraken && (force || shown.bossNotches !== !!kbar)) {
+    show(ui.bossNotches, !!kbar);
+    shown.bossNotches = !!kbar;
+  }
+  if (kbar) {
+    setText(ui.bossName, 'bossName', kbar.name, force);
+    setWidth(ui.bossFill, 'bossHp', kbar.frac * 100, force);
+    bossStatusBadge(kraken.status, force);
+    if (force || shown.bossCrewOn !== false) {
+      show(ui.bossCrew, false);
+      shown.bossCrewOn = false;
+    }
+  }
+  if (kraken) updateGrabStrip(force);
   if (boss) {
     // The Phantom Galleon, spectral (or struck): only a boarding takes her (SPEC2 §5.3).
     const boardHer = boss.type.ghost && (boss.spectral || boss.surrendered);
@@ -6597,21 +7021,11 @@ function updateHud(force = false, dt = 0) {
     setText(ui.bossName, 'bossName', boardHer ? `BOARD HER! — ${boss.type.name}` : boss.type.name, force);
     setWidth(ui.bossFill, 'bossHp', (boss.hp / boss.maxHp) * 100, force);
     // Her special-shot status (SPEC3 §6.3): shape + word beside the bar, its 8 time dots lit for the time left.
-    const st = boss.status && boss.status.id ? boss.status : null;
-    const left = st ? clamp(st.t / (st.max || st.t || 1), 0, 1) : 0;
-    const bkey = st ? `${st.id}|${Math.ceil(left * 8 - 1e-6)}` : '';
-    if (force || shown.bossStatus !== bkey) {
-      shown.bossStatus = bkey;
-      if (st) {
-        ui.bossStatus.dataset.status = st.id;
-        ui.bossStatus.textContent = specials.WORDS3.badge[st.id] || '';
-        ui.bossStatus.style.setProperty('--left', String(Math.ceil(left * 8 - 1e-6) / 8));
-      }
-      show(ui.bossStatus, !!st);
-    }
+    bossStatusBadge(boss.status, force);
     // The boss's crew: 10 pips with the surrender notch (SPEC2 §5.3).
     const c0 = boss.crew0 || 0;
     show(ui.bossCrew, c0 > 0);
+    shown.bossCrewOn = c0 > 0;
     if (c0 > 0) {
       const pct = String(Math.round((1000 * crewOf(boss)) / c0) / 10);
       if (force || shown.bossCrew !== pct) {
@@ -6624,6 +7038,56 @@ function updateHud(force = false, dt = 0) {
         shown.bossNotch = notch;
       }
     }
+  }
+}
+
+// A boss's special-shot status on its bar (#boss-status, SPEC3 §6.3): shape + word, its 8 time dots lit for the
+// time left. status: { id, t, max } (a ship's, or the Kraken's), id null for none.
+function bossStatusBadge(status, force) {
+  const st = status && status.id ? status : null;
+  const left = st ? clamp(st.t / (st.max || st.t || 1), 0, 1) : 0;
+  const bkey = st ? `${st.id}|${Math.ceil(left * 8 - 1e-6)}` : '';
+  if (force || shown.bossStatus !== bkey) {
+    shown.bossStatus = bkey;
+    if (st) {
+      ui.bossStatus.dataset.status = st.id;
+      ui.bossStatus.textContent = specials.WORDS3.badge[st.id] || '';
+      ui.bossStatus.style.setProperty('--left', String(Math.ceil(left * 8 - 1e-6) / 8));
+    }
+    show(ui.bossStatus, !!st);
+  }
+}
+
+// The grab strip (SPEC3 §6.3, top centre under the boss bar, aria-hidden: #game-live says it): "GRABBED! Hold G to
+// cut it loose" (touch: "Hold CUT!"), the 4 s it can hold you running down, and your cut (3 taps, or the hold).
+const grabUi = { built: false, title: null, fill: null, pips: [] };
+function updateGrabStrip(force) {
+  const snap = kraken && state.grabbed ? kraken.state : null;
+  const g = snap ? snap.grab : null;
+  const touch = isTouch();
+  const key = g ? `on${touch ? 't' : 'k'}` : '';
+  if (force || shown.grab !== key) {
+    shown.grab = key;
+    if (g && !grabUi.built) {
+      grabUi.built = true;
+      ui.grabStrip.innerHTML = '<div class="gs-title"></div><div class="gs-bar"><span class="gs-fill"></span></div><div class="gs-pips"><i></i><i></i><i></i></div>';
+      grabUi.title = ui.grabStrip.querySelector('.gs-title');
+      grabUi.fill = ui.grabStrip.querySelector('.gs-fill');
+      grabUi.pips = [...ui.grabStrip.querySelectorAll('.gs-pips i')];
+    }
+    if (g) grabUi.title.textContent = touch ? KR.words.stripTouch : KR.words.strip;
+    show(ui.grabStrip, !!g);
+  }
+  if (!g) return;
+  setWidth(grabUi.fill, 'grabLeft', clamp(g.left / KR.grab.max, 0, 1) * 100, force);
+  const cut = snap.cut;
+  const n = Math.min(3, Math.floor(cut * 3 + 1e-6));
+  const pk = String(n);
+  if (force || shown.grabPips !== pk) {
+    shown.grabPips = pk;
+    grabUi.pips.forEach((p, i) => {
+      p.className = i < n ? 'on' : '';
+    });
   }
 }
 
@@ -6678,6 +7142,13 @@ let boardView = null; // this frame's grapple pick (frame() works it out once; t
 // What G / the Board button does right now.
 function boardButtonState() {
   if (!player || player.sinking) return { key: 'off', state: 'idle', tag: '—', word: 'Board', aria: 'Board', disabled: true };
+  // The Kraken's fight (SPEC3 §6.2): CUT! while a tentacle holds you; "—" with nothing to board.
+  if (kraken && state.grabbed) {
+    return { key: 'cutKraken', state: 'cut', tag: 'CUT!', word: KR.words.cutButton, aria: 'Cut the tentacle loose: tap three times or hold', disabled: false };
+  }
+  if (krakenFighting() && !boarding.active && !(boardView && boardView.target)) {
+    return { key: 'kraken', state: 'idle', tag: '—', word: '—', aria: "Board: you can't board a sea monster", disabled: true };
+  }
   if (boarding.active) {
     const ph = boarding.phase;
     if (ph === 'threat') {
@@ -6835,6 +7306,83 @@ function updateBoardHud(force, dt) {
       show(ui.objective, !!text);
       shown.objective = text;
     }
+  }
+}
+
+// The Kraken's marks on the minimap (SPEC3 §6.3), from this frame's kraken.visuals(): violet dashed warning rings
+// (a grab's red-rimmed, an ink blob's dark violet), the shadow as a violet blob with a yellow eye (pinned to the
+// rim when off the map), the head with its amber eye, the raised tentacles as violet dots, the Pearl as a pearl.
+function drawKrakenMarks(toMap, scale, c) {
+  const V = krakenVis;
+  const pin = (x, y) => {
+    const dx = x - c;
+    const dy = y - c;
+    const dl = Math.hypot(dx, dy);
+    return dl > c - 9 ? [c + (dx / dl) * (c - 9), c + (dy / dl) * (c - 9)] : [x, y];
+  };
+  for (const r of V.rings || []) {
+    const [x, y] = toMap(r.x, r.z);
+    const rad = Math.max(4, (r.r || 4) * scale);
+    const k = r.T > 0 ? clamp(r.t / r.T, 0, 1) : 1;
+    mm.fillStyle = r.kind === 'ink' ? `rgba(40, 16, 64, ${0.25 + 0.4 * k})` : `rgba(192, 106, 255, ${0.2 + 0.35 * k})`;
+    mm.beginPath();
+    mm.arc(x, y, rad, 0, Math.PI * 2);
+    mm.fill();
+    mm.setLineDash([3, 2]);
+    mm.lineWidth = 2;
+    mm.strokeStyle = r.grab ? '#e63946' : r.kind === 'ink' ? '#3a1d5c' : '#c06aff';
+    mm.stroke();
+    mm.setLineDash([]);
+  }
+  if (V.shadow && V.shadow.k > 0.15) {
+    const [x, y] = pin(...toMap(V.shadow.x, V.shadow.z));
+    const rad = Math.max(5, 9 * scale);
+    mm.fillStyle = 'rgba(58, 30, 92, 0.9)';
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 1.5;
+    mm.beginPath();
+    mm.ellipse(x, y, rad, rad * 0.8, 0, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
+    mm.fillStyle = '#ffd23f';
+    mm.beginPath();
+    mm.arc(x, y - rad * 0.2, 1.8, 0, Math.PI * 2);
+    mm.fill();
+  }
+  for (const t of V.tentacles || []) {
+    const [x, y] = toMap(t.x, t.z);
+    mm.fillStyle = '#9a62b8';
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 1.5;
+    mm.beginPath();
+    mm.arc(x, y, 3, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
+  }
+  if (V.head && V.head.k > 0.3) {
+    const [x, y] = pin(...toMap(V.head.x, V.head.z));
+    const rad = Math.max(6, 6 * scale);
+    mm.fillStyle = '#4a2f6e';
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 2;
+    mm.beginPath();
+    mm.arc(x, y, rad, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
+    mm.fillStyle = '#ffb627';
+    mm.beginPath();
+    mm.arc(x, y, Math.max(2, rad * 0.4), 0, Math.PI * 2);
+    mm.fill();
+  }
+  if (V.pearl && V.pearl.k > 0.2) {
+    const [x, y] = pin(...toMap(V.pearl.x, V.pearl.z));
+    mm.fillStyle = '#fff8ec';
+    mm.strokeStyle = '#ffc93c';
+    mm.lineWidth = 2;
+    mm.beginPath();
+    mm.arc(x, y, 4, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
   }
 }
 
@@ -7011,6 +7559,7 @@ function drawMinimap() {
     mm.stroke();
   }
   for (const e of targetsFor()) {
+    if (e.pseudo) continue; // (the Kraken's parts: drawn below)
     // Ships still fighting (red, the boss orange) and struck ones (white: board them to take them).
     const struck = e.surrendered && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
     const fleeing = !!e.fleeing && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
@@ -7049,6 +7598,8 @@ function drawMinimap() {
     else mm.arc(x, y, r, 0, Math.PI * 2);
     mm.fill();
   }
+  // The Kraken (SPEC3 §6.3): its warning rings, its shadow (a violet blob with an eye), its raised parts, the Pearl.
+  if (krakenVis) drawKrakenMarks(toMap, scale, c);
   // The player: a little arrow pointing up.
   mm.fillStyle = '#fff4d6';
   mm.strokeStyle = '#1d1330';
@@ -7315,7 +7866,7 @@ const framing = {
 };
 // Keep `ship` framed while a volley flies at her (`flight` s) and her pops play.
 function frameShip(ship, flight = 0) {
-  if (!ship || ship.kind !== 'enemy') return;
+  if (!ship || (ship.kind !== 'enemy' && !ship.pseudo)) return;
   if (framing.shot !== ship || framing.shotUntil < state.time + flight + FRAME.hold) {
     framing.shot = ship;
     framing.shotUntil = state.time + flight + FRAME.hold;
@@ -7353,6 +7904,7 @@ function framingLive(e) {
 // in a firing arc first, then the nearest).
 function framingFocus() {
   if (!player || player.sinking || state.intro > 0 || boarding.active || state.mode === 'dock') return null;
+  if (kraken && kseq.stage === 'rise') return null; // (the Kraken's rise has the camera, SPEC3 §0.3)
   const s = framing.shot;
   if (s && state.time < framing.shotUntil && framingLive(s) && Math.hypot(s.x - player.x, s.z - player.z) < FRAME.reach) return s;
   const port = aimTarget(-1);
@@ -7948,6 +8500,27 @@ function updateCamera(dt, paused) {
       camera.position.lerpVectors(camStart, camFinal, e);
       camLook.lerpVectors(camFar, camLook, e);
     }
+    // The Kraken's rise (SPEC3 §5.7.1): the camera pulls up and back over your stern and swings onto its eye,
+    // eased in and out of the chase view (under reduced motion: a cut to the eye for 1.5 s and back).
+    if (kraken && kView && kseq.stage === 'rise' && kraken.rising) {
+      const T = kseq.short ? KR.shortRise : KR.rise;
+      const from = { x: player.x, z: player.z, h: player.h, duration: T };
+      const head = krakenVis && krakenVis.head;
+      if (head && reducedMotion()) {
+        // (the cut to the eye looks from a little off your line to it, so your own sails never hide the eye)
+        const a = Math.atan2(player.x - head.x, player.z - head.z) + 0.6;
+        const d = Math.hypot(player.x - head.x, player.z - head.z);
+        from.x = head.x + Math.sin(a) * d;
+        from.z = head.z + Math.cos(a) * d;
+      }
+      const rc = kView.riseCamera(clamp(kseq.t / T, 0, 1), from);
+      if (rc) {
+        const u = clamp(Math.min(kseq.t, T - kseq.t) / 0.6, 0, 1);
+        const w = reducedMotion() ? 1 : u * u * (3 - 2 * u);
+        camera.position.lerp(rc.pos, w);
+        camLook.lerp(rc.look, w);
+      }
+    }
     // A boarding takes the camera to a raised view over the two decks (boarding.js eases it in and out).
     const bc = boarding.camera(camera.aspect, { pos: camera.position, look: camLook });
     if (bc) {
@@ -7994,6 +8567,7 @@ function updateCamera(dt, paused) {
 }
 
 const gl = view.renderer.getContext();
+const fxList = []; // (the fleet and the Kraken's status stand-in for statusfx, reused)
 function frame() {
   requestAnimationFrame(frame);
   const rawDt = clock.getDelta();
@@ -8081,12 +8655,32 @@ function frame() {
     }
   }
 
+  // Level 9's Kraken (SPEC3 §5.7): its model builds one part a frame from the level start (the fly-in and the first
+  // wave), then draws what kraken.js shows; the music follows the fight (0 the dread, 1–3 its phases, 4 driven off).
+  if (kView) {
+    if (!kView.ready && (state.mode === 'playing' || state.mode === 'paused')) kView.prepare();
+    if (!paused) krakenVis = kraken && kseq.stage ? kraken.visuals() : null;
+    kView.update(krakenVis, t, paused ? 0 : dt);
+  }
+  if (kraken && kseq.stage && kseq.stage !== 'retry' && !paused) {
+    const n = kseq.stage === 'dread' ? 0 : kseq.stage === 'gone' || kseq.stage === 'over' ? 4 : clamp(kraken.phase || 1, 1, 3);
+    audio.setMusicPhase?.(n);
+    kseq.music = n;
+  }
   updateCamera(dt, paused);
   camera.updateMatrixWorld();
   // After the ships and the camera have moved: name tags, statuses on the ships, sailors going overboard, pop words.
   tags.update(enemies, camera, t, paused ? 0 : dt);
   if (statusFxView) {
-    statusFxView.sync(enemies, t, paused ? 0 : dt);
+    // (the Kraken's status stands on the part that burns, its head or its shadow: krakenView.statusShip)
+    let fxShips = enemies;
+    if (kView && kraken && kseq.stage && kseq.stage !== 'dread' && kseq.stage !== 'retry') {
+      fxList.length = 0;
+      for (const e of enemies) fxList.push(e);
+      fxList.push(kView.statusShip(kraken.status));
+      fxShips = fxList;
+    }
+    statusFxView.sync(fxShips, t, paused ? 0 : dt);
     if (!paused) updateCrackle();
   }
   overboard.update(t, paused ? 0 : dt);
@@ -8145,6 +8739,7 @@ window.__gameReady = true;
 // Exposed for automated tests and console tinkering.
 window.__game = {
   state,
+  liveLog: gameLive.log,
   audio,
   input,
   enemies,
@@ -8460,21 +9055,66 @@ window.__game = {
       return { ready: out, queue: [...prebuilt.queue] };
     },
   },
+  // Level 9's Kraken (SPEC3 §11.3). null / false / [] on a level without one.
   kraken: {
+    // kraken.js's snapshot, plus main's sequence (stage: null | 'retry' | 'dread' | 'rise' | 'fight' | 'gone' |
+    // 'over'), the grabs so far and the Pearl's gold paid.
     get state() {
-      return kraken ? kraken.state : null;
+      return kraken ? { ...kraken.state, stage: kseq.stage, stageT: kseq.t, grabs: kseq.grabs, pearlGold: kseq.pearl, baby: kseq.baby } : null;
     },
-    rise: () => false,
-    setHp: () => null,
-    phase: () => null,
+    // Raise it now (tests): the Inkheart's crew are gone at once (the ships still afloat are removed, no gold), then
+    // the rise (dread: true runs the 4 s dread first). false on a level without a Kraken or once it has risen.
+    rise({ dread = false } = {}) {
+      if (!kraken || !player || player.sinking || (kseq.stage && kseq.stage !== 'retry')) return false;
+      boarding.cancel('level');
+      for (const e of enemies) removeShip(e);
+      enemies.length = 0;
+      state.wave = LEVELS[state.level - 1].waves.length - 1;
+      state.intro = 0;
+      startDread();
+      if (!dread) startRise(false);
+      syncKrakenTargets();
+      return true;
+    },
+    // Any key or tap during the rise (true when it skipped).
+    skip() {
+      if (!kraken || !kraken.rising) return false;
+      skipRise();
+      return true;
+    },
+    // The bar now (600 full; 0 drives it off), and a phase's start (its bar's top: 600, 400, 200).
+    setHp: (n) => (kraken ? kraken.setHp(n) : null),
+    phase(n) {
+      if (!kraken) return null;
+      const P = KR.phases[clamp(Math.round(Number(n)) || 1, 1, KR.phases.length) - 1];
+      kraken.setHp(P.from);
+      return kraken.phase;
+    },
     get targets() {
       return kraken ? kraken.targets() : [];
     },
-    cut: () => false,
-    cutHold: () => {},
-    get checkpoint() {
-      return krakenCheckpoint;
+    // The pseudo-ships your guns aim at (the cached wrappers, §5.8), as plain data.
+    get wrappers() {
+      return krakenList.map((w) => ({ part: w.part, kind: w.partKind, x: w.x, z: w.z, hp: w.hp, aimY: w.aimY, len: w.type.len }));
     },
+    get bar() {
+      return kraken ? kraken.bar : null;
+    },
+    get mods() {
+      return kraken ? { ...kraken.playerMods() } : null;
+    },
+    cut: () => (kraken ? kraken.cut() : false),
+    cutHold(down) {
+      if (kraken) kraken.cutHold(!!down);
+    },
+    // "Try again from the Kraken" (the shipwreck card's first button): true when it started.
+    retry: () => retryFromKraken(),
+    get checkpoint() {
+      return krakenCheckpoint ? { ...krakenCheckpoint } : null;
+    },
+    // What the model drew at the last frame (krakenView read()), and what kraken.js shows now.
+    view: () => (kView ? kView.read() : null),
+    visuals: () => (kraken ? kraken.visuals() : null),
   },
   island: {
     get config() {

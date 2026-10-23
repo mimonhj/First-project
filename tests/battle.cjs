@@ -3812,8 +3812,47 @@ function ev(page, fn, arg = null) {
   // (by default: levels 1-7 open, the tutorial and every tip seen, all three recipes owned).
   async function openK({ store = KSTORE, ...o } = {}) {
     const r = await open({ query: KQ, store, ...o });
+    KLABEL.set(r.page, o.label || 'page');
     await r.page.evaluate(installKraken);
     return r;
+  }
+  // Leaving a page: audio.js downloads every recording in the background from page load, so a reload or a closed tab
+  // can abort one still on its way, and the page being left says so ("audio: no recording for music:volcano
+  // (music-volcano.mp3), using the synthesised sound: TypeError: Failed to fetch"), which watch() counts as a page
+  // error. leaving() forgives exactly that warning, from the pages being reloaded or closed, and only while they are
+  // being left (a reload: until the new page commits, which comes after the old page's last warning); every other
+  // audio warning stays an error. KLABEL: each page's watch() label.
+  const KLABEL = new WeakMap();
+  const FETCH_ABORT = /^audio: no recording for (?:music|amb|sfx):[\w-]+ \([\w.-]+\), using the synthesised sound: TypeError: Failed to fetch$/;
+  const kAborts = [];
+  async function leaving(pages, go) {
+    const labels = pages.map((p) => KLABEL.get(p)).filter(Boolean);
+    const n0 = errors.length;
+    let n1 = null;
+    const navs = pages.map((p) => {
+      const f = (fr) => {
+        if (n1 === null && fr === p.mainFrame()) n1 = errors.length;
+      };
+      p.on('framenavigated', f);
+      return [p, f];
+    });
+    try {
+      await go();
+    } finally {
+      for (const [p, f] of navs) p.off('framenavigated', f);
+    }
+    for (let i = (n1 === null ? errors.length : n1) - 1; i >= n0; i--) {
+      const label = labels.find((l) => errors[i].startsWith(`${l}: `));
+      if (!label || !FETCH_ABORT.test(errors[i].slice(label.length + 2))) continue;
+      kAborts.push(errors.splice(i, 1)[0]);
+      console.log(`     (${label}: left while a recording was still downloading; its aborted fetch is not a page error)`);
+    }
+  }
+  const closeK = (c) => leaving(c.pages(), () => c.close());
+  async function reloadK(p) {
+    await leaving([p], () => p.reload({ waitUntil: 'domcontentloaded', timeout: 120000 }));
+    await p.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+    await p.evaluate(installHelpers);
   }
   const r2 = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
 
@@ -4045,7 +4084,7 @@ function ev(page, fn, arg = null) {
     const past = (id) => r2(reach[id].max - RANGE[id][0]);
     check(Object.entries(RANGE).every(([id, [, mul]]) => reach[id].n === 3 && past(id) >= 0.5 && past(id) <= 3 && reach[id].reload === mul),
       `kraken ammo: Fire, Frost and Stink shot fly 30 / 28 / 22 u (round shot 34), each splashing down ${['round', 'fire', 'frost', 'stink'].map(past).join(' / ')} u past it, and reload in 1.1 / 1.1 / 1.2 × the ship's time (${J(reach)})`);
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // ------------------------------------------------------------------------------- kraken: statuses on a ship
@@ -4256,7 +4295,7 @@ function ev(page, fn, arg = null) {
     check(out.before.id === 'fire' && out.before.ticks > 0 && out.n >= 1 && out.st === 'frost' && out.ticks === 0 && out.burntAfter === 0 && J(out.pops) === '["FIRE OUT! SSSS!"]' && out.sizzle === 1,
       `kraken status: Frost on a burning ship: FIRE OUT! SSSS!, the sizzle, the burn stops and she is frozen (${J(out)})`);
 
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // ------------------------------------------------------------------------ kraken: bosses and the immunities
@@ -4342,7 +4381,7 @@ function ev(page, fn, arg = null) {
     check(immune2.n >= 1 && immune2.st.id === null && immune2.pops.length === 1 && /pop-keep/.test(immune2.pops[0]) && immune2.live.includes("Ghosts can't smell!"),
       `kraken status: the Phantom Galleon shrugs off Stink shot: IMMUNE! and "Ghosts can't smell!" (${J(immune2)})`);
 
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // --------------------------------------------------------------------- kraken: what the statuses look like
@@ -4390,7 +4429,7 @@ function ev(page, fn, arg = null) {
       `kraken status: statusfx draws flames, ice and the stink cloud on three ships in ${f.calls} draw calls (≤ 8), and nothing once they are gone (${J({ look: look.fx, gone })})`);
     check(look.tags.every((t) => t.st === t.want && t.tag && t.tag.id === t.want && t.tag.dots >= 1 && t.tag.dots <= 8),
       `kraken status: each tag shows her status badge with its ring of time dots (${J(look.tags)})`);
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // ------------------------------------------------------------------------------- kraken: the Iron Turtle's armour
@@ -4437,7 +4476,7 @@ function ev(page, fn, arg = null) {
       `kraken armour: a stern rake hits her in full (× 2 = 20 a ball) and so does a crit (× 1.75), no CLANG! (${J({ stern: arm.stern, crit: arm.crit })})`);
     check(each(arm.fire, 3.5) && arm.fire.burn === 18 && arm.kaboom.extra === 15 && arm.kaboom.st === 'fire',
       `kraken armour: a Fire ball is halved on her beam (3.5) but her burn is not (18 hp), nor KA-BOOM's +15 (${J({ fire: arm.fire, kaboom: arm.kaboom })})`);
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // ------------------------------------------------------------------------- kraken: hot and stinky boarding
@@ -4669,7 +4708,7 @@ function ev(page, fn, arg = null) {
     });
     check(glued.burn.from === 'keg' && glued.burn.ticks > 0 && glued.phases.includes('swing') && glued.phases.includes('result') && glued.glue.length === 1 && glued.loose[0] > glued.loose[1],
       `kraken board: a burn ticks on while the hooks fly and she is reeled in, and holds still while the ships are glued (swing to result: ${glued.glue.join(', ')} hp left) (${J(glued)})`);
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // ---------------------------------------------------------------- kraken: the rudder, the slide and the wheel
@@ -4773,7 +4812,7 @@ function ev(page, fn, arg = null) {
     });
     check(bomb.straight.w === 0 && bomb.slide.w > 0 && near(bomb.key.w, 2 * bomb.slide.w, 1e-3) && Object.values(bomb).every((b) => b.miss < 1e-6),
       `kraken steer: a lava bomb lands where your turn takes you, a thumb slide's half turn too (${J(bomb)})`);
-    await ctx.close();
+    await closeK(ctx);
 
     // On a phone: slide a thumb on the steering pad. A plain hold (or a wobble under 12 px) is a full turn as before;
     // past 12 px the turn follows the thumb (r = r0 + dx / 56), the rudder needle shows it, letting go ends it.
@@ -4860,9 +4899,7 @@ function ev(page, fn, arg = null) {
       `kraken steer: the wheel: a 3 px nudge is in the dead zone, 30 px right is a half turn right (60°), 90 px left a full turn left (-120°, at most), and it springs back when let go (${J({ dead: wheel.dead, half: wheel.half, full: wheel.full, up: wheel.up })})`);
     check(wheel.key.left === true && wheel.key.input === 1 && wheel.keyUp.left === false && wheel.keyUp.input === 0,
       `kraken steer: with the wheel shown the keys steer as before (${J({ key: wheel.key, up: wheel.keyUp })})`);
-    await tp.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
-    await tp.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
-    await tp.evaluate(installHelpers);
+    await reloadK(tp);
     const again = await ev(tp, async () => {
       const G = window.__game;
       T.level(1);
@@ -4871,7 +4908,7 @@ function ev(page, fn, arg = null) {
       return { steer: G.settings.get().steer, wheel: T.shown('touch-wheel') };
     });
     check(again.steer === 'wheel' && again.wheel, `kraken steer: the next visit starts with the ship's wheel (${J(again)})`);
-    await tctx.close();
+    await closeK(tctx);
 
     // Pause ▸ Steering on a phone, at the five touch sizes: the toggle is the last choice, at least 44 px, with its
     // New! badge inside it the first time; the panel doesn't scroll. A tap saves the wheel and the wheel shows when
@@ -4920,7 +4957,7 @@ function ev(page, fn, arg = null) {
       });
       check(set.saved === '{"v":1,"steer":"wheel"}' && /Steering: Ship.s wheel/.test(set.text) && set.pressed === 'true' && set.focus === 'steer-mode-btn' && resumed.wheel && resumed.hint && resumed.clear,
         `kraken steer ${w}x${h}: a tap on the toggle saves the ship's wheel (aria-pressed, focus kept); resumed, the wheel shows and the hint bubble keeps clear of it (${J({ set, resumed })})`);
-      await pc.close();
+      await closeK(pc);
     }
     const { ctx: dc, page: dp } = await openK({ label: 'kraken-steer desktop', store: { ...KSTORE, 'pirates-ahoy-tips': '255', 'pirates-ahoy-settings': '{"v":1,"steer":"wheel"}' } });
     const desk = await ev(dp, () => {
@@ -4930,7 +4967,7 @@ function ev(page, fn, arg = null) {
     });
     check(desk.choices.join() === 'resume-btn,quit-dock-btn,quit-menu-btn' && !desk.tip && !desk.wheel,
       `kraken steer: a desktop's pause has no Steering toggle (nor its badge), and no wheel shows (${J(desk)})`);
-    await dc.close();
+    await closeK(dc);
   });
 
   // -------------------------------------------------------------------------------- kraken: the touch ammo tray
@@ -4951,7 +4988,7 @@ function ev(page, fn, arg = null) {
     });
     check(none.ammo === 'chain' && !none.tray.open && !none.tray.wanted && !none.shown && none.expanded === null,
       `kraken tray: with no recipe owned a tap on Ammo cycles to the next shot as today, no tray (${J(none)})`);
-    await nc.close();
+    await closeK(nc);
 
     // Fire and Frost owned (Stink on sale, not bought): a tap on Ammo opens the tray (the game runs on); six buttons
     // in the R order, "Fire ×4", the loaded one pressed, Stink disabled with its reason (a tap says it, the tray
@@ -5051,7 +5088,7 @@ function ev(page, fn, arg = null) {
       `kraken tray: the loaded shot shows pressed; a fire tap (or a plain click on Fire) closes the tray, so does a tap elsewhere and 3 s of play without a pick; it never pauses (${J(closes)})`);
     check(closes.queued && closes.picked === 'round' && closes.dropped && closes.balls === 0 && closes.loads === 4,
       `kraken tray: a pick from the tray drops a Fire tap queued while the guns load: nothing fires, no load is spent (${J({ queued: closes.queued, picked: closes.picked, balls: closes.balls, loads: closes.loads })})`);
-    await tc.close();
+    await closeK(tc);
 
     // The layout with the tray open at the touch sizes (§6.2): 2 × 3 in portrait, 3 × 2 in landscape, right-aligned
     // with the act pad and 8 px above it, 44 px buttons on small and short screens, 52 px elsewhere (844x390: 52
@@ -5114,7 +5151,7 @@ function ev(page, fn, arg = null) {
         await snap(lp, 'kraken-tray-390x844.png');
         await lp.evaluate(() => { window.__game.state.mode = 'paused'; });
       }
-      await lc.close();
+      await closeK(lc);
     }
   });
 
@@ -5162,6 +5199,7 @@ function ev(page, fn, arg = null) {
     // other tab; feats that mirror progress (legend) merge by the larger, the counters as saved.
     const other = await ctx.newPage();
     watch(other, 'kraken-saves tab B');
+    KLABEL.set(other, 'kraken-saves tab B');
     await other.goto(base + KQ, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await other.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
     await sp.evaluate(() => window.__game.setFeats({ captures: 2, legend: 0 }));
@@ -5178,7 +5216,7 @@ function ev(page, fn, arg = null) {
     const tabs = await sp.evaluate(() => ({ own: window.__game.specials.powder.own, steer: window.__game.settings.get().steer, feats: window.__game.feats, saved: localStorage.getItem('pirates-ahoy-powder') }));
     check(J(tabs.own) === '{"fire":1,"frost":1,"stink":1}' && tabs.steer === 'buttons' && tabs.feats.legend === 1 && tabs.feats.captures === 5,
       `kraken saves: two tabs: the recipes merge upward (Fire kept here), the steering setting follows the other tab, legend merges by the larger (${J({ own: tabs.own, steer: tabs.steer, legend: tabs.feats.legend, captures: tabs.feats.captures })})`);
-    await ctx.close();
+    await closeK(ctx);
 
     // With storage switched off the game runs from the defaults, and the steering setting works for the visit.
     const { ctx: bc, page: bp } = await (async () => {
@@ -5188,6 +5226,7 @@ function ev(page, fn, arg = null) {
       });
       const p = await c.newPage();
       watch(p, 'kraken-saves blocked');
+      KLABEL.set(p, 'kraken-saves blocked');
       await p.goto(base + KQ, { waitUntil: 'domcontentloaded', timeout: 120000 });
       await p.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
       await p.evaluate(installHelpers);
@@ -5208,7 +5247,7 @@ function ev(page, fn, arg = null) {
     });
     check(J(blocked.powder) === '{"fire":0,"frost":0,"stink":0}' && J(blocked.loads) === '{"fire":0,"frost":0,"stink":0}' && blocked.set === 'wheel' && blocked.wheel && blocked.own.fire === 1,
       `kraken saves: with storage switched off it starts from the defaults (no recipes), and the ship's wheel works for the visit (${J(blocked)})`);
-    await bc.close();
+    await closeK(bc);
   });
 
   // ------------------------------------------------------------------------- kraken: the shipyard's rudder row
@@ -5246,7 +5285,7 @@ function ev(page, fn, arg = null) {
       `kraken dock: its three tiers cost 120 / 300 / 550, each saved in the ship record with the chest; a fourth is refused (${J(buy.buys.map((b) => ({ ok: b.ok, cost: b.cost, tier: b.tier, chest: b.chest })))})`);
     check(/80%/.test(buy.buys[2].text) && !/next/.test(buy.buys[2].text) && /Turning when slow: 50% → next: 65%/.test(buy.buys[0].text) && buy.rebuilt,
       `kraken dock: the row follows the tiers ("${buy.buys[0].text}" … "${buy.buys[2].text}"); the docked ship is rebuilt with her powder kegs when the recipes change (${buy.rebuilt})`);
-    await ctx.close();
+    await closeK(ctx);
 
     // Storage full when the ship record is written: the rudder is yours for the visit and its gold stays in the saved
     // chest until the ship record saves (the shipyard's own rule, SPEC3 §10.2).
@@ -5272,7 +5311,7 @@ function ev(page, fn, arg = null) {
     });
     check(full.ok && full.purse === 380 && full.chest === '500' && full.tier === 1 && !/rudder/.test(full.ship || '') && full.after.chest === '380' && /"rudder":1/.test(full.after.ship || ''),
       `kraken dock: storage full: the rudder lasts the visit and its gold stays in the saved chest until the ship record saves (${J(full)})`);
-    await fc.close();
+    await closeK(fc);
   });
 
   // ---------------------------------------------------------------------------------- kraken: the new sounds
@@ -5307,7 +5346,7 @@ function ev(page, fn, arg = null) {
     }, KRAKEN_SFX);
     check(sound.missing.length === 0 && sound.bad.length === 0,
       `kraken audio: offline renders of the ${KRAKEN_SFX.length} Kraken Seas sounds are finite, stereo and not silent (${sound.bad.length ? 'bad: ' + sound.bad.join(', ') : J(sound.peaks)}${sound.missing.length ? '; missing: ' + sound.missing : ''})`);
-    await ctx.close();
+    await closeK(ctx);
   });
 
   // -------------------------------------------------------- kraken: the live game (no ?kraken=1) unchanged
@@ -5319,9 +5358,10 @@ function ev(page, fn, arg = null) {
     // has its six rows.
     const store = { 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255', 'pirates-ahoy-powder': OWN_ALL, 'pirates-ahoy-settings': '{"v":1,"steer":"wheel"}', 'pirates-ahoy-purse': '2000' };
     const { ctx, page: lp } = await open({ label: 'kraken-live', store });
+    KLABEL.set(lp, 'kraken-live');
     if (await lp.evaluate(() => window.__game.voyage.WITH_KRAKEN)) {
       console.log('     (Voyage III sails for everyone now: no hidden Kraken Seas to check)');
-      await ctx.close();
+      await closeK(ctx);
       return;
     }
     const desk = await ev(lp, () => {
@@ -5366,9 +5406,10 @@ function ev(page, fn, arg = null) {
       `kraken live: keys 4-6 do nothing, R cycles round, chain and grape, the help lists and the pause dialog are today's, no statusfx (${J({ keys: desk.keys, r: desk.r, fx: desk.fx, tray: desk.tray, pause: desk.pause })})`);
     check(shop.rows.join() === 'guns,shot,crew,hull,sails,carpenter' && shop.ok === false && shop.spent === 0 && !/rudder/.test(shop.ship || '') && shop.tips === 255,
       `kraken live: the shipyard has its six rows and no rudder for sale (${J(shop)})`);
-    await ctx.close();
+    await closeK(ctx);
 
     const { ctx: tc, page: tp } = await open({ width: 390, height: 844, touch: true, label: 'kraken-live touch', store });
+    KLABEL.set(tp, 'kraken-live touch');
     const touch = await ev(tp, async () => {
       const G = window.__game;
       T.level(3);
@@ -5403,7 +5444,58 @@ function ev(page, fn, arg = null) {
       `kraken live: on a phone the Ammo pill cycles (no tray), a thumb slide on ◀ is a plain hold, and the arrows stay (no wheel, though one is stored) (${J({ ammo: touch.ammo, tray: touch.tray, slide: touch.slide, wheel: touch.wheel, arrows: touch.arrows })})`);
     check(touch.pause.join() === 'resume-btn,quit-dock-btn,quit-menu-btn' && !touch.toggle && !/special|slide/.test(touch.help) && touch.tips === 255,
       `kraken live: on a phone the pause dialog has no Steering toggle (nor its New! badge) and the help is today's (${J({ pause: touch.pause, toggle: touch.toggle, tips: touch.tips })})`);
-    await tc.close();
+    await closeK(tc);
+  });
+
+  // ------------------------------------------------------------------- kraken: no Kraken in the live game
+  // Until Voyage III sails for everyone, a page without ?kraken=1 has no Kraken anywhere: on the last level (the
+  // Maelstrom, a finale with a boss) the Kraken's test hooks find none (no state, rise() refused, no targets, no
+  // checkpoint), the boss bar shows no notches and no grab strip, the shipwreck card has no "Try again from the
+  // Kraken" (Enter tries the level again), and the Victory card has no Pearl line.
+  await section('kraken-finale-live', async () => {
+    const store = { 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' };
+    const { ctx, page: lp } = await open({ label: 'kraken-finale-live', store });
+    KLABEL.set(lp, 'kraken-finale-live');
+    if (await lp.evaluate(() => window.__game.voyage.WITH_KRAKEN)) {
+      console.log('     (Voyage III sails for everyone now: no hidden Kraken to check)');
+      await closeK(ctx);
+      return;
+    }
+    const live = await ev(lp, async () => {
+      const G = window.__game;
+      const out = { levels: G.LEVELS.length };
+      const p = T.level(G.LEVELS.length);
+      const boss = T.spawn('phantom', 24, 10);
+      boss.reload.port = boss.reload.star = 99;
+      out.kraken = { state: G.kraken.state, rise: G.kraken.rise(), targets: G.kraken.targets.length, checkpoint: G.kraken.checkpoint };
+      G.state.mode = 'paused';
+      await T.redraw();
+      G.state.mode = 'playing';
+      out.hud = { boss: T.shown('boss'), notches: T.shown('boss-notches'), strip: T.shown('grab-strip') };
+      // sunk: the shipwreck card
+      G.damage(p, 99999, p.x, p.z, 'phantom');
+      T.steps(6, () => G.state.mode === 'playing');
+      out.over = { mode: G.state.mode, retry: T.shown('kraken-retry-btn'), buttons: [...document.querySelectorAll('#over-screen .panel button')].filter((b) => b.offsetParent).map((b) => b.id) };
+      // cleared: the Victory card (every ship of every wave sunk)
+      T.level(G.LEVELS.length);
+      G.state.mode = 'playing';
+      for (let i = 0; i < 120 * 90 && G.state.mode === 'playing'; i++) {
+        // (the Phantom Galleon only strikes to a boarding: she sails off instead)
+        for (const e of G.enemies) if (G.fighting(e)) (e.type.ghost ? G.capture.escape(e) : G.damage(e, 99999));
+        G.player.hp = G.player.maxHp;
+        G.step(1 / 120);
+      }
+      out.won = { mode: G.state.mode, chest: T.text('won-chest'), text: T.text('won-text') };
+      return out;
+    });
+    check(live.levels === 6 && live.kraken.state === null && live.kraken.rise === false && live.kraken.targets === 0 && live.kraken.checkpoint === null && live.hud.boss && !live.hud.notches && !live.hud.strip,
+      `kraken finale live: no Kraken on the last of ${live.levels} levels: no state, rise() refused, no targets, no checkpoint; the Phantom's boss bar has no notches, no grab strip (${J({ kraken: live.kraken, hud: live.hud })})`);
+    check(live.over.mode === 'over' && !live.over.retry && live.over.buttons[0] === 'retry-btn',
+      `kraken finale live: the shipwreck card has no "Try again from the Kraken"; "Try again" comes first (${J(live.over)})`);
+    check(live.won.mode === 'won' && !/Pearl/.test(live.won.chest) && !/Kraken/.test(live.won.text),
+      `kraken finale live: the Victory card has no Pearl line ("${live.won.chest}") (${J(live.won)})`);
+    await lp.evaluate(() => document.activeElement && document.activeElement.blur && document.activeElement.blur());
+    await closeK(ctx);
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

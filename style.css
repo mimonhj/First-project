@@ -2222,3 +2222,83 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
   .edge-arrow .ea-arrow { width: 42px; height: 42px; }
   .edge-arrow .ea-word { font-size: 15px; }
 }
+
+/* ---------- The Kraken (SPEC3 §5.7, §6.3) ----------
+   The boss bar's two notch marks (its phase lines at 66.7 % and 33.3 %), shown for the Kraken only. */
+.boss-notches { position: absolute; inset: 0; pointer-events: none; } /* (over the fill, under the name) */
+.boss-notches i {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 5px;
+  margin-left: -2.5px;
+  background: var(--paper);
+  border-left: 2px solid var(--ink);
+  border-right: 2px solid var(--ink);
+}
+.boss-notches i:nth-child(1) { left: 66.667%; }
+.boss-notches i:nth-child(2) { left: 33.333%; }
+/* The grab strip: top centre under the boss bar while a tentacle holds you. "GRABBED! Hold G to cut it loose", the
+   4 s it can hold you running down (a shrinking bar), and your cut (3 taps, or the hold) as pips. */
+.grab-strip {
+  position: fixed;
+  top: calc(var(--edge) + var(--top-h) + 10px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: min(360px, 70vw);
+  display: grid;
+  justify-items: center;
+  gap: 4px;
+  pointer-events: none;
+}
+#hud:has(#boss:not(.hidden)) .grab-strip { top: calc(var(--edge) + var(--top-h) + 70px); }
+.gs-title {
+  font-family: var(--head);
+  font-size: 21px;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  text-align: center;
+  text-wrap: balance;
+  color: #fff;
+  -webkit-text-stroke: 1.5px var(--ink);
+  paint-order: stroke fill;
+  text-shadow: 0 2px 0 var(--ink);
+}
+.gs-bar {
+  position: relative;
+  width: 100%;
+  height: 14px;
+  border: 2px solid var(--ink);
+  border-radius: 8px;
+  overflow: hidden;
+  background: #4a2433;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.gs-fill { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #9a62b8, #c06aff); border-right: 2px solid var(--ink); }
+.gs-pips { display: flex; gap: 6px; }
+.gs-pips i { width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ink); background: #4a3b5c; box-shadow: 0 2px 0 var(--ink); }
+.gs-pips i.on { background: var(--red); }
+@media (max-width: 640px) and (hover: none) and (pointer: coarse) {
+  /* Left of the top-right minimap, like the boss bar. */
+  .grab-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+  .gs-title { font-size: 18px; }
+}
+@media (max-height: 500px) {
+  .grab-strip { top: calc(var(--edge) + var(--top-h) + 6px); width: min(320px, 46vw); gap: 3px; }
+  #hud:has(#boss:not(.hidden)) .grab-strip { top: calc(var(--edge) + var(--top-h) + 56px); }
+  .gs-title { font-size: 17px; }
+  .gs-bar { height: 12px; }
+  .gs-pips i { width: 10px; height: 10px; }
+}
+@media (max-height: 500px) and (hover: none) and (pointer: coarse) {
+  .grab-strip { width: min(320px, calc(100vw - 2 * (var(--mm) + 30px))); }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) and (hover: none) and (pointer: coarse) {
+  .grab-strip { left: var(--edge); right: calc(var(--edge) + var(--mm) + 20px); width: auto; transform: none; }
+}
+/* While it holds you the strip has the top of the view (the goal pill steps aside); banners start below it. */
+#hud:has(#grab-strip:not(.hidden)) .objective { display: none; }
+body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(24%, 228px); }
+@media (max-height: 500px) {
+  body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(27%, 172px); }
+}

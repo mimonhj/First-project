@@ -1120,3 +1120,195 @@ Not run: the full npm test, as the brief asked.
 - In natural level 7 play, island and world-edge avoidance can still stretch the gap between charges to 25–36 s. The old rule did the same; it comes from main's obstacle avoidance, not the course.
 - The cape crest duck assumes your ship is at about 0.7 × the distance where the camera's centre ray meets the sea. That is exact for the chase camera. In the portrait broadside framing (updateFraming, an enemy framed) the protected corridor may be a little off the ship; I probed without a framed enemy. If that ever matters, main could pass the focus point (for example envFrame.focus = { x, z }) for the env to use. This is not requested now.
 - When a stern-to wave has passed, its back still fills up to about 66–70% of the 1280x720 view behind your ship. The ship stays fully visible in front of it (≤ 1% hidden). In portrait, the crest near the camera covers up to about 54% of the lower screen without hiding the ship.
+
+## Round R5
+
+**Coordinator test run:** npm test on a snapshot of the round 5 files (identical to the committed ones), started 2026-10-23 05:46:08 UTC: 19 suites, 1,973 checks passed, 0 failed (battle 280), exit 0. Before it: tests/voyage3.cjs 82/0 and its kraken-fight section 12/0 three times in a row. Coordinator changes this round: src/main.js phase-banner fix (kseq.phaseSeen) and __game.liveLog; tests/voyage3.cjs published from 2C's final copy with the read-out check also reading liveLog.
+
+### 2A-3
+
+2A-3 (the Kraken) is done and published: src/main.js and style.css, copied to a temp name and moved into place. index.html and src/voyage.js needed no change.
+
+With ?kraken=1, level 9 now plays to the end:
+- The Kraken Crew's ships fall, and a struck Inkheart is taken if nobody boarded her.
+- The crew flee (mechanics.krakenDue), then 4 s of dread: setDread, music phase 0 and the 'kraken' scene, a hull patch and up to 3 more hands aboard.
+- The rise: a camera that pulls up and back (a cut to the eye under reduced motion), the "THE KRAKEN RISES!" banner, and any key or tap skips it. The checkpoint is taken here.
+- The fight: pseudo-target wrappers for the guns, the boss bar with notches and a status badge, the grab with its strip and CUT!, and the phase-3 pull.
+- Driven off: setDawn, music phase 4, the kraken feat saved at once, and a baby kraken that climbs onto the captain's shoulder.
+- The clear waits for kraken.over (the Pearl, +1,000 to the plunder), then Victory with "The Kraken's Pearl +1,000".
+- On a shipwreck after the rise, the first button is "Try again from the Kraken" (Enter does it too). It restarts the level with the plunder you had at the rise, a brief fly-in, then the 3 s short rise at full 600 hp.
+
+The round-4 hook is in: updateEnemy's dead `t.ram` branch is gone. A lone Shark Raider still winds up every 8.7–11.6 s, and the voyage3 atolls section passes.
+
+Without ?kraken=1 the game is unchanged. A seeded replay of all six levels is bit-identical to the previous live files (58/58).
+
+On a snapshot of the published files, all four existing suites pass with no test edits: battle 277/0, levels 73/0, smoke 94/0, controls 232/0.
+
+**Files:** src/main.js, style.css
+
+**Brief, item by item**
+
+- targetsFor + pseudo-targets: done. Wrappers are cached per part id per rise and updated in place each step (syncKrakenTargets): { pseudo, part, kind:'kraken', x, z, h:0, speed:0, hp, type:{len,wid,name}, aimY, mesh stand-in }. aimTarget, inArc, playerFire, rakeCue (null), the FIRE! light, the minimap (skips them and draws its own marks), camSide and the portrait framing all read them. p1: guns hurt the bar, BULLSEYE!, no RAKE!. p4: at 390x844 the framing focus is kraken:eye with w 1.
+- hitsShip/damage pseudo branches: done. Uses the Stage 0 seams (kraken.hits / kraken.hit, beam-on shotResult). damagePseudo also pops BULLSEYE! with the 'eye' mod and a violet splash. It applies a special ball's status once per volley through kraken.special, with its pop, sound, #game-live line and the KA-BOOM flash. p3: fire shows ON FIRE on #boss-status and statusfx draws 6 flames; stink on the grabbing tentacle lets go and sneezes.
+- startLevel creates the Kraken: done. createKrakenFor(def) runs on def.kraken levels only when WITH_KRAKEN. ctx: player, damage, land (colliders), world, rng = combatRng, warnBonus, inkSlick → mechanics.addSlick, pop, announce, sfx with the optional { duration }, tables {STATUS, INK, RAIDERS, WORDS3}, pearl(gold) → state.gold. krakenView is created with foamColor and seaY. p1 prepare: not ready at the level start, ready after 14 frames of the fly-in.
+- L9 sequence (§5.7.1) in step(): done (stepKraken, after mechanics.step). Stages null → dread (4 s) → rise → fight → gone → over. Struck ships are auto-captured once nothing fights on the last wave. The clear check waits for `!kraken || kraken.over`, and the Victory line uses def.victoryLine. p1: dread 4.008 s, then the rise; the level does not clear while the Kraken is up. p2: the bot played L9 to 'won' in 206 s (fight 114.5 s, phases 1, 2, 3), with 32 Kraken warnings, shortest 1.5 s.
+- Any key or tap skips the rise: done (skipIntro → skipRise; a canvas pointerdown in play). p1: key W skips it. p3: a touch tap on the sea skips it.
+- updatePlayer with playerMods: done. While grabbed, speed is forced to 0 and the turn is 0 (state.grabbed → playerTurn). The squeeze is 1 hp every 0.5 s (source 'grab', quiet, no shake). The phase-3 pull is applied in moveShip. p1: moved 0, speed 0, turn 0, 2 hp lost in 1 s.
+- The cut: done. G calls boardPress → kraken.cut and holding G calls kraken.cutHold. On touch, the Board pill reads CUT! and holding it cuts. blur/keyup release the hold. p1: G three times cuts loose. p3: CUT! held 1 s on touch cuts loose.
+- canGrapple on a pseudo target: done. It returns 'monster' with GRAPPLE_WHY.monster = KRAKEN.words.noBoard. G in the fight with nothing to board says "You can't board a sea monster!" and the pill reads '—'. Checked by p1 board.
+- Checkpoint + #kraken-retry-btn: done. Taken at the rise; it lives in session memory only and is cleared by any other level start or a clear. playerSunk shows the button first, Enter or a click runs retryFromKraken, and startLevel(n, { fromKraken }) does the rest. p1 retry: gold 321 from the rise, no ships, full hull, stage 'retry', short rise 3.0 s at 600 hp.
+- HUD: done. The boss bar reads THE KRAKEN with #boss-notches; #boss-status uses a shared bossStatusBadge helper; #grab-strip has text plus a release bar and cut pips; CSS added in style.css. #edge-arrow stays rogue-wave only (§6.3 gives it to the rogue wave only). Screenshots looked at, 1280x720 and 390x844.
+- frame(): done. krakenView.prepare once per frame until ready; krakenView.update(kraken.visuals()) every frame (the same snapshot feeds the minimap); riseCamera eased in and out (a cut under reduced motion); setMusicPhase 0/1–3/4 each frame; statusfx gets kView.statusShip(kraken.status). setDread is called at the dread (and at the retry's rise), setDawn when it is driven off. p3: music phases 0, 1, 3, 4; dawn eased to 1; camera y up to 20 (4.5–10 under reduced motion).
+- Feats kraken + Pearl + baby kraken: done. feats.kraken = 1 is saved when it is driven off. The Pearl gold goes into the plunder and its line appears in #won-chest. The baby kraken pops two words, and the helm captain is rebuilt with pet 'octopus'. p1 off: feat 1, Pearl line, the 'A baby kraken!' and '+1,000 THE KRAKEN'S PEARL' pops.
+- __game.kraken (§11.3): done. state (plus stage, stageT, grabs, pearlGold, baby), rise({dread}), skip, setHp, phase(n), targets, wrappers, bar, mods, cut, cutHold, retry, checkpoint, view, visuals.
+- Stage 1 hooks 1C, 1I, 1J, 1M: applied (details in hooks_applied).
+- Round-4 hook (r4-hooks.md): the dead `} else if (t.ram) {` branch is removed. It was already gone in my dev copy when I checked (see open_issues); I kept it and updated the comment. Checked: 2E's p-ram.cjs PART=cadence,natural on the published tree passed 4/4 (gaps 8.74–11.57 s, 9 wind-ups on L7); VOYAGE3_ONLY=atolls passed 8/0.
+- Exit check: L9 playable to the end with ?kraken=1 (p2 bot, mode 'won'); every attack telegraphed >= 1.5 s (p1 shortest 1.8 s; p2 32 warnings, shortest 1.5 s); battle 277/0, levels 73/0, smoke 94/0, controls 232/0.
+
+**API notes**
+
+New in main.js (all of it only runs when a Kraken exists, i.e. ?kraken=1 on level 9):
+- State. `kView` (the krakenView instance) and `kseq` = { stage: null|'retry'|'dread'|'rise'|'fight'|'gone'|'over', t, short, grabs, grabAcc, offAt, baby, pearl, music }. `krakenParts` (Map id→wrapper), `krakenList` (the raised wrappers this step) and `krakenVis` (this frame's visuals()).
+- Functions. krakenCtx(), createKrakenFor(def), disposeKraken() (called from clearLevelEntities), krakenFighting(), syncKrakenTargets(), stepKraken(dt, def), startDread(), startRise(short), skipRise(), krakenDrivenOff(), babyKraken(), retryFromKraken(), bossStatusBadge(status, force), updateGrabStrip(force), drawKrakenMarks(toMap, scale, c).
+- Changed signatures and labels:
+  - startLevel(n, { retry, fromKraken })
+  - launchVy(t, aimY = 0.8): fire() passes target.aimY for pseudo targets, so balls come down through the eye.
+  - frameShip accepts pseudo targets.
+  - GRAPPLE_WHY.monster; canGrapple(pseudo) returns 'monster'.
+  - damage() source 'grab' is quiet and does not shake the camera.
+  - SINK_TIPS gain slam and grab.
+- Pseudo-target wrapper: { pseudo: true, part, partKind, kind: 'kraken', typeName: 'kraken', id, x, z, h: 0, speed: 0, hp, maxHp, y0, y1, aimY, type: { len, wid, name: 'The Kraken' }, mesh: { position: { y }, userData: { deckY } }, status: null }. The mesh stand-in serves fpHull and popHeight. typeName 'kraken' is not a SHIP_TYPES key and is only used in the shot log.
+- DOM and CSS. ui.bossNotches, ui.grabStrip and ui.krakenRetry. #grab-strip contains .gs-title, .gs-bar > .gs-fill (time left) and .gs-pips > i (cut progress). New style.css block: .boss-notches (5 px paper marks with ink edges at 66.667% and 33.333%, under the name), .grab-strip / .gs-* with the same responsive rules as .boarding-strip, plus the banner offset and the objective pill hidden while the strip shows.
+- Test API __game.kraken: state (kraken.js snapshot + stage, stageT, grabs, pearlGold, baby), rise({ dread = false }), skip(), setHp(n), phase(n), targets, wrappers, bar, mods, cut(), cutHold(down), retry(), checkpoint, view(), visuals().
+  - rise() removes any ships still afloat, sets the last wave and runs startDread; without dread it runs startRise at once.
+
+Deviations and choices:
+1. The Kraken rises 40 u ahead of you through kraken.rise() with no spot (kraken.js finds open water). env.krakenArena is not used, including for the retry start (it starts at env.playerStart, which is inside the arena).
+2. The 'slam' launchBomb kind stays unused: kraken.js and krakenView draw and resolve the tentacle rings themselves.
+3. Under reduced motion, main passes riseCamera a `from` rotated 0.6 rad about the head. With the plain `from`, your own sails hid the eye in the cut (seen in p3-rise-mid-reduce before the fix).
+4. Phase-change banners: "The Fury!" / "The Last Stand!", with a short how-to line.
+5. The dread banner reads "Something stirs in the deep…" with the patch line. The spec names no words for it.
+6. The retry's fly-in runs at double speed (introRate 2).
+
+**Hook requests applied / rejected**
+
+- (1C) ctx.sfx forwards the optional 4th argument as sfxAt(..., { duration }): applied. The tentacle tone gets the warning length.
+- (1C) Clear check on kraken.over (not done) and ctx.pearl(gold) → state.gold: applied. p1: the clear starts the step the Pearl is taken.
+- (1C) Any key or tap calls kraken.skip(): applied through skipRise in skipIntro, plus a canvas tap.
+- (1C) playerMods each step: applied. speedMul/turnMul through the existing krakenMods seam; speed forced to 0 while grabbed; dps applied as 1 hp per 0.5 s (source 'grab'); vx/vz pull added in moveShip.
+- (1C) HUD words from KRAKEN.words: applied. strip / stripTouch / cutButton / noBoard / banner.rise / how / howStink / off, the phase names and the live lines.
+- (1I) krakenView: applied. prepare() once per frame from the level start until ready (the fly-in and wave 1); update(visuals, t, dt) each frame; riseCamera(k, { x, z, h, duration }) during the rise; statusShip(kraken.status) passed to statusfx.sync; #boss-status from kraken.status.
+- (1I) Pops: applied. Style 'kraken', mod 'eye' on BULLSEYE!, 'kaboom' / 'keep' on status words.
+- (1J) Audio: applied. setMusicPhase(0) then setScene('kraken') at the dread; setMusicPhase each frame (1–3 by phase, 4 when driven off); the retry starts the scene at phase 1. The geyser sound was 2A-2's.
+- (1M) setDread(1) at the dread and at the retry's short rise; setDawn(1) when it is driven off: applied. krakenArena: not used (see api_notes deviation 1).
+- (1B) The L9 clear check (struck ships taken first, then the gate on the Kraken) and the dread on mechanics.krakenDue: applied.
+- Round 4 (r4-hooks.md): the dead `t.ram` branch in updateEnemy is removed. It was already gone in the dev copy (see open_issues); verified with p-ram.cjs and voyage3 atolls.
+- Rejected: none.
+
+**Hook requests raised**
+
+- src/krakenView.js (2E), riseCamera(), the reduced-motion branch (`if (rm()) { ... camPos.set(ex + dx * 19 - dz * 3, ...)`): move the camera well off the line from the eye to `from`, e.g. -dz * 9 instead of -dz * 3, or raise it above the mast tops. Why: with the head about 33 u away, that camera sits about 14 u in front of the player's ship and its sails hide the eye during the 1.5 s cut. main.js works around it by passing a `from` rotated 0.6 rad about the head; once krakenView does it, main can pass the plain player pose. Optional.
+- src/levels.js / src/act3.js + main.js finishLevel (Stage 3, 3A; not done here): the Maelstrom's def.sailOn ('Sail on to the Kraken Seas') with main reading `def.sailOn ?? 'Sail on to the Far Seas'`, and ACT3_TEASER on the Maelstrom's Victory text. Why: with ?kraken=1 the L6 Victory button still reads 'Sail on to the Far Seas' before level 7. This belongs to Stage 3's go-live, which §11.2 marks for the acts and Victory texts.
+
+**Live game unchanged**
+
+Everything new runs only when `kraken` exists. That is created only when WITH_KRAKEN is true (only with ?kraken=1) and the level has def.kraken (level 9 of act3.js).
+
+Without the flag, the shared code gives the same results:
+- targetsFor returns `enemies` (krakenList is empty).
+- launchVy's default aimY 0.8 is today's constant.
+- The boss bar code was refactored into bossStatusBadge with the same logic. The board pill, boardPress, the Enter-on-'over' branch, the keyup/blur cutHold, skipIntro, the canvas tap, updatePlayer/moveShip, framingFocus, updateCamera, frame(), finishLevel, playerSunk (show(#kraken-retry-btn, false) on an already hidden button, the same summary text) and the step's clear check are all behind `kraken &&` or reduce to today's behaviour.
+- def.victoryLine is undefined for levels 1–6, so the Victory line is today's.
+- The removed t.ram branch only ever ran for the Shark Raider, a Voyage III ship.
+- index.html and src/voyage.js are byte-identical to HEAD. The new CSS only targets #boss-notches and #grab-strip, which stay hidden.
+
+Proof:
+- The seeded six-level replay without the flag: previous live files vs mine IDENTICAL 58/58, 0 page errors.
+- battle 277/0, levels 73/0, smoke 94/0 (same draw calls as before) and controls 232/0, all with HEAD's test files.
+- Published by cp to a temp name + mv. Copies are in .dock-harness/kraken2/R5-2A-3/published/v1 and v2; live main.js f6659578…, style.css 95d1f2fc….
+
+**Verification**
+
+All browser runs used NODE_PATH=/opt/node22/lib/node_modules, SwiftShader chromium and ?quality=low, one browser job at a time. Probes are in /tmp/claude-0/-home-user-First-project/7f649d8c-67e4-5236-a80e-5e9eae321fb4/scratchpad/kraken/build2/R5-2A-3/, served from the mirror .dock-harness/kraken2/R5-2A-3/mirror (the live tree with the dev files on top).
+
+- `node --input-type=module --check` passes on main.js after every edit.
+- p1-kraken.cjs (frozen, stepped loop; sections prepare, natural, fight, guns, grab, board, off, retry, draws):
+  - 1280x720: 25/3 on the first run. All 3 failures were the probe's own: it read the HUD without drawing a frame, called playerFire while paused, and its pop observer missed pops made inside one synchronous loop. After fixing the probe, those three sections passed 11/0.
+  - 390x844 touch: 28/0, no page errors.
+  - Results: dread 4.008 s; shortest warning 1.8 s in phase 1; boss bar THE KRAKEN with notches; slams hurt; broadsides took the bar 200→0 with BULLSEYE!; grab at speed 0 / turn 0 / 2 hp/s with the strip and CUT!, cut by G×3; the sea-monster hint; the clear waits for the Pearl; Victory with the Pearl line; feat saved; baby kraken and Pearl pops; retry gold 321, short rise 3.0 s at 600 hp; draw calls 129 (1280) and 125 (390) in the last stand.
+- p2-play.cjs (a bot plays L9 from the start, CHEAT keeps the hull at 40% or more): 5/5. Dread at 78.5 s, rise 82.6, fight 88.6, phases 1/2/3 at 88.6/159/188.3, driven off 197.0, Pearl 203.5, 'won' at 206 s. 32 Kraken warnings, shortest 1.5 s. Healing was needed only before the rise (159 hp); none in the fight.
+- p3-live.cjs (real frames):
+  - camera: y up to 20 normally, 4.5–10 under reduced motion;
+  - music phases 0 → 1 → 3 → 4, scene 'kraken';
+  - dawn reaches 1 after 3.2 s;
+  - fire status: ON FIRE badge and 6 flames;
+  - stink / hit on the grabbing tentacle: released, sneezes 1. This check first failed because the probe's ship placement left that tentacle outside the broadside arc; made deterministic, it passes;
+  - touch: a tap skips the rise, and CUT! held 1 s cuts loose.
+  - Final: camera 2/0, status 2/0, and every other section passed.
+- p4-frame.cjs, 390x844: framing focus kraken:eye, w 1.
+- sameprobe.cjs (no flag, seeded Math.random, 45 s of each of levels 1–6), previous live files vs the dev mirror: IDENTICAL 58/58, 0 page errors.
+- Round-4 hook:
+  - R4-2E/p-ram.cjs with ROOT=repo PART=cadence,natural: 4/4 (still gaps 9.15/8.74…, circle 8.88–11.26, cruise 11.02–11.57, natural L7 9 wind-ups).
+  - VOYAGE3_ONLY=atolls node tests/voyage3.cjs: 8 passed, 0 failed.
+- Existing suites, run on the snapshot .dock-harness/kraken2/R5-2A-3/suite (= published v2) with the repo's test files, no test edits:
+  - tests/battle.cjs: 277 passed, 0 failed (16:11–16:38)
+  - tests/levels.cjs: 73 passed, 0 failed
+  - tests/smoke.cjs: 94 PASS, 0 FAIL; draw calls per level start 298, 231, 107, 237, 191, 228; dock 297
+  - tests/controls.cjs: 232 passed, 0 failed (ended 17:16)
+  - Logs: scratch R5-2A-3/suite-*.log and suites.log.
+- Screenshots I looked at:
+  - 1280x720: p1-rise, p1-fight, p1-grab, p1-last-stand, p1-won, p1-over, p3-rise-mid (both motion settings), p2-end-L9.
+  - 390x844: p1-grab, p1-rise, p1-over, p1-last-stand, p3-touch-grab, p4-frame.
+  - This led to two fixes: the notches were drawn over the boss name, and the reduced-motion cut was hidden by the ship's sails.
+
+I did not run the full npm test (the coordinator's job).
+
+**Open issues**
+
+- Concurrent writer: at about 15:40 the r4 ram-branch removal was already in my dev copy (.dock-harness/kraken2/R5-2A-3/dev/src/main.js) with a comment I did not write. It was not in the published file. The change is exactly the requested one, so I kept it; nothing else foreign was found in the diff. The coordinator may want to know that something else wrote into this agent's dev directory.
+- Balance (Stage 3): the bot's Kraken fight lasted 114.5 s (spec target 120–180 s on the late-game ship), and the Kraken did only 12 slam damage to a ship at full sail. Tuning knobs are in kraken.js KRAKEN (2E/3B).
+- The minimap's Kraken marks (head 6 px, tentacles 3 px dots, violet rings) are small on a 150 px map. A Stage 3 polish item.
+- env.krakenArena is unused and the 'slam' launchBomb kind is unused (see api_notes). The retry starts at env.playerStart, which is inside the arena.
+- Probes that step the loop synchronously do not show what only frames do: banners never time out and the dawn ease does not progress. The real-time p3 probe shows the dawn reaching 1 in 3.2 s.
+- The "Try again from the Kraken" label wraps to two lines at 1280x720 and 390x844. It reads fine but is a tall button.
+- Not mine but noticed: 2C's kraken-steer reload flake (aborted music fetch) is in tests/battle.cjs. It did not occur in my battle run (277/0).
+
+### 2C
+
+2C was cut off by usage limits three times this round, after finishing its work but before writing its report; the coordinator closed it out from its PROGRESS.md and logs. Published: tests/battle.cjs v5 (the kraken-steer reload flake fixed: an aborted level-music download during a reload is no longer a page error, every other audio warning still is; kraken-steer passed 5 runs in a row; a new kraken-finale-live section; 13 kraken-* sections 99/0) and tests/voyage3.cjs (busy-play draw calls, and kraken-rise, kraken-fight, kraken-grab, kraken-end, kraken-retry, kraken-look sections for level 9). Mutation proofs: 45 broken copies in muts-r5.json, all caught (after replacing two no-op mutants and two equivalent mutants with real ones). 2C found a real bug in main.js: the phase banners ('The Fury!', 'The Last Stand!') never showed, because the phase was read before kraken.step while a ball's hit (later in the frame) changes it.
+
+**Files:** tests/battle.cjs, tests/voyage3.cjs
+
+**Brief, item by item**
+
+- Kraken and level 9 checks in tests/voyage3.cjs: the rise (skippable), the three phases and their banners, tentacle and ink warnings >= 1.5 s with their tones, words and read-outs, the grab and the cut, the checkpoint and #kraken-retry-btn, the boss bar and notches, driven off, the Pearl and its gold, the baby-kraken feat, the clear waiting for kraken.over; draw calls in the busiest play (L7-L9) and the Kraken fight (fight 125-137 calls, the Kraken itself 12); kraken-rise.png and kraken-fight.png.
+- battle.cjs kraken-finale-live: without ?kraken=1, level 6 has no Kraken hooks, notches, retry button or Pearl.
+- The kraken-steer flake fixed in its own fragments; 5 runs in a row green.
+- Mutation proofs: 45/45 caught.
+
+**API notes**
+
+Test hooks used: __game.kraken (state, rise, skip, setHp, phase, targets, cut, cutHold, retry, checkpoint, view, visuals), __game.liveLog (added by the coordinator: the last 40 #game-live texts asked for, said or waiting). The suites take VOYAGE3_ONLY, VOYAGE3_BUSY_LEVELS (default 7,8,9) and BATTLE_ONLY.
+
+**Hook requests raised**
+
+- src/main.js stepKraken: the phase banner never shows (phaseWas read before kraken.step; hits change the phase in updateBalls/damagePseudo). APPLIED by the coordinator (kseq.phaseSeen).
+- main.js/style.css (3A or 3E): the WAVE! edge arrow overlaps the REPEL BOARDERS! boarding strip (busy-8.png).
+- kraken.js / krakenView.js (2E/3E): the view shows 5 rings at the last stand while SPEC3 section 14 plans at most 4 (draw calls are fine: 125-137).
+- main.js (3E): the rise banner text sits over the rising head in kraken-rise.png.
+- package.json (3C): test:voyage3 and the opt-in test:balance.
+
+**Live game unchanged**
+
+Test files only (battle.cjs adds sections; the reload-abort filter matches only that exact Failed to fetch warning).
+
+**Verification**
+
+From 2C's PROGRESS.md: final battle.cjs kraken-* x13 on the repo 99/0; kraken-steer 5 runs green; 45/45 mutations caught (logs in scratch build2/R5-2C/logs and mutlogs/results-r5.json). Its last full voyage3 run (frozen copy, before the coordinator's fixes) had 80 passed, 2 failed: the phase-banner bug, and the 'read out' check, which sampled #game-live while stepping the game far faster than its 1.5 s wall-clock throttle (a test-design flaw). Coordinator: main.js banner fix + __game.liveLog; the read-out check also reads liveLog; tests/voyage3.cjs published from 2C's frozen copy with that one change: kraken-fight 12/0 three times in a row, full voyage3 82/0.
+
+**Open issues**
+
+- WAVE! edge arrow overlaps the REPEL BOARDERS! strip (busy-8.png).
+- 5 Kraken rings at the last stand vs the planned 4.
+- Rise banner over the rising head (kraken-rise.png).
+- test:voyage3 / test:balance not in package.json yet (3C).
