@@ -15,8 +15,9 @@
 //   step(dt)                      every simulation step, after moveShip, before separateShips (as mechanics.js)
 //   steer(e, dt) → { h, speed } | null   a shark with an attack slot (she comes at you bow first, lines up for
 //                                 1.5 s, surges on a locked heading, sheers off broadside while she cools: RAM and
-//                                 RAM.approach), a bomb ketch keeping her range, a fire ship sailing at you, a
-//                                 fleeing ship making for the world edge, a boss turning her bow into a rogue wave
+//                                 RAM.approach), a bomb ketch keeping her range, a fire ship sailing at you (hove
+//                                 to while ctx.hold()), a fleeing ship making for the world edge, a boss turning her
+//                                 bow into a rogue wave
 //   holdFire(e) → boolean         fire ships (no guns) and fleeing ships
 //   drift(s) → { vx, vz } | null  spout pulls and flings, rogue-wave and ram pushes (main skips the glued pair)
 //   avoid() → [{ x, z, r }]       pirates keep r 16 off every waterspout
@@ -67,7 +68,8 @@
 //   attacking(e) → boolean        she holds one of main's attack slots (default: true). A shark rams and a ketch
 //                                 keeps her range and lobs only when attacking; a fire ship needs no slot.
 //   hold() → boolean              the hazards wait (default: false): main's fly-in and the boarding truce
-//                                 (swing..result), as its bombs do. Nothing moves, forms, ticks or charges then.
+//                                 (swing..result), as its bombs do. Nothing moves, forms, ticks or charges then (a
+//                                 fire ship heaves to), and when it ends a lit fire ship's arming starts over.
 //   boarding() → boolean          a boarding is running (default: false); krakenDue waits for it
 //   capture(e)                    take a struck ship as at a level clear (at the flagship's fall)
 //   turnRate(ship) → rad/s        the player's turn rate now, to lead your turn (default: her type's turn)
@@ -91,8 +93,9 @@ export const MECHANIC3_IDS = ['spouts', 'rogue', 'flagship'];
  * `next` s later at a loop point at least `away` from you and `spacing` from the other spouts, one no farther than
  * `near` when the loops have one (so the twisters come to the fight, not to the far end of the map). pull: inside r,
  * every ship drifts toward the core at `speed`. core: inside r a ship spins at `spin` rad/s and takes 1 hp every
- * `tick` s (`dps`); after `fling` s inside she is thrown outward at `flingSpeed` for `flingTime`. Pirates keep
- * `avoid` off.
+ * `tick` s (`dps`); after `fling` s inside she is thrown outward at `flingSpeed` for `flingTime`, and that spout lets
+ * her go: it no longer pulls her until she has left its pull zone (else a ship at rest, flung 6 u, lands inside it and
+ * is dragged back into the core for the spout's whole life). Pirates keep `avoid` off.
  */
 export const SPOUTS = {
   active: [2, 3],
@@ -429,7 +432,7 @@ export function createMechanics3(ids, ctx) {
   const counts = { windups: 0, rams: 0, lobs: 0, pots: 0, lit: 0, blasts: 0, givenUp: 0 };
 
   const recs = new Map(); // enemy → { ram, mortar, fire, ink, flee, asked }
-  const fx = new Map(); // any ship → { pushes, fling, surf, wobble, core, inked, wave }
+  const fx = new Map(); // any ship → { pushes, fling, flung, surf, wobble, core, inked, wave }
   const playerPos = () => {
     const p = c.player();
     if (p) return p;
@@ -444,7 +447,7 @@ export function createMechanics3(ids, ctx) {
   const fxOf = (s) => {
     let f = fx.get(s);
     if (!f) {
-      f = { pushes: [], fling: null, surf: 0, wobble: 0, core: null, inked: false, wave: null };
+      f = { pushes: [], fling: null, flung: null, surf: 0, wobble: 0, core: null, inked: false, wave: null };
       fx.set(s, f);
     }
     return f;
@@ -633,6 +636,11 @@ export function createMechanics3(ids, ctx) {
       shown.fireship = true;
       c.showBanner(WORDS.banner.fireship, 2.8);
     }
+  }
+  // After a hold (a boarding's truce): her arming starts over, with its hiss (main's `fuse` lasts the arming).
+  function rearm(e, F) {
+    F.t = 0;
+    c.sfx('fuse', e.x, e.z);
   }
   function giveUp(e, F) {
     F.out = true;
@@ -848,6 +856,7 @@ export function createMechanics3(ids, ctx) {
       d = 1;
     }
     f.fling = { vx: (dx / d) * SPOUTS.core.flingSpeed, vz: (dz / d) * SPOUTS.core.flingSpeed, t: SPOUTS.core.flingTime };
+    f.flung = sp.id; // (it lets her go: no pull from it until she is out of its pull zone)
     f.core = null;
     spoutStats.flings++;
     c.pop(WORDS.whoosh, s.x, POP_Y, s.z, meStyle(s, 'bad', 'info'));
@@ -872,6 +881,15 @@ export function createMechanics3(ids, ctx) {
       slot.spout = form(k);
       if (!slot.spout) slot.wait = 1; // (no loops in this sea: look again later)
     });
+    // A ship a spout flung is free of its pull until she is out of its pull zone (or it is gone): the fling
+    // (6 u for a ship at rest) ends inside the zone, and a ship with her sails furled would be dragged back into
+    // the core again and again for the spout's whole life.
+    for (const [s, f] of fx) {
+      if (f.flung === null || f.fling) continue;
+      const sp = spouts.find((k) => k.id === f.flung);
+      const q = sp && sp.state === 'active' && isShip(s) ? spoutPos(sp) : null;
+      if (!q || !(Math.hypot(s.x - q.x, s.z - q.z) < SPOUTS.pull.r)) f.flung = null;
+    }
     // The cores: spin, 1 hp a tick, the fling; they put fires out.
     const C = SPOUTS.core;
     if (!spouts.some((sp) => sp.state === 'active')) {
@@ -1105,12 +1123,20 @@ export function createMechanics3(ids, ctx) {
     step(dt) {
       const d = Math.max(0, num(dt, 0));
       now += d;
+      const wasHeld = held;
       held = c.hold();
       registerAll();
       if (held) {
         // Everything waits (the fly-in, a boarding's truce). A charge in progress is called off.
         for (const r of recs.values()) if (r.ram) cancelRam(r.ram);
         return;
+      }
+      // The hold is over (your controls are back): a lit fire ship's fuse starts its arming again, her ring
+      // refilling and her hiss rising over the whole FIRESHIP.arm, so no blast comes without that telegraph.
+      if (wasHeld) {
+        let n = 0;
+        for (const [e, r] of recs) if (r.fire && r.fire.lit && !r.fire.out && !r.fire.exploded && afloat(e) && ++n) rearm(e, r.fire);
+        if (n) c.announce(WORDS.live.fireship);
       }
       const g = d;
       if (!(g > 0)) return;
@@ -1153,7 +1179,12 @@ export function createMechanics3(ids, ctx) {
       }
       if (!r) return null;
       const toYou = Math.atan2(p.x - e.x, p.z - e.z);
-      if (r.fire && !r.fire.out && !r.fire.exploded) return { h: toYou, speed: max }; // straight at you
+      if (r.fire && !r.fire.out && !r.fire.exploded) {
+        // (while the hazards wait, the fly-in or a boarding's truce, she heaves to where she is with her fuse
+        // held: she never sails up alongside the locked decks to blow the moment your controls come back)
+        if (c.hold()) return { h: num(e.h, 0), speed: 0 };
+        return { h: toYou, speed: max }; // straight at you
+      }
       if (r.ram && r.ram.phase === 'windup') return { h: toYou, speed: max * RAM.windupSpeed };
       if (r.ram && r.ram.phase === 'surge') return { h: r.ram.h, speed: surgeSpeed(e) };
       if (r.ram && c.attacking(e)) return ramCourse(e, r.ram, p, toYou, max);
@@ -1194,7 +1225,7 @@ export function createMechanics3(ids, ctx) {
       }
       if (spouts.length && hurtable(s)) {
         for (const sp of spouts) {
-          if (sp.state !== 'active') continue;
+          if (sp.state !== 'active' || (f && f.flung === sp.id)) continue; // (it just flung her: she is let go)
           const q = spoutPos(sp);
           const dx = q.x - s.x;
           const dz = q.z - s.z;

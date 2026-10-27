@@ -5498,6 +5498,134 @@ function ev(page, fn, arg = null) {
     await closeK(ctx);
   });
 
+  // -------------------------------------------------------- kraken: two fingers on the steering (Stage 2 review)
+  // A phone flat on a table, two thumbs drumming ◀ ▶: a thumb sliding on ◀ while a second finger lands on ▶, lifted in
+  // either order, leaves no turn behind, its slide goes on as it was, and the arrows steer again afterwards (a second
+  // touch never takes the slide over). A second hand on the ship's wheel doesn't snap it to the middle or take it over.
+  // With the wheel, the help lists and the first voyage's level banner say "drag the wheel", not the arrows.
+  await section('kraken-thumbs', async () => {
+    const { ctx, page: tp } = await openK({ width: 390, height: 844, touch: true, label: 'kraken-thumbs' });
+    const two = await ev(tp, () => {
+      const G = window.__game;
+      T.level(1);
+      const pad = document.querySelector('#touch .pad.left');
+      const L = pad.querySelector('[data-hold="left"]');
+      const R = pad.querySelector('[data-hold="right"]');
+      const at = (el) => {
+        const b = el.getBoundingClientRect();
+        return { x: b.left + b.width / 2, y: b.top + b.height / 2 };
+      };
+      const ptr = (el, type, x, y, id, primary) => el.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, pointerType: 'touch', isPrimary: primary, clientX: x, clientY: y }));
+      const r2 = (v) => (typeof v === 'number' ? Math.round(v * 1000) / 1000 : v);
+      const read = () => ({ steer: r2(G.input.steer), input: r2(G.turn.input), needle: T.shown('steer-needle') });
+      const a = at(L);
+      const b = at(R);
+      const out = {};
+      let id = 40;
+      for (const first of ['slider', 'second']) {
+        const A = ++id;
+        const B = ++id;
+        const C = ++id;
+        ptr(L, 'pointerdown', a.x, a.y, A, true);
+        ptr(L, 'pointermove', a.x + 15, a.y, A, true); // (a thumb's wobble past 12 px: a slide)
+        const sliding = read();
+        ptr(R, 'pointerdown', b.x, b.y, B, false);
+        const both = read();
+        ptr(L, 'pointermove', a.x + 28, a.y, A, true);
+        const still = read();
+        let mid;
+        if (first === 'slider') {
+          ptr(L, 'pointerup', a.x + 28, a.y, A, true);
+          mid = read();
+          ptr(R, 'pointerup', b.x, b.y, B, false);
+        } else {
+          ptr(R, 'pointerup', b.x, b.y, B, false);
+          mid = read();
+          ptr(L, 'pointerup', a.x + 28, a.y, A, true);
+        }
+        const up = read();
+        G.step(1 / 120);
+        ptr(R, 'pointerdown', b.x, b.y, C, true);
+        const right = read();
+        ptr(R, 'pointerup', b.x, b.y, C, true);
+        out[first] = { sliding, both, still, mid, up, right, after: read() };
+      }
+      // a second finger landing between the arrows while a thumb slides
+      ptr(L, 'pointerdown', a.x, a.y, 61, true);
+      ptr(L, 'pointermove', a.x + 15, a.y, 61, true);
+      const m = { x: (a.x + b.x) / 2, y: a.y };
+      ptr(pad, 'pointerdown', m.x, m.y, 62, false);
+      ptr(pad, 'pointermove', m.x + 40, m.y, 62, false);
+      const gap = read();
+      ptr(pad, 'pointerup', m.x + 40, m.y, 62, false);
+      ptr(L, 'pointerup', a.x + 15, a.y, 61, true);
+      out.gap = { during: gap, up: read() };
+      return out;
+    });
+    for (const k of ['slider', 'second']) {
+      const o = two[k];
+      check(near(o.sliding.steer, 0.732, 1e-3) && near(o.both.steer, 0.732, 1e-3) && near(o.still.steer, 0.5, 1e-9) && o.still.needle && (k === 'slider' ? o.mid.steer === null && o.mid.input === -1 : near(o.mid.steer, 0.5, 1e-9)) && o.up.steer === null && o.up.input === 0 && !o.up.needle && o.right.steer === null && o.right.input === -1 && o.after.input === 0,
+        `kraken thumbs: a thumb sliding on ◀ and a second finger on ▶ (${k === 'slider' ? 'the sliding thumb' : 'the second finger'} lifted first): the slide goes on as it was (${o.still.steer}), lifting both leaves no turn (${J(o.up)}), and ▶ held afterwards turns right (${o.right.input}) (${J(o)})`);
+    }
+    check(near(two.gap.during.steer, 0.732, 1e-3) && two.gap.up.steer === null && two.gap.up.input === 0 && !two.gap.up.needle,
+      `kraken thumbs: a second finger sliding between the arrows doesn't take the slide over, and nothing is left when both lift (${J(two.gap)})`);
+
+    // The ship's wheel: one hand holds it at a 0.8 turn, a second hand touches it.
+    const wheel = await ev(tp, async () => {
+      const G = window.__game;
+      T.level(1);
+      G.settings.set({ v: 1, steer: 'wheel' });
+      G.state.mode = 'paused';
+      await T.redraw();
+      G.state.mode = 'playing';
+      const w = document.getElementById('touch-wheel');
+      const box = w.getBoundingClientRect();
+      const cx = box.left + box.width / 2;
+      const cy = box.top + box.height / 2;
+      const ptr = (type, x, id, primary) => w.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, pointerType: 'touch', isPrimary: primary, clientX: x, clientY: cy }));
+      const read = () => ({ steer: G.input.steer === null ? null : Math.round(G.input.steer * 1000) / 1000, rot: w.style.transform });
+      ptr('pointerdown', cx, 71, true);
+      ptr('pointermove', cx + 48, 71, true);
+      const held = read();
+      ptr('pointerdown', cx - 20, 72, false);
+      const second = read();
+      ptr('pointermove', cx + 30, 71, true);
+      const turned = read();
+      ptr('pointerup', cx - 20, 72, false);
+      const secondUp = read();
+      ptr('pointerup', cx + 30, 71, true);
+      const up = read();
+      return { held, second, turned, secondUp, up };
+    });
+    check(wheel.held.steer === -0.8 && wheel.second.steer === -0.8 && wheel.turned.steer === -0.5 && wheel.turned.rot === 'rotate(60deg)' && wheel.secondUp.steer === -0.5 && wheel.up.steer === null && wheel.up.rot === 'rotate(0deg)',
+      `kraken thumbs: a second hand on the ship's wheel doesn't snap it to the middle (${wheel.second.steer}) or take it over: the first hand still turns it (${wheel.turned.steer}) after the second lets go (${J(wheel)})`);
+
+    // The help: the pause dialog's and the title's touch help, and the first voyage's level banner.
+    const help = await ev(tp, async () => {
+      const G = window.__game;
+      const line = (sel) => (document.querySelector(`${sel} ul.controls.touch-help li`)?.textContent || '').replace(/\s+/g, ' ').trim();
+      const read = () => {
+        G.state.tutorialDone = false;
+        G.newGame(1);
+        const banner = T.text('banner');
+        G.state.tutorialDone = true;
+        return { pause: line('#pause-screen'), menu: line('#menu-screen'), banner };
+      };
+      const out = {};
+      G.settings.set({ v: 1, steer: 'wheel' });
+      out.wheel = read();
+      G.settings.set({ v: 1, steer: 'buttons' });
+      out.arrows = read();
+      T.level(1);
+      return out;
+    });
+    check(/drag it sideways to steer/.test(help.wheel.pause) && /Ship.s wheel/.test(help.wheel.pause) && !/[◀▶]|slide/.test(help.wheel.pause) && help.wheel.menu === help.wheel.pause && /Drag the ship.s wheel to steer/.test(help.wheel.banner) && !/Hold ◀/.test(help.wheel.banner),
+      `kraken thumbs: with the ship's wheel the touch help reads "${help.wheel.pause}" and the first voyage's banner "${help.wheel.banner}" (no arrows) (${J(help.wheel)})`);
+    check(help.arrows.pause === '◀▶ steer · slide on them for gentle turns' && help.arrows.menu === help.arrows.pause && /Hold ◀ ▶ to steer/.test(help.arrows.banner),
+      `kraken thumbs: back on the arrows, the help reads "${help.arrows.pause}" again and the banner "Hold ◀ ▶ to steer" (${J(help.arrows)})`);
+    await closeK(ctx);
+  });
+
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);
   await browser.close();
   server.close();

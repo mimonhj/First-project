@@ -570,7 +570,9 @@
 .qm-hello { margin: 0; font-size: 15px; line-height: 1.3; font-weight: 600; color: #4a3826; }
 .qm-tally { display: inline-flex; align-items: center; gap: 6px; margin: 7px 0 0; padding: 2px 12px 2px 6px; font-size: 13.5px; font-weight: 700; line-height: 1.3; background: #fff; border: 2px solid var(--ink); border-radius: 999px; }
 .qm-star svg { display: block; width: 18px; height: 18px; }
-.quiz-note { margin: 10px 0 0; padding: 6px 10px; font-size: 14px; line-height: 1.3; font-weight: 700; text-align: center; color: var(--teal-text); background: #fffaf0; border: 2px dashed rgba(29, 19, 48, 0.5); border-radius: 12px; }
+/* (a note stays in view at the top of the panel while the islands scroll under it; quizPanel.js keeps a focused
+   island clear of it with the body's scroll-padding) */
+.quiz-note { position: sticky; top: 4px; z-index: 2; margin: 10px 0 0; padding: 6px 10px; font-size: 14px; line-height: 1.3; font-weight: 700; text-align: center; color: var(--teal-text); background: #fffaf0; border: 2px dashed rgba(29, 19, 48, 0.5); border-radius: 12px; box-shadow: 0 3px 0 rgba(29, 19, 48, 0.18), 0 0 0 5px var(--paper); }
 .quiz-note.warn { color: var(--red-text); }
 .quiz-note.gold { color: var(--gold-text); }
 .quiz-isles { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin: 14px 0 6px; padding: 0 2px; list-style: none; }
@@ -619,6 +621,19 @@
 .qi-state { font-size: 11.5px; color: #5c4632; }
 .qi-state .qi-lock { width: 9px; height: 11px; margin: 0 3px -1px 0; }
 .qm-prize { margin: 12px 0 4px; font-size: 13px; line-height: 1.3; font-weight: 700; text-align: center; color: var(--teal-text); }
+.qm-prize + .qm-prize { margin-top: 6px; }
+/* a trophy won: its picture beside the words */
+.qm-prize.won { display: flex; align-items: center; justify-content: center; gap: 7px; font-size: 14px; text-align: left; }
+.qt-ico { flex: none; display: block; width: 28px; height: 26px; }
+/* a tap on a locked island: a little shake (its reason shows in the note above) */
+.quiz-isle.nope { animation: quiz-nope 0.45s ease-in-out; }
+@keyframes quiz-nope {
+  0%, 100% { transform: none; }
+  20% { transform: translateX(-5px) rotate(-2deg); }
+  45% { transform: translateX(5px) rotate(2deg); }
+  70% { transform: translateX(-3px); }
+  85% { transform: translateX(2px); }
+}
 
 /* A question: progress marks (✓ right, • wrong, ○ to come), the question, 3–4 answers ≥ 56 px tall */
 #quiz-question:focus { outline: none; }
@@ -750,6 +765,8 @@
 .qr-line.gold { color: var(--gold-text); }
 .qr-line.open { color: var(--teal-text); }
 .qr-line.warn { color: var(--red-text); }
+.qr-line.trophy { display: flex; align-items: center; justify-content: center; gap: 8px; width: fit-content; max-width: 100%; box-sizing: border-box; margin: 10px auto 4px; padding: 5px 12px 5px 8px; color: var(--teal-text); text-align: left; background: #fff; border: 2px solid var(--ink); border-radius: 14px; box-shadow: 0 2px 0 var(--ink); }
+.qr-line.trophy .qt-ico { width: 34px; height: 31px; }
 .qr-line .coin, .quiz-coin-fly {
   display: inline-block;
   width: 16px;
@@ -888,7 +905,49 @@
   .build-row .b-buy { margin-top: 6px; }
   .build-row .b-btn { font-size: 14px; letter-spacing: 0; gap: 6px; }
 }
+/* Small screens (quizPanel.js picks the smallest squeeze at which every answer of the round shows whole,
+   unscrolled, SPEC3 §7.3): fit-1 drops the header in a round (the island's name and the chest; the title is still
+   read out), slims the footer (the lifebuoy shows its ring and "2 left") and makes the answers two-a-row tiles with
+   the number on a corner, so the words get the whole width; fit-2 is a size smaller still. A short landscape
+   screen gives the quiz a wider side panel, so a long question takes fewer lines. (Each step only ever makes
+   things smaller.) */
+@media (orientation: landscape) and (max-height: 500px) {
+  .quiz-panel.dock-panel { width: clamp(290px, 60vw, 400px); }
+}
+/* (the shortest screens: the map's header keeps the kicker and the chest, the title is still read out, so a note
+   and the focused island both fit in the body) */
+@media (orientation: portrait) and (max-height: 520px), (orientation: landscape) and (max-height: 400px) {
+  .quiz-panel .dock-head h2 { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .quiz-note { padding: 5px 9px; font-size: 13.5px; }
+}
+.quiz-panel.in-round.fit-1 .dock-head { display: none; }
+.quiz-panel.in-round.fit-1 .dock-body { padding-top: 2px; }
+.quiz-panel.in-round.fit-1 .quiz-progress { margin: 6px 0 0; }
+.quiz-panel.in-round.fit-1 .quiz-q { margin: 4px 0 7px; font-size: 20px; line-height: 1.2; }
+.quiz-panel.in-round.fit-1 .quiz-answers { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px 8px; padding: 4px 0 4px; }
+.quiz-panel.in-round.fit-1 .quiz-answers[data-count="3"] .quiz-ans:last-child { grid-column: 1 / -1; }
+.quiz-panel.in-round.fit-1 .quiz-ans { justify-content: center; gap: 0; padding: 6px 9px; font-size: 15px; line-height: 1.15; text-align: center; }
+.quiz-panel.in-round.fit-1 .qa-num { position: absolute; top: -10px; left: -6px; z-index: 1; width: 25px; height: 25px; font-size: 14px; }
+.quiz-panel.in-round.fit-1 .quiz-ans .qa-mark { position: absolute; top: -12px; right: 6px; z-index: 1; }
+.quiz-panel.in-round.fit-1 .quiz-ans.right .qa-mark { width: 26px; height: 26px; font-size: 16px; }
+.quiz-panel.in-round.fit-1 .dock-exits { padding: 6px 8px 7px; gap: 6px; }
+.quiz-panel.in-round.fit-1 .dock-exits .btn { min-height: 44px; font-size: 15px; padding: 6px 10px 3px; box-shadow: 0 3px 0 var(--ink); }
+.quiz-panel.in-round.fit-1 .quiz-lifebuoy .buoy { width: 22px; height: 22px; }
+.quiz-panel.in-round.fit-1 .qb-name,
+.quiz-panel.in-round.fit-1 .qb-paren { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.quiz-panel.in-round.fit-2 .quiz-progress { margin-top: 4px; }
+.quiz-panel.in-round.fit-2 .qp-marks i { width: 19px; height: 19px; font-size: 11px; }
+.quiz-panel.in-round.fit-2 .quiz-q { margin: 2px 0 5px; line-height: 1.12; }
+.quiz-panel.in-round.fit-2 .quiz-answers { gap: 11px 6px; }
+.quiz-panel.in-round.fit-2 .quiz-ans { padding: 4px 7px; font-size: 14px; line-height: 1.12; }
+.quiz-panel.in-round.fit-2 .dock-exits { padding: 5px 8px 6px; }
+/* the last resort: "More answers" over the bottom of the body (it takes no room of its own) until the last answer
+   has come into view */
+.quiz-more { position: sticky; bottom: 4px; z-index: 2; display: flex; align-items: center; justify-content: center; gap: 6px; width: fit-content; min-height: 44px; margin: -48px auto 4px; padding: 6px 14px 3px; font-size: 14px; border-width: 3px; box-shadow: 0 3px 0 var(--ink); }
+.quiz-more.done { visibility: hidden; }
+
 @media (prefers-reduced-motion: reduce) {
+  .quiz-isle.nope { animation: none; }
   .quiz-feedback, .quiz-feedback.good .qf-bird, .quiz-ans.right::after { animation: none; }
   .quiz-ans.right::after { display: none; }
   .qr-stars .qs.on { animation-name: quiz-fade; animation-timing-function: ease; animation-delay: 0s; }

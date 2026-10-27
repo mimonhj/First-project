@@ -40,7 +40,8 @@ import { waveHeight } from './scenery.js';
 //                              //   player's ship { x, z, h, duration } (else 40 u in front of the head; duration:
 //                              //   the rise's length in s, default 6). null when there is no head to frame (or,
 //                              //   under reduced motion, outside the 1.5 s cut to the eye in the middle of the
-//                              //   rise). The vectors are reused: copy them.
+//                              //   rise: it looks at the open eye from CUT_TURN rad round to that side of the
+//                              //   way the head faces, whatever `from` is). The vectors are reused: copy them.
 //   statusShip(status) → ship,  // its special status drawn by statusfx.js like a ship's (an addition to SPEC3
 //                              //   §11.1): main passes the result to statusfx.sync with the fleet. ship is one
 //                              //   persistent ship-like object { mesh, status, type, hp } whose mesh (an empty
@@ -51,8 +52,11 @@ import { waveHeight } from './scenery.js';
 //                              //   ice floes round it, the stink cloud on its crown). status: kraken.status
 //                              //   ({ id, t, max }); with nothing to stand on its status reads id null, so
 //                              //   statusfx lets the look fade.
-//   read() → { ready, warming, head, tentacles, shadow, pearl, rings, fills, bubbles, inkBlobs, glow,
-//              eyes: [openL, openR] },   // test hook (warming: the warm-up frame is up)
+//   read() → { ready, warming, head, tentacles, shadow, pearl, rings, warnings, fills, bubbles, inkBlobs, glow,
+//              eyes: [openL, openR] },   // test hook (warming: the warm-up frame is up; rings: every instance of
+//                                        //   the one rings mesh: the warnings, their red grab rims and the foam
+//                                        //   collars round the head, each raised tentacle and the pearl; warnings:
+//                                        //   the warning rings alone, kraken.visuals().rings drawn: ≤ 4, §14)
 //   dispose()
 // }
 // reducedMotion: a boolean or a function returning one: no swirl, sway or bob, no camera glide (a cut).
@@ -154,6 +158,8 @@ const GLOW_RATE = 2; // the glow moves at most this much a second ...
 const GLOW_TURN = 0.6; // ... and turns round at most every 0.6 s: under 1 Hz (SPEC3 §15)
 const RISE_T = 6; // s: the rise (SPEC3 §5.7.1), unless riseCamera is told its duration
 const CUT_T = 1.5; // s: reduced motion's cut to the eye
+const CUT_TURN = 0.6; // rad: the cut looks at the eye from this far round to its side of the way the head faces
+const CUT_BACK = 19; // u: the cut's camera from the eye
 const LID_OPEN = -1.05;
 const LID_SHUT = 1.62;
 
@@ -892,7 +898,7 @@ export function createKrakenView(scene, opts = {}) {
   let lastBurn = null; // the part on fire (visuals().burn.part)
   let lastT = 0; // the visual time of the last update
   let clock = 0;
-  const counts = { bubbles: 0, rings: 0, fills: 0, inkBlobs: 0 };
+  const counts = { bubbles: 0, rings: 0, fills: 0, inkBlobs: 0, warnings: 0 };
 
   function inst(mesh, key, cap, x, y, z, sx, sy, sz, ry, color) {
     if (counts[key] >= cap) return;
@@ -1195,6 +1201,7 @@ export function createKrakenView(scene, opts = {}) {
         const turn = still ? 0 : t * 0.9;
         const isInk = r.kind === 'ink';
         inst(fx.rings, 'rings', CAP_RINGS, r.x, y + 0.02, r.z, R, 1, R, turn, isInk ? INK_RIM : RING);
+        counts.warnings++;
         if (r.grab) inst(fx.rings, 'rings', CAP_RINGS, r.x, y + 0.01, r.z, R * 1.13, 1, R * 1.13, -turn, GRAB);
         // the fill grows to the rim as the warning runs out (like the bomb zones)
         const f = Math.max(0.06, u) * R * 0.86;
@@ -1375,7 +1382,7 @@ export function createKrakenView(scene, opts = {}) {
       const step0 = Math.max(0, num(dt, 0));
       clock += step0;
       lastT = time;
-      counts.bubbles = counts.rings = counts.fills = counts.inkBlobs = 0;
+      counts.bubbles = counts.rings = counts.fills = counts.inkBlobs = counts.warnings = 0;
       const burn = V.burn && typeof V.burn === 'object' ? V.burn.part : null;
       lastBurn = typeof burn === 'string' || Number.isFinite(burn) ? burn : null;
       if (V.head && typeof V.head === 'object') poseHead(V.head, V.eye, time, step0, still);
@@ -1424,11 +1431,15 @@ export function createKrakenView(scene, opts = {}) {
       const ex = H.x + (Math.cos(H.h) * EYE.x + fx0 * EYE.z) * HEAD_SCALE;
       const ez = H.z + (-Math.sin(H.h) * EYE.x + fz0 * EYE.z) * HEAD_SCALE;
       if (rm()) {
-        // reduced motion: a cut to the eye for 1.5 s in the middle of the rise, and back; no glide
+        // reduced motion: a cut to the eye for 1.5 s in the middle of the rise, and back; no glide. It looks at
+        // the open (left, port) eye from CUT_TURN rad round to that side of the way the head faces (it rises
+        // facing your ship), never along that line: a ship nearer than the camera on it hid the eye behind its
+        // sails. (Not from `from`'s bearing, so a caller's own turn of `from` can't add to CUT_TURN.)
         const T = from && Number.isFinite(from.duration) && from.duration > 0 ? from.duration : RISE_T;
         const w = Math.min(1, CUT_T / T);
         if (k < 0.5 - w / 2 || k >= 0.5 + w / 2) return null;
-        camPos.set(ex + dx * 19 - dz * 3, Math.max(eyeY, 0) + 3.2, ez + dz * 19 + dx * 3);
+        const a = H.h + CUT_TURN;
+        camPos.set(ex + Math.sin(a) * CUT_BACK, Math.max(eyeY, 0) + 3.2, ez + Math.cos(a) * CUT_BACK);
         camLook.set(ex, eyeY + 0.6, ez);
         return { pos: camPos, look: camLook };
       }
@@ -1457,6 +1468,7 @@ export function createKrakenView(scene, opts = {}) {
         shadow: !!(shadow && shadow.mesh.visible),
         pearl: !!(pearl && pearl.group.visible),
         rings: counts.rings,
+        warnings: counts.warnings,
         fills: counts.fills,
         bubbles: counts.bubbles,
         inkBlobs: counts.inkBlobs,

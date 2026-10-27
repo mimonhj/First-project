@@ -1177,6 +1177,140 @@ function mulberry32(seed) {
     check(w.m.state.rams[0].phase === 'cool' && w.m.drift(shark) === null, 'a hold calls a charge off, and nothing drifts while it lasts');
   }
 
+  // ---------------------------------------------------------------- hold: a fire ship heaves to (review SEAS-2)
+  // A boarding's truce (swing..result) used to freeze her fuse but not her course: she sailed up alongside the
+  // locked decks and blew the moment the truce ended, with no telegraph left after your controls came back.
+  {
+    const clampN = (v, a, b) => Math.min(b, Math.max(a, v));
+    // She sails as steer() says, speeding up at her accel and slowing at 1.5 × it (as main's updateEnemy), and
+    // main's separateShips holds the centres (len_a + len_b) × 0.36 apart.
+    const helm = (w, f, p) => {
+      const s = w.m.steer(f, DT);
+      if (s) {
+        f.h = s.h;
+        f.speed += clampN(s.speed - f.speed, -f.type.accel * 1.5 * DT, f.type.accel * DT);
+      }
+      f.x += Math.sin(f.h) * f.speed * DT;
+      f.z += Math.cos(f.h) * f.speed * DT;
+      const d = Math.hypot(f.x - p.x, f.z - p.z);
+      const min = (p.type.len + f.type.len) * 0.36;
+      if (d < min) {
+        f.x = p.x + ((f.x - p.x) / d) * min;
+        f.z = p.z + ((f.z - p.z) / d) * min;
+      }
+      return d;
+    };
+    {
+      const { w, f } = fireSetup({ dist: 20 });
+      w.m.step(DT); // lit
+      w.hold = true;
+      const st = w.m.steer(f, DT);
+      w.hold = false;
+      const go = w.m.steer(f, DT);
+      check(st && st.speed === 0 && near(st.h, f.h) && go && go.speed === 11.5, `while ctx.hold() (a boarding's truce) a lit fire ship heaves to where she is (${JSON.stringify(st)}; after it: ${JSON.stringify(go)})`);
+    }
+    // The review's two cases (level 8): you sit still and board a ship off your beam while a fire ship comes from
+    // astern at 8 u/s; the truce runs from T0 to 5 s. (A) She is lit 30 u off just before it: she used to sail up
+    // alongside through it and blow 1.3 s after it. (B) From 28 u she is armed and 11 u off when it begins: too
+    // close to stop short of you, she used to blow the very step it ended.
+    const truce = (dist, T0) => {
+      const p = ship('player', 0, 0, 0);
+      const f = ship('fireship', 0, -dist, 0, { speed: 8 });
+      const w = world({ player: p, enemies: [f] });
+      w.m.init();
+      const T1 = 5;
+      let i = 0;
+      const out = { blastAt: null, minHeld: Infinity, speedAtEnd: null, ringAfter: null, fuses: 0 };
+      w.runPre(10, () => {
+        const t = i++ * DT;
+        w.hold = t >= T0 - 1e-9 && t < T1 - 1e-9;
+        const d = helm(w, f, p);
+        if (w.hold) {
+          out.minHeld = Math.min(out.minHeld, d);
+          out.speedAtEnd = f.speed;
+        }
+        if (t > T1 + DT / 2 && out.ringAfter === null) {
+          out.fuses = w.log.sfx.filter((s) => s.name === 'fuse').length;
+          out.says = w.log.announce.filter((a) => /^Fire ship!/.test(a)).length;
+          out.ringAfter = { ...(w.m.visuals().fireRings[0] || {}) };
+        }
+        if (out.blastAt === null && w.log.explode.length) out.blastAt = t;
+      });
+      out.hurt = w.log.damage.filter((d) => d.s === p).reduce((n, d) => n + d.amount, 0);
+      out.wait = out.blastAt === null ? null : out.blastAt - T1;
+      return out;
+    };
+    const A = truce(30.5, 0.4);
+    check(A.minHeld > 12 && A.speedAtEnd < 0.05 && A.wait !== null && A.wait >= FIRESHIP.arm - 2 * DT, `lit just before a truce, she heaves to through it: never closer than ${f3(A.minHeld)} u (she used to come alongside, 6.3 u), at rest when it ends (${f3(A.speedAtEnd)} u/s), and she blows ${f3(A.wait)} s after it (≥ 1.6 s)`);
+    const B = truce(28, 1.65);
+    check(B.wait !== null && B.wait >= FIRESHIP.arm - 2 * DT && B.hurt > 0, `armed and too close to stop short when a truce begins, her arming starts over when it ends: the blast comes ${f3(B.wait)} s after your controls are back (≥ 1.6 s; it came the same step), and still hurts when she gets you (${B.hurt})`);
+    // (her ring refills from empty, her hiss and #game-live's line come again; the first came when she was lit)
+    check(B.ringAfter && B.ringAfter.armed === false && B.ringAfter.k < 0.05 && B.fuses === 2 && B.says === 2, `her ring refills from empty after the truce (${JSON.stringify(B.ringAfter)}), with her fuse hiss (${B.fuses} hisses) and "Fire ship!" in #game-live again (${B.says})`);
+    {
+      // Alongside you when the truce began (held 6.3 u off, lit 1 s): she still waits the whole 1.6 s after it.
+      const p = ship('player', 0, 0, 0);
+      const f = ship('fireship', 6.3, 0, -Math.PI / 2);
+      const w = world({ player: p, enemies: [f] });
+      w.m.init();
+      w.run(1);
+      w.hold = true;
+      w.run(3);
+      w.hold = false;
+      let at = null;
+      w.run(3, (k) => {
+        if (w.log.explode.length) at = (k + 1) * DT;
+        return at === null;
+      });
+      check(at !== null && near(at, FIRESHIP.arm, 2 * DT), `lit and alongside when a truce begins, she blows ${f3(at)} s after it ends (1.6 s: the whole telegraph, not the 0.6 s she had left)`);
+    }
+  }
+
+  // ---------------------------------------------------------------- a spout lets a ship go (review SEAS-4)
+  // A stopped ship near a waterspout used to be caught for its whole life: the fling (6 u/s for 1 s) ends inside
+  // the pull zone (r 14), so the pull dragged her back into the core again and again.
+  {
+    // Ships move as main's moveShip moves them: their speed, then drift(); the core's spin turns them.
+    const move = (w, s) => {
+      const d = w.m.drift(s);
+      s.x += Math.sin(s.h) * s.speed * DT + (d ? d.vx * DT : 0);
+      s.z += Math.cos(s.h) * s.speed * DT + (d ? d.vz * DT : 0);
+      s.h = wrap(s.h + w.m.shipMods(s).spin * DT);
+    };
+    const trap = (speed) => {
+      const p = ship('player', 9, 0, 0, { speed });
+      const w = world({ player: p });
+      w.m.init();
+      const sp = w.m.spout(0, 0); // (a test spout stays put: forming 3 s, active 22 s, collapsing 2 s)
+      let core = 0;
+      let after = null;
+      w.runPre(28, () => {
+        move(w, p);
+        if (Math.hypot(p.x, p.z) < 6) core += DT;
+        if (after === null && w.m.state.spouts.flings >= 1 && !w.m.drift(p)) after = { d: Math.hypot(p.x, p.z), drift: w.m.drift(p) };
+      });
+      return { w, p, sp, core, after, flings: w.m.state.spouts.flings, hurt: SHIP_TYPES.player.hp - p.hp };
+    };
+    const still = trap(0);
+    check(still.flings === 1 && still.hurt <= 8 && still.core <= 2.1, `a ship at rest 9 u from a spout is pulled in, spun and flung once, and then let go: ${still.flings} fling, ${f3(still.core)} s in the core, ${still.hurt} hp over the spout's life (it was 5 flings, 12.4 s and 31 hp)`);
+    check(still.after && still.after.d > SPOUTS.core.r && still.after.d < SPOUTS.pull.r, `flung out, she rests inside the pull zone (${still.after && f3(still.after.d)} u) and that spout no longer pulls her`);
+    // The release lasts only while she stays in its pull zone: out of it and back in, it pulls her again.
+    const p = ship('player', 9, 0, 0);
+    const w = world({ player: p });
+    w.m.init();
+    w.m.spout(0, 0);
+    w.runPre(10, () => move(w, p));
+    const free = w.m.drift(p);
+    p.x = 15;
+    p.z = 0;
+    w.m.step(DT);
+    p.x = 10;
+    const again = w.m.drift(p);
+    check(w.m.state.spouts.flings === 1 && free === null && again && near(again.vx, -2, 1e-9), `once she has left its pull zone, the spout pulls her again when she comes back (${JSON.stringify(again)})`);
+    // A ship at sail still sails clear on her own (as before).
+    const sailing = trap(5);
+    check(sailing.flings <= 1 && sailing.hurt <= 8, `a ship under sail gets clear (${sailing.flings} fling, ${sailing.hurt} hp)`);
+  }
+
   // ---------------------------------------------------------------- determinism
   {
     const runOnce = (seed) => {

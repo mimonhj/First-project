@@ -1191,6 +1191,91 @@ const TABLES = {
     check(threw === null, `a junk ctx and junk arguments never throw${threw ? ` (${threw.stack})` : ''}`);
   }
 
+  // ================================================================ krakenView in Node (review leftovers)
+  // krakenView.js imports three.js: it loads here through a module hook that maps 'three' and 'three/addons/' to
+  // vendor/ as index.html's importmap does (with no DOM it skips its one canvas texture). Two things it is checked
+  // for: the reduced-motion cut of the rise never looks along the line from the head to your ship (your own sails
+  // hid the eye), and the count of its warning rings, apart from the foam collars that share their mesh.
+  {
+    let KV = null;
+    let THREE = null;
+    let why = '';
+    try {
+      const { register } = require('node:module');
+      const { pathToFileURL } = require('node:url');
+      const base = pathToFileURL(ROOT + path.sep).href;
+      register(
+        'data:text/javascript,' +
+          encodeURIComponent(`const BASE = ${JSON.stringify(base)};
+export async function resolve(spec, ctx, next) {
+  if (spec === 'three') return { url: BASE + 'vendor/three.module.min.js', shortCircuit: true };
+  if (spec.startsWith('three/addons/')) return { url: BASE + 'vendor/addons/' + spec.slice(13), shortCircuit: true };
+  return next(spec, ctx);
+}
+export async function load(url, ctx, next) {
+  return url.startsWith(BASE) && url.endsWith('.js') ? next(url, { ...ctx, format: 'module' }) : next(url, ctx);
+}`)
+      );
+      THREE = await import(base + 'vendor/three.module.min.js');
+      KV = await import(base + 'src/krakenView.js');
+    } catch (e) {
+      why = e && e.message ? e.message : String(e);
+    }
+    check(!!(KV && typeof KV.createKrakenView === 'function'), `krakenView.js loads in Node through the three.js module hook${why ? ' (' + why + ')' : ''}`);
+    if (KV && typeof KV.createKrakenView === 'function') {
+      let rm = true;
+      const view = KV.createKrakenView(new THREE.Scene(), { reducedMotion: () => rm });
+      for (let i = 0; i < 12 && !view.prepare(); i++);
+      // the rise: the head up at the origin, facing your ship on +z (as kraken.js raises it, facing you)
+      view.update({ head: { x: 0, z: 0, h: 0, k: 1 }, eye: { glow: 1, open: 1, one: true } }, 1, 1 / 60);
+      const seg = (px, pz, a, b) => {
+        const dx = b.x - a.x;
+        const dz = b.z - a.z;
+        const u = Math.max(0, Math.min(1, ((px - a.x) * dx + (pz - a.z) * dz) / (dx * dx + dz * dz)));
+        return Math.hypot(px - (a.x + dx * u), pz - (a.z + dz * u));
+      };
+      const rows = [];
+      for (const d of [10, 12, 14, 17, 20, 24, 30, 40]) {
+        const c = view.riseCamera(0.5, { x: 0, z: d, h: Math.PI, duration: 6 });
+        if (!c) {
+          rows.push({ d, clear: -1 });
+          continue;
+        }
+        const cam = { x: c.pos.x, z: c.pos.z };
+        const eye = { x: c.look.x, z: c.look.z };
+        rows.push({ d, clear: +seg(0, d, cam, eye).toFixed(2), back: +Math.hypot(cam.x - eye.x, cam.z - eye.z).toFixed(1), port: cam.x > eye.x });
+      }
+      check(
+        rows.every((r) => r.clear >= 4 && r.back >= 15 && r.back <= 25 && r.port),
+        `reduced motion: the rise's cut looks at the open eye from its side, from 15–25 u, and its line of sight passes ≥ 4 u from your ship anywhere 10–40 u off on the line the head faces (it used to sit on that line, behind your sails once you were nearer than ~24 u): ${rows.map((r) => `${r.d} u → ${r.clear}`).join(', ')}`
+      );
+      // main.js turns the `from` it passes 0.6 rad round the head under reduced motion (its own work-around): the
+      // cut is the same either way, so that turn neither adds to the cut's nor is needed (main may drop it)
+      const a = view.riseCamera(0.5, { x: 0, z: 30, h: Math.PI, duration: 6 });
+      const pa = a && a.pos.clone();
+      const b = view.riseCamera(0.5, { x: Math.sin(0.6) * 30, z: Math.cos(0.6) * 30, h: Math.PI, duration: 6 });
+      check(!!(pa && b && pa.distanceTo(b.pos) < 1e-9), `the cut does not turn with \`from\`: main's own 0.6 rad turn of it changes nothing (${pa && b ? pa.distanceTo(b.pos).toFixed(3) : 'null'} u apart)`);
+      const outside = [0.3, 0.37, 0.63, 0.8].map((k) => view.riseCamera(k, { x: 0, z: 30, h: Math.PI, duration: 6 }));
+      rm = false;
+      const glide = view.riseCamera(0.5, { x: 0, z: 30, h: Math.PI, duration: 6 });
+      check(outside.every((c) => c === null) && !!glide, 'the cut lasts 1.5 s in the middle of a 6 s rise (none at k 0.3, 0.37, 0.63, 0.8); without reduced motion the camera glides as before');
+      // §14's "rings ≤ 4" is about warning rings: the view's `rings` counts every instance of its one rings mesh,
+      // the foam collars round the head and each raised tentacle too (the "5 rings at the last stand" of the
+      // Stage 2 report: the head's collar and four tentacles'); `warnings` counts the warning rings alone.
+      const up = [0, 1, 2, 3].map((i) => ({ id: 'u' + i, x: 20 * Math.cos(i), z: 20 * Math.sin(i), h: 0, t: 1, state: 'sway' }));
+      view.update({ head: { x: 0, z: 0, h: 0, k: 1 }, eye: { glow: 1, open: 1 }, tentacles: up, rings: [] }, 2, 1 / 60);
+      const r0 = view.read();
+      const warn = [0, 1, 2, 3].map((i) => ({ x: -20 + 9 * i, z: 25, r: 4, t: 0.5, T: 1.5, grab: false, kind: 'tentacle' }));
+      view.update({ head: { x: 0, z: 0, h: 0, k: 1 }, eye: { glow: 1, open: 1 }, tentacles: up, rings: warn }, 3, 1 / 60);
+      const r1 = view.read();
+      check(
+        r0.tentacles === 4 && r0.rings === 5 && r0.warnings === 0 && r1.warnings === 4 && r1.rings === 9,
+        `the view's rings: the head and 4 tentacles up draw 5 foam collars and no warning ring (rings ${r0.rings}, warnings ${r0.warnings}); with 4 warning rings, warnings reads 4 (rings ${r1.rings}, warnings ${r1.warnings})`
+      );
+      view.dispose();
+    }
+  }
+
   // ================================================================ EXIT — the 1C exit check (SPEC3 §12)
   {
     const live = runs.filter((w) => w.name);

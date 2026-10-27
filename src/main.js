@@ -321,9 +321,10 @@ function flashClass(el, cls, ms) {
 
 // Saved records are plain decimal integers in [min, max]. Anything else (missing, garbage, NaN,
 // Infinity, negative, fractional, absurdly large) falls back to `fallback`; integers outside the
-// range are clamped (e.g. progress saved by a version with more levels). Bad records are rewritten.
+// range are clamped (e.g. progress saved by a version with more levels). Bad records are rewritten, but with
+// keepHigher an integer above max is clamped here only and stays saved as it is (loadProgress()).
 const MAX_GOLD = 1_000_000;
-function loadInt(key, min, max, fallback) {
+function loadInt(key, min, max, fallback, keepHigher = false) {
   let raw;
   try {
     raw = localStorage.getItem(key);
@@ -333,12 +334,19 @@ function loadInt(key, min, max, fallback) {
   if (raw === null) return fallback;
   const text = raw.trim();
   let value = fallback;
+  let n = NaN;
   if (/^-?\d{1,16}$/.test(text)) {
-    const n = Number(text);
+    n = Number(text);
     if (Number.isSafeInteger(n)) value = clamp(n, min, max);
   }
-  if (String(value) !== raw) saveNumber(key, value);
+  if (String(value) !== raw && !(keepHigher && Number.isSafeInteger(n) && n > max)) saveNumber(key, value);
   return value;
+}
+// The levels open: this build's share of them. Progress saved by a build with more levels (the Kraken Seas' 9, in
+// another tab or before an update) is clamped in memory only, never lowered on disk (SPEC3 §10.2: progress only
+// ever goes up); only an unreadable record is rewritten.
+function loadProgress() {
+  return loadInt(PROGRESS_KEY, 1, LEVELS.length, 1, true);
 }
 
 // The chest and ship records as this tab last read or wrote them (see syncSaved).
@@ -762,7 +770,7 @@ const state = {
   best: loadInt(BEST_KEY, 0, MAX_GOLD, 0),
   purse: loadInt(PURSE_KEY, 0, MAX_GOLD, 0), // the treasure chest: gold banked from cleared levels
   banked: 0, // gold banked when the last level was cleared
-  unlocked: loadInt(PROGRESS_KEY, 1, LEVELS.length, 1),
+  unlocked: loadProgress(),
   tutorialDone: loadInt(TUTOR_KEY, 0, 1, 0) === 1,
   time: 0, // simulated seconds since level start
   combatTime: 0, // simulated seconds since the fly-in ended
@@ -951,10 +959,19 @@ const pops = createPops(ui.pops, camera, {
     const e = framing.focus;
     const r = e && state.mode === 'playing' ? tags.rect(e, camera) : null;
     if (r && typeof DOMRect === 'function') list.push(new DOMRect(r.l, r.t, r.r - r.l, r.b - r.t));
+    // (the Kraken's grab strip and the screen-edge warning arrows: their words stay readable)
+    if (WITH_KRAKEN) for (const el of kidCues()) list.push(el.getBoundingClientRect());
     return list;
   },
-  insetTop: () => hudTopInset(),
+  // (while a tentacle holds you, the pops stay below its grab strip: "Hold CUT! to cut it loose" stays readable)
+  insetTop: () => (WITH_KRAKEN && state.grabbed ? Math.max(hudTopInset(), grabStripBottom()) : hudTopInset()),
 });
+function grabStripBottom() {
+  const el = ui.grabStrip;
+  if (!el || el.classList.contains('hidden')) return 0;
+  const r = el.getBoundingClientRect();
+  return r.height > 0 ? Math.ceil(r.bottom) + 6 : 0;
+}
 const overboardCtx = {
   foam,
   sfx: (name, x, z) => audio.play(name, sfxAt(x, z)),
@@ -1364,13 +1381,12 @@ function clearHazardCues() {
   spoutWind.id = null;
   for (const z of fireRings.values()) scene.remove(z);
   fireRings.clear();
-  show(ui.edgeArrow, false);
-  shown.edgeArrow = false;
+  for (const m of edgeMarks) setEdgeMark(m, false);
 }
 function hazardCues() {
   const v = hazardVis;
   if (!v || !player || state.mode !== 'playing') {
-    if (spoutWind.handle || shown.edgeArrow) clearHazardCues();
+    if (spoutWind.handle || edgeMarks.some((m) => m.on)) clearHazardCues();
     return;
   }
   // The nearest spout's wind.
@@ -1396,14 +1412,7 @@ function hazardCues() {
     spoutWind.id = near.id;
     spoutWind.handle = audio.play('spout', sfxAt(near.x, near.z, { duration: left }));
   } else if (spoutWind.handle && spoutWind.handle.set) spoutWind.handle.set(sfxAt(near.x, near.z));
-  // The rogue wave's arrow at the screen edge it comes from, for its warning.
-  const w = v.rogue;
-  const warn = !!(w && w.warning);
-  if (warn) placeEdgeArrow(w);
-  if (warn !== !!shown.edgeArrow) {
-    show(ui.edgeArrow, warn);
-    shown.edgeArrow = warn;
-  }
+  // (the screen-edge arrows: edgeCues(), once the camera has moved this frame)
 }
 // One-time tips (SPEC3 §6.5, bits 2048 / 4096 / 8192): the first ram wind-up, the first forming waterspout, the
 // first rogue-wave warning. Simulated time (step()), looked at 10 times a second until all three are seen.
@@ -1418,29 +1427,156 @@ function hazardTips(dt) {
   if (!(tips & TIP.spout) && v.spouts.some((sp) => sp.state === 'forming')) showTip(TIP.spout, 'Waterspout! Keep clear of the twister');
   if (!(tips & TIP.rogue) && v.rogue && v.rogue.warning) showTip(TIP.rogue, 'ROGUE WAVE! Turn your bow or stern to it');
 }
-// Where the arrow goes: the crest's bearing from the view (0 = straight ahead, up the screen), on the edge of the
-// view, pointing in at you.
+// Threats coming from off screen (SPEC3 §6.3 and the kid rule: a shape, a sound and a word for ≥ 1.5 s): an arrow
+// at the screen edge they come from, pointing in at you, with its word. The rogue wave's teal WAVE! for its
+// warning; a lit fire ship's red FIRE SHIP! and a shark's red RAM! (winding up or charging) while she is off the
+// view (behind you or off your beam on a phone held upright), until she comes into it. Arrows keep off the HUD's
+// pieces (the minimap, the boss bar, the boarding and grab strips, the banner, the hint, the gun card, the touch pads)
+// and off each other. edgeMarks: [{ kind, el, on, at, w, h }] (WITH_KRAKEN).
+const edgeMarks = [];
 const edgeV = new THREE.Vector3();
-function placeEdgeArrow(w) {
-  edgeV.set(w.x, 0, w.z).applyMatrix4(camera.matrixWorldInverse);
-  const a = Math.atan2(edgeV.x, -edgeV.z);
+const EDGE_KEEP_OFF = '#minimap, #boss, #boarding-strip, #grab-strip, #objective, #banner, #hint, .hud-bottom .card, #touch .pad, #ammo-tray';
+function setEdgeMark(m, on) {
+  if (m.on === on) return;
+  m.on = on;
+  show(m.el, on);
+  if (!on) m.at = '';
+}
+// The shown Voyage III cues that pop words keep off (createPops' avoid): the grab strip and the edge arrows.
+function kidCues() {
+  const out = [];
+  if (ui.grabStrip && !ui.grabStrip.classList.contains('hidden')) out.push(ui.grabStrip);
+  for (const m of edgeMarks) if (m.on) out.push(m.el);
+  return out;
+}
+// Is (x, y, z) in the clear part of the view (inside the top HUD row, the gun card or the touch pads, `more` px in)?
+function inClearView(x, y, z, more = 0) {
+  edgeV.set(x, y, z).applyMatrix4(camera.matrixWorldInverse);
+  if (edgeV.z > -1) return false; // (behind the camera, or right at it)
+  edgeV.applyMatrix4(camera.projectionMatrix);
+  const W = window.innerWidth;
+  const H = window.innerHeight;
+  const sx = ((edgeV.x + 1) / 2) * W;
+  const sy = ((1 - edgeV.y) / 2) * H;
+  const top = Math.min(110, H / 2) + more;
+  const bottom = Math.max(H / 2, H - (isTouch() ? 250 : 150)) - more;
+  return sx >= 24 + more && sx <= W - 24 - more && sy >= top && sy <= bottom;
+}
+// The arrows this frame (frame(), after the camera has moved).
+function edgeCues() {
+  const v = hazardVis;
+  if (!edgeMarks.length) return;
+  if (!v || !player || player.sinking || state.mode !== 'playing') {
+    for (const m of edgeMarks) setEdgeMark(m, false);
+    return;
+  }
+  const want = {};
+  if (v.rogue && v.rogue.warning) want.wave = v.rogue;
+  // (a threat already on its arrow keeps it until it is well inside the view: no flicker at the edge)
+  const off = (m, x, z) => !inClearView(x, 1.5, z, m.on ? 30 : 0);
+  const fire = edgeMarks.find((m) => m.kind === 'fire');
+  let best = null;
+  for (const r of v.fireRings) if (off(fire, r.x, r.z) && (!best || r.k > best.k)) best = r;
+  if (best) want.fire = best;
+  const ram = edgeMarks.find((m) => m.kind === 'ram');
+  best = null;
+  let bd = Infinity;
+  for (const r of v.rams) {
+    const d = Math.hypot(r.x - player.x, r.z - player.z);
+    if (d < bd && off(ram, r.x, r.z)) {
+      bd = d;
+      best = r;
+    }
+  }
+  if (best) want.ram = best;
+  const placed = [];
+  for (const m of edgeMarks) {
+    const w = want[m.kind];
+    if (w) placeEdgeArrow(m, w, placed);
+    setEdgeMark(m, !!w);
+  }
+}
+// Where an arrow goes: the threat's bearing on the sea from your ship, against the way the camera looks (0 = straight
+// ahead, up the screen; a quarter turn = off to the right), on that edge of the view, pointing in at you. (Measured on
+// the sea, not by the view's depth: a threat close behind you, under the chase camera, is in front of its lens but
+// below the screen, and its arrow belongs at the bottom.) Then, if a HUD piece or an arrow already placed is in the
+// way, the nearest spot clear of them all (the arrow still pointing the same way).
+function placeEdgeArrow(m, w, placed) {
+  camera.getWorldDirection(edgeV);
+  let fx = edgeV.x;
+  let fz = edgeV.z;
+  const fl = Math.hypot(fx, fz);
+  if (fl > 0.05) {
+    fx /= fl;
+    fz /= fl;
+  } else {
+    fx = fwdX(player.h); // (a camera looking straight down: your bow is up)
+    fz = fwdZ(player.h);
+  }
+  const vx = w.x - player.x;
+  const vz = w.z - player.z;
+  const a = Math.atan2(vx * -fz + vz * fx, vx * fx + vz * fz);
   const W = window.innerWidth;
   const H = window.innerHeight;
   const dx = Math.sin(a);
   const dy = -Math.cos(a);
-  const mx = W / 2 - 44;
-  const my = H / 2 - 56;
+  // (its box: the arrow over its word, as big as it was last shown; before that about 80 × 84 px, 72 × 74 on a small
+  // screen, wider for a longer word)
+  const small = W <= 420 || H <= 420;
+  if (m.el.offsetWidth > 0) {
+    m.w = m.el.offsetWidth;
+    m.h = m.el.offsetHeight;
+  }
+  const hw = Math.ceil((m.w || Math.max(small ? 72 : 80, m.el.textContent.length * (small ? 7.5 : 9) + 20)) / 2);
+  const hh = Math.ceil((m.h || (small ? 74 : 84)) / 2);
+  const mx = W / 2 - hw - 6;
+  const my = H / 2 - hh - 6;
   const k = Math.min(Math.abs(dx) > 1e-6 ? mx / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-6 ? my / Math.abs(dy) : Infinity);
-  // (kept clear of the top HUD row and of the gun card or the touch pads at the bottom)
-  const x = Math.round(W / 2 + dx * k);
-  const y = Math.round(clamp(H / 2 + dy * k, Math.min(110, H / 2), Math.max(H / 2, H - (isTouch() ? 250 : 150))));
+  // (below the top HUD row)
+  const yMin = Math.min(110, H / 2);
+  const yMax = H - hh - 6;
+  const x0 = Math.round(W / 2 + dx * k);
+  const y0 = Math.round(clamp(H / 2 + dy * k, yMin, yMax));
+  const boxes = placed.slice();
+  for (const el of document.querySelectorAll(EDGE_KEEP_OFF)) {
+    if (el.closest('.hidden')) continue;
+    const r = el.getBoundingClientRect();
+    if (r.width >= 1 && r.height >= 1) boxes.push({ l: r.left, t: r.top, r: r.right, b: r.bottom });
+  }
+  const PAD = 6;
+  const clear = (x, y) => !boxes.some((b) => x + hw > b.l - PAD && x - hw < b.r + PAD && y + hh > b.t - PAD && y - hh < b.b + PAD);
+  let x = x0;
+  let y = y0;
+  if (!clear(x, y)) {
+    // (beside or past each piece, or at the screen's edges: the nearest of those spots that is clear)
+    const xs = [x0, hw + 6, W - hw - 6];
+    const ys = [y0, yMin, yMax];
+    for (const b of boxes) {
+      xs.push(Math.round(b.l - PAD - hw), Math.round(b.r + PAD + hw));
+      ys.push(Math.round(b.t - PAD - hh), Math.round(b.b + PAD + hh));
+    }
+    let best = Infinity;
+    for (const cx of xs) {
+      if (cx < hw + 6 || cx > W - hw - 6) continue;
+      for (const cy of ys) {
+        if (cy < yMin || cy > yMax) continue;
+        const d = (cx - x0) * (cx - x0) + (cy - y0) * (cy - y0);
+        if (d < best && clear(cx, cy)) {
+          best = d;
+          x = cx;
+          y = cy;
+        }
+      }
+    }
+  }
+  placed.push({ l: x - hw, t: y - hh, r: x + hw, b: y + hh });
   const deg = Math.round(((a * 180) / Math.PI + 180) % 360);
   const key = `${x},${y},${deg}`;
-  if (shown.edgeArrowAt === key) return;
-  shown.edgeArrowAt = key;
-  ui.edgeArrow.style.left = `${x}px`;
-  ui.edgeArrow.style.top = `${y}px`;
-  ui.edgeArrow.style.setProperty('--turn', `${deg}deg`);
+  if (m.at === key) return;
+  m.at = key;
+  m.el.style.left = `${x}px`;
+  m.el.style.top = `${y}px`;
+  m.el.style.setProperty('--turn', `${deg}deg`);
 }
 
 const coinGeo = new THREE.CylinderGeometry(0.7, 0.7, 0.2, 20);
@@ -1675,7 +1811,7 @@ function spawnWave(index) {
     const label = boss ? `${SHIP_TYPES[boss].name} appears!` : 'Reinforcements!';
     const crewLine = hands > 0 ? ` &middot; ${hands} more ${hands === 1 ? 'hand' : 'hands'} aboard` : '';
     const patchLine = patch !== WAVE_REPAIR ? `Your crew patches ${Math.round(patch * 100)}% of the hull` : 'Your crew patches the hull';
-    showBanner(`${label}<small>${describeWave(wave)}</small><small>${patchLine}${crewLine}</small>`, 3);
+    showBanner(`${label}<small>${describeWave(wave)}</small><small>${patchLine}${crewLine}</small>`, 3, 'routine');
   }
   // The level's mechanics may place a new ship (a galleon at a convoy start, the Phantom rising beside the
   // eye, with her own banner): after the banner above, so theirs wins.
@@ -1691,6 +1827,7 @@ function describeWave(wave) {
 }
 
 function controlsLine() {
+  if (isTouch() && wheelMode()) return 'Drag the ship&rsquo;s wheel to steer &middot; + &minus; for sails &middot; Fire buttons shoot sideways';
   return isTouch()
     ? 'Hold &#9664; &#9654; to steer &middot; + &minus; for sails &middot; Fire buttons shoot sideways'
     : 'Steer <kbd>A</kbd><kbd>D</kbd> &middot; Sails <kbd>W</kbd><kbd>S</kbd> &middot; Fire <kbd>Q</kbd> / <kbd>E</kbd>. Cannons fire sideways!';
@@ -1787,7 +1924,7 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     damage,
     escape: escapeShip,
     pop: (text, x, y, z, style) => pops.pop(text, x, y, z, style),
-    showBanner,
+    showBanner: WITH_KRAKEN ? (html, s) => showBanner(html, s, HOLD_BANNER.test(String(html)) ? 'hold' : null) : showBanner,
     announce: gameAnnounce,
     sfx: (name, x, z) => audio.play(name, sfxAt(x, z)),
     rng: () => combatRng(),
@@ -1900,12 +2037,27 @@ function blurActive() {
   if (document.activeElement instanceof HTMLElement) document.activeElement.blur();
 }
 
-function showBanner(html, seconds) {
+// kind (Voyage III, WITH_KRAKEN): 'hold' a hazard's how-to (a rogue wave, a fire ship, a mortar, a geyser), which
+// keeps the banner for its time; 'routine' news ("X sunk! 2 to go", "X strikes her colours!", reinforcements), which
+// waits while a 'hold' shows (the latest one only, shown when it ends: frame()); 'rise' the Kraken's rise banner,
+// placed clear of the rising head (style.css .banner.rise). Any other banner shows at once and drops a waiting one.
+function showBanner(html, seconds, kind = null) {
+  if (WITH_KRAKEN) {
+    if (kind === 'routine' && state.bannerHold && state.bannerTimer > 0) {
+      state.bannerNext = { html, seconds };
+      return;
+    }
+    if (kind !== 'hold') state.bannerNext = null;
+    state.bannerHold = kind === 'hold';
+    if (ui.banner.classList.contains('rise') !== (kind === 'rise')) ui.banner.classList.toggle('rise', kind === 'rise');
+  }
   ui.banner.innerHTML = html;
   show(ui.banner, true);
   retrigger(ui.banner, 'popped');
   state.bannerTimer = seconds;
 }
+// (the hazard how-to banners of mechanics3, WORDS.banner: they keep the banner for their time)
+const HOLD_BANNER = /^(?:ROGUE WAVE!|Fire ship!|Mortar shell!|The fire ship gives up!)/;
 
 function finishLevel() {
   boarding.cancel('level');
@@ -1992,7 +2144,7 @@ function finishLevel() {
 // larger of this tab's value and the saved one, so a tab opened earlier can never re-lock a level (or lower
 // the best) that another tab saved. The 'storage' listener raises this tab's values as soon as another saves.
 function raiseProgress(to) {
-  const saved = loadInt(PROGRESS_KEY, 1, LEVELS.length, 1);
+  const saved = loadProgress();
   state.unlocked = clamp(Math.max(state.unlocked, saved, Math.round(Number(to)) || 1), 1, LEVELS.length);
   if (state.unlocked > saved) saveNumber(PROGRESS_KEY, state.unlocked);
 }
@@ -2008,7 +2160,7 @@ function raiseBest(gold) {
 // Another tab saved progress or a best (or cleared storage): take the larger values, writing nothing. Returns
 // whether either changed here.
 function syncProgress() {
-  const unlocked = Math.max(state.unlocked, loadInt(PROGRESS_KEY, 1, LEVELS.length, 1));
+  const unlocked = Math.max(state.unlocked, loadProgress());
   const best = Math.max(state.best, loadInt(BEST_KEY, 0, MAX_GOLD, 0));
   const changed = unlocked !== state.unlocked || best !== state.best;
   state.unlocked = unlocked;
@@ -2380,10 +2532,10 @@ function strikeColours(ship, { quiet = false } = {}) {
   );
   if (ship.type.ghost) {
     audio.play('ghost', sfxAt(ship.x, ship.z));
-    showBanner(`The ghost crew is banished!<small>Take ${name.replace(/^The /, 'the ')} for ${captureGold(ship.type.gold)} gold</small>`, 2.8);
+    showBanner(`The ghost crew is banished!<small>Take ${name.replace(/^The /, 'the ')} for ${captureGold(ship.type.gold)} gold</small>`, 2.8, 'routine');
     gameAnnounce('The ghost crew is banished! Grapple the Phantom Galleon to take her.');
   } else {
-    showBanner(`${name} strikes her colours!<small>Take her for ${captureGold(ship.type.gold)} gold</small>`, 2.2);
+    showBanner(`${name} strikes her colours!<small>Take her for ${captureGold(ship.type.gold)} gold</small>`, 2.2, 'routine');
     // (The first time, the tip in the hint bubble, a live region too, says it: not read twice.)
     if (!tipped) gameAnnounce(`${name} strikes her colours. Grapple her to take her.`);
   }
@@ -2646,6 +2798,10 @@ function stepKraken(dt, def) {
   if (grabbed && !state.grabbed) {
     kseq.grabs++;
     kseq.grabAcc = 0;
+    // (one red flash as it takes hold, from the tentacle's side; its squeeze then flashes nothing)
+    const g = kraken.state && kraken.state.grab;
+    const w = g ? krakenParts.get(g.id) : null;
+    if (player && !player.sinking) hurtFlash(w ? w.x : player.x, w ? w.z : player.z, 'grab');
     if (!(tips & TIP.grab)) showTip(TIP.grab, 'GRABBED! Hold <kbd>G</kbd> to cut it loose', 'GRABBED! Hold <b>CUT!</b> to cut it loose', KR.grab.max);
   }
   state.grabbed = grabbed;
@@ -2688,7 +2844,7 @@ function startDread() {
     hands = state.crew - before;
   }
   const crewLine = hands > 0 ? ` &middot; ${hands} more ${hands === 1 ? 'hand' : 'hands'} aboard` : '';
-  showBanner(`Something stirs in the deep…<small>Your crew patches the hull${crewLine}</small>`, KR.dread);
+  showBanner(`Something stirs in the deep…<small>All stop! Your crew patches the hull${crewLine}</small>`, KR.dread);
   gameAnnounce('Something stirs in the deep. Your crew patches the hull.');
 }
 
@@ -2704,11 +2860,28 @@ function startRise(short = false) {
   krakenCheckpoint = { level: state.level, gold: state.gold, goldAtLevelStart: state.goldAtLevelStart };
   const B = KR.words.banner;
   const how = B.how + (ownsRecipe('stink') ? B.howStink : '');
-  showBanner(`${B.rise}<small>${how}</small>`, short ? KR.shortRise : KR.rise);
+  showBanner(`${B.rise}<small>${how}</small>`, short ? KR.shortRise : KR.rise, 'rise');
   gameAnnounce(`${B.rise} ${how}`);
   audio.setMusicPhase?.(1);
   kseq.music = 1;
   return true;
+}
+// Its head is solid while it is up (SPEC3 §5.7.2: a sphere r 6 at y 3, about 5.2 u round at the waterline): your
+// ship slides round it, as ships push each other apart (separateShips), and doesn't sail through it.
+function keepOffKrakenHead() {
+  const w = krakenParts.get('head');
+  const p = player;
+  if (!w || !(w.hp > 0) || !p || p.sinking || !krakenList.includes(w)) return;
+  const min = w.type.len * 0.43 + p.type.len * 0.36;
+  const dx = p.x - w.x;
+  const dz = p.z - w.z;
+  const d = Math.hypot(dx, dz);
+  if (d >= min) return;
+  const ux = d > 1e-4 ? dx / d : -fwdX(p.h);
+  const uz = d > 1e-4 ? dz / d : -fwdZ(p.h);
+  p.x = w.x + ux * min;
+  p.z = w.z + uz * min;
+  if (fwdX(p.h) * ux + fwdZ(p.h) * uz < 0) p.speed *= 0.97; // (bumping into it slows you a little)
 }
 // Any key or tap during the rise ends it (like the level's fly-in).
 function skipRise() {
@@ -3615,13 +3788,10 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
     state.lastHit = state.time;
     if (source !== 'grab') shakeCamera(0.4);
     state.ghostHold = 0.45;
-    retrigger(ui.hullCard, 'hurt');
-    if (state.edgeCooldown <= 0) {
-      const r = relative(player, hx, hz);
-      ui.edge.className = `edge ${r.lat > 0 ? 'right' : 'left'}${source === 'lava' ? ' lava' : ''}`;
-      retrigger(ui.edge, 'on');
-      state.edgeCooldown = 0.25;
-    }
+    // (A Kraken's squeeze, 2 ticks a second, is quiet for the eyes too: no red flash more often than once in 3 s,
+    // SPEC3 §15. The screen edge and the hull card flash once as the tentacle takes hold, stepKraken; the grab
+    // strip's shrinking bar shows the rest.)
+    if (source !== 'grab') hurtFlash(hx, hz, source);
   }
   if (ship.hp <= 0) {
     ship.hp = 0;
@@ -3655,7 +3825,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
       const moreWaves = state.wave < def.waves.length - 1;
       if (left > 0 || moreWaves) {
         const title = ship.type.boss ? `${ship.type.name} is sunk!` : `${ship.type.name} sunk!`;
-        showBanner(`${title}${left ? `<small>${left} to go</small>` : ''}`, 1.8);
+        showBanner(`${title}${left ? `<small>${left} to go</small>` : ''}`, 1.8, 'routine');
       } else if (ship.type.boss) {
         state.lastBossSunk = ship.type.name; // named in the victory banner
       }
@@ -3666,6 +3836,16 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
   }
   // A special shot's status (SPEC3 §2.2), once the hull damage is done: not on a ship it sank or made strike.
   if (info && info.status && ship.kind === 'enemy') applyShotStatus(ship, info, hx, hz);
+}
+// Your hull is hit: the hull card flashes, and the screen's edge on the side the blow came from (lava orange).
+function hurtFlash(hx, hz, source) {
+  retrigger(ui.hullCard, 'hurt');
+  if (state.edgeCooldown <= 0) {
+    const r = relative(player, hx, hz);
+    ui.edge.className = `edge ${r.lat > 0 ? 'right' : 'left'}${source === 'lava' ? ' lava' : ''}`;
+    retrigger(ui.edge, 'on');
+    state.edgeCooldown = 0.25;
+  }
 }
 
 // A special shot puts its status on her (SPEC3 §2.2, §2.3): once per volley per target (the first ball of a
@@ -3785,7 +3965,7 @@ function launchBomb(spec = null) {
     state.bombWarned = true;
     if (B.kind === 'lightning') showBanner('Lightning!<small>Steer out of the white circle</small>', 2.5);
     else if (B.kind === 'geyser') {
-      showBanner('Sea geyser!<small>Steer out of the bubbling circle</small>', 2.5);
+      showBanner('Sea geyser!<small>Steer out of the bubbling circle</small>', 2.5, 'hold');
       gameAnnounce('Sea geyser! Steer out of the bubbling circle.');
     } else showBanner('Lava bomb!<small>Steer out of the red circle</small>', 2.5);
   }
@@ -4033,7 +4213,10 @@ function updatePlayer(dt) {
   const turn = playerTurn();
   const rate = turnRate(p);
   p.h = wrapAngle(p.h + turn * rate * dt);
-  const target = Math.min(SAIL_LEVELS[state.sail] * speedCap(p), boarding.speedCap);
+  let target = Math.min(SAIL_LEVELS[state.sail] * speedCap(p), boarding.speedCap);
+  // All stop for the Kraken's dread and rise (SPEC3 §5.7.1): its eye opens 40 u ahead of your bow, and a ship
+  // sailing on would hide it behind her own sails and then sail into it. Your sails set again for the fight.
+  if (kraken && (kseq.stage === 'dread' || kseq.stage === 'rise')) target = 0;
   p.speed += clamp(target - p.speed, -t.accel * 1.5 * dt, t.accel * dt);
   // A Kraken tentacle holds her (SPEC3 §5.7.3): dead in the water, unable to turn (playerTurn), its squeeze
   // 2 hp/s (1 hp every 0.5 s, quiet: the strip and the creaking hull say it).
@@ -4679,6 +4862,7 @@ function step(dt) {
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
   if (kraken) stepKraken(dt, def); // (level 9: the Inkheart's fall, the dread, the rise, the Kraken, SPEC3 §5.7.1)
   separateShips(dt);
+  if (kraken) keepOffKrakenHead();
   updateBalls(dt);
   updateCoins(dt);
   updateCrates();
@@ -5162,10 +5346,11 @@ ui.canvas.addEventListener('webglcontextlost', onContextLost);
 ui.canvas.addEventListener('webglcontextrestored', onContextRestored);
 ui.recoverBtn.addEventListener('click', continueAfterRecovery);
 
-// Any input during the fly-in fast-forwards it to the chase camera.
-function skipIntro() {
+// Any input during the fly-in fast-forwards it to the chase camera. A fresh press (not a held key's auto-repeat)
+// skips the Kraken's rise too (SPEC3 §5.7.1): a child holding a steering or fire key through the dread sees it.
+function skipIntro(fresh = true) {
   if (state.mode === 'playing' && state.intro > 0.5) state.introRate = Math.max(state.introRate, state.intro / 0.5);
-  if (kraken && state.mode === 'playing') skipRise(); // (and the Kraken's rise, SPEC3 §5.7.1)
+  if (kraken && state.mode === 'playing' && fresh) skipRise();
 }
 
 const KEYMAP = {
@@ -5261,7 +5446,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (state.mode !== 'playing') return;
-  skipIntro();
+  skipIntro(!e.repeat);
   // Ammo: R cycles, 1 / 2 / 3 pick (by physical key, so AZERTY works). 4 / 5 / 6 are Fire, Frost and Stink
   // shot (SPEC3 §6.1): taken here so they never do anything else; they pick once the Kraken Seas sail.
   const ammoKey = /^(?:Digit|Numpad)([1-6])$/.exec(e.code || '');
@@ -5415,6 +5600,9 @@ function showNeedle(r) {
 }
 function startSlide(e, r0) {
   if (!WITH_KRAKEN || wheelMode() || state.mode !== 'playing') return;
+  // One thumb slides at a time: a second finger on the pad (both thumbs drumming ◀ ▶) only presses its button, and
+  // never takes the slide over, or the first thumb's slide would outlive both fingers.
+  if (slide.id !== null && slide.id !== e.pointerId) return;
   slide.id = e.pointerId;
   slide.x0 = e.clientX;
   slide.r0 = r0;
@@ -5466,6 +5654,15 @@ for (const type of ['pointerup', 'pointercancel', 'lostpointercapture']) {
     if (e.target === steerPad) endSlide(e);
   });
 }
+// (A finger lifted anywhere ends its own slide or wheel turn: whatever element its pointerup reaches.)
+if (WITH_KRAKEN) {
+  for (const type of ['pointerup', 'pointercancel']) {
+    window.addEventListener(type, (e) => {
+      endSlide(e);
+      wheelLetGo(e);
+    });
+  }
+}
 // The ship's wheel.
 function setWheelTurn(v, spring) {
   wheel.v = v;
@@ -5488,6 +5685,7 @@ function wheelLetGo(e) {
 touchWheel.addEventListener('pointerdown', (e) => {
   if (!wheelMode() || state.mode !== 'playing') return;
   e.preventDefault();
+  if (wheel.id !== null && wheel.id !== e.pointerId) return; // (one hand on the wheel: a second touch doesn't snap it)
   try {
     touchWheel.setPointerCapture(e.pointerId);
   } catch {
@@ -5512,13 +5710,17 @@ touchWheel.innerHTML =
     return `<line x1="${x1.toFixed(1)}" y1="${y1.toFixed(1)}" x2="${x2.toFixed(1)}" y2="${y2.toFixed(1)}" class="spoke"/><circle cx="${x2.toFixed(1)}" cy="${y2.toFixed(1)}" r="5.5" class="grip"/>`;
   }).join('') +
   '<circle r="44" class="rim"/><circle r="44" class="rim-in"/><circle r="15" class="hub"/><circle r="6" class="hub-in"/><circle cx="0" cy="-60" r="6.5" class="top"/></svg>';
-// The steering mode on show: the wheel in the arrows' place, or the arrows (setting changed, or at load).
+// The steering mode on show: the wheel in the arrows' place, or the arrows (setting changed, or at load); the help
+// lists' steering line says which (the level banner's controlsLine() reads wheelMode() too).
+const steerHelp = []; // [{ li, arrows }]: the touch help lists' steering lines, with the arrows' wording
+const WHEEL_HELP = '<b>Ship&rsquo;s wheel</b> drag it sideways to steer';
 function applySteerMode() {
   const on = wheelMode();
   steerPad.classList.toggle('wheel-mode', on);
   show(touchWheel, on);
   if (!on) wheelLetGo();
   ui.hud.classList.toggle('wheel-mode', on);
+  for (const h of steerHelp) h.li.innerHTML = on ? WHEEL_HELP : h.arrows;
   const btn = ui.steerModeBtn;
   if (WITH_KRAKEN) {
     btn.setAttribute('aria-pressed', String(on));
@@ -8504,16 +8706,8 @@ function updateCamera(dt, paused) {
     // eased in and out of the chase view (under reduced motion: a cut to the eye for 1.5 s and back).
     if (kraken && kView && kseq.stage === 'rise' && kraken.rising) {
       const T = kseq.short ? KR.shortRise : KR.rise;
-      const from = { x: player.x, z: player.z, h: player.h, duration: T };
-      const head = krakenVis && krakenVis.head;
-      if (head && reducedMotion()) {
-        // (the cut to the eye looks from a little off your line to it, so your own sails never hide the eye)
-        const a = Math.atan2(player.x - head.x, player.z - head.z) + 0.6;
-        const d = Math.hypot(player.x - head.x, player.z - head.z);
-        from.x = head.x + Math.sin(a) * d;
-        from.z = head.z + Math.cos(a) * d;
-      }
-      const rc = kView.riseCamera(clamp(kseq.t / T, 0, 1), from);
+      // (under reduced motion krakenView's cut looks at the eye from off its line to your ship by itself)
+      const rc = kView.riseCamera(clamp(kseq.t / T, 0, 1), { x: player.x, z: player.z, h: player.h, duration: T });
       if (rc) {
         const u = clamp(Math.min(kseq.t, T - kseq.t) / 0.6, 0, 1);
         const w = reducedMotion() ? 1 : u * u * (3 - 2 * u);
@@ -8601,7 +8795,13 @@ function frame() {
 
   if (state.bannerTimer > 0 && !paused) {
     state.bannerTimer -= dt;
-    if (state.bannerTimer <= 0) show(ui.banner, false);
+    if (state.bannerTimer <= 0) {
+      show(ui.banner, false);
+      // (news that waited for a hazard's how-to banner: now)
+      const next = WITH_KRAKEN ? state.bannerNext : null;
+      if (next && state.mode === 'playing') showBanner(next.html, next.seconds);
+      if (WITH_KRAKEN) state.bannerNext = null;
+    }
   }
 
   if (!paused) updateParticles(dt);
@@ -8704,6 +8904,8 @@ function frame() {
     updateHud(false, paused ? 0 : dt);
     drawMinimap();
   }
+  // (the screen-edge arrows of threats off the view: after the camera has moved and the HUD shows what it shows)
+  if (WITH_KRAKEN && !paused) edgeCues();
   view.renderer.info.reset();
   view.render(scene, camera);
   if (paused) pausedDrawn = true;
@@ -8712,9 +8914,23 @@ function frame() {
 // The Kraken Seas' controls (SPEC3 §3.2, §6.1), shown only once they sail: the pause dialog's Steering toggle,
 // the steering mode saved, and the help lists' new lines ("4–6 special ammo", "slide for gentle turns").
 if (WITH_KRAKEN) {
-  // The rogue wave's warning arrow (SPEC3 §6.3): a teal arrow with "WAVE!", placed by placeEdgeArrow().
-  ui.edgeArrow.innerHTML =
-    '<span class="ea-arrow"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 8h-4v9H9v-9H5z"/></svg></span><span class="ea-word">WAVE!</span>';
+  // The rogue wave's warning arrow (SPEC3 §6.3): a teal arrow with "WAVE!"; a lit fire ship's and a charging
+  // shark's red ones (FIRE SHIP!, RAM!) beside it. edgeCues() shows them and placeEdgeArrow() places them.
+  const arrowHtml = (word) =>
+    `<span class="ea-arrow"><svg viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M12 3l7 8h-4v9H9v-9H5z"/></svg></span><span class="ea-word">${word}</span>`;
+  ui.edgeArrow.innerHTML = arrowHtml('WAVE!');
+  edgeMarks.push({ kind: 'wave', el: ui.edgeArrow, on: false, at: '', w: 0, h: 0 });
+  let after = ui.edgeArrow;
+  for (const [kind, word] of [['fire', 'FIRE SHIP!'], ['ram', 'RAM!']]) {
+    const el = document.createElement('div');
+    el.id = `edge-arrow-${kind}`;
+    el.className = 'edge-arrow danger hidden';
+    el.setAttribute('aria-hidden', 'true');
+    el.innerHTML = arrowHtml(word);
+    after.after(el);
+    after = el;
+    edgeMarks.push({ kind, el, on: false, at: '', w: 0, h: 0 });
+  }
   const btn = ui.steerModeBtn;
   btn.innerHTML = '<span class="steer-label"></span><span class="new-badge hidden" aria-hidden="true">New!</span>';
   show(btn, true); // (.touch-only: nothing shows on a screen without touch)
@@ -8722,9 +8938,10 @@ if (WITH_KRAKEN) {
   for (const li of document.querySelectorAll('ul.controls:not(.touch-help) li')) {
     if (/ammo/.test(li.textContent)) li.insertAdjacentHTML('beforeend', ' &middot; <kbd>4</kbd>&ndash;<kbd>6</kbd> special');
   }
+  // (the steering line of each touch help list follows the steering mode: applySteerMode)
   for (const ul of document.querySelectorAll('ul.controls.touch-help')) {
     const li = ul.querySelector('li');
-    if (li) li.insertAdjacentHTML('beforeend', ' &middot; slide on them for gentle turns');
+    if (li) steerHelp.push({ li, arrows: `${li.innerHTML} &middot; slide on them for gentle turns` });
   }
   applySteerMode();
 }

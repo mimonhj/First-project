@@ -33,6 +33,11 @@
 //            click buys once, the rumour board's powder tip
 // - tabs:    two tabs: island tiers, quiz stars and recipes bought in one tab show in the other, never go down
 // - layout:  the quiz and build panels at the 7 town sizes (no page scroll, 44 px, answers 56 px, 4.5:1)
+// - quizfit: at the 7 town sizes every answer of a round shows whole at the top of the quiz panel, unscrolled,
+//            ≥ 56 px: rounds on four islands and rounds dealt to hold the bank's longest questions and answers
+// - quizmap: the map's notes (owed gold, "Your stars are safe!", why an island is locked) in view with the
+//            focused island; the trophies: the ninth island's mortarboard and the 27th star's Rainbow macaw on
+//            the results (once), #quiz-live and the map's prize line, after a reload too, and at Polly's
 // - draws:   every plot at tier 3 + 8 villagers + Bess and Barnacle: the walk view at 30 spots × 8 headings, the
 //            shipyard view, the quiz and build views ≤ 450 draw calls; screenshots quiz.png, build.png,
 //            island-tier3.png
@@ -41,10 +46,12 @@
 // Walking is stepped with __game.town.simulate() inside one evaluate (the villagers' clock by hand, Math.random
 // seeded); keys go through the game's own handlers.
 // Run with `node tests/ashore.cjs` (ASHORE_ONLY=bar,keys,walking,quiz,quiztaps,quizrec,build,perks,powder,
-// tabs,layout,draws,rays runs some sections; ASHORE_ROOT serves another copy of the game; ASHORE_QUERY replaces
-// "?quality=low&kraken=1"; ASHORE_PENDING=<tags> reports the tagged checks that wait for later work as PEND
-// instead of FAIL ("all" for every tagged check): gift, bakery, lighthouse, governor, tabs-island, tabs-quiz
-// wait for main.js (2A / 3A: the island perks, the Governor's coat feat, the -island / -quiz two-tab merge); mouth
+// tabs,layout,quizfit,quizmap,draws,rays runs some sections; ASHORE_ROOT serves another copy of the game;
+// ASHORE_QUERY replaces "?quality=low&kraken=1"; ASHORE_PENDING=<tags> reports the tagged checks that wait for
+// later work as PEND instead of FAIL ("all" for every tagged check): gift, bakery, lighthouse, governor,
+// tabs-island, tabs-quiz
+// wait for main.js (2A / 3A: the island perks, the Governor's coat feat, the -island / -quiz two-tab merge), and
+// quiz-feats too (3A: feats.quiz / feats.stars raised from the quiz record, for Polly's two quiz trophies); mouth
 // waits for town.js (a captain wedged beside a rope bridge's mouth by someone on it, 3D).
 const fs = require('fs');
 const path = require('path');
@@ -1457,6 +1464,202 @@ function installHelpers() {
         }
         await page.evaluate(() => window.__game.town.back());
       }
+      await ctx.close();
+    }
+  });
+
+  // ------------------------------------------------------------------------------------------------ quizfit
+  // On every town size, every answer of a round shows whole at the top of the quiz panel, unscrolled, ≥ 56 px tall,
+  // with no page scroll (SPEC3 §7.3, ASH-2: on the shortest screens the panel squeezes itself until they do). Rounds
+  // on four islands, and rounds dealt (with quiz.js makeRound, as the panel deals them) to hold the bank's longest
+  // questions and answers, with the Sea School's lifebuoy in the footer. Every round is finished, so the next one's
+  // deal depends only on the saved record.
+  await section('quizfit', async () => {
+    const QS = BANK.QUESTIONS;
+    const tall = (e) => e.q.length + 3 * Math.max(e.right.length, ...e.wrong.map((w) => w.length));
+    const BAND_LEVEL = { 1: 0, 2: 3, 3: 6 };
+    const targets = [1, 2, 3].flatMap((band) => QS.filter((e) => e.band === band && (e.cat !== 'places' || (e.seas || 0) <= 7)).sort((a, b) => tall(b) - tall(a)).slice(0, 3));
+    const quizRec = JSON.stringify({ v: 1, stars: [3, 3, 3, 3, 3, 3, 3, 3, 0], paid: [3, 3, 3, 3, 3, 3, 3, 3, 0], tried: [1, 1, 1, 1, 1, 1, 1, 1, 0], seen: [] });
+    // one round (island lv, seed) played through by answering right: per question, any answer not whole inside the
+    // body at scrollTop 0 (or under 56 px, or covered), and any page scroll
+    const play = (page, lv, seed) => page.evaluate(([lv, seed]) => {
+      const q = T.q();
+      if (!q.start(lv, seed)) return { ids: [], bad: ['the round did not start'] };
+      const ids = q.round.questions.map((x) => x.id);
+      const bad = [];
+      for (let i = 0; i < 5 && q.mode === 'question'; i++) {
+        T.finish();
+        const body = document.querySelector('#quiz-panel .dock-body');
+        body.scrollTop = 0;
+        const b = body.getBoundingClientRect();
+        const top = b.top + body.clientTop;
+        const bottom = Math.min(top + body.clientHeight, innerHeight);
+        const answers = [...document.querySelectorAll('#quiz-answers .quiz-ans')].filter((a) => T.shown(a));
+        if (answers.length !== q.round.question.options.length) bad.push(`q${i + 1}: ${answers.length} of ${q.round.question.options.length} answers shown`);
+        answers.forEach((a, k) => {
+          const r = a.getBoundingClientRect();
+          const seen = Math.max(0, Math.min(r.bottom, bottom) - Math.max(r.top, top));
+          if (r.top < top - 0.5 || r.bottom > bottom + 0.5) bad.push(`q${i + 1} "${q.round.question.q.slice(0, 32)}…": answer ${k + 1} shows ${Math.round(seen)} of ${Math.round(r.height)} px`);
+          else if (r.height < 55.5) bad.push(`q${i + 1}: answer ${k + 1} is only ${Math.round(r.height)} px tall`);
+          else {
+            const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+            if (!hit || !(hit === a || a.contains(hit))) bad.push(`q${i + 1}: answer ${k + 1} is covered`);
+          }
+        });
+        const de = document.documentElement;
+        if (de.scrollHeight > innerHeight + 1 || de.scrollWidth > innerWidth + 1) bad.push(`q${i + 1}: the page scrolls (${de.scrollWidth}x${de.scrollHeight})`);
+        q.answer(q.round.question.right);
+        q.next();
+      }
+      if (q.mode !== 'results') bad.push(`the round ended in ${q.mode}`);
+      q.map();
+      return { ids, bad };
+    }, [lv, seed]);
+    for (const touch of [true, false]) {
+      const { ctx, page } = await open({ touch, width: touch ? 390 : 1280, height: touch ? 844 : 720, label: touch ? 'quizfit-touch' : 'quizfit', store: { ...STORE, 'pirates-ahoy-island': island({ school: 3 }), 'pirates-ahoy-quiz': quizRec } });
+      await walkView(page);
+      await page.evaluate(() => window.__game.town.open('quiz'));
+      for (const [w, h] of TOWN_SIZES.filter((s) => s[2] === touch)) {
+        const tag = `${w}x${h}${touch ? ' touch' : ''}`;
+        await page.setViewportSize({ width: w, height: h });
+        await page.waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, [w, h], { timeout: 60000 });
+        await frames(page, 2);
+        const problems = [];
+        let rounds = 0;
+        let found = 0;
+        // the bank's longest: a seed whose round (dealt from the saved record, nothing asked since) holds it
+        for (const t of targets) {
+          // (the record as at the start, nothing seen: the panel's own list of questions asked is empty after a
+          // finished round)
+          await page.evaluate((r) => window.__game.quiz.set(JSON.parse(r)), quizRec);
+          const lv = BAND_LEVEL[t.band];
+          let seed = 0;
+          for (let s = 1; s < 20000 && !seed; s++) if (Q.makeRound(QS, lv, s, { unlocked: 7, seen: [], recent: [] }).some((x) => x.id === t.id)) seed = s;
+          if (!seed) {
+            problems.push(`no round deals ${t.id}`);
+            continue;
+          }
+          const r = await play(page, lv, seed);
+          rounds++;
+          if (r.ids.includes(t.id)) found++;
+          else problems.push(`the round for ${t.id} dealt ${r.ids.join(',')}`);
+          problems.push(...r.bad.map((p) => `${t.id} round: ${p}`));
+        }
+        for (const [lv, seed] of [[0, 21], [3, 22], [6, 23], [8, 24]]) {
+          const r = await play(page, lv, seed);
+          rounds++;
+          problems.push(...r.bad.map((p) => `island ${lv + 1} round: ${p}`));
+        }
+        check(problems.length === 0 && rounds === targets.length + 4 && found === targets.length, `quizfit ${tag}: every answer of ${rounds} rounds (${found} dealt to hold the bank's longest questions and answers) shows whole at the top of the quiz panel, unscrolled, ≥ 56 px, uncovered; no page scroll${problems.length ? ' -> ' + problems.slice(0, 6).join('; ') + (problems.length > 6 ? ` (+${problems.length - 6} more)` : '') : ''}`);
+        if (w === 568 || w === 320) {
+          await page.evaluate(() => T.q().start(6, 25));
+          await frames(page, 2);
+          await snap(page, `ashore-quizfit-${w}x${h}.png`);
+          await page.evaluate(() => T.q().leave());
+        }
+      }
+      await ctx.close();
+    }
+  });
+
+  // ------------------------------------------------------------------------------------------------ quizmap
+  // The map's notes stay in view (ASH-3): the owed gold paid, "Your stars are safe!" after Leave quiz, and why an
+  // island is locked, each inside the visible part of the panel and on top, with the focused island in view and
+  // uncovered (390 × 844 and 568 × 320, touch). The trophies (§7.2, ASH-1): passing the ninth island wins the
+  // Professor's mortarboard and the 27th star the Rainbow macaw; the results that complete each set say so once,
+  // and #quiz-live reads it; the map's prize line says what was won (after a reload too); Polly has them
+  // ([quiz-feats]: main raises feats.quiz / feats.stars from the quiz record, 3A).
+  await section('quizmap', async () => {
+    const GUARD_MS = 450; // (the panel ignores a tap on a control that appeared less than 350 ms ago)
+    const noteSeen = (page) => page.evaluate(() => {
+      T.finish();
+      const n = document.querySelector('#quiz-map .quiz-note');
+      const body = document.querySelector('#quiz-panel .dock-body');
+      const b = body.getBoundingClientRect();
+      const box = { top: b.top + body.clientTop, bottom: Math.min(b.top + body.clientTop + body.clientHeight, innerHeight) };
+      const inView = (el) => {
+        const r = el.getBoundingClientRect();
+        const hit = document.elementFromPoint(r.left + r.width / 2, r.top + r.height / 2);
+        return r.height > 0 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5 && !!hit && (hit === el || el.contains(hit));
+      };
+      const f = document.activeElement && document.activeElement.closest ? document.activeElement.closest('#quiz-map [data-level]') : null;
+      return { note: n ? T.text(n) : '', noteIn: !!n && inView(n), focus: f ? Number(f.dataset.level) : null, focusIn: !!f && inView(f), scrolled: Math.round(body.scrollTop), live: T.text('quiz-live') };
+    });
+    const showsNote = (s, text) => s.note === text && s.noteIn && s.focusIn;
+    {
+      const { ctx, page } = await open({ touch: true, width: 390, height: 844, label: 'quizmap-notes', store: { ...STORE, 'pirates-ahoy-quiz': JSON.stringify({ v: 1, stars: [1, 2, 3, 1, 1, 1, 0, 0, 0], paid: [1, 2, 3, 1, 1, 0, 0, 0, 0], tried: [1, 1, 1, 1, 1, 1, 0, 0, 0], seen: [] }) } });
+      await walkView(page);
+      await page.evaluate(() => window.__game.town.open('quiz'));
+      await frames(page, 2);
+      const owed = await noteSeen(page);
+      const want = `+${QUIZ_GOLD[5][0]} gold for the stars you won last time!`;
+      check(showsNote(owed, want) && owed.focus === 6, `quizmap 390x844: the owed gold's note "${owed.note}" shows in the panel (in view ${owed.noteIn}, body scrolled ${owed.scrolled} px) with the focused island ${owed.focus} in view and uncovered (${owed.focusIn})`);
+      for (const [w, h] of [[390, 844], [568, 320]]) {
+        await page.setViewportSize({ width: w, height: h });
+        await page.waitForFunction(([w, h]) => innerWidth === w && innerHeight === h, [w, h], { timeout: 60000 });
+        await page.evaluate(() => T.q().start(6, 3));
+        await frames(page, 2);
+        await page.waitForTimeout(GUARD_MS);
+        await page.tap('#quiz-leave-btn', { timeout: 20000 }).catch(() => missed.push('#quiz-leave-btn'));
+        await frames(page, 2);
+        const left = await noteSeen(page);
+        check(showsNote(left, 'You left the quiz. Your stars are safe!') && left.focus === 6 && /Your stars are safe/.test(left.live), `quizmap ${w}x${h}: Leave quiz: "${left.note}" shows in the panel (in view ${left.noteIn}, body scrolled ${left.scrolled} px), Storm Cape focused in view (${left.focusIn})${notShown()}`);
+        await page.waitForTimeout(GUARD_MS);
+        await page.evaluate(() => document.querySelector('#quiz-map [data-level="7"]').scrollIntoView({ block: 'nearest' }));
+        await page.tap('#quiz-map [data-level="7"]', { force: true, timeout: 20000 }).catch(() => missed.push('#quiz-map [data-level="7"]'));
+        await frames(page, 2);
+        const locked = await noteSeen(page);
+        check(showsNote(locked, 'Kraken Quay is locked. Pass Storm Cape first!') && locked.focus === 7 && /Kraken Quay is locked/.test(locked.live), `quizmap ${w}x${h}: a tap on locked Kraken Quay: "${locked.note}" shows in the panel (in view ${locked.noteIn}, body scrolled ${locked.scrolled} px), Kraken Quay focused in view (${locked.focusIn})${notShown()}`);
+        if (w === 390) await snap(page, 'ashore-quiz-note-390x844.png');
+      }
+      await ctx.close();
+    }
+    {
+      const MORTAR = "You won the Professor's mortarboard! Try it on at Polly's.";
+      const MACAW = "You won the Rainbow macaw! Try it on at Polly's.";
+      const { ctx, page } = await open({ touch: true, width: 390, height: 844, label: 'quizmap-trophies', store: { ...STORE, 'pirates-ahoy-quiz': JSON.stringify({ v: 1, stars: [3, 3, 3, 3, 3, 3, 3, 3, 0], paid: [3, 3, 3, 3, 3, 3, 3, 3, 0], tried: [1, 1, 1, 1, 1, 1, 1, 1, 0], seen: [] }) } });
+      const prize = () => page.evaluate(() => [...document.querySelectorAll('#quiz-map .qm-prize')].map((p) => T.text(p)));
+      const wardrobe = () => page.evaluate(() => {
+        T.walkView();
+        window.__game.town.open('tailor');
+        const st = (id) => { const b = document.querySelector(`[data-item="${id}"]`); return b ? b.getAttribute('aria-disabled') : 'missing'; };
+        const out = { hat: st('hat.mortarboard'), pet: st('pet.rainbow') };
+        window.__game.town.back();
+        return out;
+      });
+      // a round on Professor's Peak with `right` right answers: the results' lines and #quiz-live
+      const round = (right, seed) => page.evaluate(([right, seed]) => {
+        const q = T.q();
+        q.start(8, seed);
+        for (let i = 0; i < 5 && q.mode === 'question'; i++) {
+          const Qn = q.round.question;
+          q.answer(i < right ? Qn.right : (Qn.right + 1) % Qn.options.length);
+          q.next();
+        }
+        T.finish();
+        return { mode: q.mode, lines: T.resultLines(), live: T.text('quiz-live'), stars: window.__game.quiz.record.stars.join('') };
+      }, [right, seed]);
+      await walkView(page);
+      const w0 = await wardrobe();
+      await page.evaluate(() => window.__game.town.open('quiz'));
+      const p0 = await prize();
+      const r9 = await round(3, 5);
+      check(r9.mode === 'results' && r9.lines.includes(MORTAR) && !r9.lines.includes(MACAW) && r9.live.includes(MORTAR), `quizmap: the ninth island passed (stars ${r9.stars}): the results say "${MORTAR}" and #quiz-live reads it (${J(r9.lines)})`);
+      await page.evaluate(() => T.q().map());
+      const p9 = await prize();
+      check(p0.length === 1 && /^Pass all nine for the Professor's mortarboard!$/.test(p0[0]) && p9.join('|') === `${MORTAR}|Win all 27 stars for the Rainbow macaw!`, `quizmap: the map's prize line before (${J(p0)}) and after the ninth island (${J(p9)})`);
+      const r27 = await round(5, 6);
+      const again = await round(5, 7);
+      check(r27.mode === 'results' && r27.stars === '333333333' && r27.lines.includes(MACAW) && !r27.lines.includes(MORTAR) && r27.live.includes(MACAW) && !again.lines.some((l) => /You won/.test(l)), `quizmap: the 27th star: the results say "${MACAW}" and #quiz-live reads it (${J(r27.lines)}); a replay wins nothing again (${J(again.lines)})`);
+      await page.evaluate(() => T.q().map());
+      await snap(page, 'ashore-quiz-trophies-390x844.png');
+      await reload(page);
+      await walkView(page);
+      await page.evaluate(() => window.__game.town.open('quiz'));
+      const p27 = await prize();
+      check(p27.join('|') === `${MORTAR}|${MACAW}`, `quizmap: after a reload the map says both trophies were won (${J(p27)})`);
+      const w27 = await wardrobe();
+      check(w0.hat === 'true' && w0.pet === 'true' && w27.hat === 'false' && w27.pet === 'false', `quizmap: Polly's: the mortarboard and the Rainbow macaw locked before (${J(w0)}), won after the 9 islands and 27 stars and a reload (${J(w27)})`, 'quiz-feats');
       await ctx.close();
     }
   });

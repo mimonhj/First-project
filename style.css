@@ -2211,6 +2211,10 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
   border-radius: 999px;
   text-shadow: none;
 }
+/* A lit fire ship's and a charging shark's arrows (FIRE SHIP!, RAM!), while she is off the view: the same arrow in
+   red, its word on red (white on --red-text, 6.8:1). */
+.edge-arrow.danger .ea-arrow svg { fill: #ff6b4a; }
+.edge-arrow.danger .ea-word { background: var(--red-text); }
 @keyframes ea-throb {
   0%, 100% { scale: 1; }
   50% { scale: 1.12; }
@@ -2221,6 +2225,12 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
 @media (max-width: 420px), (max-height: 420px) {
   .edge-arrow .ea-arrow { width: 42px; height: 42px; }
   .edge-arrow .ea-word { font-size: 15px; }
+}
+
+/* The Kraken's rise (SPEC3 §5.7.1) on a screen wider than tall: the rise camera puts the rising head and its eye in
+   the upper middle of the view, so its banner goes low, above the gun card (over your own ship), clear of the head. */
+@media (min-aspect-ratio: 1/1) {
+  .banner.rise { top: auto; bottom: calc(var(--edge) + 100px); }
 }
 
 /* ---------- The Kraken (SPEC3 §5.7, §6.3) ----------

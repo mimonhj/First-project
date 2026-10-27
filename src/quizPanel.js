@@ -23,6 +23,16 @@
 //   react(what, info) → the 3D set's moment: 'open', 'question', 'right' (the professor rings the bell,
 //     Quizzle flaps), 'wrong' (Quizzle tilts his head), 'lifebuoy', 'results' ({ stars, gold }), 'map'.
 //
+// Small screens: every answer of a round shows whole at the top of the panel, unscrolled. When a round starts
+// (and on a resize) the panel finds the smallest squeeze (classes fit-1, fit-2 on #quiz-panel, styles in
+// town.css: the header goes, the footer slims and the answers become tiles with the number on a corner; then
+// a size smaller) at which all five questions' answers fit; if even the last one can't, a "More answers" cue
+// shows under the answers that do.
+// The map's notes ("Your stars are safe!", owed gold, why an island is locked) stay in view (sticky), and the
+// focused island scrolls clear of them. Passing all nine islands / winning all 27 stars wins the Professor's
+// mortarboard / the Rainbow macaw (feats quiz and stars, raised by main from the record): the map's prize line
+// and the results that complete the set say so, and #quiz-live reads it.
+//
 // Keys (onKey, while the panel is up): 1–4 (Digit or Numpad) answer, H throws a lifebuoy, Esc goes back a
 // step (a round to the map, "Your stars are safe"; the map to the town). Enter and Space press the focused
 // button (the browser's own); a held one never presses twice. Pointer double taps never press the control
@@ -56,17 +66,6 @@ const islandSvg = (band) => {
 const LOCK_SVG =
   '<svg class="qi-lock" viewBox="0 0 12 14" aria-hidden="true" focusable="false"><path d="M3.2 6V4.4a2.8 2.8 0 0 1 5.6 0V6" fill="none" stroke="currentColor" stroke-width="1.6"/>' +
   '<rect x="1.4" y="6" width="9.2" height="7" rx="1.6" fill="currentColor"/></svg>';
-// Quizzle, the professor's green-and-yellow macaw
-const QUIZZLE_SVG =
-  `<svg viewBox="0 0 44 44" aria-hidden="true" focusable="false"><g ${INK}>` +
-  '<path d="M15.5 6.4c-1.2-3 .6-5 3.2-4.4-.2 1.8.6 3 2 4z" fill="#3fbf5f"/>' +
-  '<path d="M9 41c-3.6-9.4-2.6-21.6 4.8-28.6 5.8-5.4 15.4-5 19 1.6 3.2 5.8 1.8 13.6-3.4 19.4C25.8 37.4 18 40.6 9 41z" fill="#3fbf5f"/>' +
-  '<path d="M12.6 39.4c-.6-6.8 3.4-12.6 10-14.4 4.2-1.2 7.6.4 8.2 3.2-2.6 6.2-9.2 10.6-18.2 11.2z" fill="#ffd23c"/>' +
-  '<path d="M30.4 12.8c5.6-1.4 10.4 1.6 10.8 7.2.2 3.2-1.6 5.6-4.4 5.6.8-2.6.2-5-2.2-6.2-1.6 1.4-3.4 1.8-5.4 1.2z" fill="#fffaf0"/>' +
-  '<path d="M29.6 20.6c1.8 1 3.8 1 5.4-.2.4 1.6 0 3-1.4 3.8-1.6-.4-3-1.6-4-3.6z" fill="#2b2433"/>' +
-  '<ellipse cx="24.4" cy="15.4" rx="4.4" ry="4.2" fill="#fff"/></g>' +
-  '<circle cx="25.4" cy="15.6" r="1.9" fill="#1d1330"/><circle cx="26" cy="14.9" r=".6" fill="#fff"/>' +
-  '<path d="M17.4 19.6c1.2 1 2.6 1.4 4 1.2" fill="none" stroke="#1d1330" stroke-width="1.2" stroke-linecap="round"/></svg>';
 const BUOY_SVG =
   '<svg class="buoy" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="7.2" fill="none" stroke="#fff" stroke-width="5"/>' +
   '<circle cx="12" cy="12" r="7.2" fill="none" stroke="#e2383d" stroke-width="5" stroke-dasharray="5.65 5.65" stroke-dashoffset="2.8"/>' +
@@ -77,10 +76,35 @@ const starSvg = (on) =>
   (on ? '<path d="M9.4 8.6l1.4-2.6" stroke="#fff" stroke-width="1.4" stroke-linecap="round" opacity=".9"/>' : '') +
   '</svg>';
 
+// The quiz trophies (cosmetics.js): the Professor's mortarboard and the Rainbow macaw
+const MORTARBOARD_SVG =
+  `<svg class="qt-ico" viewBox="0 0 32 28" aria-hidden="true" focusable="false"><g ${INK}>` +
+  '<path d="M8.5 13.5v6.2c0 2.4 3.4 4.3 7.5 4.3s7.5-1.9 7.5-4.3v-6.2z" fill="#2c2f4a"/>' +
+  '<path d="M2 11.2L16 4.5l14 6.7-14 6.7z" fill="#3a3e60"/></g>' +
+  '<path d="M16 11.2l8.6 3.4v6.2" fill="none" stroke="#ffc93c" stroke-width="1.8" stroke-linecap="round"/>' +
+  '<circle cx="24.6" cy="22.4" r="2.2" fill="#ffc93c" stroke="#1d1330" stroke-width="1.2"/><circle cx="16" cy="11.2" r="1.5" fill="#ffc93c"/></svg>';
+const macawSvg = (body, wing, crest, cls = '') =>
+  `<svg${cls ? ` class="${cls}"` : ''} viewBox="0 0 44 44" aria-hidden="true" focusable="false"><g ${INK}>` +
+  `<path d="M15.5 6.4c-1.2-3 .6-5 3.2-4.4-.2 1.8.6 3 2 4z" fill="${crest}"/>` +
+  `<path d="M9 41c-3.6-9.4-2.6-21.6 4.8-28.6 5.8-5.4 15.4-5 19 1.6 3.2 5.8 1.8 13.6-3.4 19.4C25.8 37.4 18 40.6 9 41z" fill="${body}"/>` +
+  `<path d="M12.6 39.4c-.6-6.8 3.4-12.6 10-14.4 4.2-1.2 7.6.4 8.2 3.2-2.6 6.2-9.2 10.6-18.2 11.2z" fill="${wing}"/>` +
+  '<path d="M30.4 12.8c5.6-1.4 10.4 1.6 10.8 7.2.2 3.2-1.6 5.6-4.4 5.6.8-2.6.2-5-2.2-6.2-1.6 1.4-3.4 1.8-5.4 1.2z" fill="#fffaf0"/>' +
+  '<path d="M29.6 20.6c1.8 1 3.8 1 5.4-.2.4 1.6 0 3-1.4 3.8-1.6-.4-3-1.6-4-3.6z" fill="#2b2433"/>' +
+  '<ellipse cx="24.4" cy="15.4" rx="4.4" ry="4.2" fill="#fff"/></g>' +
+  '<circle cx="25.4" cy="15.6" r="1.9" fill="#1d1330"/><circle cx="26" cy="14.9" r=".6" fill="#fff"/>' +
+  '<path d="M17.4 19.6c1.2 1 2.6 1.4 4 1.2" fill="none" stroke="#1d1330" stroke-width="1.2" stroke-linecap="round"/></svg>';
+// Quizzle, the professor's green-and-yellow macaw
+const QUIZZLE_SVG = macawSvg('#3fbf5f', '#ffd23c', '#3fbf5f');
+const TROPHIES = {
+  mortarboard: { icon: MORTARBOARD_SVG, won: "You won the Professor's mortarboard! Try it on at Polly's." },
+  rainbow: { icon: macawSvg('#f2552c', '#27b35a', '#2f6fe0', 'qt-ico'), won: "You won the Rainbow macaw! Try it on at Polly's." },
+};
+
 const STAR_WORDS = ['no stars yet', '1 of 3 stars', '2 of 3 stars', '3 of 3 stars'];
 const NUMBER_WORDS = ['no', 'one', 'two', 'three'];
 const GUARD = 350; // ms: the second tap of a double tap never presses the control that appears under it
 const STAMP = 450; // ms between the results' stars
+const FIT_MAX = 2; // the squeezes a round can take on a small screen (fit-1, fit-2)
 const GOOD_TRY = Number.isFinite(Q.GOOD_TRY) ? Q.GOOD_TRY : 10;
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
@@ -184,6 +208,9 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
   let buoysMax = 0;
   let result = null; // the last round's results
   let note = null; // { text, kind } a line over the map
+  let nope = -1; // the locked island just tapped (it gives a little shake)
+  let fit = 0; // this round's squeeze (0..FIT_MAX)
+  let fitDirty = true; // the squeeze is worked out again before the next question shows
   let seedCount = 0;
   let timers = [];
   const recent = []; // ids asked this visit and not yet in the saved `seen` list
@@ -221,6 +248,14 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     if (el.answers.parentNode === el.body) el.body.insertBefore(el.feedback, el.answers.nextSibling);
     else el.body.appendChild(el.feedback);
   }
+  // The last resort on a screen too small for even the tightest squeeze: a cue over the bottom of the body that
+  // brings the rest of the answers into view (it goes once the last one shows)
+  el.more = R.querySelector('#quiz-more') || document.createElement('button');
+  el.more.id = 'quiz-more';
+  el.more.type = 'button';
+  el.more.className = 'btn alt quiz-more hidden';
+  el.more.innerHTML = 'More answers <span aria-hidden="true">&#9660;</span>';
+  if (el.more.parentNode !== el.body) el.body.insertBefore(el.more, el.feedback);
 
   // ---------------------------------------------------------------------------------------------
   // Modes
@@ -236,6 +271,8 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     show(el.question, inRound);
     show(el.answers, inRound);
     show(el.feedback, m === 'answered');
+    if (m !== 'question') show(el.more, false);
+    if (m !== 'map') el.body.style.scrollPaddingTop = '';
     show(el.results, m === 'results');
     show(el.buoy, m === 'question' && buoysMax > 0);
     show(el.next, m === 'answered');
@@ -287,8 +324,19 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
         '</button></li>';
     });
     html += '</ol>';
-    html += '<p class="qm-prize">Pass all nine for the Professor\'s mortarboard!</p>';
+    // the trophies (§7.2): what to aim for, then what was won
+    const won = (t) => `<p class="qm-prize won">${TROPHIES[t].icon}<span>${esc(TROPHIES[t].won)}</span></p>`;
+    if (!L.length || passed < L.length) html += '<p class="qm-prize">Pass all nine for the Professor\'s mortarboard!</p>';
+    else {
+      html += won('mortarboard');
+      html += total >= L.length * 3 ? won('rainbow') : `<p class="qm-prize">Win all ${L.length * 3} stars for the Rainbow macaw!</p>`;
+    }
     el.map.innerHTML = html;
+    // The note stays in view (sticky at the top of the body), and a focused island scrolls clear of it
+    const n = el.map.querySelector('.quiz-note');
+    el.body.style.scrollPaddingTop = n ? `${Math.ceil(n.getBoundingClientRect().height) + 14}px` : '';
+    const shake = nope >= 0 ? mapButton(nope) : null;
+    if (shake && !reduced()) shake.classList.add('nope');
   }
   function mapButton(i) {
     return el.map.querySelector(`[data-level="${i}"]`);
@@ -347,7 +395,8 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     const word = el.buoy.querySelector('.qb-word');
     const q = round[index];
     const can = buoys > 0 && q && has('hint') && Q.hint(q, [...removed]) !== null;
-    word.textContent = `Lifebuoy (${buoys} left)`;
+    // ("Lifebuoy (2 left)"; a squeezed footer shows the ring and "2 left", the rest is still read out)
+    word.innerHTML = `<span class="qb-name">Lifebuoy </span><span class="qb-paren">(</span>${buoys} left<span class="qb-paren">)</span>`;
     el.buoy.setAttribute('aria-disabled', String(!can));
     // (greyed with lifebuoys left: quiz.js hint() keeps two answers to choose from, so it says why)
     el.buoy.title = buoys <= 0 ? 'No lifebuoys left this round' : can ? 'Takes away one wrong answer (H)' : 'Only two answers left: no lifebuoy needed';
@@ -365,10 +414,72 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
       b.querySelector('.qa-sr').textContent = ' (taken away by the lifebuoy)';
     }
   }
+  // ----- a round on a small screen -----
+  function setFit(k) {
+    fit = k;
+    for (let i = 1; i <= FIT_MAX; i++) el.panel.classList.toggle(`fit-${i}`, i <= k);
+  }
+  // Every answer whole inside the body, its shadow too, scrolled to the top (only the last one, as it is now:
+  // last)
+  function answersIn(last = false) {
+    const B = el.body;
+    if (!last) B.scrollTop = 0;
+    const b = B.getBoundingClientRect();
+    if (!(b.height > 0) || !B.clientHeight) return true; // (not laid out: nothing to fit)
+    const lo = b.top + B.clientTop - 0.5;
+    const hi = b.top + B.clientTop + B.clientHeight + 0.5;
+    const list = answerButtons();
+    return (last ? list.slice(-1) : list).every((a) => {
+      const r = a.getBoundingClientRect();
+      return (last || r.top >= lo) && r.bottom + 2 <= hi;
+    });
+  }
+  // The smallest squeeze at which every answer of every question in this round shows whole, unscrolled: each
+  // question is laid out in turn before anything paints, then the one on screen is put back as it was.
+  function fitRound() {
+    fitDirty = false;
+    if (!active || !round.length || mode !== 'question') return;
+    const at = index;
+    const a = document.activeElement;
+    const fa = a && a.closest && el.answers.contains(a) ? a.closest('[data-answer]') : null;
+    const focusAt = fa ? Number(fa.dataset.answer) : -1;
+    show(el.more, false);
+    let k = 0;
+    setFit(0);
+    for (let i = 0; i < round.length; i++) {
+      index = i;
+      renderQuestion();
+      while (k < FIT_MAX && !answersIn()) setFit(++k);
+    }
+    index = at;
+    renderQuestion();
+    showRemoved();
+    if (focusAt >= 0 && answerButtons()[focusAt]) answerButtons()[focusAt].focus({ preventScroll: true });
+    moreCue();
+  }
+  // The cue, when even the tightest squeeze leaves an answer out of sight
+  function moreCue() {
+    show(el.more, false);
+    el.more.classList.remove('done');
+    if (!active || mode !== 'question' || fit < FIT_MAX || answersIn()) return;
+    show(el.more, true);
+  }
+  let viewSize = '';
+  const onResize = (e) => {
+    const size = `${globalThis.innerWidth}x${globalThis.innerHeight}`;
+    if (e && e.type === 'resize' && size === viewSize) return; // (only a real change of size)
+    viewSize = size;
+    if (!active || !round.length) return;
+    fitDirty = true;
+    if (mode === 'question') fitRound();
+  };
+
   function startQuestion() {
     removed = new Set();
     setMode('question');
     renderQuestion();
+    if (fitDirty) fitRound();
+    else moreCue();
     const q = round[index];
     const id = q && q.id;
     if (id && !id.startsWith('sums-')) {
@@ -488,7 +599,9 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
       const why = `${L[lv].name} is locked. Pass ${L[lv - 1].name} first!`;
       note = { text: why, kind: 'warn' };
       if (mode === 'map') {
+        nope = lv;
         renderMap();
+        nope = -1;
         focus(mapButton(lv));
       }
       announce(why);
@@ -507,6 +620,7 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     note = null;
     buoysMax = hintsPerRound();
     buoys = buoysMax;
+    fitDirty = true;
     startQuestion();
     return true;
   }
@@ -549,10 +663,23 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
       reason: saved.ok ? null : saved.reason,
       opened: openAfter > openBefore && level + 1 < L.length ? level + 1 : null,
       nextOpen: level + 1 < Math.min(openAfter, L.length),
+      trophies: trophiesWon(before, after),
     };
     setMode('results');
     renderResults();
     react('results', { stars: won, gold: result.gold, level });
+  }
+
+  // The trophies this round completed: all nine islands passed (the mortarboard), all 27 stars (the macaw)
+  function trophiesWon(before, after) {
+    const n = levels().length;
+    if (!n || !before || !after) return [];
+    const isles = (r) => (Array.isArray(r.stars) ? r.stars.filter((x) => (x | 0) > 0).length : 0);
+    const stars = (r) => (Array.isArray(r.stars) ? r.stars.reduce((a, b) => a + (b | 0), 0) : 0);
+    const out = [];
+    if (isles(before) < n && isles(after) >= n) out.push('mortarboard');
+    if (stars(before) < n * 3 && stars(after) >= n * 3) out.push('rainbow');
+    return out;
   }
 
   function renderResults() {
@@ -577,11 +704,12 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
       lines.push(['plain', `No new stars this time. Your best here: ${STAR_WORDS[R2.best]}.`]);
     }
     if (R2.opened !== null) lines.push(['open', `${L[R2.opened].name} is open!`]);
+    for (const t of R2.trophies || []) lines.push(['trophy', TROPHIES[t].won, t]);
     const stars = [0, 1, 2].map((k) => `<span class="qs${k < R2.stars ? ' on' : ''}" style="--i:${k}">${starSvg(k < R2.stars)}</span>`).join('');
     el.results.innerHTML =
       `<div class="qr-stars${reduced() ? ' calm' : ''}" role="img" aria-label="${esc(STAR_WORDS[R2.stars].replace('no stars yet', 'no stars'))}">${stars}</div>` +
       `<p class="qr-score">${esc(head)}</p>` +
-      lines.map(([k, t]) => `<p class="qr-line ${k}">${k === 'gold' ? '<span class="coin" aria-hidden="true"></span>' : ''}${esc(t)}</p>`).join('') +
+      lines.map(([k, t, id]) => `<p class="qr-line ${k}">${k === 'gold' ? '<span class="coin" aria-hidden="true"></span>' : ''}${k === 'trophy' ? TROPHIES[id].icon : ''}${esc(t)}</p>`).join('') +
       '<div class="qr-actions">' +
       (R2.nextOpen ? '<button type="button" class="btn qr-btn" data-act="next-quiz">Next quiz <span aria-hidden="true">&#9654;</span></button>' : '') +
       `<button type="button" class="btn ${R2.nextOpen ? 'alt ' : ''}qr-btn" data-act="again">Play again</button>` +
@@ -591,7 +719,7 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     // the stars stamp in one by one, then the gold flies to the chest
     const calm = reduced();
     for (let k = 0; k < R2.stars; k++) later(() => sfx('coin', { pitch: 0.9 + k * 0.18, volume: 0.7 }), (calm ? 0 : 160) + k * STAMP);
-    if (R2.stars === 3) later(() => sfx('cheer'), 160 + 3 * STAMP);
+    if (R2.stars === 3 || (R2.trophies || []).length) later(() => sfx('cheer'), 160 + Math.max(1, R2.stars) * STAMP);
     if (R2.gold > 0) later(() => flyGold(), calm ? 0 : 180 + Math.max(1, R2.stars) * STAMP);
     else renderChest();
     announce(
@@ -706,6 +834,28 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
   el.leave.addEventListener('click', (e) => {
     if (!tapTooSoon(e)) leaveRound();
   });
+  el.more.setAttribute('tabindex', '-1'); // (a sighted helper: the answers are all read out anyway)
+  el.more.setAttribute('aria-hidden', 'true');
+  el.more.addEventListener('click', () => {
+    const end = el.body.scrollHeight - el.body.clientHeight;
+    el.body.scrollTo({ top: end, behavior: reduced() ? 'auto' : 'smooth' });
+    if (document.activeElement === el.more) el.question.focus({ preventScroll: true });
+    // (a smooth scroll that a busy frame cut short is finished at once)
+    later(() => {
+      if (mode === 'question' && el.body.scrollTop < end - 1) el.body.scrollTop = end;
+      if (!el.more.classList.contains('hidden')) el.more.classList.toggle('done', answersIn(true));
+    }, 600);
+  });
+  el.body.addEventListener(
+    'scroll',
+    () => {
+      // (it goes once the last answer has come into view, and comes back if it scrolls away again)
+      if (!el.more.classList.contains('hidden')) el.more.classList.toggle('done', answersIn(true));
+    },
+    { passive: true },
+  );
+  if (typeof globalThis.addEventListener === 'function') globalThis.addEventListener('resize', onResize);
+  if (globalThis.document && document.fonts && typeof document.fonts.addEventListener === 'function') document.fonts.addEventListener('loadingdone', onResize);
   el.back.addEventListener('click', (e) => {
     if (!tapTooSoon(e)) call(C.back);
   });

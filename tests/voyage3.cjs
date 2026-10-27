@@ -24,6 +24,11 @@
 //   Pearl, the baby kraken, the feat, the clear waiting for the Pearl, the final Victory, Enter to the title
 //   (kraken-end); "Try again from the Kraken" (kraken-retry); the rise's camera and reduced motion, the fight's
 //   draw calls ≤ 450, kraken-rise.png, kraken-fight.png, kraken-grab-390x844.png (kraken-look)
+// - the Stage 2 review's fixes: a grab's squeeze flashes nothing red (one flash as it takes hold), a held key's
+//   auto-repeat doesn't skip the rise, all stop for the dread and the rise, its head is solid (kraken-calm); the
+//   rise's banner clear of the rising head, "All stop!" (kraken-calm-look); a grab's pops clear of the grab strip on
+//   small phones (kraken-calm-pops); FIRE SHIP! and RAM! arrows at the screen edge for threats off the view, the WAVE!
+//   arrow clear of the minimap and the REPEL BOARDERS! strip, a hazard's how-to banner keeps its time (seas-cues)
 // Run with `node tests/voyage3.cjs` (VOYAGE3_ONLY=levels,starts runs some sections; VOYAGE3_ROOT serves another
 // copy of the game; SCREENSHOT_DIR puts the screenshots elsewhere).
 const fs = require('fs');
@@ -233,7 +238,33 @@ function ev(page, fn, arg = null) {
     console.log(`     (${name}: ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   }
 
-  const { page } = await open({ label: 'voyage3' });
+  // ------------------------------------------------------------------------------------- leaving a page safely
+  // audio.js downloads every recording in the background from page load, so closing a tab can abort one still on
+  // its way, and the page being left may say so ("audio: no recording for music:deep (music-deep.mp3), using the
+  // synthesised sound: TypeError: Failed to fetch"), which watch() counts as a page error. closeV() forgives exactly
+  // that warning from the pages being closed, while they close; every other audio warning stays an error.
+  const VLABEL = new WeakMap(); // page → its watch() label (openV records it)
+  const FETCH_ABORT = /^audio: no recording for (?:music|amb|sfx):[\w-]+ \([\w.-]+\), using the synthesised sound: TypeError: Failed to fetch$/;
+  async function openV(o) {
+    const r = await open(o);
+    VLABEL.set(r.page, o.label || 'page');
+    return r;
+  }
+  async function closeV(c) {
+    const labels = c.pages().map((p) => VLABEL.get(p)).filter(Boolean);
+    const n0 = errors.length;
+    await c.close();
+    for (let i = errors.length - 1; i >= n0; i--) {
+      const label = labels.find((l) => errors[i].startsWith(`${l}: `));
+      if (!label || !FETCH_ABORT.test(errors[i].slice(label.length + 2))) continue;
+      errors.splice(i, 1);
+      console.log(`     (${label}: closed while a recording was still downloading; its aborted fetch is not a page error)`);
+    }
+  }
+
+  // The first page (levels, starts, specials); closed after the banner section, so it doesn't render on behind the
+  // sections after it (each opens its own page).
+  const { ctx: firstCtx, page } = await openV({ label: 'voyage3' });
 
   // ---------------------------------------------------------------------------------------------- the voyage
   await section('levels', async () => {
@@ -422,6 +453,7 @@ function ev(page, fn, arg = null) {
     check(rows.length === 3 && bad.length === 0, `banner: the level banners of levels 7-9 at 568x320 fit and keep clear of the minimap's ring${bad.length ? ' -> ' + J(bad) : ` (${rows.map((r) => r.text).join(' | ')})`}`);
     await ctx.close();
   });
+  await closeV(firstCtx);
 
   // ------------------------------------------------------------- level 7: waterspouts, Shark Raiders, crates
   await section('atolls', async () => {
@@ -1010,30 +1042,6 @@ function ev(page, fn, arg = null) {
     await snap(dp, 'deep-hazards.png');
     await ctx.close();
   });
-
-  // ------------------------------------------------------------------------------------- leaving a page safely
-  // audio.js downloads every recording in the background from page load, so closing a tab can abort one still on
-  // its way, and the page being left may say so ("audio: no recording for music:deep (music-deep.mp3), using the
-  // synthesised sound: TypeError: Failed to fetch"), which watch() counts as a page error. closeV() forgives exactly
-  // that warning from the pages being closed, while they close; every other audio warning stays an error.
-  const VLABEL = new WeakMap(); // page → its watch() label (openV records it)
-  const FETCH_ABORT = /^audio: no recording for (?:music|amb|sfx):[\w-]+ \([\w.-]+\), using the synthesised sound: TypeError: Failed to fetch$/;
-  async function openV(o) {
-    const r = await open(o);
-    VLABEL.set(r.page, o.label || 'page');
-    return r;
-  }
-  async function closeV(c) {
-    const labels = c.pages().map((p) => VLABEL.get(p)).filter(Boolean);
-    const n0 = errors.length;
-    await c.close();
-    for (let i = errors.length - 1; i >= n0; i--) {
-      const label = labels.find((l) => errors[i].startsWith(`${l}: `));
-      if (!label || !FETCH_ABORT.test(errors[i].slice(label.length + 2))) continue;
-      errors.splice(i, 1);
-      console.log(`     (${label}: closed while a recording was still downloading; its aborted fetch is not a page error)`);
-    }
-  }
 
   // ---------------------------------------------------------------- the busiest play: draw calls (≤ 450, §14)
   // Each Voyage III level at its busiest, staged in front of you and sampled over real frames, both outline passes,
@@ -1864,8 +1872,475 @@ function ev(page, fn, arg = null) {
     if (busy) await snap(fp, 'kraken-fight.png');
     check(!!busy && busy.head && busy.tentacles >= 3 && busy.ships === 0 && busy.frames >= 5 && busy.max <= 450 && busy.settled <= 450 && busy.view && busy.view.head && busy.view.tentacles >= 1 && busy.model !== null && busy.model > 0 && busy.model <= 30 + 2 * busy.view.rings,
       `kraken look: the last stand at its busiest (its head up, ${busy && busy.tentacles} tentacles, ${busy && busy.view && busy.view.rings} rings) draws ${busy && busy.min}-${busy && busy.max} calls over ${busy && busy.frames} frames, ${busy && busy.settled} settled (≤ 450); the Kraken itself ${busy && busy.model} (≤ 30 + its rings) (${J(busy)})`);
+    // (SPEC3 §14: ≤ 4 warning rings at once; view.rings counts the rings mesh's instances, the foam circles round its
+    // head and tentacles included)
+    check(!!busy && busy.view && Number.isInteger(busy.view.warnings) && busy.view.warnings <= 4,
+      `kraken look: the last stand at its busiest shows ${busy && busy.view && busy.view.warnings} warning rings (≤ 4; ${busy && busy.view && busy.view.rings} rings with the foam circles)`);
     await closeV(fc);
   });
+  // The Stage 2 review's Kraken fixes (stepped): the grab's squeeze doesn't flash the screen red twice a second (one
+  // flash as it takes hold, SPEC3 §15: ≤ 1 per 3 s); a key held through the dread (its auto-repeat) doesn't skip the
+  // rise, a fresh press does; all stop for the dread and the rise (the ship doesn't sail into the rising Kraken), and
+  // its head is solid in the fight (your ship slides round it).
+  await section('kraken-calm', async () => {
+    const { ctx, page: kp } = await openV({ label: 'kraken-calm' });
+    await kp.evaluate(installFinale);
+    const calm = await ev(kp, () => {
+      const G = window.__game;
+      const r2 = (v) => Math.round(v * 100) / 100;
+      const out = {};
+      // 1. a grab left alone for its 4 s: the red flashes of the screen edge and the hull card
+      if (!T.toFight()) return null;
+      const p = G.player;
+      G.kraken.setHp(390);
+      T.stepUntil(() => T.k().grabbed, 45, () => (p.hp = p.maxHp));
+      const flashes = [];
+      const spies = [];
+      for (const [id, cls] of [['edge', 'on'], ['hull-card', 'hurt']]) {
+        const el = document.getElementById(id);
+        const cl = el.classList;
+        const add = cl.add;
+        cl.add = function (...a) {
+          if (a.includes(cls)) flashes.push({ id, t: r2(G.state.time) });
+          return add.apply(this, a);
+        };
+        spies.push(() => (cl.add = add));
+      }
+      // (from the step after it took hold: its squeeze)
+      const hp0 = p.hp;
+      const t0 = G.state.time;
+      T.stepUntil(() => !T.k().grabbed, 5);
+      const held = r2(G.state.time - t0);
+      spies.forEach((f) => f());
+      out.grab = { held, lost: r2(hp0 - p.hp), flashes };
+      // the flash as it takes hold: a second grab, watched from the step before
+      T.stepUntil(() => false, 9, () => (p.hp = p.maxHp));
+      const seen = [];
+      const el = document.getElementById('edge');
+      const add = el.classList.add;
+      el.classList.add = function (...a) {
+        if (a.includes('on')) seen.push(r2(G.state.time));
+        return add.apply(this, a);
+      };
+      let grabAt = null;
+      T.stepUntil(() => T.k().grabbed && grabAt !== null, 45, () => {
+        p.hp = p.maxHp;
+        if (grabAt === null && T.k().grabbed) grabAt = r2(G.state.time);
+      });
+      if (grabAt === null && T.k().grabbed) grabAt = r2(G.state.time);
+      // (then 0.7 s of its squeeze; a slam of the same attack landing on you may flash too: its times are noted)
+      const slams = [];
+      const hurt = T.hurtWatch();
+      T.stepUntil(() => false, 0.7, () => {
+        const d = hurt();
+        if (d.slam || d.ink) slams.push(r2(G.state.time));
+      });
+      el.classList.add = add;
+      const after = grabAt === null ? [] : seen.filter((t) => t >= grabAt - 0.01);
+      out.takeHold = { grabAt, seen: after, slams, squeezes: after.filter((t) => t > grabAt + 0.05 && !slams.some((u) => Math.abs(u - t) <= 0.02)) };
+      T.stepUntil(() => !T.k().grabbed, 5);
+
+      // 2. a steering key held through the dread (auto-repeat about 30 a second) and on into the rise
+      T.level(9);
+      G.state.nextBomb = Infinity;
+      T.key('a', 'KeyA');
+      G.kraken.rise({ dread: true });
+      let i = 0;
+      T.stepUntil(() => T.k().stage === 'rise', 6, () => {
+        if (i++ % 4 === 0) T.key('a', 'KeyA', { repeat: true });
+      });
+      const atRise = { stage: T.k().stage, rising: T.k().rising };
+      T.stepUntil(() => false, 1, () => {
+        if (i++ % 4 === 0) T.key('a', 'KeyA', { repeat: true });
+      });
+      out.held = { atRise, after: { stage: T.k().stage, rising: T.k().rising, riseT: r2(T.k().riseT) } };
+      T.key('a', 'KeyA', { type: 'keyup' });
+      T.key('a', 'KeyA');
+      T.key('a', 'KeyA', { type: 'keyup' });
+      T.steps(1 / 120);
+      out.held.fresh = { stage: T.k().stage, rising: T.k().rising };
+
+      // 3. cruising when the dread comes: all stop; the rise 40 u ahead, never sailed into
+      const q = T.level(9);
+      G.state.nextBomb = Infinity;
+      G.state.sail = 2;
+      T.steps(3);
+      const cruise = r2(q.speed);
+      G.kraken.rise({ dread: true });
+      let near = Infinity;
+      let riseSpeed = null;
+      let maxSpeed = 0;
+      let x0 = null;
+      let z0 = null;
+      T.steps(12, () => {
+        const s = T.k();
+        if (s.stage === 'rise' && riseSpeed === null) {
+          riseSpeed = r2(q.speed);
+          x0 = q.x;
+          z0 = q.z;
+        }
+        if (s.stage === 'rise') maxSpeed = Math.max(maxSpeed, q.speed);
+        const v = G.kraken.visuals();
+        if (s.stage === 'rise' && v.head) near = Math.min(near, Math.hypot(q.x - v.head.x, q.z - v.head.z));
+        if (s.stage === 'fight') return false;
+      });
+      out.rise = { cruise, riseSpeed, maxSpeed: r2(maxSpeed), moved: x0 === null ? null : r2(Math.hypot(q.x - x0, q.z - z0)), near: r2(near), banner: T.banner(), stage: T.k().stage, sail: G.state.sail };
+      // after the rise the sails set again
+      T.steps(3);
+      out.rise.after = r2(q.speed);
+
+      // 4. the fight's last stand (its head always up): full sail straight at the head for 8 s
+      if (!T.toFight()) return out;
+      G.kraken.setHp(150);
+      const f = G.player;
+      T.stepUntil(() => !!T.k().head && T.k().head.up, 15, () => {
+        f.hp = f.maxHp;
+        if (T.k().grabbed) G.kraken.cut(), G.kraken.cut(), G.kraken.cut();
+      });
+      let minD = Infinity;
+      G.state.sail = 3;
+      T.steps(8, () => {
+        f.hp = f.maxHp;
+        if (T.k().grabbed) G.kraken.cut(), G.kraken.cut(), G.kraken.cut();
+        const h = T.k().head;
+        if (!h || !h.up) return;
+        f.h = Math.atan2(h.x - f.x, h.z - f.z); // (steering straight at it)
+        minD = Math.min(minD, Math.hypot(f.x - h.x, f.z - h.z));
+      });
+      G.state.sail = 0;
+      out.head = { minD: r2(minD), up: !!T.k().head && T.k().head.up };
+      return out;
+    });
+    const g = calm && calm.grab;
+    check(!!g && g.held >= 3 && g.lost >= 6 && g.flashes.length === 0,
+      `kraken calm: a grab left alone squeezes (${g && g.lost} hp in ${g && g.held} s) without flashing the screen edge or the hull card red (${g && g.flashes.length} flashes, ${J(g && g.flashes.slice(0, 8))})`);
+    const th = calm && calm.takeHold;
+    check(!!th && th.grabAt !== null && th.seen.length >= 1 && Math.abs(th.seen[0] - th.grabAt) <= 0.02 && th.squeezes.length === 0,
+      `kraken calm: one red flash as a tentacle takes hold (at ${th && th.grabAt} s: ${J(th && th.seen)}), none for its squeeze after (${J(th)})`);
+    const hk = calm && calm.held;
+    check(!!hk && hk.atRise.stage === 'rise' && hk.atRise.rising && hk.after.rising && hk.after.riseT >= 0.9 && hk.fresh.stage === 'fight' && !hk.fresh.rising,
+      `kraken calm: a steering key held through the dread (its auto-repeat) doesn't skip the rise (${hk && hk.after.riseT} s in, still rising); a fresh press does (${J(hk)})`);
+    const rs = calm && calm.rise;
+    check(!!rs && rs.cruise > 5 && rs.riseSpeed !== null && rs.riseSpeed <= 0.5 && rs.maxSpeed <= 0.5 && rs.moved <= 1 && rs.near >= 35 && rs.after > 1,
+      `kraken calm: cruising at ${rs && rs.cruise} u/s when the dread comes, the ship is stopped when it rises (${rs && rs.riseSpeed} u/s, moved ${rs && rs.moved} u in the rise), ${rs && rs.near} u from its head at the nearest; the sails set again for the fight (${rs && rs.after} u/s) (${J(rs)})`);
+    const hd = calm && calm.head;
+    check(!!hd && hd.up && hd.minD >= 8,
+      `kraken calm: full sail straight at its head in the last stand, the ship slides round it, never nearer than ${hd && hd.minD} u to its middle (≥ 8: it is solid) (${J(hd)})`);
+    await closeV(ctx);
+  });
+
+  // The look of those fixes (real frames): the rise's banner keeps off the rising head on a wide screen and a phone,
+  // and the dread's banner says "All stop!".
+  await section('kraken-calm-look', async () => {
+    const rows = [];
+    for (const [w, h, touch] of [[1280, 720, false], [844, 390, true], [390, 844, true]]) {
+      const { ctx, page: kp } = await openV({ label: `kraken-calm-look ${w}x${h}`, width: w, height: h, touch });
+      await kp.evaluate(installFinale);
+      const r = await ev(kp, async () => {
+        const G = window.__game;
+        const THREE = await import('/vendor/three.module.min.js');
+        const p = T.level(9);
+        G.state.nextBomb = Infinity;
+        await T.play(1.0, () => (p.speed = 0));
+        G.kraken.rise({ dread: true });
+        await T.play(0.5);
+        const out = { dread: T.banner(), at: [] };
+        T.stepUntil(() => T.k().stage === 'rise', 6);
+        const box = (pts) => ({ l: Math.min(...pts.map((q) => q.x)), r: Math.max(...pts.map((q) => q.x)), t: Math.min(...pts.map((q) => q.y)), b: Math.max(...pts.map((q) => q.y)) });
+        for (const want of [1, 3, 4.5]) {
+          T.stepUntil(() => T.k().riseT >= want - 0.1 || !T.k().rising, 6);
+          await T.play(0.1);
+          const v = G.kraken.visuals();
+          const cam = G.camera;
+          cam.updateMatrixWorld();
+          const scr = (x, y, z) => {
+            const q = new THREE.Vector3(x, y, z).project(cam);
+            return { x: ((q.x + 1) / 2) * innerWidth, y: ((1 - q.y) / 2) * innerHeight };
+          };
+          let head = null;
+          if (v.head) {
+            // its mantle: a sphere r 6 at y 3 (× 1.1 for the model) as far as it has risen, and the crown's figurehead
+            const hy = 3.3 * Math.max(0, v.head.k);
+            const pts = [];
+            for (const [dx, dy, dz] of [[0, 6.6, 0], [0, 9, 0], [0, -0.5, 0], [6.6, 0, 0], [-6.6, 0, 0], [0, 0, 6.6], [0, 0, -6.6]]) pts.push(scr(v.head.x + dx, hy + dy, v.head.z + dz));
+            head = box(pts);
+          }
+          const b = document.getElementById('banner').getBoundingClientRect();
+          out.at.push({ riseT: Math.round(T.k().riseT * 100) / 100, rising: T.k().rising, shown: T.shown('banner'), text: T.banner().slice(0, 18), banner: { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom) }, head: head && { l: Math.round(head.l), t: Math.round(head.t), r: Math.round(head.r), b: Math.round(head.b) } });
+        }
+        return out;
+      });
+      rows.push({ w, h, r });
+      await closeV(ctx);
+    }
+    const hits = (a, b) => a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+    for (const { w, h, r } of rows) {
+      const bad = r.at.filter((a) => !a.shown || !/THE KRAKEN RISES/.test(a.text) || !a.head || hits(a.banner, a.head));
+      check(/All stop!/.test(r.dread) && /stirs/i.test(r.dread) && r.at.length === 3 && bad.length === 0,
+        `kraken calm look ${w}x${h}: "THE KRAKEN RISES!" keeps off its rising head all through the rise (${J(r.at.map((a) => ({ t: a.riseT, banner: [a.banner.t, a.banner.b], head: a.head && [a.head.t, a.head.b] })))}); the dread says "${r.dread}"`);
+    }
+  });
+
+  // A grab on a small phone (real frames): the pops (GRABBED!, TENTACLE!, ...) keep off the grab strip, so its "Hold
+  // CUT! to cut it loose" stays readable.
+  await section('kraken-calm-pops', async () => {
+    for (const [w, h] of [[320, 480], [568, 320]]) {
+      const { ctx, page: kp } = await openV({ label: `kraken-calm-look ${w}x${h}`, width: w, height: h, touch: true });
+      await kp.evaluate(installFinale);
+      const g = await ev(kp, async () => {
+        const G = window.__game;
+        if (!T.toFight()) return null;
+        const p = G.player;
+        G.kraken.setHp(395);
+        // (stepped until a tentacle's warning is 0.3 s from landing on you, then real frames through the grab)
+        T.stepUntil(() => { const k = T.k(); return k.grabbed || k.tentacles.some((t) => t.state === 'warn' && t.grab && t.T - t.t < 0.8); }, 45, () => (p.hp = p.maxHp));
+        T.watchPops();
+        const overlaps = [];
+        let frames = 0;
+        let stripFrames = 0;
+        await T.play(2.2, () => {
+          p.speed = 0;
+          p.hp = p.maxHp;
+          frames++;
+          const strip = document.getElementById('grab-strip');
+          if (strip.classList.contains('hidden')) return;
+          // (the frame it shows, the pops were placed just before it: they make way from the next one)
+          if (++stripFrames === 1) return;
+          const s = strip.getBoundingClientRect();
+          for (const el of document.querySelectorAll('#pops .pop')) {
+            if (el.style.visibility === 'hidden' || getComputedStyle(el).opacity < 0.2) continue;
+            for (const line of el.querySelectorAll('.pop-main, .pop-sub')) {
+              const b = line.getBoundingClientRect();
+              if (b.width < 1) continue;
+              if (b.left < s.right && s.left < b.right && b.top < s.bottom && s.top < b.bottom) overlaps.push({ text: line.textContent, pop: [Math.round(b.left), Math.round(b.top), Math.round(b.right), Math.round(b.bottom)], strip: [Math.round(s.left), Math.round(s.top), Math.round(s.right), Math.round(s.bottom)] });
+            }
+          }
+        });
+        return { grabbed: T.k().grabbed, frames, stripFrames, pops: T.pops(), overlaps: overlaps.slice(0, 6), n: overlaps.length };
+      });
+      check(!!g && g.stripFrames >= 5 && g.pops.some((t) => /GRABBED/.test(t)) && g.n === 0,
+        `kraken calm look ${w}x${h}: a grab's pops (${J(g && g.pops)}) keep off the grab strip over ${g && g.stripFrames} frames (${g && g.n} overlaps: ${J(g && g.overlaps)})`);
+      await closeV(ctx);
+    }
+  });
+
+  // The Stage 2 review's Voyage III fixes (real frames). A threat off the view gets an arrow at the screen edge it
+  // comes from with its word: a lit fire ship (FIRE SHIP!) and a shark winding up (RAM!) coming from behind you on a
+  // phone held upright, where the chase camera can't see them (the arrow at the bottom, pointing up at you); nothing
+  // when she is in view. The arrows keep off the minimap (a rogue wave from any of 12 bearings), the REPEL BOARDERS!
+  // strip and the banner. A hazard's how-to banner (ROGUE WAVE!, Fire ship!) keeps its time: a ship sunk meanwhile
+  // says so once it ends.
+  await section('seas-cues', async () => {
+    const { ctx, page: sp } = await openV({ label: 'seas-cues', width: 390, height: 844, touch: true });
+    await sp.evaluate(installFinale);
+    const behind = await ev(sp, async () => {
+      const G = window.__game;
+      const THREE = await import('/vendor/three.module.min.js');
+      const W = innerWidth;
+      const H = innerHeight;
+      const offView = (x, y, z) => {
+        const v = new THREE.Vector3(x, y, z).applyMatrix4(G.camera.matrixWorldInverse);
+        if (v.z > -1) return true;
+        v.applyMatrix4(G.camera.projectionMatrix);
+        const sx = ((v.x + 1) / 2) * W;
+        const sy = ((1 - v.y) / 2) * H;
+        return sx < 0 || sx > W || sy < 0 || sy > H;
+      };
+      const arrow = (id, word) => T.shown(id) && T.text(id).includes(word);
+      // (a threat behind you: more than 6 u back along the way the camera looks, on the sea. Its arrow belongs in the
+      // lower half of the screen, pointing up at you: its --turn within 75 deg of 0)
+      const fwd = new THREE.Vector3();
+      const behindYou = (x, z) => {
+        G.camera.getWorldDirection(fwd);
+        const l = Math.hypot(fwd.x, fwd.z) || 1;
+        return ((x - G.player.x) * fwd.x + (z - G.player.z) * fwd.z) / l < -6;
+      };
+      const arrowWay = (id) => {
+        const el = document.getElementById(id);
+        const b = el.getBoundingClientRect();
+        const turn = parseFloat(el.style.getPropertyValue('--turn')) || 0;
+        return { y: Math.round((b.top + b.bottom) / 2), turn, ok: (b.top + b.bottom) / 2 > H / 2 && Math.min(turn % 360, 360 - (turn % 360)) <= 75 };
+      };
+      const out = {};
+      // a fire ship 36 u off at a bearing (0 ahead, 180 behind), sailing at you while you sail on at 6 u/s
+      for (const b of [180, 0]) {
+        const p = T.level(8);
+        await T.play(0.4, () => (p.speed = 0));
+        G.state.sail = 1;
+        const a = (b * Math.PI) / 180;
+        const fs = T.spawn('fireship', Math.sin(a) * 36, Math.cos(a) * 36, 0);
+        fs.h = Math.atan2(p.x - fs.x, p.z - fs.z);
+        fs.speed = 6;
+        const r = { lit: 0, litOff: 0, shownOff: 0, shownOn: 0, litOn: 0, word: false, behind: 0, wrongWay: [] };
+        await T.play(9, () => {
+          p.speed = 6;
+          p.hp = p.maxHp;
+          const lit = G.mechanics3.visuals().fireRings.some((q) => Math.hypot(q.x - fs.x, q.z - fs.z) < 0.01);
+          if (!lit) return;
+          r.lit++;
+          const off = offView(fs.x, 1.5, fs.z);
+          const on = arrow('edge-arrow-fire', 'FIRE SHIP!');
+          if (off) {
+            r.litOff++;
+            if (on) r.shownOff++;
+            if (on && behindYou(fs.x, fs.z)) {
+              r.behind++;
+              const way = arrowWay('edge-arrow-fire');
+              if (!way.ok && r.wrongWay.length < 4) r.wrongWay.push(way);
+            }
+          } else {
+            r.litOn++;
+            if (on) r.shownOn++;
+          }
+        });
+        out[`fire${b}`] = r;
+      }
+      // a Shark Raider 22 u behind you lining up her charge
+      {
+        const p = T.level(7);
+        await T.play(0.4, () => (p.speed = 0));
+        G.state.sail = 1;
+        const sh = T.spawn('shark', 0, -22, 0);
+        sh.h = Math.atan2(p.x - sh.x, p.z - sh.z);
+        sh.speed = 4;
+        const r = { wind: 0, windOff: 0, shownOff: 0, behind: 0, wrongWay: [] };
+        // (stepped until she starts winding up, then real frames through her wind-up)
+        const windup = () => G.mechanics3.visuals().rams.some((q) => q.state === 'windup' && Math.hypot(q.x - sh.x, q.z - sh.z) < 0.01);
+        r.waited = T.stepUntil(windup, 20, () => {
+          p.hp = p.maxHp;
+          sh.reload.port = sh.reload.star = 99;
+        });
+        await T.play(1.6, () => {
+          p.speed = 0;
+          p.hp = p.maxHp;
+          sh.reload.port = sh.reload.star = 99;
+          const w = windup();
+          if (!w) return;
+          r.wind++;
+          if (offView(sh.x, 1.5, sh.z)) {
+            r.windOff++;
+            const on = arrow('edge-arrow-ram', 'RAM!');
+            if (on) r.shownOff++;
+            if (on && behindYou(sh.x, sh.z)) {
+              r.behind++;
+              const way = arrowWay('edge-arrow-ram');
+              if (!way.ok && r.wrongWay.length < 4) r.wrongWay.push(way);
+            }
+          }
+        });
+        out.ram = r;
+      }
+      return out;
+    });
+    const f = behind.fire180;
+    check(f.litOff >= 5 && f.shownOff >= f.litOff * 0.9,
+      `seas cues: a lit fire ship coming from behind you on a phone (off the view ${f.litOff} of ${f.lit} lit frames) has a FIRE SHIP! arrow at the screen edge (${f.shownOff} of those frames) (${J(f)})`);
+    check(f.behind >= 3 && f.wrongWay.length === 0,
+      `seas cues: while she is behind you (${f.behind} frames) the FIRE SHIP! arrow is at the bottom of the screen, pointing up at you (${f.wrongWay.length ? 'wrong way: ' + J(f.wrongWay) : 'all'})`);
+    const f0 = behind.fire0;
+    check(f0.lit >= 5 && f0.litOn >= 5 && f0.shownOn === 0,
+      `seas cues: a lit fire ship ahead, in view (${f0.litOn} frames), gets no arrow (${J(f0)})`);
+    const rm = behind.ram;
+    check(rm.windOff >= 3 && rm.shownOff >= rm.windOff * 0.9,
+      `seas cues: a Shark Raider winding up behind you (off the view ${rm.windOff} frames) has a RAM! arrow (${rm.shownOff} of them) (${J(rm)})`);
+    check(rm.behind >= 3 && rm.wrongWay.length === 0,
+      `seas cues: while the shark winds up behind you (${rm.behind} frames) the RAM! arrow is at the bottom of the screen, pointing up at you (${rm.wrongWay.length ? 'wrong way: ' + J(rm.wrongWay) : 'all'})`);
+
+    // The WAVE! arrow from 12 bearings round your bow keeps off the minimap and the boss bar.
+    const spots = await ev(sp, async () => {
+      const G = window.__game;
+      const R = (el) => {
+        if (!el || el.classList.contains('hidden') || !el.getClientRects().length) return null;
+        const b = el.getBoundingClientRect();
+        return { l: b.left, t: b.top, r: b.right, b: b.bottom };
+      };
+      const hits = (a, b) => !!a && !!b && a.l < b.r && b.l < a.r && a.t < b.b && b.t < a.b;
+      const out = [];
+      for (let d = 0; d < 360; d += 30) {
+        const p = T.level(8);
+        G.mechanics3.wave(p.h + (d * Math.PI) / 180);
+        await T.play(0.3, () => (p.speed = 0));
+        const a = R(document.getElementById('edge-arrow'));
+        const map = R(document.getElementById('minimap'));
+        out.push({ d, shown: !!a, map: hits(a, map), a: a && [Math.round(a.l), Math.round(a.t), Math.round(a.r), Math.round(a.b)] });
+      }
+      return out;
+    });
+    const onMap = spots.filter((s) => !s.shown || s.map);
+    check(spots.length === 12 && onMap.length === 0,
+      `seas cues: the WAVE! arrow from 12 bearings round your bow on a phone keeps off the minimap (${onMap.length ? J(onMap) : 'all clear'})`);
+
+    // A hazard's how-to banner keeps its time: a ship sunk 0.5 s into ROGUE WAVE! (and into Fire ship!) waits.
+    const hold = await ev(sp, async () => {
+      const G = window.__game;
+      const out = {};
+      for (const kind of ['rogue', 'fire']) {
+        const p = T.level(8);
+        const a = T.spawn('corsair', 30, 40);
+        T.spawn('corsair', -30, 40);
+        a.reload.port = a.reload.star = 99;
+        await T.play(0.3, () => (p.speed = 0));
+        if (kind === 'rogue') G.mechanics3.wave(p.h + Math.PI / 2);
+        else {
+          const fs = T.spawn('fireship', -16, -16, 0);
+          fs.speed = 0;
+          // (until she lights her fuse)
+          T.stepUntil(() => G.mechanics3.visuals().fireRings.length > 0, 5);
+        }
+        await T.play(0.5, () => (p.speed = 0));
+        const first = T.banner();
+        G.damage(a, 9999, a.x, a.z);
+        await T.play(0.6, () => (p.speed = 0));
+        const during = T.banner();
+        await T.play(3.2, () => {
+          p.speed = 0;
+          p.hp = p.maxHp;
+        });
+        const after = T.banner();
+        out[kind] = { first, during, after };
+      }
+      return out;
+    });
+    for (const [kind, word] of [['rogue', 'ROGUE WAVE!'], ['fire', 'Fire ship!']]) {
+      const o = hold[kind];
+      check(o.first.startsWith(word) && o.during.startsWith(word) && /sunk!/.test(o.after),
+        `seas cues: "${word}" keeps the banner while a ship is sunk 0.5 s into it ("${o.during}"), then "${o.after}" (${J(o)})`);
+    }
+    await closeV(ctx);
+
+    // The REPEL BOARDERS! strip at the top and a rogue wave from ahead: its arrow keeps off the strip (desktop, phone).
+    for (const [w, h, touch] of [[1280, 720, false], [390, 844, true]]) {
+      const { ctx: bc, page: bp } = await openV({ label: `seas-cues boarders ${w}x${h}`, width: w, height: h, touch });
+      const r = await ev(bp, async () => {
+        const G = window.__game;
+        const R = (el) => {
+          if (!el || el.classList.contains('hidden') || !el.getClientRects().length) return null;
+          const b = el.getBoundingClientRect();
+          return { l: Math.round(b.left), t: Math.round(b.top), r: Math.round(b.right), b: Math.round(b.bottom) };
+        };
+        const p = T.level(8);
+        const raider = T.spawn('corsair', -7, 0);
+        await T.play(0.3, () => (p.speed = 0));
+        const raided = G.boarding.raid(raider);
+        G.mechanics3.wave(p.h);
+        const seen = [];
+        await T.play(1.5, () => {
+          p.speed = 0;
+          p.hp = p.maxHp;
+          const a = R(document.getElementById('edge-arrow'));
+          const s = R(document.getElementById('boarding-strip'));
+          const bn = R(document.getElementById('banner'));
+          const over = (q) => !!q && a.l < q.r && q.l < a.r && a.t < q.b && q.t < a.b;
+          if (a && s) seen.push({ a, s, bn, hit: over(s) || over(bn) });
+        });
+        return { raided, frames: seen.length, banners: seen.filter((x) => !!x.bn).length, hits: seen.filter((x) => x.hit).length, last: seen[seen.length - 1] || null, strip: T.text('boarding-strip').slice(0, 30) };
+      });
+      check(r.raided && r.frames >= 3 && r.banners >= 3 && r.hits === 0,
+        `seas cues ${w}x${h}: a rogue wave from ahead while raiders board you: its WAVE! arrow keeps off the "${r.strip}" strip and the ROGUE WAVE! banner (${r.hits} of ${r.frames} frames on one, the banner up in ${r.banners}) (${J(r.last)})`);
+      await closeV(bc);
+    }
+  });
+
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);
   await browser.close();
   server.close();

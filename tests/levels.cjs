@@ -14,9 +14,10 @@
 //   doubloon.png, frost.png, maelstrom.png
 // - the Stage 4 review's fixes (review4): locked cards focusable and described, progress never lowered by an older
 //   tab, the Victory words after capturing the Molten Maw, the level banners clear of the minimap at 568x320
+// - progress saved by a build with more levels (the Kraken Seas' 9) is never lowered, in one tab or two (progress)
 // The simulation is frozen (the real-time loop paused) and driven with G.step(1/120) like smoke.cjs; only the
 // draw-call and screenshot parts let real frames run. Run with `npm test` or `npm run test:levels`
-// (LEVELS_ONLY=cards,finale,doubloon,frost,maelstrom,bot,draws,review4 runs some sections; LEVELS_ROOT serves another
+// (LEVELS_ONLY=cards,finale,doubloon,frost,maelstrom,bot,draws,review4,progress runs some sections; LEVELS_ROOT serves another
 // copy of the game).
 const fs = require('fs');
 const path = require('path');
@@ -1299,6 +1300,75 @@ function botLevel(args) {
       }
       const bad = rows.filter((r) => !r.clear);
       check(rows.length === 6 && bad.length === 0, `the level banners at 568x320 (desktop) keep clear of the minimap's ring on all 6 levels${bad.length ? ' -> ' + J(bad) : ''}`);
+      await ctx.close();
+    }
+  });
+
+  // ------------------------------------------------------------------------------------------------ progress
+  // LIVE-1 (the Stage 2 review): progress saved by a build with more levels (the Kraken Seas' 9, in another tab or
+  // before an update) is never lowered by this 6-level game. Loading it clamps the levels open in memory only and
+  // leaves the record as it is; only an unreadable record is rewritten. Two tabs: a ?kraken=1 tab saves 9 while this
+  // game is open in another tab, which takes the larger value and writes nothing, not even when it wins a level;
+  // the ?kraken=1 tab reloads with all nine open.
+  await section('progress', async () => {
+    // (a page is reloaded or closed only once its recordings have all come in: a download cut short says so as an
+    // audio warning, a page error here)
+    const settle = (p) => p.waitForLoadState('networkidle', { timeout: 60000 }).catch(() => {});
+    const cardsOf = (p) => p.evaluate(() => ({ unlocked: window.__game.state.unlocked, levels: window.__game.LEVELS.length, saved: localStorage.getItem('pirates-ahoy-unlocked'), cards: [...document.querySelectorAll('.level-card')].map((b) => (b.getAttribute('aria-disabled') === 'true' || b.disabled ? 'L' : 'P')).join('') }));
+    {
+      const { ctx, page } = await open({ label: 'progress', store: { 'pirates-ahoy-unlocked': '9', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
+      const rows = [{ set: '9', ...(await cardsOf(page)) }];
+      for (const set of ['8', '7', 'lots', '2.5']) {
+        await page.evaluate((v) => localStorage.setItem('pirates-ahoy-unlocked', v), set);
+        await settle(page);
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
+        await page.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+        rows.push({ set, ...(await cardsOf(page)) });
+      }
+      await settle(page);
+      const want = { 9: ['9', 6], 8: ['8', 6], 7: ['7', 6], lots: ['1', 1], 2.5: ['1', 1] };
+      const bad = rows.filter((r) => r.levels !== 6 || r.saved !== want[r.set][0] || r.unlocked !== want[r.set][1] || r.cards !== 'P'.repeat(r.unlocked) + 'L'.repeat(6 - r.unlocked));
+      check(rows.length === 5 && bad.length === 0,
+        `LIVE-1: the 6-level game opens all 6 cards for progress saved as 9, 8 or 7 and leaves the record as it is (never lowered); an unreadable one ("lots", "2.5") is rewritten to 1 (${J(rows.map((r) => [r.set, r.saved, r.unlocked, r.cards]))})`);
+      await ctx.close();
+    }
+    {
+      // tab A: the Kraken Seas (9 levels), 8 open; tab B: this game
+      const { ctx, page: A } = await open({ label: 'progressA', query: '?quality=low&kraken=1', store: { 'pirates-ahoy-unlocked': '8', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '65535' } });
+      const B = await ctx.newPage();
+      watch(B, 'progressB');
+      await B.goto(base + '?quality=low', { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await B.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+      await B.evaluate(installHelpers);
+      await B.waitForTimeout(500);
+      const a0 = await cardsOf(A);
+      const b0 = await cardsOf(B);
+      // A clears level 8: it saves 9 (as its raiseProgress does) while B is open
+      await A.evaluate(() => localStorage.setItem('pirates-ahoy-unlocked', '9'));
+      await B.waitForTimeout(1500);
+      const b1 = await cardsOf(B);
+      // B wins the Volcano (its level 3): a win there opens nothing more and writes nothing
+      const won = await ev(B, () => {
+        const G = window.__game;
+        T.level(3);
+        for (let w = 0; w < 8 && G.state.mode === 'playing'; w++) {
+          for (const e of G.enemies) if (G.fighting(e)) G.damage(e, 9999);
+          T.steps(1, () => G.state.mode === 'playing');
+        }
+        T.steps(12, () => G.state.mode === 'playing');
+        return { mode: G.state.mode, unlocked: G.state.unlocked, saved: localStorage.getItem('pirates-ahoy-unlocked') };
+      });
+      await B.waitForTimeout(500);
+      await settle(B);
+      await B.close();
+      await settle(A);
+      await A.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
+      await A.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+      const a1 = await cardsOf(A);
+      await settle(A);
+      check(a0.levels === 9 && a0.unlocked === 8 && b0.levels === 6 && b0.unlocked === 6 && b0.saved === '8' && b1.saved === '9' && b1.unlocked === 6 && won.mode === 'won' && won.saved === '9' && won.unlocked === 6 &&
+        a1.unlocked === 9 && a1.saved === '9' && a1.cards === 'PPPPPPPPP',
+        `LIVE-1: two tabs: the 6-level game opened beside a Kraken Seas tab leaves its progress at ${b0.saved}; the Kraken tab saves 9 and it stays ${b1.saved}, also after a win in the 6-level tab (${won.saved}); the Kraken tab reloads with ${a1.cards.length} cards, ${a1.unlocked} open (${J({ a0, b0, b1, won, a1 })})`);
       await ctx.close();
     }
   });
