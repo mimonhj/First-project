@@ -548,11 +548,14 @@ async function shotColours(page) {
   await freeze(page);
 
   // ---- A bot captain plays every Act I level with simulated controls (Act II has its own bot in tests/levels.cjs).
+  // Its rolls aren't repeatable (aim spread and lava scatter use Math.random, and a crit's hit-stop is gated by the
+  // wall clock), and about one Volcano try in 40 is lost to bad rolls: with two tries, both were lost about once in
+  // a few hundred runs, failing the suite with nothing broken. Like a player, it may try a level up to three times.
   const bot = await page.evaluate(() => {
     const G = window.__game;
     const wrap = (a) => ((((a + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
     const results = [];
-    // Like a player, the bot gets a second try at a level it loses.
+    // Like a player, the bot tries again at a level it loses (up to three tries).
     for (let n = 1, attempt = 1; n <= 3; n++) {
       G.startLevel(n);
       G.togglePause();
@@ -605,8 +608,8 @@ async function shotColours(page) {
         }
         t += 6 / 120;
       }
-      if (G.state.mode === 'over' && attempt === 1) {
-        attempt = 2;
+      if (G.state.mode === 'over' && attempt < 3) {
+        attempt++;
         n--;
         continue;
       }
