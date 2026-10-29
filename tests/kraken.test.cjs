@@ -2,7 +2,7 @@
 // simulation runs against a mock of the ctx main.js hands it, with a scripted ship that obeys playerMods():
 // - the API: exact exports, the KRAKEN table as SPEC3 (and none of STATUS / INK / RAIDERS copied into it)
 // - the rise (6 s, 3 s short, skippable, 40 u ahead in open water), the bar and its notches
-// - phase thresholds 400 / 200; chase speeds 8 / 9.5 / 0 (frost ×0.5); attack counts and intervals per phase
+// - phase thresholds at the notches (1,900 / 950 of 2,850 since Stage 3); chase speeds 8 / 9.5 / 0 (frost ×0.5); attack counts and intervals per phase
 // - every warning ≥ 1.5 s (+ the warn bonus, + 0.5 s frozen); slam damage only inside the ring
 // - never more than 4 tentacles up (slamming, swaying, grabbing, recoiling or sinking) over 600 s of each phase,
 //   and the hard cap retiring the oldest when a fifth would rise
@@ -247,8 +247,12 @@ const TABLES = {
   const circle = (p) => ({ h: p.h + 0.5, speed: 8 });
 
   // ================================================================ the API and the table
+  // (the bar and its two notches, as tuned: the phases below are reached through them)
+  const HP = KRAKEN.hp;
+  const [N1, N2] = KRAKEN.notches;
   check(same(Object.keys(K).sort(), ['KRAKEN', 'createKraken']), 'kraken.js exports exactly KRAKEN and createKraken');
-  check(KRAKEN.hp === 600 && same(KRAKEN.notches, [400, 200]) && KRAKEN.pearl === 1000, 'KRAKEN: 600 hp, notches at 400 and 200, the Pearl 1,000 (§5.7.1, §5.7.2)');
+  check(KRAKEN.hp === 2850 && same(KRAKEN.notches, [1900, 950]) && KRAKEN.pearl === 1000, 'KRAKEN: 2,850 hp (Stage 3 balance, for a 2–3 minute fight on the late-game ship; §5.7.2 started at 600), notches at 1,900 and 950, the Pearl 1,000 (§5.7.1, §5.7.2)');
+  check(KRAKEN.notches[0] * 3 === KRAKEN.hp * 2 && KRAKEN.notches[1] * 3 === KRAKEN.hp, 'the notches cut the bar in thirds (the boss bar marks at 1/3 and 2/3)');
   check(KRAKEN.dread === 4 && KRAKEN.rise === 6 && KRAKEN.shortRise === 3 && KRAKEN.riseAhead === 40 && KRAKEN.boil === 30, 'KRAKEN: dread 4 s, rise 6 s (short 3 s), the eye 40 u ahead, the boil ring 30 u (§5.7.1, §5.7.6)');
   check(KRAKEN.sway === 4 && KRAKEN.sink <= 0.5 && KRAKEN.maxUp === 4 && KRAKEN.ring === 4 && KRAKEN.minWarn === 1.5, 'KRAKEN: sway 4 s, sink ≤ 0.5 s, at most 4 up, rings r 4, no warning under 1.5 s (§5.7.3)');
   check(KRAKEN.grabRest === 8 && KRAKEN.restGap === 8 && KRAKEN.grab.dps === 2 && KRAKEN.grab.max === 4, 'KRAKEN: no grab for 8 s after a release, first rings ≥ 8 u, grab 2 hp/s for at most 4 s (§5.7.3)');
@@ -256,14 +260,14 @@ const TABLES = {
   check(same(KRAKEN.specials, { chase: 0.5, warn: 0.5, sneeze: true }), 'KRAKEN.specials: chase ×0.5, warnings +0.5 s, the sneeze (§5.7.5)');
   {
     const [a, b, c] = KRAKEN.phases;
-    check(a.from === 600 && b.from === 400 && c.from === 200, 'phases from 600, 400, 200');
+    check(a.from === HP && b.from === N1 && c.from === N2, `phases from the full bar and the two notches (${a.from}, ${b.from}, ${c.from})`);
     check(a.chase === 8 && b.chase === 9.5 && c.chase === 0, 'chase 8 / 9.5 u/s, then it stops (a stock ship at 12 u/s outruns it)');
     check(a.trigger === 14 && b.trigger === 14 && c.trigger === Infinity, 'attack trigger: the shadow within 14 u (always in phase 3)');
     check(a.count === 2 && b.count === 3 && c.count === 4 && a.every === 8 && b.every === 7 && c.every === 6, 'attacks: 2 every 8 s, 3 every 7 s, 4 every 6 s');
     check(a.spread === 6 && b.spread === 6 && c.reach === 40, 'spots: your predicted spot ±6 u; phase 3 anywhere within 40 u');
     check(a.warn === 1.8 && b.warn === 1.6 && c.warn === 1.5 && a.slam === 12 && b.slam === 12 && c.slam === 12, 'warnings 1.8 / 1.6 / 1.5 s; slams 12');
     check(a.grab === false && b.grab === true && c.grab === true, 'grabs only in phases 2–3');
-    check(a.head.every === 3 && a.head.up === 7 && a.head.off === 20 && b.head.every === 2 && b.head.up === 7 && c.head.always === true && c.head.off === 25 && same(c.head.glow, [4, 8]), 'head: every 3rd attack / every 2nd for 7 s at 20 u off the beam; always up at 25 u in phase 3, glowing 4 s in 8');
+    check(a.head.every === 2 && a.head.up === 7 && a.head.off === 20 && b.head.every === 2 && b.head.up === 7 && c.head.always === true && c.head.off === 25 && same(c.head.glow, [4, 8]), 'head: every 2nd attack in phases 1 and 2 (Stage 3 balance; §5.7.3 started phase 1 at every 3rd) for 7 s at 20 u off the beam; always up at 25 u in phase 3, glowing 4 s in 8');
     check(!a.ink && b.ink === 12 && !c.ink && !a.pull && !b.pull && c.pull.speed === 2 && c.pull.reach === 50, 'ink every 12 s only in phase 2; the pull (2 u/s within 50 u) only in phase 3');
     const P = KRAKEN.parts;
     check(P.shadow.r === 9 && P.head.r === 6 && P.head.y === 3 && P.head.mul === 1 && P.eye.r === 2.5 && P.eye.mul === 1.5 && P.tentacle.r === 1.4 && P.tentacle.y0 === 0 && P.tentacle.y1 === 9 && P.tentacle.hp === 30 && P.tentacle.mul === 1, 'parts: shadow r 9, head sphere r 6 at y 3 ×1, eye r 2.5 ×1.5, tentacle capsule r 1.4 y 0–9 with 30 hp (§5.7.2)');
@@ -344,11 +348,11 @@ const TABLES = {
   {
     const w = fight({ player: { x: 0, z: 0, h: 0 } });
     const k = w.k;
-    const seq = [601, 401, 400, 201, 200, 1].map((v) => (k.setHp(v), k.phase));
-    check(same(seq, [1, 1, 2, 2, 3, 3]), `phase thresholds: 401 → 1, 400 → 2, 201 → 2, 200 → 3 (${seq})`);
-    // by hits on its parts: hit tentacles until the bar crosses 400
+    const seq = [HP + 1, N1 + 1, N1, N2 + 1, N2, 1].map((v) => (k.setHp(v), k.phase));
+    check(same(seq, [1, 1, 2, 2, 3, 3]), `phase thresholds: ${N1 + 1} → 1, ${N1} → 2, ${N2 + 1} → 2, ${N2} → 3 (${seq})`);
+    // by hits on its parts: hit tentacles until the bar crosses the first notch
     const w2 = fight({ player: { x: 0, z: 0, h: 0 } });
-    w2.k.setHp(410);
+    w2.k.setHp(N1 + 10);
     let crossed = false;
     for (let i = 0; i < 120 * 30 && !crossed; i++) {
       w2.step();
@@ -356,7 +360,7 @@ const TABLES = {
       if (t) w2.k.hit(t.id, { dmg: 6 });
       if (w2.k.phase === 2) crossed = true;
     }
-    check(crossed && w2.k.hp <= 400, `hits on its tentacles take it into phase 2 at 400 (${f2(w2.k.hp)})`);
+    check(crossed && w2.k.hp <= N1, `hits on its tentacles take it into phase 2 at ${N1} (${f2(w2.k.hp)})`);
   }
   function chaseSpeed(hp, frost = false) {
     const w = fight({ player: { x: 0, z: -60, h: 0 }, riseX: 0, riseZ: 40 }, hp);
@@ -367,12 +371,12 @@ const TABLES = {
     return Math.hypot(b.x - a.x, b.z - a.z);
   }
   {
-    const s1 = chaseSpeed(600);
-    const s2 = chaseSpeed(390);
-    const sf = chaseSpeed(600, true);
+    const s1 = chaseSpeed(HP);
+    const s2 = chaseSpeed(N1 - 10);
+    const sf = chaseSpeed(HP, true);
     check(near(s1, 8, 0.05) && near(s2, 9.5, 0.05), `the shadow chases at 8 u/s in phase 1, 9.5 in phase 2 (${f2(s1)}, ${f2(s2)})`);
     check(near(sf, 4, 0.05), `frozen, it chases at half speed (${f2(sf)})`);
-    const w = fight({ player: { x: 0, z: 0, h: 0 } }, 150);
+    const w = fight({ player: { x: 0, z: 0, h: 0 } }, N2 - 50);
     w.run(1);
     const a = w.k.state;
     w.run(20, { speed: 0 });
@@ -392,11 +396,19 @@ const TABLES = {
     let hi = 0;
     let turned = 0;
     let last = null;
-    for (let i = 0; i < 120 * 20; i++) {
+    let closed = false; // (once the head has been up, the shadow comes back from where it went under: counted again
+    //                     from when it is back inside the trigger)
+    for (let i = 0; i < 120 * 30; i++) {
       wl.step(DT, { speed: 0 });
       const S = wl.k.state;
-      if (S.head) continue;
+      if (S.head) {
+        closed = false;
+        last = null;
+        continue;
+      }
       const d = Math.hypot(S.shadow.x, S.shadow.z);
+      if (!closed && d > KRAKEN.phases[0].trigger) continue;
+      closed = true;
       lo = Math.min(lo, d);
       hi = Math.max(hi, d);
       const a = Math.atan2(S.shadow.x, S.shadow.z);
@@ -422,9 +434,9 @@ const TABLES = {
     runs.push(w);
     return w;
   }
-  const P1 = 600;
-  const P2 = 390;
-  const P3 = 190;
+  const P1 = HP;
+  const P2 = N1 - 10;
+  const P3 = N2 - 10;
   const phaseRuns = {};
   for (const [ph, hp] of [[1, P1], [2, P2], [3, P3]]) {
     phaseRuns[ph] = {
@@ -731,7 +743,7 @@ const TABLES = {
   // ================================================================ head, ink, pull, cut-off
   {
     // phase 1: the head every 3rd attack, phase 2 every 2nd, 7 s up, 20 u off the beam
-    for (const [hp, every] of [[P1, 3], [P2, 2]]) {
+    for (const [hp, every] of [[P1, KRAKEN.phases[0].head.every], [P2, KRAKEN.phases[1].head.every]]) {
       const w = fight({ seed: 21, player: { x: 0, z: 0, h: 0 } }, hp);
       const ups = [];
       let upAt = null;
@@ -975,6 +987,9 @@ const TABLES = {
     const rc = w.k.hit('head', { dmg: 10, crit: true });
     const rr = w.k.hit('head', { dmg: 10, aspect: 'stern', aspectMul: 2, rake: true, tags: ['rake'] });
     check(re.dmg === 15 && re.word === 'BULLSEYE!' && rh.dmg === 10 && rh.word === null && rc.word === 'CRIT!' && rr.dmg === 10 && rr.word === null && near(hp0 - w.k.hp, 45), 'hit(): the eye ×1.5 (BULLSEYE!), the head ×1, a crit says CRIT!, a rake counts nothing extra (never RAKE!)');
+    const by0 = S.dmgBy;
+    const by = w.k.state.dmgBy;
+    check(by && near(by.eye - by0.eye, 15) && near(by.head - by0.head, 30) && by.tentacle === by0.tentacle && by.burn === by0.burn, `state.dmgBy says what took the bar down: eye +15, head +30 (${JSON.stringify(by)})`);
     const w2 = fight({ player: { x: 0, z: 0, h: 0 } }, P3);
     let tt = null;
     for (let i = 0; i < 120 * 10 && !tt; i++) {
@@ -1160,7 +1175,7 @@ const TABLES = {
         for (let i = 0; i < 120 * 30; i++) {
           k.step(DT);
           if (i % 97 === 0) {
-            k.setHp([590, 380, 150][i % 3]);
+            k.setHp([HP - 10, N1 - 20, N2 - 50][i % 3]);
             for (const j of junk) {
               k.hits(j, j, j, j);
               k.hit(j, j);

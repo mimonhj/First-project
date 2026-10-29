@@ -7,7 +7,7 @@ import { createAudio } from './audio.js';
 import { buildPerson, animatePerson, disposePerson, releaseSharedPeople } from './people.js';
 import * as sparrow from './env/sparrow.js';
 // The voyage's levels: Voyages I and II (levels.js), then Voyage III, The Kraken Seas, once it sails (voyage.js).
-import { LEVELS, WITH_KRAKEN } from './voyage.js';
+import { LEVELS, WITH_KRAKEN, ACT3_TEASER } from './voyage.js';
 // "The Kraken Seas" (SPEC3): special ammo, Voyage III's rules, the Kraken (its simulation and its model), the
 // statuses drawn on ships, the island's buildings, the quiz and the player's settings. Imported whole (each
 // module's own names are read where they are used), so a module that is still being built never stops the game
@@ -19,6 +19,7 @@ import * as krakenView from './krakenView.js';
 import * as statusFx from './statusfx.js';
 import * as islandRules from './island.js';
 import * as quizRules from './quiz.js';
+import { QUESTIONS as QUIZ_BANK } from './quizBank.js';
 import * as settingsRules from './settings.js';
 // "Boarders Away!" (SPEC2): the combat rules, the tavern upgrades, the looks and feats records, the enemy
 // name tags, the pop words and the sailors that go overboard.
@@ -116,6 +117,8 @@ const FEATS_KEY = 'pirates-ahoy-feats'; // captures, boardings, rakes, crits... 
 const TIPS_KEY = 'pirates-ahoy-tips'; // one-time battle tips already shown (bitmask, see showTip())
 const POWDER_KEY = 'pirates-ahoy-powder'; // the special-shot recipes bought at the tavern (see specials.js, SPEC3 §10.1)
 const SETTINGS_KEY = 'pirates-ahoy-settings'; // how the ship steers on a touch screen (see settings.js, SPEC3 §3.2)
+const ISLAND_KEY = 'pirates-ahoy-island'; // the buildings on Sparrow's Floating Island (see island.js, SPEC3 §8)
+const QUIZ_KEY = 'pirates-ahoy-quiz'; // the Riddle Bell's stars and the gold paid for them (see quiz.js, SPEC3 §7)
 const HELM_SCALE = 1.1; // the captain at the helm: his hands meet the Sea Biscuit's wheel at this scale (people.js WHEEL)
 const LIST_BATTERED = 0.04; // radians a battered ship lists toward the side with more hits
 const LIST_WRECKED = 0.09;
@@ -497,6 +500,58 @@ function syncPowder() {
   state.powder = merged;
   return true;
 }
+// The quiz record as main keeps it: its `seen` list holds only questions the bank has (quiz.js parseQuiz).
+function parseQuizRecord(raw) {
+  return quizRules.parseQuiz(raw, QUIZ_BANK);
+}
+// The island record changed in another tab (SPEC3 §10.2): each plot keeps the larger tier (tiers only ever go
+// up). Returns whether this tab's island changed (a new record object, so the build panel redraws).
+function syncIsland() {
+  if (!WITH_KRAKEN) return false;
+  const raw = readRaw(ISLAND_KEY);
+  if (raw === null) return false;
+  const merged = islandRules.mergeIsland(islandCfg, raw);
+  if (islandRules.serializeIsland(merged) === islandRules.serializeIsland(islandCfg)) return false;
+  islandCfg = merged;
+  return true;
+}
+// The quiz record changed in another tab (SPEC3 §10.2): each island's stars and paid the larger, tried or-ed,
+// seen merged and capped (quiz.js mergeQuiz): stars never go down and no star is paid twice. Returns whether this
+// tab's record changed (a new record object, so the quiz map redraws).
+function syncQuiz() {
+  if (!WITH_KRAKEN) return false;
+  const raw = readRaw(QUIZ_KEY);
+  if (raw === null) return false;
+  const merged = parseQuizRecord(quizRules.mergeQuiz(quizRec, parseQuizRecord(raw)));
+  if (quizRules.serializeQuiz(merged) === quizRules.serializeQuiz(quizRec)) return false;
+  quizRec = merged;
+  return true;
+}
+// The feats that mirror the island and the quiz (SPEC3 §10.2, §10.3): quiz islands passed, quiz stars won and the
+// island's tiers built are reached, not counted. Raised to what the records hold (never lowered) and saved, so
+// Polly's mortarboard (9 islands), Rainbow macaw (27 stars) and Governor's coat (30 tiers) unlock. Called at load
+// and whenever the island or the quiz record changes. Returns whether a feat went up.
+function raiseRecordFeats() {
+  if (!WITH_KRAKEN) return false;
+  const reached = {
+    quiz: quizRules.passed(quizRec),
+    stars: quizRules.totalStars(quizRec),
+    island: islandRules.tiersBuilt(islandCfg),
+  };
+  let raised = false;
+  for (const id of Object.keys(reached)) {
+    const n = reached[id];
+    if (Number.isSafeInteger(n) && n > (Number(feats[id]) || 0)) {
+      feats[id] = n;
+      raised = true;
+    }
+  }
+  if (raised) {
+    featsDirty = true;
+    saveFeats(); // (MAX_FEATS: another tab's values merge by the larger, never added)
+  }
+  return raised;
+}
 // The settings changed in another tab: take theirs.
 function syncSettings() {
   const raw = readRaw(SETTINGS_KEY);
@@ -737,6 +792,14 @@ let shipConfig = loadShipConfig(); // upgrades bought and paint chosen at the sh
 let feats = loadRecord(FEATS_KEY, parseFeats, serializeFeats);
 let featsDirty = false; // counted this voyage, not saved yet (see saveFeats())
 let featsSaved = parseFeats(feats); // the feats as this tab last read or wrote them (see syncFeats())
+// "The Kraken Seas" island and quiz records (SPEC3 §10.1), each validated by its module (a record that needed
+// fixing is rewritten), read only once the Kraken Seas sail (WITH_KRAKEN): until then the game runs on the
+// defaults and never touches them. They come before the look: the quiz islands passed, the stars won and the
+// island's tiers built are feats (the mortarboard, the Rainbow macaw, the Governor's coat), raised from these
+// records at load (§10.2, §10.3), so a trophy the records have earned is never taken off.
+let islandCfg = WITH_KRAKEN ? loadRecord(ISLAND_KEY, islandRules.parseIsland, islandRules.serializeIsland) : islandRules.defaultIsland(); // the island's buildings
+let quizRec = WITH_KRAKEN ? loadRecord(QUIZ_KEY, parseQuizRecord, quizRules.serializeQuiz) : quizRules.defaultQuiz(); // the Riddle Bell's stars
+raiseRecordFeats();
 let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
 {
   const clean = sanitizeLook(look, feats);
@@ -746,14 +809,11 @@ let look = loadRecord(LOOK_KEY, parseLook, serializeLook);
 let lookSeen = readRaw(LOOK_KEY); // the look record as this tab last read or wrote it (see syncLook)
 let armoryCfg = loadRecord(ARMORY_KEY, parseArmoryConfig, serializeArmoryConfig); // the tavern's crew upgrades
 let tips = loadInt(TIPS_KEY, 0, TIPS_MAX, 0); // one-time tips already shown (SPEC2 §5.5, SPEC3 §6.5)
-// "The Kraken Seas" records (SPEC3 §10.1), each validated by its module (a record that needed fixing is
-// rewritten). They are read only once the Kraken Seas sail (WITH_KRAKEN): until then the game runs on the
-// defaults and never touches them. The island and the quiz are read in Stage 3 (in memory until then).
+// The steering setting (SPEC3 §10.1), read only once the Kraken Seas sail (WITH_KRAKEN), like the island and the
+// quiz above: until then the game runs on the defaults and never touches it.
 let settings = WITH_KRAKEN
   ? loadRecord(SETTINGS_KEY, settingsRules.parseSettings, settingsRules.serializeSettings)
   : settingsRules.defaultSettings(); // how the ship steers on a touch screen
-let islandCfg = islandRules.defaultIsland(); // the island's buildings
-let quizRec = quizRules.defaultQuiz(); // the Riddle Bell's stars
 // Gameplay dice for hits (crits), reseeded at every level start so a level plays out the same way.
 let combatRng = mulberry32(1 * 7919 + 13);
 let forcedCrit = null; // tests: null | 'none' | 'crit' | 'rudder' | 'mast' | 'keg' | 'routed'
@@ -820,6 +880,12 @@ const state = {
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
 seen[SHIP_KEY] = readRaw(SHIP_KEY);
+// The save migration once the Kraken Seas sail (SPEC3 §5.2, §10.3; nobody loses anything): a captain who captured
+// the Phantom Galleon with the Far Seas open sails on to Voyage III at once (level 7 opens), and nobody replays the
+// Maelstrom. (The one rule, with its accepted edge case: the legend feat is saved the moment the Phantom is taken,
+// so a later wreck on that level still counts.) Every other record is kept as it is; the four new feats were read
+// as 0 and raised from the island and quiz records above.
+if (WITH_KRAKEN && (Number(feats.legend) || 0) >= 1 && state.unlocked >= 6) raiseProgress(7);
 
 // steer: an analogue turn, −1..1 (positive = left, like updatePlayer's turn), from a thumb sliding on the
 // steering pad or the ship's wheel (SPEC3 §3.2); null: the buttons and keys decide (left / right stay booleans).
@@ -2006,7 +2072,20 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     const sub = firstVoyage ? controlsLine() : (isTouch() && def.mechanicTouch) || def.mechanic || m.subtitle;
     showBanner(`Level ${n}: ${m.name}<small>${sub}</small><small>${describeWave(def.waves[0])}</small>`, firstVoyage ? 6 : 4.5);
   }
+  warmShaders();
   updateHud(true);
+}
+// Every material of the level is compiled now, at its start (behind the fly-in), hidden ones too: the shaders of
+// hazards that only show later (the Turtle Atolls' waterspouts, the Deep's dread bubbles) must not stall a frame
+// the moment they first appear (review LIVE-2). A level's programs go with it, so a retry compiles them again here.
+// Once the Kraken Seas sail; nothing is drawn.
+function warmShaders() {
+  if (!WITH_KRAKEN || state.contextLost) return;
+  try {
+    view.renderer.compile(scene, camera);
+  } catch {
+    // (a lost context: they compile when they first show, as before)
+  }
 }
 
 function newGame(level = 1) {
@@ -2109,8 +2188,14 @@ function finishLevel() {
     // The finale's own words; with more voyage after it (the Molten Maw opens the Far Seas) the first button
     // sails on, gold and all (Enter does the same), and the main menu steps back.
     const after = LEVELS[state.level];
-    if (def.finaleText) ui.wonText.textContent = def.finaleText;
-    ui.act2Btn.textContent = after && (after.act || 1) !== (def.act || 1) ? 'Sail on to the Far Seas' : after ? `Sail on to ${after.env.meta.name}` : '';
+    const nextVoyage = !!after && (after.act || 1) !== (def.act || 1);
+    // (the Maelstrom, once Voyage III follows it: "…but far to the south, something stirs in the deep." SPEC3 §5.2;
+    // the level's own `teaser` if it has one)
+    const teaser = WITH_KRAKEN && nextVoyage && after.act === 3 ? (typeof def.teaser === 'string' ? def.teaser : ACT3_TEASER) : '';
+    if (def.finaleText) ui.wonText.textContent = teaser && !def.finaleText.includes(teaser) ? `${def.finaleText} ${teaser}` : def.finaleText;
+    // The sail-on button: the level's own words (the Maelstrom's "Sail on to the Kraken Seas", SPEC3 §5.1), else
+    // today's for a new voyage, else the next sea by name.
+    ui.act2Btn.textContent = nextVoyage ? (def.sailOn ?? 'Sail on to the Far Seas') : after ? `Sail on to ${after.env.meta.name}` : '';
     show(ui.act2Btn, !!after);
     show(ui.wonHint, !!after);
     ui.againBtn.classList.toggle('alt', !!after);
@@ -4937,10 +5022,12 @@ function step(dt) {
         ? `<small>${state.lastBossSunk} is sunk!</small>`
         : '';
     const struckLine = taken ? `<small>${taken === 1 ? 'The surrendered ship is yours!' : 'The surrendered ships are yours!'}</small>` : '';
-    const onward = won && state.level < LEVELS.length; // a finale with the Far Seas still to come
+    const onward = won && state.level < LEVELS.length; // a finale with more voyage still to come
+    // (the level's own line, else the voyage just won: the Old World, or the Far Seas once the Kraken Seas follow)
+    const voyageWon = (def.act || 1) === 2 ? 'The Far Seas are yours' : 'The Old World is yours';
     showBanner(
       won
-        ? `Victory!${bossLine}${struckLine}<small>${def.victoryLine ?? (onward ? 'The Old World is yours' : 'The seas are yours')}</small>`
+        ? `Victory!${bossLine}${struckLine}<small>${def.victoryLine ?? (onward ? voyageWon : 'The seas are yours')}</small>`
         : `Level cleared!${bossLine}${struckLine}<small>Grab the loot</small>`,
       2.5
     );
@@ -5973,6 +6060,13 @@ window.addEventListener('storage', (e) => {
   // (the Kraken Seas' records, SPEC3 §10.2: recipes only ever go up; the steering setting is theirs)
   const powder = WITH_KRAKEN && (any || e.key === POWDER_KEY) && syncPowder();
   if (WITH_KRAKEN && (any || e.key === SETTINGS_KEY)) syncSettings();
+  // (the island and the quiz: tiers, stars and paid gold only ever go up; the feats they mirror follow. The build
+  // panel and the quiz map redraw on their own when the record they read changes.)
+  const built = WITH_KRAKEN && (any || e.key === ISLAND_KEY) && syncIsland();
+  const quizzed = WITH_KRAKEN && (any || e.key === QUIZ_KEY) && syncQuiz();
+  const won = (built || quizzed) && raiseRecordFeats();
+  if (built && state.mode === 'dock') showIsland();
+  if (won && state.mode === 'dock') townMode.refresh(); // (Polly's trophies)
   if (powder && state.mode === 'dock') {
     rebuildDockShip(); // (its kegs)
     townMode.refresh();
@@ -6014,6 +6108,19 @@ function titleClickTooSoon(e) {
 // that act's cards. Each card: number, name, difficulty word and skull pips ("Difficulty 4 of 6"), and Play
 // or why it is locked ("Beat the Molten Maw"). With a single act there are no headings.
 const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas', 3: 'Voyage III · The Kraken Seas' };
+// Once the Kraken Seas sail, the title's tagline and the page's description name them too (SPEC3 §6.6; the words
+// "Far Seas" stay). Until then they read as index.html has them.
+if (WITH_KRAKEN) {
+  const tagline = ui.menu.querySelector('.tagline');
+  if (tagline) {
+    tagline.innerHTML =
+      'Captain the <b>Sea Biscuit</b> from the coast of Europe to the fiery volcano, across the <b>Far Seas</b> and down to the <b>Kraken Seas</b>. Sink pirate fleets, board their ships and plunder their gold!';
+  }
+  const about = document.querySelector('meta[name="description"]');
+  if (about) {
+    about.setAttribute('content', 'A cartoon 3D pirate adventure: sail from the coast of Europe past Bali and the volcano to the Far Seas and on to the Kraken Seas, sinking and boarding pirate ships along the way.');
+  }
+}
 const SKULL_SVG =
   '<svg viewBox="0 0 16 16" aria-hidden="true" focusable="false"><path d="M8 1.6C4.6 1.6 2.2 3.9 2.2 6.9c0 1.8.8 3.2 2.1 4v1.9c0 .8.6 1.4 1.4 1.4h4.6c.8 0 1.4-.6 1.4-1.4v-1.9c1.3-.8 2.1-2.2 2.1-4 0-3-2.4-5.3-5.8-5.3z"/>' +
   '<circle class="eye" cx="5.8" cy="7.3" r="1.55"/><circle class="eye" cx="10.2" cy="7.3" r="1.55"/><path class="eye" d="M7.2 10.4h1.6l-.8-1.3z"/></svg>';
@@ -6070,6 +6177,15 @@ function renderLevelCards() {
   }
   menuPin();
 }
+// The card of the highest open level, scrolled into view inside the title panel when the title shows (SPEC3 §5.2:
+// with nine cards in three groups a phone's title panel scrolls), without taking focus. Once the Kraken Seas sail.
+function showOpenCard() {
+  if (!WITH_KRAKEN || state.mode !== 'menu') return;
+  const card = ui.levelCards.querySelector(`.level-card[data-level="${clamp(state.unlocked, 1, LEVELS.length)}"]`);
+  if (!card || !card.getClientRects().length) return;
+  menuPin(); // (the pinned Set sail! row's height first: the card stops above it)
+  card.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+}
 // A locked card pressed: its lock text flashes and is read out ("Doubloon Bay is locked. Beat the Molten Maw.").
 function lockedCard(btn, n) {
   const def = LEVELS[n - 1];
@@ -6125,6 +6241,7 @@ function showMenu() {
   renderLevelCards();
   show(ui.menu, true);
   menuLayout = null;
+  showOpenCard();
 }
 
 // A ship bobbing in the harbour behind the title screen, framed beside the menu panel.
@@ -6291,6 +6408,7 @@ function openDock(from) {
   // (kraken: the island's new places, builders and villagers come with the Kraken Seas, SPEC3 §8; until they
   // sail, the town is exactly today's)
   setEnvironment(sparrow, 77, { kraken: WITH_KRAKEN });
+  showIsland(); // (the Kraken Seas: the buildings, villagers and rank as built, SPEC3 §8)
   // The prize ships moored off the town are built here, behind the "Rowing to…" transition, not in the frame the
   // first Go ashore swoops in (sparrow keeps them hidden until the town view; ashore keeps ships of the same kind).
   if (env.setPrizes) env.setPrizes(prizeShips());
@@ -6942,6 +7060,97 @@ function wardrobeBuy(id) {
   saveChest();
   return { ok: true, reason: null };
 }
+
+// ---- The Kraken Seas ashore (SPEC3 §7, §8, §2.5, §10.2): what townMode's Powder room, Builder Bess and the
+// Riddle Bell ask of main. One storage rule for each (§0.1): the record is written first and the chest second; if
+// the record can't be written, nothing is bought and no gold moves (the panel says why). Each one first takes what
+// another tab saved (the chest, the record), so neither tab undoes the other's work.
+// A Powder-room recipe: { ok, cost, rebuilt } or { ok: false, reason: 'storage' | 'owned' | 'locked' | 'poor' |
+// 'unknown' | 'closed' }. The docked ship is built again with the new recipe's keg (ships.js `powder`).
+function buyPowderRecipe(id) {
+  if (!WITH_KRAKEN || state.mode !== 'dock') return { ok: false, reason: 'closed' };
+  if (syncSaved()) renderDock(); // (gold banked in another tab; the ship is rebuilt below)
+  syncPowder(); // recipes bought in another tab
+  const r = specials.buyRecipe(state.powder, state.purse, id, state.unlocked);
+  if (!r.ok) return { ok: false, reason: r.reason || 'unknown' };
+  if (!saveRecord(POWDER_KEY, specials.serializePowder, r.powder)) return { ok: false, reason: 'storage' };
+  state.powder = r.powder;
+  state.purse -= r.cost;
+  saveChest();
+  rebuildDockShip();
+  renderDock();
+  return { ok: true, cost: r.cost, rebuilt: true };
+}
+// Build a plot's next tier (Builder Bess): { ok, cost } or { ok: false, reason: 'storage' | 'maxed' | 'poor' |
+// 'unknown' | 'closed' }. The 3D town is left to townMode's montage (scaffold, knocks, the building springing up:
+// env.setIsland(cfg, { built }) and setRank at once, setVillagers once it stands). Building the last tier of the
+// last plot wins the Governor's coat (feats.island).
+function buildPlot(id) {
+  if (!WITH_KRAKEN || state.mode !== 'dock') return { ok: false, reason: 'closed' };
+  if (syncSaved()) {
+    rebuildDockShip();
+    renderDock();
+  }
+  syncIsland(); // tiers built in another tab (the montage shows them with this one)
+  const r = islandRules.build(islandCfg, state.purse, id);
+  if (!r.ok) return { ok: false, reason: r.reason || 'unknown' };
+  if (!saveRecord(ISLAND_KEY, islandRules.serializeIsland, r.island)) return { ok: false, reason: 'storage' };
+  islandCfg = r.island;
+  state.purse -= r.cost;
+  saveChest();
+  renderDock();
+  raiseRecordFeats();
+  return { ok: true, cost: r.cost };
+}
+// A quiz reward (quizPanel.js's contract): `rec` is the quiz record as it is once everything is paid (stars raised,
+// paid = stars, the island's "Good try!" ticked). Main works the gold out itself from the records, after taking
+// another tab's: every star the new record pays that the old one hadn't (quiz.js owed) plus 10 for each "Good try!"
+// ticked now, so nothing is ever paid twice. The quiz record is written first and the chest second (§10.2): if the record can't be
+// written, the stars last for the visit and their gold stays owed; if the chest can't, the record is written back
+// with the new stars but the old paid and tried, so the gold stays owed and is paid once, later. In memory, paid
+// and tried rise only when both writes succeed. The quiz feats (islands passed, stars) follow the stars shown.
+function saveQuiz(rec) {
+  if (!WITH_KRAKEN) return { ok: false, reason: 'closed' };
+  syncSaved(); // gold banked in another tab
+  syncQuiz(); // stars won (and gold paid) in another tab
+  const before = quizRec;
+  const next = parseQuizRecord(quizRules.mergeQuiz(parseQuizRecord(rec), before)); // (nothing goes down)
+  const kept = parseQuizRecord({ stars: next.stars, paid: before.paid, tried: before.tried, seen: next.seen });
+  let tries = 0;
+  next.tried.forEach((t, i) => {
+    if (t === 1 && before.tried[i] !== 1) tries++;
+  });
+  // (the stars paid now: those above the old paid up to the new; normally every star won, so nothing stays owed)
+  const gold = Math.max(0, quizRules.owed(kept) - quizRules.owed(next) + tries * quizRules.GOOD_TRY);
+  if (!saveRecord(QUIZ_KEY, quizRules.serializeQuiz, next)) {
+    quizRec = kept;
+    raiseRecordFeats();
+    return { ok: false, reason: 'storage' };
+  }
+  if (gold > 0) {
+    const purse = state.purse;
+    state.purse = clamp(purse + gold, 0, MAX_GOLD);
+    if (!saveChest()) {
+      state.purse = purse;
+      saveRecord(QUIZ_KEY, quizRules.serializeQuiz, kept);
+      quizRec = kept;
+      raiseRecordFeats();
+      return { ok: false, reason: 'chest' };
+    }
+  }
+  quizRec = next;
+  raiseRecordFeats();
+  if (state.mode === 'dock') renderDock();
+  return { ok: true, gold };
+}
+// The island as it stands on the 3D town (sparrow.js): its buildings, the villagers out walking and the rank on the
+// plaque under the welcome sign. When the dock opens (behind the "Rowing to…" toast) and when another tab builds.
+function showIsland() {
+  if (!WITH_KRAKEN || !env || state.mode !== 'dock') return;
+  if (typeof env.setIsland === 'function') env.setIsland(islandCfg);
+  if (typeof env.setVillagers === 'function') env.setVillagers(islandRules.villagers(islandCfg));
+  if (typeof env.setRank === 'function') env.setRank(islandRules.rank(islandCfg).name);
+}
 // The tavern's rumour board: the next level after a cleared one, the level to retry after a wreck (or a
 // battle left early), else the highest unlocked one. null past the last level.
 function nextRumour() {
@@ -7014,6 +7223,14 @@ const townMode = createTownMode({
   log: () => [],
   toggleMute,
   prizes: prizeShips,
+  // The Kraken Seas ashore (SPEC3 §11.2 "dock / town"; read once: without them the town is exactly today's)
+  withKraken: WITH_KRAKEN,
+  unlocked: () => state.unlocked,
+  powder: { state: () => state.powder, buy: buyPowderRecipe },
+  island: { state: () => islandCfg, build: buildPlot },
+  quiz: { record: () => quizRec, save: saveQuiz },
+  hints: () => islandRules.perks(islandCfg).hints, // (the Sea School's lifebuoys a round)
+  rebuildShip: () => rebuildDockShip(),
 });
 
 // ---------------------------------------------------------------------------
@@ -9333,30 +9550,48 @@ window.__game = {
     view: () => (kView ? kView.read() : null),
     visuals: () => (kraken ? kraken.visuals() : null),
   },
+  // The island record (in memory: set() is not saved; the docked town shows it), and a plot built as Builder
+  // Bess builds it (the record first, then the chest), without the montage: { ok, reason }.
   island: {
     get config() {
       return JSON.parse(islandRules.serializeIsland(islandCfg));
     },
     set(cfg) {
       islandCfg = islandRules.parseIsland(cfg);
+      showIsland();
       return JSON.parse(islandRules.serializeIsland(islandCfg));
     },
-    build: () => ({ ok: false, reason: 'closed' }),
+    build(id) {
+      const r = buildPlot(id);
+      if (r.ok) {
+        showIsland();
+        townMode.refresh();
+      }
+      return { ok: !!r.ok, reason: r.ok ? null : r.reason };
+    },
   },
+  // The quiz record (in memory: set() is not saved), and a round played through the Riddle Bell's panel (in the
+  // dock: start() walks to the quiz first). start(level, seed) → true when the round began; round: the panel's.
   quiz: {
     get record() {
       return JSON.parse(quizRules.serializeQuiz(quizRec));
     },
     set(rec) {
-      quizRec = quizRules.parseQuiz(rec);
+      quizRec = parseQuizRecord(rec);
       return JSON.parse(quizRules.serializeQuiz(quizRec));
     },
-    start: () => null,
-    answer: () => null,
-    hint: () => null,
-    next: () => null,
+    start(level, seed) {
+      if (!WITH_KRAKEN || state.mode !== 'dock') return null;
+      if (townMode.view !== 'quiz') townMode.open('quiz');
+      const q = townMode.api.quiz;
+      return q ? q.start(level, seed) : null;
+    },
+    answer: (i) => (townMode.api.quiz ? townMode.api.quiz.answer(i) : null),
+    hint: () => (townMode.api.quiz ? townMode.api.quiz.hint() : null),
+    next: () => (townMode.api.quiz ? townMode.api.quiz.next() : null),
     get round() {
-      return null;
+      const q = townMode.api.quiz;
+      return q ? q.round : null;
     },
   },
   voyage: {

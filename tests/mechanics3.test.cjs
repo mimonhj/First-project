@@ -9,8 +9,8 @@
 //   the start 16 u farther per bonus second); 49° surfs, 50° and 130° take 10 and the push, 131° rides; every
 //   wave puts fire out; the directions come from env.rogueDirs; bosses turn bow-in
 // - the Shark Raider's ram: a 1.5 s wind-up before any surge, the surge at 16 (frost: 8), contact damage that
-//   scales with speed (10 / 5), 8 to her, the push apart, CRUNCH!, the 6 s cooldown; stink cancels it; her course
-//   (RAM.approach): bow first at you, broadside inside 13 u and while she cools, a charge about every 10 s
+//   scales with speed (10 / 5), 8 to her, the push apart, CRUNCH!, the 9 s cooldown; stink cancels it; her course
+//   (RAM.approach): bow first at you, broadside inside 13 u and while she cools, a charge about every 12 s
 // - the Bomb Ketch: the range window 25–48, every 6–8 s, the shell's numbers and lead, stink pauses, her course
 // - the Fire Ship: lit at 30 u, never a blast before 1.6 s lit, the blast and its falloff (pirates too), a blast
 //   when sunk while lit (none when sunk before), frost → she strikes and never explodes
@@ -208,9 +208,14 @@ function mulberry32(seed) {
       'ROGUE: first at 30 s then every 24–32 s, warn 4 s, a crest 120 long and 7 tall at 16 u/s from 70 u (+16 per bonus second), side-on 50°–130°: 10 damage, pushed 6 u over 0.5 s, 1 s wobble (turn ×0.5); surf +2 for 2 s'
     );
     const ramSpec = { reach: RAM.reach, cone: RAM.cone, windup: RAM.windup, surge: RAM.surge, speed: RAM.speed, contact: RAM.contact, damage: RAM.damage, self: RAM.self, push: RAM.push, pushTime: RAM.pushTime, cooldown: RAM.cooldown };
-    check(same(ramSpec, { reach: 25, cone: 0.35, windup: 1.5, surge: 2, speed: 16, contact: 0.36, damage: 10, self: 8, push: 4, pushTime: 0.6, cooldown: 6 }) && RAM.frost === 0.5, 'RAM: within 25 u and 0.35 rad, wind-up 1.5 s, surge 2 s at 16 (frost halves it), contact (len_a + len_b) × 0.36, 10 to you / 8 to her, pushed apart 4 u/s for 0.6 s, cooldown 6 s');
+    check(same(ramSpec, { reach: 25, cone: 0.35, windup: 1.5, surge: 2, speed: 16, contact: 0.36, damage: 10, self: 8, push: 4, pushTime: 0.6, cooldown: 9 }) && RAM.frost === 0.5, 'RAM: within 25 u and 0.35 rad, wind-up 1.5 s, surge 2 s at 16 (frost halves it), contact (len_a + len_b) × 0.36, 10 to you / 8 to her, pushed apart 4 u/s for 0.6 s, cooldown 9 s (Stage 3 balance; §4.2 started at 6)');
     const mortarSpec = { keep: MORTAR.keep, flee: MORTAR.flee, every: MORTAR.every, range: MORTAR.range, lead: MORTAR.lead, radius: MORTAR.radius, damage: MORTAR.damage, warn: MORTAR.warn };
-    check(same(mortarSpec, { keep: [35, 45], flee: 20, every: [6, 8], range: [25, 48], lead: 0.8, radius: 4.5, damage: 12, warn: 2.2 }), 'MORTAR: keeps 35–45 u (flees inside 20), every 6–8 s with you 25–48 u away, lead 0.8, ring 4.5, 12 damage, warning 2.2 s');
+    check(same(mortarSpec, { keep: [28, 38], flee: 20, every: [6, 8], range: [25, 48], lead: 0.8, radius: 4.5, damage: 12, warn: 2.2 }), 'MORTAR: keeps 28–38 u (Stage 3 balance, §4.2 started at 35–45: your round shot reaches 34, so a captain who only fires can sink her; flees inside 20), every 6–8 s with you 25–48 u away, lead 0.8, ring 4.5, 12 damage, warning 2.2 s');
+    check(MORTAR.keep[0] < SHIP_TYPES.bombketch.engage && SHIP_TYPES.bombketch.engage < 34 && MORTAR.keep[0] < 34, `the Bomb Ketch keeps (and waits, at her engage ${SHIP_TYPES.bombketch.engage} u) within your round shot's 34 u part of the time`);
+    // (Stage 3 balance, shipTypes.js: the Inkheart's broadside was the one that sank a late-game ship in a
+    // fifth of the bots' first tries at level 9; now the Phantom's, 6 × 5 every 2.6 s)
+    const ink = SHIP_TYPES.inkheart;
+    check(ink.guns === 6 && ink.dmg === 5 && ink.reload === 2.6 && ink.hp === 360, `the Inkheart: 6 guns × 5 every 2.6 s, 360 hp (Stage 3 balance; §4.1 started at × 6 every 2.4 s) (${JSON.stringify({ guns: ink.guns, dmg: ink.dmg, reload: ink.reload })})`);
     check(same(FIRESHIP, { light: 30, ring: 6, arm: 1.6, reach: 4, touch: 0.25, blast: 22, edge: 11, frozenSpeed: 3 }), 'FIRESHIP: lit at 30 u, ring 6, armed after 1.6 s, within 4 u of a hull (or touching it), 22 falling to 11 at r 6, frozen 3 u/s');
     const inkSpec = { every: INK.every, pots: INK.pots, scatter: INK.scatter, radius: INK.radius, damage: INK.damage, warn: INK.warn, slick: { r: INK.slick.r, time: INK.slick.time, speedMul: INK.slick.speedMul, max: INK.slick.max } };
     check(same(inkSpec, { every: 10, pots: 2, scatter: 6, radius: 4, damage: 8, warn: 1.8, slick: { r: 7, time: 6, speedMul: 0.6, max: 3 } }), 'INK: 2 pots every 10 s ±6 u, ring 4, 8 damage, warning 1.8 s; slicks r 7 for 6 s, speed ×0.6, at most 3');
@@ -660,15 +665,15 @@ function mulberry32(seed) {
       if (w.m.drift(p)) pushT += DT;
     });
     check(near(pushT, 0.6, DT / 2), `for 0.6 s (${f3(pushT)})`);
-    // Cooldown 6 s: you stay dead ahead of her bow, and the next wind-up waits.
+    // The cooldown (9 s): you stay dead ahead of her bow, and the next wind-up waits.
     shark.x = 0;
     shark.z = 20;
     shark.h = Math.PI;
     let again = null;
-    w.run(8, (i) => {
+    w.run(RAM.cooldown + 2, (i) => {
       if (again === null && w.m.state.counts.windups === 2) again = 1 + (i + 1) * DT;
     });
-    check(again !== null && again >= 6 - 2 * DT && again <= 6 + 2 * DT, `the next charge only after the 6 s cooldown (${f3(again)} s after the crunch)`);
+    check(again !== null && again >= RAM.cooldown - 2 * DT && again <= RAM.cooldown + 2 * DT, `the next charge only after the ${RAM.cooldown} s cooldown (${f3(again)} s after the crunch)`);
   }
   {
     // Frost halves the surge, and so the hit.
@@ -858,9 +863,11 @@ function mulberry32(seed) {
       p.h = wrap(p.h + 0.4 * DT);
     });
     const fmt = (r) => `${r.winds} wind-ups, gaps ${r.gaps.length ? f3(Math.min(...r.gaps)) + '–' + f3(Math.max(...r.gaps)) : '-'} s, ${r.rams} rams`;
-    const regular = (r) => r.winds >= 6 && r.first < 6 && r.gaps.every((g) => g >= RAM.windup + RAM.cooldown && g <= 14) && r.lost === 0;
-    check(regular(still) && still.rams >= 6, `you sit still: she lines up and charges again and again, about every 10 s (${fmt(still)})`);
-    check(regular(sailing) && regular(turning), `you sail straight at 8 u/s (${fmt(sailing)}) or round in a circle (${fmt(turning)}): she still comes round, about every 10 s`);
+    // (sitting still you are charged every windup + cooldown + her ~1 s surge: about every 12 s since Stage 3's
+    // balance raised the cooldown from 6 to 9 s; sailing on, she needs a few seconds more to come round)
+    const regular = (r, slack) => r.winds >= 6 && r.first < 6 && r.gaps.every((g) => g >= RAM.windup + RAM.cooldown && g <= RAM.windup + RAM.cooldown + slack) && r.lost === 0;
+    check(regular(still, 2) && still.rams >= 6, `you sit still: she lines up and charges again and again, about every 12 s (${fmt(still)})`);
+    check(regular(sailing, 10) && regular(turning, 10), `you sail straight at 8 u/s (${fmt(sailing)}) or round in a circle (${fmt(turning)}): she still comes round, every 10.5–20.5 s`);
   }
 
   // ---------------------------------------------------------------- the Bomb Ketch's mortar
@@ -916,7 +923,7 @@ function mulberry32(seed) {
       };
     });
     check(near(stinky.log.bombs[0].at - plain.log.bombs[0].at, 4, 3 * DT), `stink pauses her mortar (the shell comes ${f3(stinky.log.bombs[0].at - plain.log.bombs[0].at)} s later)`);
-    // Her course: away inside 20, opening the range inside 35, crossing in the band, closing beyond 45.
+    // Her course: away inside 20, opening the range inside keep[0], crossing in the band, closing beyond keep[1].
     const p = ship('player', 0, 0, 0);
     const k = ship('bombketch', 0, 15, 0);
     const wk = world({ player: p, enemies: [k] });
@@ -926,13 +933,13 @@ function mulberry32(seed) {
       return wk.m.steer(k, DT);
     };
     const c15 = course(15);
-    const c30 = course(30);
-    const c40 = course(40);
-    const c60 = course(60);
+    const c30 = course(MORTAR.keep[0] - 3);
+    const c40 = course((MORTAR.keep[0] + MORTAR.keep[1]) / 2);
+    const c60 = course(MORTAR.keep[1] + 15);
     check(near(c15.h, 0) && c15.speed === 6.5, `inside 20 u she runs straight away (${JSON.stringify(c15)})`);
-    check(Math.abs(wrap(c30.h - 0)) <= MORTAR.slant + 1e-9 && Math.abs(wrap(c30.h)) > 0 && c30.speed === 6.5, `inside 35 u she opens the range (${JSON.stringify(c30)})`);
-    check(near(Math.abs(wrap(c40.h)), Math.PI / 2) && near(c40.speed, 6.5 * MORTAR.cruise), `35–45 u: she crosses your bearing (${JSON.stringify(c40)})`);
-    check(near(Math.abs(c60.h), Math.PI) && c60.speed === 6.5, `beyond 45 u she closes in (${JSON.stringify(c60)})`);
+    check(Math.abs(wrap(c30.h - 0)) <= MORTAR.slant + 1e-9 && Math.abs(wrap(c30.h)) > 0 && c30.speed === 6.5, `inside ${MORTAR.keep[0]} u she opens the range (${JSON.stringify(c30)})`);
+    check(near(Math.abs(wrap(c40.h)), Math.PI / 2) && near(c40.speed, 6.5 * MORTAR.cruise), `${MORTAR.keep[0]}–${MORTAR.keep[1]} u: she crosses your bearing (${JSON.stringify(c40)})`);
+    check(near(Math.abs(c60.h), Math.PI) && c60.speed === 6.5, `beyond ${MORTAR.keep[1]} u she closes in (${JSON.stringify(c60)})`);
     wk.attacking = () => false;
     check(wk.m.steer(k, DT) === null, 'without an attack slot she waits like any pirate (steer null)');
   }
@@ -1478,6 +1485,10 @@ function mulberry32(seed) {
     const { ACT2_LEVELS } = await import(dataUrl(stub('src/act2.js')));
     check(Array.isArray(ACT3_LEVELS) && ACT3_LEVELS.length === 3, `ACT3_LEVELS has three levels (${ACT3_LEVELS?.length})`);
     check(ACT3_TEASER === '…but far to the south, something stirs in the deep.', 'ACT3_TEASER is §5.2\'s line');
+    // §5.1–5.2: the Maelstrom's Victory leads on to Voyage III (main reads these keys only when a Voyage III level follows)
+    const mael = ACT2_LEVELS[2] || {};
+    check(mael.sailOn === 'Sail on to the Kraken Seas' && mael.teaser === ACT3_TEASER && ACT2_LEVELS.slice(0, 2).every((l) => !('sailOn' in l) && !('teaser' in l)),
+      `the Maelstrom's def has sailOn "Sail on to the Kraken Seas" and the teaser, the same words as ACT3_TEASER (${JSON.stringify({ sailOn: mael.sailOn, teaser: mael.teaser })})`);
     const WANT = [
       {
         env: 'atolls', difficulty: 'Daring', act: 3, stars: 7, scene: 'atolls',

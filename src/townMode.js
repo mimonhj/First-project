@@ -130,6 +130,7 @@ const VERB_SAY = { ship: 'go aboard', quiz: 'play', builder: 'build' };
 const WALK_NAME = { shipyard: 'the shipyard', tailor: 'the tailor', tavern: 'the tavern', ship: 'your ship', quiz: 'the quiz', builder: 'Builder Bess' };
 // The Kraken Seas' greetings (SPEC3 §8.4): the villagers, Builder Bess and Professor Barnacle
 const VILLAGER_LINES = { house: "Lovely house, Cap'n!", bakery: 'Fresh biscuits today!', kraken: 'The Kraken? Brrr!' };
+const THANKS_LINE = 'Thank you, Captain!'; // a new home's villagers, waving from its porch (SPEC3 §8.3)
 const NPC_LINES = { bess: ["Fancy a new house, Cap'n?", 'Hammers ready, Captain!'], barnacle: ['A riddle for you, Captain?', 'Ring the bell for a quiz!'] };
 const MONTAGE_SECS = { scaffold: 0.4, knocks: 1.2, spring: 0.5, cheer: 0.3 }; // sparrow's env.buildTimes + the cheer
 const MODIFIER_KEYS = new Set(['shift', 'control', 'alt', 'meta', 'capslock']);
@@ -331,6 +332,15 @@ export function createTownMode(ctx = {}) {
   bubble.className = 'town-bubble hidden';
   bubble.setAttribute('aria-hidden', 'true');
   el.town.appendChild(bubble);
+  // (the Kraken Seas, SPEC3 §8.3) "Thank you, Captain!" over a new home's villagers while they wave from its porch, in
+  // the build view or the town: its own bubble, first in its screen so the panel draws over it (aria-hidden: #build-live
+  // already says who moved in)
+  const thanks = KRAKEN ? document.createElement('div') : null;
+  if (thanks) {
+    thanks.className = 'town-bubble thanks-bubble hidden';
+    thanks.setAttribute('aria-hidden', 'true');
+    thanks.textContent = THANKS_LINE;
+  }
   // the shipyard's Go ashore / Back to town button
   el.ashore.innerHTML =
     '<svg class="boot" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path d="M8 3h6v9l5 3.5c1 .7 1.5 1.6 1.5 2.7V20H4.5v-3.5L8 14z" /></svg>' +
@@ -990,9 +1000,9 @@ export function createTownMode(ctx = {}) {
     }
     return lines[Math.floor(Math.random() * lines.length)];
   }
-  function placeBubble(at) {
+  function placeBubble(at, node = bubble) {
     if (!at || !C.camera) {
-      bubble.classList.add('hidden');
+      node.classList.add('hidden');
       return;
     }
     const cam = C.camera;
@@ -1000,18 +1010,39 @@ export function createTownMode(ctx = {}) {
     const W = window.innerWidth;
     const H = window.innerHeight;
     if (v.z > 1 || v.x < -1.1 || v.x > 1.1 || v.y < -1 || v.y > 1.2) {
-      bubble.classList.add('hidden');
+      node.classList.add('hidden');
       return;
     }
     const x = ((v.x + 1) / 2) * W;
     const y = ((1 - v.y) / 2) * H;
-    bubble.classList.remove('hidden');
+    node.classList.remove('hidden');
     // kept on screen: a speaker near the edge gets the bubble slid in, its tail still pointing at them
-    const half = bubble.offsetWidth / 2;
+    const half = node.offsetWidth / 2;
     const bx = half && W > 2 * half + 16 ? Math.min(Math.max(x, half + 8), W - half - 8) : x;
     const tail = Math.max(-half + 16, Math.min(half - 16, x - bx));
-    bubble.style.setProperty('--tail', `${Math.round(tail)}px`);
-    bubble.style.transform = `translate(${Math.round(bx)}px, ${Math.round(y)}px) translate(-50%, calc(-100% - 12px))`;
+    node.style.setProperty('--tail', `${Math.round(tail)}px`);
+    node.style.transform = `translate(${Math.round(bx)}px, ${Math.round(y)}px) translate(-50%, calc(-100% - 12px))`;
+  }
+  // "Thank you, Captain!" over the porch wavers (sparrow's env.wavers: world { x, top, z } each), above the two of
+  // them, while they wave; in the build view (the plot framed beside the panel) or the town
+  function placeThanks() {
+    if (!thanks) return;
+    const env = envNow();
+    const host = view === 'build' ? el.build : view === 'town' ? el.town : null;
+    let list = null;
+    try {
+      list = host && env && 'wavers' in env ? env.wavers : null;
+    } catch {
+      list = null;
+    }
+    const at = Array.isArray(list) ? list.filter((w) => w && [w.x, w.top, w.z].every(Number.isFinite)) : [];
+    if (!at.length) {
+      if (!thanks.classList.contains('hidden')) thanks.classList.add('hidden');
+      return;
+    }
+    if (thanks.parentNode !== host) host.insertBefore(thanks, host.firstChild);
+    const n = at.length;
+    placeBubble({ x: at.reduce((a, w) => a + w.x, 0) / n, y: Math.max(...at.map((w) => w.top)), z: at.reduce((a, w) => a + w.z, 0) / n }, thanks);
   }
 
   // ---------------------------------------------------------------------------------------------
@@ -1603,7 +1634,8 @@ export function createTownMode(ctx = {}) {
     if (env && typeof env.npcReact === 'function') call(env.npcReact.bind(env), 'bess', 'cheer', 1.6);
     const info = Array.isArray(env && env.plots) ? env.plots.find((q) => q && q.id === M.id) : null;
     const box = plotBox(info);
-    if (town && box) town.sparkle(info.x, box[1][1] + 0.4, info.z);
+    // (over the new building's own top when sparrow knows it, else over the plot's box)
+    if (town && box) town.sparkle(info.x, (Number.isFinite(info.top) && info.top > info.y ? info.top : box[1][1]) + 0.4, info.z);
   }
   // sparrow's building still going up (it runs on the game's clock, which a slow frame rate stretches past the build
   // panel's own montage window)
@@ -1924,6 +1956,7 @@ export function createTownMode(ctx = {}) {
     }
     const r = town.update(dt, t);
     cullNow();
+    if (KRAKEN) placeThanks();
     if (view === 'town') {
       if (r.arrived && !activeModal()) open(r.arrived);
       if (view === 'town') {

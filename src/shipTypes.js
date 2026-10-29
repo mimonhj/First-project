@@ -96,6 +96,9 @@ export const SHIP_TYPES = {
   // (mechanics3.js): ram (the Shark Raider charges), mortar (the Bomb Ketch lobs shells), armour (beam
   // hits × armour, combat.js armourMul), fireship (sails at you and explodes; frost makes her strike),
   // flagship (the Inkheart: ink pots; when she falls her crew flee and the Kraken rises).
+  // Stage 3 balance (SPEC3 §19): the Bomb Ketch waits at 33 u (was 42, out of your guns' 34 u reach), and the
+  // Inkheart fires the Phantom's broadside, 6 × 5 every 2.6 s (was 6 × 6 every 2.4 s, which sank a late-game ship
+  // in about a fifth of the bots' first tries at level 9).
   // Level 7: The Turtle Atolls
   shark: {
     name: 'Shark Raider',
@@ -106,7 +109,7 @@ export const SHIP_TYPES = {
   bombketch: {
     name: 'Bomb Ketch',
     hp: 70, len: 9, wid: 3.0, maxSpeed: 6.5, accel: 2.2, turn: 0.8, reload: 3.5, guns: 1, dmg: 3,
-    gold: 7, engage: 42, spread: 0.12, crew: 10, grit: 0.9,
+    gold: 7, engage: 33, spread: 0.12, crew: 10, grit: 0.9,
     mortar: true,
   },
 
@@ -135,7 +138,7 @@ export const SHIP_TYPES = {
   inkheart: {
     name: 'The Inkheart',
     boss: true,
-    hp: 360, len: 17, wid: 5.6, maxSpeed: 7, accel: 2, turn: 0.65, reload: 2.4, guns: 6, dmg: 6,
+    hp: 360, len: 17, wid: 5.6, maxSpeed: 7, accel: 2, turn: 0.65, reload: 2.6, guns: 6, dmg: 5,
     gold: 35, engage: 24, spread: 0.07, crew: 26, grit: 1.6,
     flagship: true,
   },

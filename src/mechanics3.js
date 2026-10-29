@@ -158,7 +158,8 @@ export const ROGUE = {
  * top speed inside it, until `near` u; inside `near` (you are off her bow, or she would be winding up) and all
  * through her cooldown she sheers off broadside at `sheer` × her top speed: turned `out` rad away from you while
  * closer than `ring`, and `out` rad back towards you once beyond `reach`, so she has room to come round again
- * when her cooldown ends (a charge about every 10 s).
+ * when her cooldown ends (a charge about every 12 s at a captain sitting still; Stage 3's balance raised the
+ * cooldown from 6 s, which charged a sitting captain every 9 s).
  */
 export const RAM = {
   reach: 25,
@@ -174,18 +175,20 @@ export const RAM = {
   push: 4,
   pushTime: 0.6,
   after: 0.3,
-  cooldown: 6,
+  cooldown: 9,
   approach: { far: 26, speed: 0.7, near: 13, sheer: 0.8, out: 0.7, ring: 18 },
 };
 
 /**
  * The Bomb Ketch's mortar (§4.2): she keeps `keep` u off (under `flee` she runs straight away, under keep[0] she
- * opens the range on a `slant`, inside the band she crosses at `cruise` × her top speed). Every `every` s, with
+ * opens the range on a `slant`, inside the band she crosses at `cruise` × her top speed; Stage 3's balance moved the
+ * band in from 35–45 u, beyond your round shot's 34 u, where a captain who only fires could never sink her and her
+ * shells kept coming for minutes; her engage, where she waits without an attack slot, is 33). Every `every` s, with
  * you `range` u away, she lobs a shell from `muzzle` u up at your predicted spot (lead × the shell's flight of
  * your turn's arc): ring `radius`, `damage`, warning `warn` (+ the Lighthouse's bonus, added by main). Stink
  * pauses her clock.
  */
-export const MORTAR = { keep: [35, 45], flee: 20, slant: 0.6, cruise: 0.6, every: [6, 8], range: [25, 48], lead: 0.8, muzzle: 2.5, radius: 4.5, damage: 12, warn: 2.2 };
+export const MORTAR = { keep: [28, 38], flee: 20, slant: 0.6, cruise: 0.6, every: [6, 8], range: [25, 48], lead: 0.8, muzzle: 2.5, radius: 4.5, damage: 12, warn: 2.2 };
 
 /**
  * The Fire Ship (§4.2): within `light` u of you she is lit (a danger ring of r `ring`), `arm` s later armed;

@@ -3792,6 +3792,27 @@ export function build(scene, ctx = {}) {
   }
   /** Where a plot stands: its platform's centre, deck height, size and turn (world). */
   const plotInfo = (plot) => ({ id: plot.id, x: r2(plot.P.x), z: r2(plot.P.z), y: r2(plot.P.y), w: plot.P.w, d: plot.P.d, ry: r3(plot.P.ry || 0), height: plot.height });
+  /** The top (world y) of what stands on a plot now, from its baked chunk (the windmill's sails and the beam, drawn
+   * apart, not counted), or null before the layer is built; e.g. for the sparkle over a building that has just gone up. */
+  const topCache = new Map();
+  function plotTop(plot) {
+    if (!KRAKEN || !dev.built) return null;
+    const lit = plot.kind === 'home' && plot.tier > 0 && dev.lit[plot.id] !== false;
+    const key = `${plot.id}:${plot.tier}:${lit ? 1 : 0}`;
+    if (topCache.has(key)) return topCache.get(key);
+    const c = dev.chunks.get(key);
+    if (!c) return null;
+    const R = Math.max(plot.P.w, plot.P.d) / 2;
+    let top = -Infinity;
+    for (const cls of ['ink', 'thin', 'flat']) {
+      const a = c[cls] && c[cls].pos;
+      if (!a) continue;
+      for (let i = 0; i < a.length; i += 3) if (a[i + 1] > top && Math.hypot(a[i] - plot.P.x, a[i + 2] - plot.P.z) < R) top = a[i + 1];
+    }
+    const out = Number.isFinite(top) ? r2(top) : null;
+    topCache.set(key, out);
+    return out;
+  }
   if (KRAKEN) {
     dev.root = new THREE.Group();
     dev.root.name = 'sparrow-development';
@@ -4601,33 +4622,125 @@ export function build(scene, ctx = {}) {
   // and goes into the layer. setIsland(cfg, { built }) starts it; finishBuild() skips to the end.
   const MONTAGE = { scaffold: 0.4, knocks: 1.2, spring: 0.5 };
   dev.wavers = [];
-  function scaffold(plot) {
+  // The scaffold stands round the new building (its baked chunk's footprint and height in the plot's frame), so it
+  // shows outside the old one too: bright yellow poles, orange rails, red cross braces, pale fresh planks, a ladder,
+  // a pulley with a hanging bucket, little flags along the top and a red-and-white barrier at the front; it pops up
+  // from the deck (at once under reduced motion). The frame g (userData.keep) holds `pop`, the group that pops.
+  const SCAFFOLD = { pad: 0.3, minH: 2.6, maxH: 7.2, level: 1.3, pole: COL.yellow, rail: COL.orange, brace: COL.red, board: 0xf6dfab };
+  function scaffoldBox(plot, from) {
+    const P = plot.P;
     const g = plotFrame(plot);
-    const s = subG(g, 0, plot.P.y, -0.45);
-    const wd = ink(COL.wood3);
-    const W = 3.9;
-    const D = 3.3;
-    for (const sx of [-1, 1]) for (const sz of [-1, 1]) add(s, cyl(0.07, 0.08, 3.6, 6), ink(COL.woodDark), (sx * W) / 2, 1.8, (sz * D) / 2);
-    for (const y of [1.25, 2.55]) {
-      for (const sz of [-1, 1]) add(s, rbox(W + 0.3, 0.08, 0.36, 0.02), wd, 0, y, (sz * D) / 2);
-      for (const sx of [-1, 1]) add(s, rbox(0.36, 0.08, D + 0.3, 0.02), wd, (sx * W) / 2, y, 0);
-    }
-    for (const sz of [-1, 1]) {
-      beam(s, thin(COL.wood2), V3(-W / 2, 0.1, (sz * D) / 2), V3(0, 2.5, (sz * D) / 2), 0.07, 0.05, 0.02);
-      beam(s, thin(COL.wood2), V3(W / 2, 0.1, (sz * D) / 2), V3(0, 2.5, (sz * D) / 2), 0.07, 0.05, 0.02);
-    }
-    for (let k = 0; k < 7; k++) rod(s, thin(COL.wood3), V3(W / 2 + 0.25, 0.3 + k * 0.42, 0.9), V3(W / 2 + 0.25, 0.3 + k * 0.42, 1.4), 0.03, 4);
-    for (const z of [0.9, 1.4]) rod(s, thin(COL.wood3), V3(W / 2 + 0.25, 0, z), V3(W / 2 + 0.25, 3.0, z), 0.035, 4);
-    crate(s, -1.1, 0, 1.95, 0.6, 0.3);
-    for (let i = 0; i < 3; i++) add(s, rbox(1.6, 0.1, 0.3, 0.03), wd, 0.6, 0.06 + i * 0.11, 2.0, 0, 0.05 * i, 0);
     g.updateMatrixWorld(true);
-    bake(g, { force: 'thin' });
+    const inv = new THREE.Matrix4().copy(g.matrixWorld).invert();
+    // (round the old building and the new one: the scaffold goes up outside whatever stands there now)
+    const chunks = [plotChunk(plot, plot.tier)];
+    if (Number.isInteger(from) && from !== plot.tier) chunks.push(plotChunk(plot, from));
+    const hx = P.w / 2 - 0.08;
+    const hz = P.d / 2 - 0.08;
+    const v = V3();
+    const b = { x0: Infinity, x1: -Infinity, z0: Infinity, z1: -Infinity, top: -Infinity };
+    for (const c of chunks) for (const cls of ['ink', 'thin', 'flat']) {
+      const a = c && c[cls] && c[cls].pos;
+      if (!a) continue;
+      for (let i = 0; i < a.length; i += 3) {
+        v.set(a[i], a[i + 1], a[i + 2]).applyMatrix4(inv);
+        if (v.y < P.y + 0.3 || Math.abs(v.x) > hx || Math.abs(v.z) > hz) continue;
+        if (v.x < b.x0) b.x0 = v.x;
+        if (v.x > b.x1) b.x1 = v.x;
+        if (v.z < b.z0) b.z0 = v.z;
+        if (v.z > b.z1) b.z1 = v.z;
+        if (v.y > b.top) b.top = v.y;
+      }
+    }
+    if (!(b.x1 > b.x0 && b.z1 > b.z0)) Object.assign(b, { x0: -1.95, x1: 1.95, z0: -2.1, z1: 1.2, top: P.y + 3.6 });
+    const X0 = Math.max(-hx + 0.05, b.x0 - SCAFFOLD.pad);
+    const X1 = Math.min(hx - 0.05, b.x1 + SCAFFOLD.pad);
+    const Z0 = Math.max(-hz + 0.05, b.z0 - SCAFFOLD.pad);
+    const Z1 = Math.min(hz - 0.05, b.z1 + SCAFFOLD.pad);
+    const H = clamp((b.top - P.y) * 0.8, SCAFFOLD.minH, SCAFFOLD.maxH);
+    return { X0, X1, Z0, Z1, H, hx, hz };
+  }
+  function scaffold(plot, from) {
+    const P = plot.P;
+    const { X0, X1, Z0, Z1, H, hz } = scaffoldBox(plot, from);
+    const g = plotFrame(plot);
+    const s = subG(g, 0, P.y, 0); // (the deck at y 0: it pops up from there)
+    const poleM = ink(SCAFFOLD.pole);
+    const railM = ink(SCAFFOLD.rail);
+    const braceM = thin(SCAFFOLD.brace);
+    const boardM = thin(SCAFFOLD.board);
+    // poles round the edge (one more along a side longer than 3.2 u), each on a little dark foot plate
+    const along = (a, b) => (b - a > 3.2 ? [a, (a + b) / 2, b] : [a, b]);
+    const xs = along(X0, X1);
+    const zs = along(Z0, Z1);
+    const poles = [];
+    for (const x of xs) for (const z of [Z0, Z1]) poles.push([x, z]);
+    for (const z of zs.slice(1, -1)) for (const x of [X0, X1]) poles.push([x, z]);
+    const PH = H + 0.45;
+    for (const [x, z] of poles) {
+      add(s, cyl(0.075, 0.085, PH, 8), poleM, x, PH / 2, z);
+      add(s, rbox(0.3, 0.06, 0.3, 0.02), ink(COL.woodDeep), x, 0.03, z);
+    }
+    // rails at every level, round all four sides; planks to stand on along the front and the back
+    const n = Math.max(2, Math.round(H / SCAFFOLD.level));
+    for (let k = 1; k <= n; k++) {
+      const y = (k * H) / n;
+      rod(s, railM, V3(X0, y, Z0), V3(X1, y, Z0), 0.055, 6);
+      rod(s, railM, V3(X0, y, Z1), V3(X1, y, Z1), 0.055, 6);
+      rod(s, railM, V3(X0, y, Z0), V3(X0, y, Z1), 0.055, 6);
+      rod(s, railM, V3(X1, y, Z0), V3(X1, y, Z1), 0.055, 6);
+      if (k < n) for (const z of [Z0, Z1]) add(s, rbox(X1 - X0 + 0.2, 0.07, 0.42, 0.02), boardM, (X0 + X1) / 2, y - 0.08, z);
+    }
+    // a red cross brace on every face, in the lowest bay
+    const y1 = H / n;
+    for (const z of [Z0, Z1]) {
+      rod(s, braceM, V3(X0, 0.12, z), V3(X1, y1, z), 0.04, 5);
+      rod(s, braceM, V3(X1, 0.12, z), V3(X0, y1, z), 0.04, 5);
+    }
+    for (const x of [X0, X1]) {
+      rod(s, braceM, V3(x, 0.12, Z0), V3(x, y1, Z1), 0.04, 5);
+      rod(s, braceM, V3(x, 0.12, Z1), V3(x, y1, Z0), 0.04, 5);
+    }
+    // a ladder up the right side
+    const lz = Z0 + (Z1 - Z0) * 0.62;
+    for (const dz of [-0.25, 0.25]) rod(s, poleM, V3(X1 + 0.12, 0, lz + dz), V3(X1 + 0.12, H + 0.3, lz + dz), 0.035, 5);
+    for (let y = 0.35; y < H; y += 0.4) rod(s, thin(COL.woodDark), V3(X1 + 0.12, y, lz - 0.25), V3(X1 + 0.12, y, lz + 0.25), 0.025, 4);
+    // a pulley arm over the back left corner, a rope and a bucket of nails
+    const top = PH;
+    rod(s, poleM, V3(X0, top - 0.15, Z0), V3(X0 - 0.15, top + 0.25, Z0 + 0.9), 0.05, 6);
+    add(s, cyl(0.13, 0.13, 0.06, 10), ink(COL.iron), X0 - 0.15, top + 0.25, Z0 + 0.9, 0, 0, PI / 2);
+    rod(s, thin(COL.rope), V3(X0 - 0.15, top + 0.18, Z0 + 0.9), V3(X0 - 0.15, top - 1.3, Z0 + 0.9), 0.02, 4);
+    add(s, cyl(0.2, 0.15, 0.3, 10), ink(COL.iron), X0 - 0.15, top - 1.45, Z0 + 0.9);
+    // little flags along the top rail, front and back
+    let f = 0;
+    for (const z of [Z0, Z1]) {
+      const m = Math.max(3, Math.round((X1 - X0) / 0.5));
+      for (let i = 0; i < m; i++) {
+        const x = X0 + ((i + 0.5) * (X1 - X0)) / m;
+        const sag = 0.18 * Math.sin((PI * (i + 0.5)) / m);
+        add(s, cone(0.13, 0.32, 3), flat(FLAGS[f++ % FLAGS.length]), x, H + 0.32 - sag - 0.16, z, PI, 0, 0, [1, 1, 0.35]);
+      }
+      rod(s, thin(COL.rope), V3(X0, H + 0.34, z), V3(X1, H + 0.34, z), 0.015, 3);
+    }
+    // a red-and-white barrier on two little trestles in front (just inside the platform's edge)
+    const bz = Math.min(hz - 0.12, Z1 + 0.45);
+    const bw = Math.min(2.4, X1 - X0);
+    for (const sx of [-1, 1]) {
+      const x = (sx * bw) / 2;
+      rod(s, thin(COL.woodDark), V3(x - 0.12, 0, bz), V3(x, 0.62, bz), 0.035, 4);
+      rod(s, thin(COL.woodDark), V3(x + 0.12, 0, bz), V3(x, 0.62, bz), 0.035, 4);
+    }
+    const stripes = 6;
+    for (let i = 0; i < stripes; i++) add(s, rbox(bw / stripes, 0.16, 0.06, 0.02), ink(i % 2 ? COL.white : COL.red), -bw / 2 + ((i + 0.5) * bw) / stripes, 0.62, bz);
+    g.updateMatrixWorld(true);
+    bake(s);
     g.userData.keep = true;
+    g.userData.pop = s;
     return g;
   }
   function startMontage(plot, from) {
     plotChunk(plot, plot.tier); // the new building, baked now (out of sight)
-    const M = { plot, from, t: 0, stage: 'scaffold', pop: null, scaffold: scaffold(plot), dust: [] };
+    const M = { plot, from, t: 0, stage: 'scaffold', pop: null, scaffold: scaffold(plot, from), dust: [] };
     dev.montage = M;
     dev.root.add(M.scaffold);
     rebuildDev({ [plot.id]: from });
@@ -4643,6 +4756,13 @@ export function build(scene, ctx = {}) {
     const M = dev.montage;
     if (!M) return;
     M.t += dt;
+    // the scaffold pops up from the deck (0.35 s, a little overshoot; standing at once under reduced motion)
+    const pop = M.scaffold && M.scaffold.userData.pop;
+    if (pop && M.stage === 'scaffold') {
+      const u = ctx.reducedMotion ? 1 : clamp(M.t / 0.35, 0, 1);
+      const k = u < 0.75 ? 0.08 + 1.0 * (u / 0.75) * (2 - u / 0.75) : 1.08 - 0.08 * ((u - 0.75) / 0.25);
+      pop.scale.set(1, Math.max(0.08, k), 1);
+    }
     if (M.dust.length && M.t >= MONTAGE.scaffold + 0.25) {
       anim.smoke.dev = anim.smoke.dev.filter((q) => !M.dust.includes(q));
       M.dust.length = 0;
@@ -5596,8 +5716,12 @@ export function build(scene, ctx = {}) {
       const bell = tw(-1.05, 2.0);
       const camP = tw(-4.33, 5.92, 2.7);
       const camT = tw(-0.2, 2.2, 1.15);
+      // (in the panel view he stands a step to the left, under the bell: from the camera the professor and Quizzle
+      // are then clear of him beside the chalkboard, in a phone's narrow view too)
+      const stand = tw(-1.4, 2.62);
       walkData.places.push({
         id: 'quiz', name: "Professor Barnacle's Riddle Bell", x: r2(at.x), z: r2(at.z), r: 1.3, face: r3(Math.atan2(bell.x - at.x, bell.z - at.z)),
+        podium: { x: r2(stand.x), y: r2(stand.y), z: r2(stand.z) },
         cam: { pos: [r2(camP.x), r2(camP.y), r2(camP.z)], target: [r2(camT.x), r2(camT.y), r2(camT.z)] },
       });
     }
@@ -6469,7 +6593,7 @@ export function build(scene, ctx = {}) {
       return villagers.map((f) => ({ x: f.p.position.x, y: f.p.position.y, z: f.p.position.z, home: f.home, loop: f.loop, visible: f.p.visible }));
     },
     get plots() {
-      return plotList.map((p) => ({ ...plotInfo(p), tier: p.tier }));
+      return plotList.map((p) => ({ ...plotInfo(p), tier: p.tier, top: plotTop(p) }));
     },
     // a new home's villagers while they wave from its porch (SPEC3 §8.3, for the "Thank you, Captain!" bubble):
     // { x, y, z } where each stands (world), top: the top of the head, secs: how long they go on waving

@@ -90,6 +90,11 @@ export const ACT2_LEVELS = [
     mechanics: ['current'],
     finale: true,
     finaleText: 'The Phantom Galleon is yours! You are the Legend of the Seven Seas.',
+    // Once the Kraken Seas sail with the voyage (SPEC3 §5.1–5.2; main reads these two only when a Voyage III
+    // level follows): the Victory screen's sail-on button, and the line added after finaleText on it (the same
+    // words as act3.js's ACT3_TEASER, which mechanics3.test checks).
+    sailOn: 'Sail on to the Kraken Seas',
+    teaser: '…but far to the south, something stirs in the deep.',
     rumour: {
       title: 'The Maelstrom',
       lines: ['A ghost ship sails where the sea swallows itself.', "Round shot barely scratches her. Grape and cutlasses don't!"],

@@ -394,6 +394,17 @@ function pathProblems(W, p, from, to) {
       check(!!p && fin(p.x, p.z, p.r, p.face) && p.cam && p.cam.pos.length === 3 && p.cam.target.length === 3 && W.inside(p.x, p.z) && !W.blocked(p.x, p.z, R), `${p ? p.name : 'a new place'} stands on the walk, clear, with a facing and a panel camera`);
     }
     check(!!quiz && quiz.name === "Professor Barnacle's Riddle Bell" && Math.abs(W.heightAt(quiz.x, quiz.z) - 1.3) < 0.01 && Math.hypot(quiz.x + 18.2, quiz.z + 25.4) < 3.6, `the Riddle Bell is on the lookout tower's raft (${f2(quiz && quiz.x)}, ${f2(quiz && quiz.z)})`);
+    // in the quiz's panel view the captain stands a step to the left (its podium): from the panel's camera the
+    // professor (and Quizzle on his shoulder) is then clear of him, not hidden behind him on a phone
+    {
+      const st = quiz && quiz.podium;
+      const prof = (data.npcs || []).find((n) => n.id === 'barnacle');
+      const c = quiz && quiz.cam && quiz.cam.pos;
+      const ang = (q) => Math.atan2(q.x - c[0], q.z - c[2]);
+      const sep = st && prof && c ? (Math.abs(Math.atan2(Math.sin(ang(st) - ang(prof)), Math.cos(ang(st) - ang(prof)))) * 180) / Math.PI : 0;
+      check(!!st && fin(st.x, st.y, st.z) && W.inside(st.x, st.z) && !W.blocked(st.x, st.z, R) && Math.hypot(st.x - quiz.x, st.z - quiz.z) < 0.6 && sep >= 8,
+        `the quiz's panel stand is on the walk, clear, a step from the bell's place, and from the panel camera the professor stands ${sep.toFixed(1)}° beside it (at least 8°)`);
+    }
     check(!!builder && builder.name === 'Builder Bess' && builder.x > -8.5 && builder.x < 8.5 && builder.z < -5.7 && builder.z > -14.8, `Builder Bess's place is on the plaza (${f2(builder && builder.x)}, ${f2(builder && builder.z)})`);
     // (the reachability loop above already walks from the spawn to every place and between every two places)
     for (const p of [quiz, builder]) {

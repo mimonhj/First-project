@@ -53,11 +53,16 @@
 // Damage sources: 'slam' (12 inside a ring), 'ink' (the phase-2 ink blob). The grab's 2 hp/s is main's to
 // apply from playerMods().dps (§11.2 updatePlayer). A warning is never shorter than 1.5 s (KRAKEN.minWarn).
 
-/** §5.7.2–5.7.6 (starting values; Stage 1C owns them, Stage 3 tunes them with the bots, §5.9). */
+/**
+ * §5.7.2–5.7.6 (Stage 1C's starting values, tuned by Stage 3 with the bots, §5.9, SPEC3 §19): hp 600 → 2,850 (the
+ * fight lasted 30–50 s on the late-game ship, so the Fury and the Last Stand passed in seconds; now 2–2.5 minutes,
+ * a third of the bar a phase) and the Hunt's head every 3rd → every 2nd attack (with 900 hp a phase, every 3rd
+ * attack made the Hunt alone last over a minute).
+ */
 export const KRAKEN = {
   name: 'THE KRAKEN',
-  hp: 600,
-  notches: [400, 200], // the phase lines on the bar (phase 2 from 400, phase 3 from 200)
+  hp: 2850,
+  notches: [1900, 950], // the phase lines on the bar (phase 2 from 1900, phase 3 from 950), a third of it each
   pearl: 1000, // gold, paid when the Pearl is taken (main adds it to state.gold)
   dread: 4, // s of dread before the rise (main's)
   rise: 6, // s: the rise, skippable
@@ -91,9 +96,9 @@ export const KRAKEN = {
     tentacle: { r: 1.4, y0: 0, y1: 9, mul: 1, hp: 30 },
   },
   phases: [
-    { from: 600, chase: 8, trigger: 14, count: 2, every: 8, spread: 6, warn: 1.8, slam: 12, grab: false, head: { every: 3, up: 7, off: 20 } },
-    { from: 400, chase: 9.5, trigger: 14, count: 3, every: 7, spread: 6, warn: 1.6, slam: 12, grab: true, head: { every: 2, up: 7, off: 20 }, ink: 12, inkFirst: 6 },
-    { from: 200, chase: 0, trigger: Infinity, count: 4, every: 6, spread: 6, reach: 40, near: 10, warn: 1.5, slam: 12, grab: true, head: { always: true, off: 25, glow: [4, 8] }, pull: { speed: 2, reach: 50, min: 18 } },
+    { from: 2850, chase: 8, trigger: 14, count: 2, every: 8, spread: 6, warn: 1.8, slam: 12, grab: false, head: { every: 2, up: 7, off: 20 } },
+    { from: 1900, chase: 9.5, trigger: 14, count: 3, every: 7, spread: 6, warn: 1.6, slam: 12, grab: true, head: { every: 2, up: 7, off: 20 }, ink: 12, inkFirst: 6 },
+    { from: 950, chase: 0, trigger: Infinity, count: 4, every: 6, spread: 6, reach: 40, near: 10, warn: 1.5, slam: 12, grab: true, head: { always: true, off: 25, glow: [4, 8] }, pull: { speed: 2, reach: 50, min: 18 } },
   ],
   ring: 4, // u: a tentacle's warning ring
   specials: { chase: 0.5, warn: 0.5, sneeze: true }, // the Kraken's own frost and stink effects (§5.7.5)
@@ -353,6 +358,7 @@ export function createKraken(ctx) {
   let pearl = null; // { x, z, t, got }
   let over = false;
   let log = { slams: 0, grabs: 0, releases: 0, inks: 0, cutOffs: 0, sneezes: 0 };
+  const dmgBy = { eye: 0, head: 0, tentacle: 0, burn: 0, burst: 0 }; // what took the bar down (state: the balance bots read it)
 
   const row = () => KRAKEN.phases[clamp(phase, 1, 3) - 1];
   const fighting = () => !disposed && mode === 'fight';
@@ -433,8 +439,9 @@ export function createKraken(ctx) {
     if (say && was) announce(phase === 2 ? KRAKEN.words.live.fury : phase === 3 ? KRAKEN.words.live.last : '');
   }
 
-  function hurt(dmg) {
+  function hurt(dmg, src) {
     if (!fighting() || !(dmg > 0)) return;
+    if (src in dmgBy) dmgBy[src] += Math.min(dmg, hp);
     hp = Math.max(0, hp - dmg);
     if (hp <= EPS) {
       hp = 0;
@@ -727,7 +734,7 @@ export function createKraken(ctx) {
   // The Kraken's status (a boss's): fire burns the bar, frost and stink run out, clothes-pegs wear off while
   // it isn't stinky.
   function stepStatus(dt) {
-    if (st.id === 'fire') hurt(status.fireDps() * Math.min(dt, Math.max(0, st.t)));
+    if (st.id === 'fire') hurt(status.fireDps() * Math.min(dt, Math.max(0, st.t)), 'burn');
     if (!fighting()) return;
     if (st.id !== 'stink' && st.pegs > 0) st.pegs = Math.max(0, st.pegs - dt);
     if (!st.id) return;
@@ -1077,6 +1084,7 @@ export function createKraken(ctx) {
       cut: grab ? round(clamp(Math.max(grab.taps / cutTaps(), grab.hold / cutHoldT()), 0, 1)) : 0,
       pearl: pearl ? { x: round(pearl.x), z: round(pearl.z), t: round(pearl.t), got: pearl.got } : null,
       counts: { ...log },
+      dmgBy: { ...dmgBy },
       disposed,
     };
   }
@@ -1164,7 +1172,7 @@ export function createKraken(ctx) {
         head.hurt = 1;
       }
       if (!w && crit) w = KRAKEN.words.crit;
-      hurt(dmg);
+      hurt(dmg, part.kind);
       return { dmg, word: w };
     },
     special(id, ammo) {
@@ -1195,7 +1203,7 @@ export function createKraken(ctx) {
         if (st.id === 'stink') {
           w = word('kaboom');
           st.pegs = status.pegs();
-          hurt(status.burst());
+          hurt(status.burst(), 'burst');
           if (!fighting()) return w;
         }
         const t = status.fireTime();
