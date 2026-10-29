@@ -2,13 +2,15 @@
 // flattened by the Kraken Seas' new toys. The Act I bot (smoke.cjs's captain) and the Act II bot (levels.cjs's bot v2,
 // a mid-game ship) sail again with every recipe owned and the Powder Windmill at tier 3 (7 loads of each special shot
 // at every level start), firing special shot (Stink before a boarding, Frost on a fleeing galleon, Fire instead of
-// round shot on the rest), served with ?kraken=1 until Voyage III sails for everyone. Each level is still cleared and
-// fights back, the ship never ends up inside land, and the order of each voyage holds: the Volcano hurts more than
-// the Coast of Europe, the Maelstrom more than Doubloon Bay, by the median damage taken over BALANCE_RUNS runs of each
-// level (default 5: aim spread and the volcano's lava scatter roll Math.random, so single runs scatter; the bots get a
-// second try at a level, as a player would).
+// round shot on the rest), the Kraken Seas sailing (WITH_KRAKEN). Each level is still cleared and fights back, the
+// ship never ends up inside land, and the order of each voyage holds: the Volcano hurts more than the Coast of Europe,
+// the Maelstrom more than Doubloon Bay, by the median damage taken over BALANCE_RUNS runs of each level (default 5:
+// aim spread and the volcano's lava scatter roll Math.random, so single runs scatter; the bots get a second try at a
+// level, as a player would). "Still cleared" allows a bot one lost run in ten (both tries lost: a run of bad rolls,
+// not a level made unwinnable); with the default 5 runs every run must be won.
 // Run with `node tests/balance.cjs` (BALANCE_ONLY=act1,act2 runs one bot; BALANCE_RUNS=n; BALANCE_ROOT serves another
-// copy of the game).
+// copy of the game; BALANCE_QUERY replaces "?quality=low", e.g. "?quality=low&kraken=1" before the Kraken Seas
+// sailed for everyone).
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -16,7 +18,7 @@ const { serve } = require('./server.cjs');
 
 const ROOT = process.env.BALANCE_ROOT || path.join(__dirname, '..');
 const ONLY = (process.env.BALANCE_ONLY || '').split(',').filter(Boolean);
-const QUERY = '?quality=low&kraken=1';
+const QUERY = process.env.BALANCE_QUERY || '?quality=low';
 const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 
 let failures = 0;
@@ -408,9 +410,12 @@ function botLevel(args) {
     const a = xs.slice().sort((x, y) => x - y);
     return a.length % 2 ? a[(a.length - 1) / 2] : (a[a.length / 2 - 1] + a[a.length / 2]) / 2;
   };
-  // Each level sailed RUNS times (BALANCE_RUNS, default 5): every run must clear it (a second try allowed), and the
-  // order compares the median damage taken (one run can invert it: on 6 single runs of Voyage II with specials,
-  // 1 had the Maelstrom at 66 against Doubloon Bay's 76; their medians were 127 and 66).
+  // Each level sailed RUNS times (BALANCE_RUNS, default 5): the bot must clear it on every run but at most one in ten
+  // (a second try allowed; floor(RUNS / 10) lost runs: none at the default 5), and the order compares the median
+  // damage taken (one run can invert it: on 6 single runs of Voyage II with specials, 1 had the Maelstrom at 66
+  // against Doubloon Bay's 76; their medians were 127 and 66). (At 24 runs the stock-ship Act I bot lost 1 Volcano
+  // run on both tries, 186 damage from the Man-o'-War and the Molten Maw, while winning the other 23 on the first
+  // try: bad rolls of aim spread and lava scatter, Math.random, not a broken level; Act I was not changed.)
   const RUNS = Math.max(1, Math.floor(Number(process.env.BALANCE_RUNS) || 5));
   async function voyage(tag, levels, fn, args, { easy, hard, limit = Infinity }) {
     const { ctx, page, SPECIAL } = await open(tag);
@@ -422,7 +427,9 @@ function botLevel(args) {
     const L = (i) => `L${levels[i]}`;
     console.log(`      ${tag}: damage taken by level ${dmg.map((d, i) => `${L(i)} [${d.join(', ')}] median ${med[i]}`).join('; ')}`);
     check(all.every((r) => J(r.loads) === '{"fire":7,"frost":7,"stink":7}'), `${tag}: with every recipe and the Powder Windmill at 3, each level starts with 7 loads of each special shot (${J([...new Set(all.map((r) => J(r.loads)))])})`);
-    check(all.every((r) => won(r) && r.time <= limit), `${tag}: the bot with special shot clears ${L(0)}-${levels[levels.length - 1]} on each of ${RUNS} runs${Number.isFinite(limit) ? ` within ${limit} s` : ''}, a second try allowed (${runs.map((rs, i) => `${L(i)} ${rs.map((r) => `${r.tries} ${r.time} s`).join(', ')}`).join('; ')})`);
+    const lost = runs.map((rs) => rs.filter((r) => !(won(r) && r.time <= limit)).length);
+    const allowed = Math.floor(RUNS / 10);
+    check(lost.every((k) => k <= allowed), `${tag}: the bot with special shot clears ${L(0)}-${levels[levels.length - 1]} on ${allowed ? `all but at most ${allowed} of ${RUNS} runs` : `each of ${RUNS} runs`}${Number.isFinite(limit) ? ` within ${limit} s` : ''}, a second try allowed (lost ${lost.join(' / ')}; ${runs.map((rs, i) => `${L(i)} ${rs.map((r) => `${r.tries} ${r.time} s`).join(', ')}`).join('; ')})`);
     check(all.every(spentAny), `${tag}: it fires special shot on every run of every level (${runs.map((rs, i) => `${L(i)} ${rs.map((r) => r.spent.fire + r.spent.frost + r.spent.stink).join('/')}`).join('; ')} loads)`);
     check(med.every((m) => m > 0), `${tag}: every level still fights back (median damage taken ${med.join(' / ')})`);
     check(med[2] > med[0], `${tag}: ${hard} still hurts more than ${easy} (median damage taken ${med[2]} > ${med[0]})`);

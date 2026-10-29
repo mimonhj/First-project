@@ -110,13 +110,14 @@ async function shotColours(page) {
   const colours = await shotColours(page);
   check(colours > 40, `title scene renders with rich colour (${colours} colour buckets)`);
 
-  // Level select: 6 cards in two acts, only the first unlocked on a fresh profile.
+  // Level select: 9 cards in three voyages, only the first unlocked on a fresh profile.
   // (a locked card is aria-disabled, not disabled: it stays focusable and says why it is locked, SPEC2 §13)
   const cards = await page.$$eval('.level-card', (els) => els.map((e) => ({ text: e.textContent, locked: e.getAttribute('aria-disabled') === 'true' })));
-  check(cards.length === 6, `6 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
+  check(cards.length === 9, `9 level cards (${cards.map((c) => c.text.replace(/\s+/g, ' ')).join(' | ')})`);
   check(!cards[0].locked && cards.slice(1).every((c) => c.locked), 'only level 1 is unlocked at first');
   check(/Easy/.test(cards[0].text) && /Medium/.test(cards[1].text) && /Hard/.test(cards[2].text) &&
-    /Tricky/.test(cards[3].text) && /Tough/.test(cards[4].text) && /Legendary/.test(cards[5].text), 'level cards show the difficulty');
+    /Tricky/.test(cards[3].text) && /Tough/.test(cards[4].text) && /Legendary/.test(cards[5].text) &&
+    /Daring/.test(cards[6].text) && /Fearsome/.test(cards[7].text) && /Mythic/.test(cards[8].text), 'level cards show the difficulty');
   check(await page.evaluate(() => window.__gameReady === true), 'startup sets the ready flag');
 
   // ---- Level 1.

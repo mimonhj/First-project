@@ -8,7 +8,7 @@
   },
   "scripts": {
     "start": "npx http-server -p 8080 -c-1 .",
-    "test": "node tests/combat.test.cjs && node tests/specials.test.cjs && node tests/armory.test.cjs && node tests/cosmetics.test.cjs && node tests/walk.test.cjs && node tests/mechanics.test.cjs && node tests/mechanics3.test.cjs && node tests/kraken.test.cjs && node tests/island.test.cjs && node tests/quiz.test.cjs && node tests/settings.test.cjs && node tests/upgrades.test.cjs && node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs && node tests/audio.cjs && node tests/battle.cjs && node tests/levels.cjs && node tests/town.cjs",
+    "test": "node tests/combat.test.cjs && node tests/specials.test.cjs && node tests/armory.test.cjs && node tests/cosmetics.test.cjs && node tests/walk.test.cjs && node tests/mechanics.test.cjs && node tests/mechanics3.test.cjs && node tests/kraken.test.cjs && node tests/island.test.cjs && node tests/quiz.test.cjs && node tests/settings.test.cjs && node tests/upgrades.test.cjs && node tests/server.test.cjs && node tests/smoke.cjs && node tests/controls.cjs && node tests/audio.cjs && node tests/battle.cjs && node tests/levels.cjs && node tests/town.cjs && node tests/voyage3.cjs && node tests/ashore.cjs",
     "test:combat": "node tests/combat.test.cjs",
     "test:specials": "node tests/specials.test.cjs",
     "test:armory": "node tests/armory.test.cjs",
@@ -27,7 +27,10 @@
     "test:audio": "node tests/audio.cjs",
     "test:battle": "node tests/battle.cjs",
     "test:levels": "node tests/levels.cjs",
-    "test:town": "node tests/town.cjs"
+    "test:town": "node tests/town.cjs",
+    "test:voyage3": "node tests/voyage3.cjs",
+    "test:ashore": "node tests/ashore.cjs",
+    "test:balance": "node tests/balance.cjs"
   },
   "devDependencies": {
     "http-server": "^14.1.1",

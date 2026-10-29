@@ -1809,6 +1809,61 @@ except the one part noted under T-LEVELS-UNLISTED.
 | QUIZ-REWARD-LOSS | The quiz record gains `paid`; gold counts as paid only when both writes succeed, else the chest write is rolled back and the gold stays owed; `markPaid`/`owed` in quiz.js; tested (§0.1, §7.2, §10.1, §10.2, §11.1, §13). |
 | SMALL-FACTS | (a) `.pad.left`, not `.pad.steer`; (b) LOOK-2's waiting is in sparrow.js; (c) tags treat `status.id == null` as none; (d) Bess and Barnacle ≥ 1 u from every walker path; (e) the class `overlay` makes the new screens inert, the DOM order is for painting; (f) a special ball launches with the round shot's sound (§0.2, §6.2–6.4, §8.4, §11.2, §12, App. A). |
 
+### Stage 3 (tuning and go-live)
+
+Agent reports: `docs/kraken-seas/stage3-reports.md`. Bot v3 (§13.3) is
+`.dock-harness/kraken3/S1-3B/bot/bot3.js`; a trimmed copy is the `bot` section of `tests/voyage3.cjs`.
+
+**Tuned numbers (3B, §5.9 order).** Bot v3 on levels 7–9, 24 seeds per configuration (late ship, with and without
+special shot, circling and beam-keeping), plus stock and full ships at 12 seeds:
+
+| Number | Plan | Built | Why (bot evidence) |
+|---|---|---|---|
+| `KRAKEN.hp` | 600 | 2850 | §5.7's fight lasted 33–47 s on the late ship (review kraken:F2), too short to see the grab, the ink and the last stand. At 2850: fight median 138.8 s, p95 183 s, max 250.9 s. Per configuration: 135.3 / 144.8 / 138.1 / 136.3 s. |
+| `KRAKEN.notches` | [400, 200] | [1900, 950] | Kept at thirds, so the bar marks (§6.4) stay. |
+| `KRAKEN.phases[0].head.every` | 3 | 2 | The head (and the eye) shows sooner in phase 1. |
+| `RAM.cooldown` | 6 s | 9 s | A sitting captain was rammed every 8.7 s; now every 11.7 s. |
+| `MORTAR.keep` | [35, 45] | [28, 38] | The bomb ketch stood just out of gun reach (34 u): a sitting player fought 57–816 s. |
+| `bombketch.engage` | 42 | 33 | Same reason; a sitting late ship now wins in 29–93 s, a stock one 7 of 8. |
+| Inkheart reload / damage | 2.4 s / 6 | 2.6 s / 5 | The late ship sank on its first try at level 9 in 13–19 of 96 runs, every time to the Inkheart; now 0 of 96. |
+
+**Medians on the late ship.** Damage taken on L7 / L8 / L9 (Kraken hp 2700; levels 7 and 8 unchanged since):
+
+| Configuration | L7 | L8 | L9 |
+|---|---|---|---|
+| special shot, beam | 49.5 | 118 | 124 |
+| special shot, circle | 56.5 | 82 | 96 |
+| no special shot, beam | 46.5 | 76 | 117.5 |
+| no special shot, circle | 47.5 | 59.5 | 99.5 |
+
+So L7 < L8 < L9 holds. At hp 2850, L9's medians are 155 / 110.5 / 144 / 91, and 95 of 96 runs are won within two tries.
+
+**`tests/balance.cjs` at 24 runs, every recipe owned:**
+- Act I medians 34 / 106 / 110: the Volcano is above Europe.
+- Act II medians 68 / 30 / 119: the Maelstrom is above Doubloon Bay.
+
+**Tried and reverted:**
+- L7 with 3 attackers (the stock ship sank more often).
+- L9 lead 0.6 and spreadMul 1.1 (no effect).
+- A per-phase hold on the Kraken's bar (not needed).
+
+**Where the build differs from the plan**
+
+| Item | What changed |
+|---|---|
+| KRAKEN-DMGBY | `kraken.js` keeps `state.dmgBy` (eye, head, tentacle, burn, burst), snapshot only, for the bots and tests. |
+| BALANCE-CLEARS | `balance.cjs`'s "still cleared" check allows `floor(RUNS / 10)` lost runs per level (none at the default 5). At 24 runs the stock Act I bot lost 1 Volcano run on both tries, to `Math.random` aim and lava rolls; Act I is unchanged (§13.4). |
+| TEST-QUERIES | `voyage3.cjs`, `ashore.cjs` and `balance.cjs` default to `?quality=low`; `VOYAGE3_QUERY` / `ASHORE_QUERY` / `BALANCE_QUERY` restore `&kraken=1` on an older copy. `ashore.cjs` lost its PENDING tags (§13.2, §13.5). |
+| VOYAGE3-KR | `voyage3.cjs` derives every Kraken hp it sets from `KRAKEN` (hp, notches), so later tuning keeps it valid; it gains the `voyage` and `bot` sections (§13.2, §13.3). |
+| WARM-SHADERS | Review finding LIVE-2: `main.js` `warmShaders()` compiles the level scene at the end of `startLevel`; no program compiles when the first spout or the dread bubbles appear (§14). |
+| PILL-9 | The 9-skull difficulty pill puts its skulls on their own line in the three-column title grids (§6.6). |
+| CRATE-BEACON | 3E: on a phone a crate was about 8 px wide at 80–90 u and hidden by your own sails. Each crate now carries a light pillar (`ships.js` `crateBeacon`, +1 call per crate), and its diamond keeps its screen size far off (`crateMarkScale`) (§2.5, §14). |
+| SHOT-TRAILS | 3E: the §2.7 trails (embers, snowflakes, green fumes) behind Fire, Frost and Stink balls, as ambient particles in `frame()` (`trailShots`) (§2.7). |
+| LAIR-DIM | 3E: the L9 lair rock's eye-fires burn low during the dread, so they no longer read as a second monster behind the rising Kraken (§5.6). |
+| PHONE-POPS | 3E: on portrait phones the special-shot and Kraken pop words are 29 px (KA-BOOM! 34, BULLSEYE! 33), so GRABBED!, TENTACLE! and SLAM! no longer cover the ship (§6.4). |
+| TOWN-SCAFFOLD | 3D: the build scaffold stands round both the old and the new building, with bright poles, braces, a ladder and flags (§8.3). Plus the "Thank you, Captain!" bubble over `env.wavers`, a quiz podium so the captain doesn't hide the professor, and the sparkle on the new building's real top (§7.1, §8.3). |
+| FLIP | `WITH_KRAKEN = true` in `voyage.js`, together with 3C's §13.4 edits and `npm test` gaining `voyage3` and `ashore` (21 suites); `test:balance` is opt-in (§12, §13.5). |
+
 ---------------------------------------------------------------------------------------------------
 
 ## Appendix A — DOM ids added in Stage 0 (all start `hidden`)

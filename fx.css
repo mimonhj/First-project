@@ -97,6 +97,15 @@
   .pop-kraken { --pop-size: 30px; }
   .pop-kraken.pop-eye { --pop-size: 33px; }
 }
+/* A phone in portrait (390 px wide): the Kraken's and the special shots' words at their 34 px minimum stack up
+   over your ship when a grab, a warning and a slam come together (GRABBED! TENTACLE! SLAM!), so there they are the
+   size of a damage pop (KA-BOOM! and BULLSEYE! a little bigger), never under the 24 px floor. */
+@media (max-width: 520px) and (min-height: 421px) {
+  .pop-fire, .pop-frost, .pop-stink { --pop-size: 29px; }
+  .pop-fire.pop-kaboom { --pop-size: 34px; }
+  .pop-kraken { --pop-size: 29px; }
+  .pop-kraken.pop-eye { --pop-size: 33px; }
+}
 
 /* ---------------------------------------------------------------------------------------------
    Hitmark stickers: <div id="hitmark">HIT ×3<span class="hm-tags"><span class="hm-tag rake">RAKE ×2</span>

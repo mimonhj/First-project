@@ -5318,6 +5318,46 @@ export function projectileMesh(ammoId) {
 }
 
 // ---------------------------------------------------------------------------
+// A powder crate's beacon (SPEC3 §2.5, Stage 3 polish): a soft powder-orange pillar of light standing on a crate
+// and fading out upward, so a crate reads from across the sea and over your own sails on a phone. One noOutline
+// mesh per crate (1 draw call), its geometry and material shared, built on the first call (Voyage III levels
+// only) and never disposed: the caller adds it to the crate and removes it with the crate. crateMarkScale(d) is
+// how much the crate's diamond and beacon grow `d` u from the camera, so they keep about the size on screen they
+// have at 34 u (1 up to 34 u, at most 2.6). Static: nothing on it flashes.
+// ---------------------------------------------------------------------------
+let beaconGeo = null;
+let beaconMat = null;
+export function crateBeacon() {
+  if (!beaconGeo) {
+    const h = 11;
+    const foot = 0.5;
+    const g = new THREE.CylinderGeometry(0.24, 0.56, h, 12, 6, true).translate(0, foot + h / 2, 0);
+    const pos = g.attributes.position;
+    const c = new THREE.Color(0xffa82e);
+    const col = new Float32Array(pos.count * 4);
+    for (let i = 0; i < pos.count; i++) {
+      const k = Math.min(1, Math.max(0, (pos.getY(i) - foot) / h)); // 0 at its foot, 1 at its top
+      col[i * 4] = c.r;
+      col[i * 4 + 1] = c.g;
+      col[i * 4 + 2] = c.b;
+      col[i * 4 + 3] = 0.78 * Math.pow(1 - k, 1.3);
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 4));
+    beaconGeo = g;
+    beaconMat = noOutline(new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, depthWrite: false, side: THREE.DoubleSide }));
+    beaconMat.name = 'ship:crate-beacon';
+  }
+  const m = new THREE.Mesh(beaconGeo, beaconMat);
+  m.name = 'crate-beacon';
+  m.renderOrder = 3;
+  return m;
+}
+export function crateMarkScale(d) {
+  const v = Number(d);
+  return Number.isFinite(v) ? Math.min(2.6, Math.max(1, v / 34)) : 1;
+}
+
+// ---------------------------------------------------------------------------
 // Special shot (SPEC3 §2.7) and the Voyage III bombs: one vertex-coloured mesh each, all sharing one
 // material (cached geometry, never disposed, like the round, chain and grape shot)
 // ---------------------------------------------------------------------------

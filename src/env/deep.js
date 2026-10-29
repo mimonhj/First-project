@@ -204,6 +204,10 @@ const SLICK_MAX = 8;
 const SLICK_R = 7; // the Inkheart's slick radius (mechanics3 INK.slick.r) when a snapshot gives none
 const SLICK_FADE = 1; // a slick fades over its last second (mechanics3 INK.slick.fade)
 const GLOW_HZ = 0.45; // torches, the lair's eyes, barnacles
+// The lair's eye-socket fires burn low while the Kraken's dread is up (eased with it: never a flash), so the only
+// eyes glowing in the fight are the Kraken's own amber ones and the carved lair behind it doesn't read as a second
+// monster (Stage 3 polish): their glow × (1 − glow), their flames × (1 − flame).
+const LAIR_DIM = { glow: 0.85, flame: 0.6 };
 // the torches' flames (rad/s): their size breathes, they sway and lick upward, all under 1 Hz
 const FLAME_W = { breathe: 5.3, breathe2: 3.1, sway: 4.2, lick: 6.0 };
 
@@ -594,7 +598,9 @@ void main() {
 const GLOW_VERT = /* glsl */ `
 attribute vec4 aGlow;   // half size, intensity, phase, pull towards the camera
 attribute vec3 aColor;
+attribute float aDim;   // 1: the lair's eyes, which go dim as the Kraken's dread rises (uDread)
 uniform float uTime;
+uniform float uDread;
 varying vec2 vC;
 varying vec3 vCol;
 varying float vI;
@@ -605,7 +611,7 @@ void main() {
   vC = uv * 2.0 - 1.0;
   mv.xy += vC * aGlow.x;
   vCol = aColor;
-  vI = aGlow.y * (0.88 + 0.12 * sin(uTime * ${TAU_GLSL} * ${glslNum(GLOW_HZ)} + aGlow.z));
+  vI = aGlow.y * (0.88 + 0.12 * sin(uTime * ${TAU_GLSL} * ${glslNum(GLOW_HZ)} + aGlow.z)) * (1.0 - ${glslNum(LAIR_DIM.glow)} * aDim * uDread);
   vFogD = -mv.z;
   gl_Position = projectionMatrix * mv;
 }
@@ -633,15 +639,18 @@ void main() {
 // Cartoon flames as camera-facing cards: a teardrop with a pale core and an ink rim (the torches). The
 // flame sways and licks; its size breathes at under 1 Hz.
 const FLAME_VERT = /* glsl */ `
-attribute vec4 aFl;   // half width, height, phase, unused
+attribute vec4 aFl;   // half width, height, phase, 1 for the lair's eyes (they burn low under the dread)
 uniform float uTime;
+uniform float uDread;
 varying vec2 vUv2;
 varying float vPh;
 varying float vFogD;
 void main() {
   vec4 mv = modelViewMatrix * vec4(position, 1.0);
   float f = 1.0 + 0.07 * sin(uTime * ${glslNum(FLAME_W.breathe)} + aFl.z) + 0.04 * sin(uTime * ${glslNum(FLAME_W.breathe2)} + aFl.z * 2.3);
-  mv.x += (uv.x - 0.5) * 2.0 * aFl.x * 1.35;
+  float low = 1.0 - ${glslNum(LAIR_DIM.flame)} * aFl.w * uDread;
+  f *= low;
+  mv.x += (uv.x - 0.5) * 2.0 * aFl.x * 1.35 * low;
   mv.y += (uv.y - 0.08) * aFl.y * f;
   vUv2 = uv;
   vPh = aFl.z;
@@ -1020,9 +1029,9 @@ export function build(scene, ctx = {}) {
       const bowl = mesh(dome, lathe([[0.15, -0.6], [0.95, 0.15], [1.05, 0.35], [0.85, 0.3]], 12), M.iron, ex * 1.02, ey - 1.5, ez + 1.15);
       ownGeos.push(bowl.geometry);
       const fw = toWorld(dome, ex * 1.03, ey - 1.3, ez + 1.45);
-      flames.push({ x: fw.x, y: fw.y, z: fw.z, w: 1.25, h: 4.2 });
+      flames.push({ x: fw.x, y: fw.y, z: fw.z, w: 1.25, h: 4.2, dim: 1 });
       const gw = toWorld(dome, ex * 1.03, ey + 0.6, ez + 2.4);
-      glows.push({ x: gw.x, y: gw.y, z: gw.z, size: 8.5, intensity: 0.9, color: 0xb36bff, pull: 2.5 });
+      glows.push({ x: gw.x, y: gw.y, z: gw.z, size: 8.5, intensity: 0.9, color: 0xb36bff, pull: 2.5, dim: 1 });
       const brow = taperTube(
         [new THREE.Vector3(side * 1.4, 15.3, 13.2), new THREE.Vector3(side * 4.6, 16.6, 12.9), new THREE.Vector3(side * 8.6, 16.4, 11.0), new THREE.Vector3(side * 10.3, 15.2, 9.6)],
         1.25,
@@ -1511,7 +1520,7 @@ export function build(scene, ctx = {}) {
       for (const [u, v] of [[0, 0], [1, 0], [1, 1], [0, 1]]) {
         pos.push(f.x, f.y, f.z);
         uv.push(u, v);
-        aF.push(f.w, f.h, n * 2.3 + 0.7, 0);
+        aF.push(f.w, f.h, n * 2.3 + 0.7, f.dim ? 1 : 0);
       }
       const b = n * 4;
       index.push(b, b + 1, b + 2, b, b + 2, b + 3);
@@ -1528,6 +1537,7 @@ export function build(scene, ctx = {}) {
         uniforms: {
           ...fogUniforms(),
           uTime: { value: 0 },
+          uDread: { value: 0 },
           uOuter: { value: linear(0x8a2fe0) },
           uMid: { value: linear(0xd07bff) },
           uCore: { value: linear(0xfbeaff) },
@@ -1558,6 +1568,7 @@ export function build(scene, ctx = {}) {
     const uv = [];
     const aG = [];
     const aC = [];
+    const aD = [];
     const index = [];
     glows.forEach((g, n) => {
       const c = linear(g.color);
@@ -1566,6 +1577,7 @@ export function build(scene, ctx = {}) {
         uv.push(u, v);
         aG.push(g.size, g.intensity, n * 1.7, g.pull);
         aC.push(c.r, c.g, c.b);
+        aD.push(g.dim ? 1 : 0);
       }
       const b = n * 4;
       index.push(b, b + 1, b + 2, b, b + 2, b + 3);
@@ -1575,12 +1587,13 @@ export function build(scene, ctx = {}) {
     geo.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
     geo.setAttribute('aGlow', new THREE.Float32BufferAttribute(aG, 4));
     geo.setAttribute('aColor', new THREE.Float32BufferAttribute(aC, 3));
+    geo.setAttribute('aDim', new THREE.Float32BufferAttribute(aD, 1));
     geo.setIndex(index);
     ownGeos.push(geo);
     const material = own(
       new THREE.ShaderMaterial({
         name: 'deep-glows',
-        uniforms: { ...fogUniforms(), uTime: { value: 0 }, uGain: { value: 1 } },
+        uniforms: { ...fogUniforms(), uTime: { value: 0 }, uGain: { value: 1 }, uDread: { value: 0 } },
         vertexShader: GLOW_VERT,
         fragmentShader: GLOW_FRAG,
         transparent: true,
@@ -2157,8 +2170,10 @@ export function build(scene, ctx = {}) {
 
     // ---- torches and glows ----
     flameMesh.material.uniforms.uTime.value = now;
+    flameMesh.material.uniforms.uDread.value = kd;
     glowMesh.material.uniforms.uTime.value = now;
     glowMesh.material.uniforms.uGain.value = 1 - 0.45 * kw;
+    glowMesh.material.uniforms.uDread.value = kd;
 
     // ---- jellyfish: drift on slow loops, ride the swell, pulse (≤ 1 Hz); under the dread they dive ----
     const glow = (1 - 0.75 * kd) * (1 - 0.5 * kw);

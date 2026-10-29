@@ -13,8 +13,8 @@
 //   9 The Kraken's Deep     'flagship'  sea geysers (def.bombs); Squid Skiffs board you; when the Inkheart falls
 //                                       her crew flee and the Kraken rises (kraken: true), the finale
 // Waves stay at ≤ 3 ships and nextWaveAt keeps ≤ 4 afloat at once (SPEC3 §5.9: no draw-call room for more).
-// voyage.js appends these levels to the voyage (behind ?kraken=1 until the Kraken Seas go live). The numbers are
-// SPEC3's starting values; Stage 3 tunes them with the bots (§5.9 order) and records any change in SPEC3 §19.
+// voyage.js appends these levels to the voyage (WITH_KRAKEN). The numbers are SPEC3's starting values as Stage 3's
+// bots tuned them (§5.9 order); every change is recorded in SPEC3 §19 and docs/kraken-seas/stage3-reports.md.
 import * as atolls from './env/atolls.js';
 import * as cape from './env/cape.js';
 import * as deep from './env/deep.js';

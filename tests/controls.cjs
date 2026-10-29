@@ -388,7 +388,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       { name: 'negative', set: { best: '-50', unlocked: '-2' }, best: 0, unlocked: 1, tutorial: false },
       { name: 'fractional', set: { best: '12.5', unlocked: '2.5' }, best: 0, unlocked: 1, tutorial: false },
       { name: 'exponent / huge', set: { best: '1e400', unlocked: '99999999999999999999' }, best: 0, unlocked: 1, tutorial: false },
-      { name: 'too large', set: { best: '5000000', unlocked: '7' }, best: 1000000, unlocked: 6, tutorial: false },
+      { name: 'too large', set: { best: '5000000', unlocked: '10' }, best: 1000000, unlocked: 9, tutorial: false },
       { name: 'zero progress', set: { unlocked: '0' }, best: 0, unlocked: 1, tutorial: false },
     ];
     const { ctx, page } = await open();
@@ -1226,7 +1226,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       if (!f || !f.inDock) break;
       order.push(f);
     }
-    const wantOrder = ['buy-guns', 'buy-shot', 'buy-crew', 'buy-hull', 'buy-sails', 'buy-carpenter', 'dock-title-btn'];
+    const wantOrder = ['buy-guns', 'buy-shot', 'buy-crew', 'buy-hull', 'buy-sails', 'buy-carpenter', 'buy-rudder', 'dock-title-btn'];
     const unseen = order.filter((f) => !f.ring || !f.visible).map((f) => f.id);
     check(order.map((f) => f.id).join() === wantOrder.join() && unseen.length === 0, `keyboard: Tab goes through every Buy button to the way out, each with a visible focus ring (${order.map((f) => f.id).join(' > ')}${unseen.length ? '; not visible: ' + unseen.join(', ') : ''})`);
 
@@ -1457,7 +1457,7 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     await page.waitForFunction(() => document.getElementById('dock-chest-gold').textContent === '140', null, { timeout: 60000 }).catch(() => {});
     await settle(page);
     const lay = await page.evaluate(dockLayoutProbe);
-    check(lay.problems.length === 0 && lay.exits === 2 && lay.buys === 6 && lay.swatches === 16, `shipyard layout ${w}x${h}${touch ? ' touch' : ''}: no page scroll, the ways out, tabs, every Buy button and swatch on screen (or scrolled to inside the panel), 44px targets, nothing overlapping${lay.problems.length ? ' -> ' + lay.problems.join('; ') : ''}`);
+    check(lay.problems.length === 0 && lay.exits === 2 && lay.buys === 7 && lay.swatches === 16, `shipyard layout ${w}x${h}${touch ? ' touch' : ''}: no page scroll, the ways out, tabs, every Buy button and swatch on screen (or scrolled to inside the panel), 44px targets, nothing overlapping${lay.problems.length ? ' -> ' + lay.problems.join('; ') : ''}`);
     // The ship is framed in the free space beside (or above) the panel: no part of it above the
     // water lies under the panel or off screen, and it is not tiny.
     const frame = await page.evaluate(async () => {
@@ -1892,9 +1892,11 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
     const confirm = await page.evaluate(pauseLayoutProbe);
     const c2 = await page.evaluate(dockContrastProbe, '#pause-screen .panel');
     const problems = [...choose.problems.map((p) => `choices: ${p}`), ...confirm.problems.map((p) => `question: ${p}`)];
+    // (on a touch screen the Steering toggle shows under the choices too, SPEC3 §6.3)
+    const choices = touch ? `${CHOICES},steer-mode-btn` : CHOICES;
     check(
-      choose.mode === 'paused' && choose.buttons.join() === CHOICES && confirm.buttons.join() === CONFIRM && problems.length === 0,
-      `pause dialog layout ${w}x${h}${touch ? ' touch (opened with the II button)' : ''}: Resume, Shipyard, Main menu and the question fit with no page scroll, nothing clipped or covered, 44px buttons${problems.length ? ' -> ' + problems.join('; ') : ''}`,
+      choose.mode === 'paused' && choose.buttons.join() === choices && confirm.buttons.join() === CONFIRM && problems.length === 0,
+      `pause dialog layout ${w}x${h}${touch ? ' touch (opened with the II button)' : ''}: Resume, Shipyard, Main menu${touch ? ', the Steering toggle' : ''} and the question fit with no page scroll, nothing clipped or covered, 44px buttons (${choose.buttons.join()})${problems.length ? ' -> ' + problems.join('; ') : ''}`,
     );
     const contrast = [...c1, ...c2];
     const bad = contrast.filter((r) => r.ratio < r.need);

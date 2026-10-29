@@ -1,6 +1,6 @@
 import * as THREE from 'three';
 import { SHIP_TYPES, gunOffset } from './shipTypes.js';
-import { buildShip, animateShip, disposeShip, projectileMesh, addHole, clearHoles, setShipDamage, hoistFlag } from './ships.js';
+import { buildShip, animateShip, disposeShip, projectileMesh, addHole, clearHoles, setShipDamage, hoistFlag, crateBeacon, crateMarkScale } from './ships.js';
 import { createRenderer, createOcean, createSky, createClouds, createLights, applyPalette } from './scenery.js';
 import { toon, noOutline, gradientMap, setOutline } from './style.js';
 import { createAudio } from './audio.js';
@@ -1346,10 +1346,11 @@ function placeCrates(def) {
     const gem = new THREE.Mesh(P.gemGeo, P.gemMat);
     const ring = new THREE.Mesh(P.ringGeo, P.ringMat);
     ring.renderOrder = 4;
-    g.add(keg, gem, ring);
+    const beam = crateBeacon(); // (ships.js: a soft light pillar, so it reads from afar and over your sails)
+    g.add(keg, gem, ring, beam);
     g.scale.setScalar(1.25);
     scene.add(g);
-    crates.push({ i, x: s.x, z: s.z, mesh: g, keg, gem, ring, taken: false, spin: i * 1.7 });
+    crates.push({ i, x: s.x, z: s.z, mesh: g, keg, gem, ring, beam, taken: false, spin: i * 1.7 });
   }
 }
 function clearCrates() {
@@ -1397,6 +1398,24 @@ function updateCrates() {
   if (!crates.length || !player || player.sinking || player.hp <= 0 || state.intro > 0) return;
   for (const c of crates) if (!c.taken && crateInReach(c, player)) pickCrate(c);
 }
+// Special shot's trails (SPEC3 §2.7): embers behind a Fire ball, snowflakes behind a Frost ball, green fumes behind
+// a stinkpot (frame(), visual only; ambient particles, so they never crowd out the battle's own effects).
+const SHOT_TRAIL = {
+  fire: { kind: 'glow', colors: [0xffb020, 0xff5a1a], size: 0.3, life: 0.4, vy: 0.9, grow: false },
+  frost: { kind: 'glow', colors: [0xffffff, 0xbfe8ff], size: 0.24, life: 0.55, vy: -0.4, grow: false },
+  stink: { kind: 'puff', colors: [0x8bc34a, 0x5a8f2e], size: 0.32, life: 0.6, vy: 0.5, grow: true },
+};
+let trailAt = 0;
+function trailShots(t) {
+  if (t - trailAt < 0.04) return;
+  trailAt = t;
+  for (const b of balls) {
+    const T = SHOT_TRAIL[b.ammo];
+    if (!T) continue;
+    const c = T.colors[Math.random() < 0.5 ? 0 : 1];
+    spawnParticle(T.kind, c, b.x + rand(-0.12, 0.12), b.y + rand(-0.12, 0.12), b.z + rand(-0.12, 0.12), 0, T.vy, 0, T.life, T.size * rand(0.8, 1.2), 0, T.grow, false, true);
+  }
+}
 // The look: they bob on the swell, turn slowly, the diamond floats (frame()).
 function syncCrates(t) {
   for (const c of crates) {
@@ -1405,7 +1424,11 @@ function syncCrates(t) {
     c.mesh.position.set(c.x, y, c.z);
     c.keg.position.y = 0.25;
     c.keg.rotation.set(0.12 * Math.sin(t * 1.3 + c.spin), t * 0.4 + c.spin, 0.1 * Math.cos(t * 1.1 + c.spin));
-    c.gem.position.y = 2.3 + (reducedMotion() ? 0 : 0.22 * Math.sin(t * Math.PI + c.spin)); // (0.5 Hz)
+    // (far off, the diamond and the beam grow to keep their size on screen)
+    const far = crateMarkScale(camera.position.distanceTo(c.mesh.position));
+    c.gem.scale.setScalar(far);
+    c.beam.scale.set(far, 1, far);
+    c.gem.position.y = 2.3 + 1.1 * (far - 1) + (reducedMotion() ? 0 : 0.22 * Math.sin(t * Math.PI + c.spin)); // (0.5 Hz)
     c.gem.rotation.y = reducedMotion() ? 0 : t * 1.2;
     c.ring.position.y = 0.12;
   }
@@ -9069,6 +9092,7 @@ function frame() {
     if (!paused) {
       prebuildStep();
       hazardCues();
+      trailShots(t);
     }
   }
 

@@ -1,6 +1,6 @@
-// Voyage III suite (SPEC3 §13.2, tests/voyage3.cjs): the Kraken Seas, levels 7-9, served with ?kraken=1 until
-// Voyage III sails for everyone (then the query is harmless). Drives the game in headless Chromium through the
-// window.__game test API with the real-time loop frozen (G.step(1/120)), like battle.cjs:
+// Voyage III suite (SPEC3 §13.2, tests/voyage3.cjs): the Kraken Seas, levels 7-9, as everyone sails them (WITH_KRAKEN;
+// before it was switched on for everyone, VOYAGE3_QUERY='?quality=low&kraken=1' served them). Drives the game in
+// headless Chromium through the window.__game test API with the real-time loop frozen (G.step(1/120)), like battle.cjs:
 // - the voyage: nine levels, Voyage III's three (names, seas, stars, waves, rules, crates, bonus, the finale)
 // - each level's start: its sea and music, its first wave, open water for every spawn and powder-crate spot, the
 //   draw calls at the start (≤ 310), a screenshot (atolls.png, cape.png, deep.png), the level banner clear of the
@@ -29,8 +29,15 @@
 //   rise's banner clear of the rising head, "All stop!" (kraken-calm-look); a grab's pops clear of the grab strip on
 //   small phones (kraken-calm-pops); FIRE SHIP! and RAM! arrows at the screen edge for threats off the view, the WAVE!
 //   arrow clear of the minimap and the REPEL BOARDERS! strip, a hazard's how-to banner keeps its time (seas-cues)
+// - the journey (voyage): the title's cards 7-9 under "Voyage III · The Kraken Seas", card 7 "Beat the Phantom
+//   Galleon"; the save migration (6 open + the legend feat opens card 7 at load; without the feat nothing opens); the
+//   Maelstrom's Victory "Sail on to the Kraken Seas" with the teaser, the won shipyard's way out to the Turtle Atolls,
+//   and Enter starts level 7 with the voyage gold
+// - bot v3 (bot): the late-game ship clears each of levels 7-9 within 900 s (a second try allowed), with special shot
+//   and with none, never stuck 60 s, never inside land, the Kraken's fight within 240 s (one seeded run each)
+// The Kraken's hp checks follow src/kraken.js's KRAKEN (hp and the two phase lines), whatever its tuning.
 // Run with `node tests/voyage3.cjs` (VOYAGE3_ONLY=levels,starts runs some sections; VOYAGE3_ROOT serves another
-// copy of the game; SCREENSHOT_DIR puts the screenshots elsewhere).
+// copy of the game; VOYAGE3_QUERY replaces "?quality=low"; SCREENSHOT_DIR puts the screenshots elsewhere).
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -39,7 +46,7 @@ const { serve } = require('./server.cjs');
 const ROOT = process.env.VOYAGE3_ROOT || path.join(__dirname, '..');
 const OUT = process.env.SCREENSHOT_DIR || path.join(ROOT, 'tests', 'screenshots');
 const ONLY = (process.env.VOYAGE3_ONLY || '').split(',').filter(Boolean);
-const QUERY = '?quality=low&kraken=1';
+const QUERY = process.env.VOYAGE3_QUERY || '?quality=low';
 const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 const SCREENSHOT_TIMEOUT = 120000;
 
@@ -56,6 +63,14 @@ const r2 = (v) => (typeof v === 'number' ? Math.round(v * 100) / 100 : v);
 const OWN_ALL = '{"v":1,"own":{"fire":1,"frost":1,"stink":1}}';
 // Levels 1-9 open, the tutorial and every tip seen, all three recipes owned.
 const STORE = { 'pirates-ahoy-unlocked': '9', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '65535', 'pirates-ahoy-powder': OWN_ALL };
+// The Kraken's bar from src/kraken.js's KRAKEN (a pure module, loaded as a data: URL), so the checks follow its tuning:
+// hp (full), n1 (phase 2 from here) and n2 (phase 3 from here). In the page as T.KR.
+async function krakenNumbers() {
+  const src = fs.readFileSync(path.join(ROOT, 'src', 'kraken.js'), 'utf8');
+  const { KRAKEN } = await import(`data:text/javascript;base64,${Buffer.from(src).toString('base64')}`);
+  return { hp: KRAKEN.hp, n1: KRAKEN.notches[0], n2: KRAKEN.notches[1] };
+}
+let KR = null;
 
 // ---------------------------------------------------------------------------------------------------------
 // In-page helpers (window.T), installed after every page load
@@ -189,6 +204,392 @@ function installHelpers() {
   window.T = T;
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// Bot v3 (SPEC3 §13.3; agent 3B's balance bot, .dock-harness/kraken3/S1-3B/bot/bot3.js, without its trace options).
+// Runs INSIDE the page: page.evaluate(botV3, args). Bot v2 (balance.cjs botLevel) plus: Fire on Iron Turtles (and the
+// Inkheart), Frost on fire ships and charging sharks, Stink on bomb ketches, on a Kraken grab and before a boarding;
+// dodges every warning ring (lava, lightning, geyser, shell, ink, the Kraken's tentacle and ink rings) like lava; keeps
+// > 16 u from spout cores; turns bow-in or stern-on to a warned rogue wave; holds G to cut a grab; shoots the Kraken's
+// raised parts. args: { n, profile: 'stock' | 'late' | 'full', specials, strategy: 'circle' | 'beam', seed, maxT,
+// SPECIAL, retry } (retry: 'kraken' starts from the shipwreck card's "Try again from the Kraken"). Deterministic per
+// seed: Math.random and the combat dice are reseeded after the level starts.
+// ---------------------------------------------------------------------------------------------------------
+function botV3(args) {
+  const { n, profile = 'late', maxT = 900, specials = true, strategy = 'circle', seed = 1, SPECIAL = {}, retry = null } = args;
+  const G = window.__game;
+  const wrap = (a) => ((((a + Math.PI) % (Math.PI * 2)) + Math.PI * 2) % (Math.PI * 2)) - Math.PI;
+  const hyp = Math.hypot;
+  function mulberry32(a0) {
+    let a = a0 >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+  const PROFILES = {
+    stock: { ship: {}, armory: {}, island: {} },
+    // SPEC3 §5.9's late-game profile
+    late: { ship: { guns: 1, shot: 2, crew: 2, hull: 2, sails: 1, carpenter: 1, rudder: 1 }, armory: { boarders: 1, cutlass: 1, grapple: 0, gunner: 1 }, island: { windmill: 1 } },
+    // everything bought: the shipyard, the tavern and the island at their tops
+    full: {
+      ship: { guns: 2, shot: 3, crew: 3, hull: 3, sails: 2, carpenter: 2, rudder: 3 },
+      armory: { boarders: 3, cutlass: 3, grapple: 2, gunner: 3 },
+      island: { homeA: 3, homeB: 3, homeC: 3, homeD: 3, bakery: 3, windmill: 3, lighthouse: 3, market: 3, school: 3, park: 3 },
+    },
+  };
+  const P = PROFILES[profile] || PROFILES.late;
+  if (retry === 'kraken') {
+    if (!G.kraken.retry()) return { level: n, result: 'noretry' };
+  } else {
+    G.setShipConfig({ up: P.ship });
+    G.armory.set({ up: P.armory });
+    G.island.set({ v: 1, t: P.island });
+    G.specials.setPowder({ v: 1, own: specials ? { fire: 1, frost: 1, stink: 1 } : { fire: 0, frost: 0, stink: 0 } });
+    G.state.unlocked = Math.max(G.state.unlocked, G.LEVELS.length);
+    G.state.tutorialDone = true;
+    G.startLevel(n);
+  }
+  if (G.state.mode === 'playing') G.togglePause();
+  G.state.mode = 'playing';
+  Math.random = mulberry32((seed * 2654435761 + n * 40503 + (retry ? 77 : 0)) >>> 0);
+  G.combat.seed(seed * 7919 + n * 31 + (retry ? 5 : 0));
+  const S = G.combat.rules;
+  const isL9 = !!G.LEVELS[n - 1].kraken;
+  const stats = {
+    level: n, profile, specials, strategy, seed, retry, loads: G.specials.loads, spent: null, result: null, time: 0, damageTaken: 0, hpLeft: 0, maxHp: G.player.maxHp,
+    captures: 0, sunk: 0, boardings: 0, raids: 0, cuts: 0, takes: 0, stuck: 0, hurtBy: null, left: '', noProgress: 0,
+    kraken: null, waveTimes: [], ammoFired: {},
+  };
+  let t = 0;
+  let lastHp = G.player.hp;
+  let wasActive = false;
+  let tick = 0;
+  let cutPresses = 0;
+  let holding = false;
+  let lastProgress = 0;
+  let progressKey = '';
+  const orbit = { target: null, hp: 0, crew: Infinity, hitAt: 0, flipUntil: -1 };
+  const unstick = { slow: 0, until: -1, side: 1, trail: [] };
+  const notchOf = (e) => e.strikeAt ?? S.strikeAt(e.crew0);
+  const crewOf = (e) => G.combat.crewOf(e);
+  // the Kraken: when its fight starts and ends (simulated s), damage taken during it, by phase
+  const K = { riseAt: null, fightAt: null, offAt: null, dmg: 0, phaseAt: {}, dmgByPhase: { 1: 0, 2: 0, 3: 0 }, minHp: Infinity, counts: null, grabHeld: 0 };
+  let wave = G.state.wave;
+  while (G.state.mode === 'playing' && t < maxT) {
+    tick++;
+    const p = G.player;
+    const B = G.boarding;
+    G.input.left = G.input.right = false;
+    if (G.state.wave !== wave) {
+      wave = G.state.wave;
+      stats.waveTimes.push(Math.round(t));
+    }
+    // ---- boarding set-pieces
+    if (B.active && !wasActive) {
+      if (B.kind === 'defend') stats.raids++;
+      else if (B.kind === 'surrender') stats.takes++;
+      else if (B.kind !== 'counter') stats.boardings++;
+      cutPresses = 0;
+    }
+    wasActive = B.active;
+    const ks = isL9 ? G.kraken.state : null;
+    const kStage = ks ? ks.stage : null;
+    const inFight = kStage === 'rise' || kStage === 'fight';
+    if (ks) {
+      if (kStage === 'rise' && K.riseAt === null) K.riseAt = t;
+      if (kStage === 'fight' && K.fightAt === null) K.fightAt = t;
+      if ((kStage === 'gone' || kStage === 'over') && K.offAt === null) K.offAt = t;
+      if (ks.phase && K.phaseAt[ks.phase] === undefined && inFight) K.phaseAt[ks.phase] = t;
+      if (inFight) K.minHp = Math.min(K.minHp, p.hp);
+    }
+    if (!p.sinking) {
+      if (B.active && B.phase === 'threat' && cutPresses < 3 && tick % 3 === 0) {
+        G.boardPress();
+        cutPresses++;
+        if (cutPresses === 3) stats.cuts++;
+      }
+      const vis = G.mechanics3.visuals() || {};
+      // ---- who to go for: the nearest fighting ship (the Inkheart's escort before her); a struck ship close by is taken
+      const afloat = G.enemies.filter((e) => e.hp > 0 && !e.sinking && !e.captured && !e.escaped && !e.fleeing);
+      const fighting = afloat.filter((e) => G.fighting(e) && !(e.rise > 0));
+      const struck = afloat.filter((e) => e.surrendered);
+      const near = (list) => list.slice().sort((a, b) => hyp(a.x - p.x, a.z - p.z) - hyp(b.x - p.x, b.z - p.z))[0] || null;
+      let target = near(fighting);
+      const s0 = near(struck);
+      if (s0 && (!target || hyp(s0.x - p.x, s0.z - p.z) < 30)) target = s0;
+      // the Kraken's raised parts (pseudo-ships for inArc), and what to steer by when nothing is up: its shadow
+      const kparts = inFight ? G.kraken.wrappers.filter((w) => w.hp > 0).map((w) => ({ x: w.x, z: w.z, h: 0, speed: 0, hp: w.hp, kind: w.kind, part: w.part, type: { len: w.len, wid: w.len } })) : [];
+      let kTarget = null;
+      if (inFight) {
+        const pick = (k) => kparts.filter((w) => w.kind === k).sort((a, b) => hyp(a.x - p.x, a.z - p.z) - hyp(b.x - p.x, b.z - p.z))[0];
+        kTarget = pick('eye') || pick('head') || pick('tentacle') || null;
+        if (!kTarget) {
+          const kv = G.kraken.visuals();
+          if (kv && kv.shadow) kTarget = { x: kv.shadow.x, z: kv.shadow.z, h: 0, speed: 0, hp: 0, kind: 'shadow', type: { len: 4 } };
+        }
+      }
+      // ---- grapple when the preview says capture (or she struck); counter-board on capture odds
+      if (!B.active && !inFight) {
+        const ct = B.counterTarget;
+        if (ct) {
+          const o = B.odds(ct, 'counter');
+          if (o && o.label === 'capture') G.boardPress();
+        } else {
+          const pick = B.pick();
+          if (pick.target && (pick.label === 'capture' || pick.label === 'take')) G.grapple();
+        }
+      }
+      let desired = p.h;
+      let sail = 2;
+      let ammo = 'round';
+      const L = G.specials.loads;
+      const unl = G.combat.unlockedAmmo || ['round'];
+      const has = (a) => unl.includes(a);
+      const rams = vis.rams || [];
+      if (target) {
+        const r = G.relative(p, target.x, target.z);
+        const toT = Math.atan2(target.x - p.x, target.z - p.z);
+        const odds = B.odds(target);
+        const wantBoard = odds && (odds.label === 'capture' || odds.label === 'take');
+        const crew = crewOf(target);
+        if (has('grape') && r.dist < 16 && crew > notchOf(target) + 2 && !target.surrendered && !target.type.fireship) ammo = 'grape';
+        else ammo = 'round';
+        // Special shot (bot v3): Frost on a fire ship or a charging shark, Fire on an Iron Turtle or the Inkheart,
+        // Stink on a bomb ketch and before a boarding.
+        if (specials && !target.surrendered) {
+          const st = target.status && target.status.id;
+          const immune = target.status && target.status.immune > 0;
+          const charging = target.type.ram && rams.some((m) => m.id === target.id);
+          if (target.type.fireship && L.frost > 0 && r.dist < 28) ammo = 'frost';
+          else if (charging && L.frost > 0 && st !== 'frost' && r.dist < 28) ammo = 'frost';
+          else if (wantBoard && L.stink > 0 && st !== 'stink' && !immune && r.dist < 20) ammo = 'stink';
+          else if (target.type.mortar && L.stink > 0 && st !== 'stink' && !immune && r.dist < 20) ammo = 'stink';
+          else if (!wantBoard && (target.type.armour || target.type.flagship) && L.fire > 0 && st !== 'fire' && r.dist < 28) ammo = 'fire';
+        }
+        const pref = ammo === 'grape' ? 12 : target.type.fireship ? 24 : 20;
+        const lt = Math.min(3, r.dist / Math.max(4, p.speed + 2));
+        const ix = target.x + Math.sin(target.h) * target.speed * lt;
+        const iz = target.z + Math.cos(target.h) * target.speed * lt;
+        const toI = Math.atan2(ix - p.x, iz - p.z);
+        if (wantBoard || target.surrendered) {
+          desired = toI;
+          sail = 3;
+        } else if (r.dist > pref + 6) {
+          desired = toT;
+          sail = 3;
+        } else {
+          const a1 = toT + Math.PI / 2;
+          const a2 = toT - Math.PI / 2;
+          if (orbit.target !== target) {
+            orbit.target = target;
+            orbit.hp = target.hp;
+            orbit.hitAt = t;
+            orbit.flipUntil = -1;
+          }
+          if (target.hp < orbit.hp - 1e-6 || crewOf(target) < (orbit.crew ?? Infinity)) orbit.hitAt = t;
+          orbit.hp = target.hp;
+          orbit.crew = crewOf(target);
+          if (strategy === 'circle' && t - orbit.hitAt > 6 && r.dist < 28 && !(orbit.flipUntil > t)) {
+            orbit.flipUntil = t + 4;
+            orbit.hitAt = t;
+          }
+          const near1 = Math.abs(wrap(a1 - p.h)) < Math.abs(wrap(a2 - p.h));
+          desired = near1 !== orbit.flipUntil > t ? a1 : a2;
+          const sideOf = Math.sign(wrap(desired - toT));
+          if (r.dist > pref + 2) desired -= sideOf * 0.4;
+          else if (r.dist < pref - 5) desired += sideOf * 0.4;
+          sail = strategy === 'beam' ? 1 : 2;
+        }
+      } else if (kTarget) {
+        // The Kraken: circle it at full sail, or keep it on the beam at about 20 u under easy sail.
+        const r = G.relative(p, kTarget.x, kTarget.z);
+        const toT = Math.atan2(kTarget.x - p.x, kTarget.z - p.z);
+        const a1 = toT + Math.PI / 2;
+        const a2 = toT - Math.PI / 2;
+        desired = Math.abs(wrap(a1 - p.h)) < Math.abs(wrap(a2 - p.h)) ? a1 : a2;
+        const sideOf = Math.sign(wrap(desired - toT));
+        const pref = 20;
+        if (r.dist > pref + 4) desired -= sideOf * 0.5;
+        else if (r.dist < pref - 4) desired += sideOf * 0.5;
+        sail = strategy === 'beam' ? 1 : 3;
+        if (specials && kTarget.kind !== 'shadow') {
+          const kst = ks && ks.status;
+          if ((kTarget.kind === 'eye' || kTarget.kind === 'head') && L.fire > 0 && !(kst && kst.id === 'fire')) ammo = 'fire';
+        }
+      }
+      // ---- the Kraken's grab: hold G (CUT!) to cut it loose; Stink on it makes it sneeze and let go
+      if (ks && ks.grab) {
+        if (!holding) {
+          G.kraken.cutHold(true);
+          holding = true;
+        }
+        K.grabHeld++;
+        if (specials && L.stink > 0 && !(ks.status && ks.status.pegs > 0)) ammo = 'stink';
+      } else if (holding) {
+        G.kraken.cutHold(false);
+        holding = false;
+      }
+      if (G.state.ammo !== ammo) G.combat.setAmmo(ammo);
+      // ---- a rogue wave: bow or stern to it, whichever is nearer
+      const rg = vis.rogue;
+      if (rg && rg.ahead > -4 && rg.ahead < 60) {
+        const bow = rg.h + Math.PI;
+        const stern = rg.h;
+        desired = Math.abs(wrap(bow - p.h)) < Math.abs(wrap(stern - p.h)) ? bow : stern;
+        sail = 3;
+      }
+      // ---- keep > 16 u off a waterspout's core
+      for (const s of vis.spouts || []) {
+        if (s.state === 'collapsing') continue;
+        if (hyp(p.x - s.x, p.z - s.z) < 19) {
+          desired = Math.atan2(p.x - s.x, p.z - s.z);
+          sail = 3;
+        }
+      }
+      // ---- a shark lining up or charging: turn out of her line
+      for (const m of rams) {
+        const sh = G.enemies.find((e) => e.id === m.id) || { x: m.x, z: m.z, h: m.h };
+        const rr = G.relative({ x: sh.x, z: sh.z, h: m.h }, p.x, p.z);
+        if (rr.along > -2 && rr.along < 32 && Math.abs(rr.lat) < 7) {
+          desired = m.h + (rr.lat >= 0 ? 1 : -1) * Math.PI / 2;
+          sail = 3;
+        }
+      }
+      // ---- a lit fire ship close by: sail away from her ring
+      for (const f of vis.fireRings || []) {
+        if (hyp(p.x - f.x, p.z - f.z) < f.r + 9) {
+          desired = Math.atan2(p.x - f.x, p.z - f.z);
+          sail = 3;
+        }
+      }
+      // ---- dodge warning rings (lava, lightning, geysers, shells, ink pots; the Kraken's tentacles and ink)
+      const rings = G.bombs.map((b) => ({ x: b.tx, z: b.tz, r: b.radius || 5 }));
+      if (ks && inFight) {
+        for (const tt of ks.tentacles) if (tt.state === 'warn') rings.push({ x: tt.x, z: tt.z, r: 4 });
+        for (const b of ks.inks) rings.push({ x: b.x, z: b.z, r: b.r });
+      }
+      for (const b of rings) {
+        if (hyp(p.x - b.x, p.z - b.z) < b.r + 6) {
+          desired = Math.atan2(p.x - b.x, p.z - b.z);
+          sail = 3;
+        }
+      }
+      // ---- steer round land and reefs (the nearest one ahead decides the side)
+      let block = null;
+      for (const o of [...G.colliders, ...G.reefs]) {
+        const ri = G.relative(p, o.x, o.z);
+        if (ri.along > -2 && ri.along < 22 && Math.abs(ri.lat) < o.r + 6 && (!block || ri.dist < block.dist)) block = ri;
+      }
+      if (block) desired = p.h + (block.lat > 0 ? 1.3 : -1.3);
+      if (hyp(p.x, p.z) > G.env.worldRadius - 15) desired = Math.atan2(-p.x, -p.z);
+      // ---- wedged against land (under sail but barely moving for 2 s): commit to one hard turn for 3 s, away from
+      // the nearest land, whatever else is going on (a child steers out of it; a bot that re-decides every tick can't)
+      // (also: under any sail but hardly getting anywhere for 6 s, e.g. a pull or a current holding her against a rock)
+      const free = !(ks && ks.grab) && !G.boarding.active && !(G.state.intro > 0) && kStage !== 'dread' && kStage !== 'rise';
+      const shoved = sail >= 2 && p.speed < 2.5 && free;
+      unstick.slow = shoved ? unstick.slow + 6 / 120 : 0;
+      if (tick % 10 === 0) {
+        unstick.trail.push({ t, x: p.x, z: p.z, free: free && sail >= 1 });
+        while (unstick.trail.length && unstick.trail[0].t < t - 6) unstick.trail.shift();
+      }
+      const old = unstick.trail[0];
+      const crawling = old && t - old.t > 5.5 && unstick.trail.every((q) => q.free) && hyp(p.x - old.x, p.z - old.z) < 5;
+      if ((unstick.slow > 2 || crawling) && !(unstick.until > t)) {
+        unstick.trail.length = 0;
+        let nearC = null;
+        for (const o of G.colliders) {
+          const dd = hyp(o.x - p.x, o.z - p.z) - o.r;
+          if (!nearC || dd < nearC.dd) nearC = { o, dd };
+        }
+        const lat = nearC ? G.relative(p, nearC.o.x, nearC.o.z).lat : 1;
+        unstick.side = lat > 0 ? 1 : -1; // (turn to port when the land is to starboard)
+        unstick.until = t + 3;
+        stats.unsticks = (stats.unsticks || 0) + 1;
+      }
+      if (unstick.until > t) {
+        desired = p.h + unstick.side * 1.5;
+        sail = 3;
+      }
+      const diff = wrap(desired - p.h);
+      if (diff > 0.05) G.input.left = true;
+      else if (diff < -0.05) G.input.right = true;
+      G.state.sail = sail;
+      // ---- fire whichever side has a target abeam or in its arc, within the loaded ammo's range
+      const range = (S.AMMO[G.state.ammo] || SPECIAL[G.state.ammo] || S.AMMO.round).range;
+      const pool = [...G.enemies.filter((e) => G.fighting(e)), ...kparts];
+      for (const side of [1, -1]) {
+        const inArc = pool.filter((e) => {
+          const r2 = G.relative(p, e.x, e.z);
+          const abeam = Math.sign(r2.lat) === side && r2.dist < range - 2 && Math.abs(r2.along) < Math.abs(r2.lat) * 0.5;
+          return abeam || G.inArc(p, e, side, range);
+        });
+        if (!inArc.length) continue;
+        if (G.playerFire(side)) stats.ammoFired[G.state.ammo] = (stats.ammoFired[G.state.ammo] || 0) + 1;
+      }
+      for (const c of G.colliders) if (hyp(c.x - p.x, c.z - p.z) < c.r) stats.stuck++;
+    }
+    for (let k = 0; k < 6 && G.state.mode === 'playing'; k++) {
+      G.step(1 / 120);
+      const d = lastHp - G.player.hp;
+      if (d > 0) {
+        stats.damageTaken += d;
+        if (isL9) {
+          const st = G.kraken.state;
+          if (st && (st.stage === 'rise' || st.stage === 'fight')) {
+            K.dmg += d;
+            K.dmgByPhase[st.phase || 1] += d;
+          }
+        }
+      }
+      lastHp = G.player.hp;
+    }
+    t += 6 / 120;
+    // progress: enemy hp, the Kraken's bar, the wave; 60 s without any change is "stuck"
+    const key = G.enemies.map((e) => Math.round(e.hp) + (e.surrendered ? 's' : '')).join(',') + '|' + G.state.wave + '|' + (isL9 && G.kraken.state ? Math.round(G.kraken.state.hp) + G.kraken.state.stage : '');
+    if (key !== progressKey) {
+      progressKey = key;
+      lastProgress = t;
+    } else stats.noProgress = Math.max(stats.noProgress, t - lastProgress);
+  }
+  if (holding) G.kraken.cutHold(false);
+  G.input.left = G.input.right = false;
+  const left = G.specials.loads;
+  stats.spent = { fire: stats.loads.fire - left.fire, frost: stats.loads.frost - left.frost, stink: stats.loads.stink - left.stink };
+  stats.result = G.state.mode === 'playing' ? 'timeout' : G.state.mode;
+  stats.time = Math.round(t * 10) / 10;
+  stats.damageTaken = Math.round(stats.damageTaken);
+  stats.hpLeft = Math.round(G.player.hp);
+  stats.captures = G.state.captures;
+  stats.sunk = G.state.sunk;
+  stats.hurtBy = JSON.stringify(Object.fromEntries(Object.entries(G.state.hurtBy).map(([k, v]) => [k, Math.round(v)])));
+  stats.left = G.enemies.filter((e) => e.hp > 0 && !e.captured && !e.escaped).map((e) => e.typeName + (e.surrendered ? '(struck)' : '')).join(' ');
+  const m3 = G.mechanics3.state;
+  if (m3 && m3.counts) stats.m3 = m3.counts;
+  if (isL9) {
+    const st = G.kraken.state;
+    const r1 = (v) => (v === null || v === undefined ? null : Math.round(v * 10) / 10);
+    stats.kraken = {
+      stage: st ? st.stage : null,
+      rise: r1(K.riseAt),
+      fight: K.fightAt !== null ? r1((K.offAt ?? t) - K.fightAt) : null,
+      done: K.offAt !== null,
+      phases: Object.fromEntries(Object.entries(K.phaseAt).map(([k, v]) => [k, r1(v - (K.fightAt ?? v))])),
+      dmg: Math.round(K.dmg),
+      dmgByPhase: Object.fromEntries(Object.entries(K.dmgByPhase).map(([k, v]) => [k, Math.round(v)])),
+      minHp: Number.isFinite(K.minHp) ? Math.round(K.minHp) : null,
+      hpLeft: st ? Math.round(st.hp) : null,
+      counts: st ? st.counts : null,
+      dmgBy: st && st.dmgBy ? Object.fromEntries(Object.entries(st.dmgBy).map(([k, v]) => [k, Math.round(v)])) : null,
+      grabs: st ? st.grabs : null,
+      checkpoint: !!G.kraken.checkpoint,
+    };
+  }
+  if (G.state.mode === 'playing') G.state.mode = 'paused';
+  return stats;
+}
+
 // Run `fn` in the page with the game playing for that one synchronous stretch, frozen again afterwards.
 function ev(page, fn, arg = null) {
   return page.evaluate(`(async () => {
@@ -204,6 +605,7 @@ function ev(page, fn, arg = null) {
 
 (async () => {
   fs.mkdirSync(OUT, { recursive: true });
+  KR = await krakenNumbers();
   const server = await serve(ROOT);
   const base = `http://127.0.0.1:${server.address().port}/`;
   const browser = await chromium.launch({ args: BROWSER_ARGS });
@@ -221,6 +623,7 @@ function ev(page, fn, arg = null) {
     await page.goto(base + QUERY, { waitUntil: 'domcontentloaded', timeout: 120000 });
     await page.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
     await page.evaluate(installHelpers);
+    await page.evaluate((k) => (window.T.KR = k), KR);
     return { ctx, page };
   }
   const frames = (page, n = 2) =>
@@ -290,7 +693,7 @@ function ev(page, fn, arg = null) {
         })),
       };
     });
-    check(v.kraken === true && v.n === 9, `voyage: with ?kraken=1 the voyage has nine levels (${J({ kraken: v.kraken, n: v.n })})`);
+    check(v.kraken === true && v.n === 9, `voyage: the Kraken Seas sail: the voyage has nine levels (${J({ kraken: v.kraken, n: v.n })})`);
     const want = [
       { name: 'The Turtle Atolls', difficulty: 'Daring', stars: 7, scene: 'atolls', waves: [['shark', 'shark', 'corsair'], ['bombketch', 'shark', 'privateer']], mechanics: ['spouts'], bonus: 1300, kraken: false, finale: false, bombs: null },
       { name: 'The Cape of Storms', difficulty: 'Fearsome', stars: 8, scene: 'cape', waves: [['ironclad', 'bombketch', 'corsair'], ['fireship', 'ironclad', 'fireship']], mechanics: ['rogue'], bonus: 1600, kraken: false, finale: false, bombs: null },
@@ -1370,9 +1773,9 @@ function ev(page, fn, arg = null) {
       `kraken rise: the Inkheart falls: the geysers stop (${seq.fall && seq.fall.geysers} -> ${seq.fall && seq.fall.after}), her skiff flees and is gone ${seq.times && seq.times.gone} s later, no feat, no capture; the Kraken still sleeps (${J({ fall: seq.fall, skiff: seq.skiff })})`);
     check(seq.times && seq.times.dread !== null && seq.times.gone !== null && seq.times.dread >= seq.times.gone - 0.01 && seq.times.dread <= 5.5 && near(seq.dreadFor, 4, 0.05) && seq.patch >= 0.3 && seq.hands === 3 && /stirs/i.test(seq.dreadBanner) && seq.music.includes('setScene:kraken') && seq.music.includes('setMusicPhase:0'),
       `kraken rise: once her crew are gone, ${seq.dreadFor} s of dread (4): the sea darkens, the drone (${J(seq.music)}), "${seq.dreadBanner}", the hull patched ${seq.patch} and ${seq.hands} more hands aboard (${J(seq.times)})`);
-    check(seq.rise && seq.rise.rising && seq.rise.dur === 6 && seq.rise.hp === 600 && /THE KRAKEN RISES!/.test(seq.rise.banner) && /Shoot its tentacles and its big eye!/.test(seq.rise.banner) && /Stink shot makes it let go!/.test(seq.rise.banner) && seq.rise.sound && seq.rise.checkpoint && seq.rise.checkpoint.level === 9 && seq.rise.checkpoint.gold === seq.rise.gold && seq.rise.dread > 0.25,
+    check(seq.rise && seq.rise.rising && seq.rise.dur === 6 && seq.rise.hp === KR.hp && /THE KRAKEN RISES!/.test(seq.rise.banner) && /Shoot its tentacles and its big eye!/.test(seq.rise.banner) && /Stink shot makes it let go!/.test(seq.rise.banner) && seq.rise.sound && seq.rise.checkpoint && seq.rise.checkpoint.level === 9 && seq.rise.checkpoint.gold === seq.rise.gold && seq.rise.dread > 0.25,
       `kraken rise: THE KRAKEN RISES! for 6 s with its how-to line ("${seq.rise && seq.rise.banner}"), the horn, the checkpoint taken with the plunder then (${J(seq.rise)})`);
-    check(seq.oneIn && seq.oneIn.rising === true && seq.skipped.rising === false && seq.skipped.mode !== 'idle' && seq.skipped.phase === 1 && seq.skipped.hp === 600,
+    check(seq.oneIn && seq.oneIn.rising === true && seq.skipped.rising === false && seq.skipped.mode !== 'idle' && seq.skipped.phase === 1 && seq.skipped.hp === KR.hp,
       `kraken rise: 1 s into the rise any key skips it: the fight is on at once (phase ${seq.skipped && seq.skipped.phase}, ${seq.skipped && seq.skipped.hp} hp) (${J({ oneIn: seq.oneIn, skipped: seq.skipped })})`);
     await closeV(ctx);
   });
@@ -1403,7 +1806,7 @@ function ev(page, fn, arg = null) {
         // (into phases 2 and 3 the way a broadside does it: a hit on a raised part takes the bar over the line)
         let crossed = null;
         if (n > 1) {
-          G.kraken.setHp(n === 2 ? 405 : 205);
+          G.kraken.setHp(n === 2 ? T.KR.n1 + 5 : T.KR.n2 + 5); // (just above the line: one hit takes it over)
           T.stepUntil(() => G.kraken.targets.length > 0, 20, () => {
             p.hp = p.maxHp;
             if (T.k().grabbed) G.kraken.cut(), G.kraken.cut(), G.kraken.cut();
@@ -1475,10 +1878,10 @@ function ev(page, fn, arg = null) {
         return { shown: T.shown('boss'), name: T.text('boss-name'), notches: T.shown('boss-notches'), marks, fill: r2(fill.getBoundingClientRect().width / barEl.width) };
       };
       out.full = await read();
-      G.kraken.setHp(450);
+      G.kraken.setHp(Math.round(T.KR.hp * 0.75));
       out.at450 = await read();
       // the last stand: its head comes up off your beam; FIRE! lights on that side and a broadside hits it
-      G.kraken.setHp(200);
+      G.kraken.setHp(T.KR.n2);
       T.stepUntil(() => { const h = T.k().head; return !!h && h.up; }, 8, () => (p.hp = p.maxHp));
       T.stepUntil(() => false, 1.2, () => (p.hp = p.maxHp));
       const head = T.k().head;
@@ -1505,7 +1908,7 @@ function ev(page, fn, arg = null) {
     check(!!bar && bar.full.shown && bar.full.name === 'THE KRAKEN' && bar.full.notches && marks.length === 2 && near(marks[0], 1 / 3, 0.02) && near(marks[1], 2 / 3, 0.02),
       `kraken fight: the boss bar reads THE KRAKEN with two notches at ${bar && J(bar.full.marks)} of its width (${J(bar && bar.full)})`);
     check(!!bar && near(bar.full.fill, 1, 0.02) && near(bar.at450.fill, 0.75, 0.02),
-      `kraken fight: the bar shows its hp: full at 600, ${bar && bar.at450.fill} at 450 (0.75)`);
+      `kraken fight: the bar shows its hp: full at ${KR.hp}, ${bar && bar.at450.fill} at ${Math.round(KR.hp * 0.75)} (0.75)`);
     check(!!bar && bar.light.target && bar.light.tag === 'FIRE!' && bar.light.wrappers.includes('head') && bar.volley.hp < bar.volley.hp0 && !bar.volley.pops.includes('RAKE!'),
       `kraken fight: its head up off your beam lights FIRE! on that side and a broadside aimed at it takes ${bar && Math.round(bar.volley.hp0 - bar.volley.hp)} hp off the bar, no RAKE! (${J(bar && { light: bar.light, volley: bar.volley })})`);
     check(!!bar && !bar.g.grabbed && bar.g.hint === "You can't board a sea monster!" && !bar.g.boarding,
@@ -1549,7 +1952,7 @@ function ev(page, fn, arg = null) {
       const r2 = (v) => Math.round(v * 100) / 100;
       if (!T.toFight()) return null;
       const p = G.player;
-      G.kraken.setHp(400);
+      G.kraken.setHp(T.KR.n1); // (phase 2: it grabs)
       // the time from the last release to each new grab, on the Kraken's own clock
       const gaps = [];
       // Stepped (your hull kept up) until the next grab; then real frames (the pops' rate fills up again: the words
@@ -1646,7 +2049,7 @@ function ev(page, fn, arg = null) {
       const G = window.__game;
       if (!T.toFight()) return null;
       const p = G.player;
-      G.kraken.setHp(400);
+      G.kraken.setHp(T.KR.n1); // (phase 2: it grabs)
       T.stepUntil(() => T.k().grabbed, 60, () => (p.hp = Math.max(p.hp, p.maxHp * 0.6)));
       if (!T.k().grabbed) return { none: true };
       // (the rise's banner goes, as it would have in the stepped seconds, so the shot shows the grab)
@@ -1764,8 +2167,8 @@ function ev(page, fn, arg = null) {
     });
     check(again.mode === 'playing' && again.level === 9 && again.gold === 700 && again.start === 300 && again.ships === 0 && again.hp && again.crew && J(again.loads) === '{"fire":4,"frost":4,"stink":4}',
       `kraken retry: Enter tries again from the Kraken: level 9, the plunder from the rise (${again.gold}), the level's own start kept (${again.start}), no ships, a full hull and crew, loads refilled (${J(again)})`);
-    check(!!again.rise && again.rise.rising && again.rise.dur === 3 && again.rise.hp === 600 && !!again.fight && again.fight.phase === 1 && again.fight.hp === 600,
-      `kraken retry: the Kraken rises again at once, the short rise (${again.rise && again.rise.dur} s), at full 600 hp (${J({ rise: again.rise, fight: again.fight })})`);
+    check(!!again.rise && again.rise.rising && again.rise.dur === 3 && again.rise.hp === KR.hp && !!again.fight && again.fight.phase === 1 && again.fight.hp === KR.hp,
+      `kraken retry: the Kraken rises again at once, the short rise (${again.rise && again.rise.dur} s), at full ${KR.hp} hp (${J({ rise: again.rise, fight: again.fight })})`);
     await closeV(ctx);
   });
 
@@ -1835,7 +2238,7 @@ function ev(page, fn, arg = null) {
         p.hp = p.maxHp;
         if (T.k().grabbed) G.kraken.cut(), G.kraken.cut(), G.kraken.cut();
       });
-      G.kraken.setHp(200);
+      G.kraken.setHp(T.KR.n2); // (the last stand)
       // until its head is up and 3 or more tentacles are up or warning
       T.stepUntil(() => { const k = T.k(); return !!k.head && k.head.up && k.tentacles.length >= 3; }, 20, () => {
         p.hp = p.maxHp;
@@ -1892,7 +2295,7 @@ function ev(page, fn, arg = null) {
       // 1. a grab left alone for its 4 s: the red flashes of the screen edge and the hull card
       if (!T.toFight()) return null;
       const p = G.player;
-      G.kraken.setHp(390);
+      G.kraken.setHp(T.KR.n1 - 10); // (phase 2: it grabs)
       T.stepUntil(() => T.k().grabbed, 45, () => (p.hp = p.maxHp));
       const flashes = [];
       const spies = [];
@@ -1991,7 +2394,7 @@ function ev(page, fn, arg = null) {
 
       // 4. the fight's last stand (its head always up): full sail straight at the head for 8 s
       if (!T.toFight()) return out;
-      G.kraken.setHp(150);
+      G.kraken.setHp(T.KR.n2 - 50); // (the last stand)
       const f = G.player;
       T.stepUntil(() => !!T.k().head && T.k().head.up, 15, () => {
         f.hp = f.maxHp;
@@ -2091,7 +2494,7 @@ function ev(page, fn, arg = null) {
         const G = window.__game;
         if (!T.toFight()) return null;
         const p = G.player;
-        G.kraken.setHp(395);
+        G.kraken.setHp(T.KR.n1 - 5); // (phase 2: it grabs)
         // (stepped until a tentacle's warning is 0.3 s from landing on you, then real frames through the grab)
         T.stepUntil(() => { const k = T.k(); return k.grabbed || k.tentacles.some((t) => t.state === 'warn' && t.grab && t.T - t.t < 0.8); }, 45, () => (p.hp = p.maxHp));
         T.watchPops();
@@ -2339,6 +2742,142 @@ function ev(page, fn, arg = null) {
         `seas cues ${w}x${h}: a rogue wave from ahead while raiders board you: its WAVE! arrow keeps off the "${r.strip}" strip and the ROGUE WAVE! banner (${r.hits} of ${r.frames} frames on one, the banner up in ${r.banners}) (${J(r.last)})`);
       await closeV(bc);
     }
+  });
+
+  // ------------------------------------------------------------------------------------------------ the journey
+  // The title once the Kraken Seas sail (SPEC3 §5.2, §6.6): Voyage III's three cards under their own heading, card 7
+  // locked with "Beat the Phantom Galleon"; the save migration (§10.3): progress at 6 with the legend feat (the Phantom
+  // taken) opens card 7 at load and saves it, without the feat nothing opens; the Maelstrom's Victory says "Sail on to
+  // the Kraken Seas" (with the teaser), the won shipyard sails on to the Turtle Atolls, and Enter starts level 7 with
+  // the voyage gold.
+  await section('voyage', async () => {
+    const title = async (store, label) => {
+      const { ctx, page: tp } = await openV({ label, store });
+      const r = await tp.evaluate(() => {
+        const grid = document.getElementById('level-cards');
+        return {
+          order: [...grid.children].map((el) => (el.matches('.act-head') ? `H:${el.textContent.trim()}` : el.matches('.level-card') ? `C${el.dataset.level}` : el.tagName)),
+          cards: [...grid.querySelectorAll('.level-card')].map((b) => ({
+            n: Number(b.dataset.level),
+            name: (b.querySelector('.lvl-name') || {}).textContent,
+            word: (b.querySelector('.diff-word') || {}).textContent,
+            lock: ((b.querySelector('.lvl-lock') || {}).textContent || '').trim(),
+            locked: b.getAttribute('aria-disabled') === 'true',
+          })),
+          unlocked: window.__game.state.unlocked,
+          saved: localStorage.getItem('pirates-ahoy-unlocked'),
+        };
+      });
+      await closeV(ctx);
+      return r;
+    };
+    const fresh = await title({ 'pirates-ahoy-tutorial-done': '1' }, 'voyage title');
+    const three = fresh.cards.slice(6);
+    check(fresh.cards.length === 9 && fresh.order.slice(-4).join(' | ') === 'H:Voyage III · The Kraken Seas | C7 | C8 | C9' &&
+      three.map((c) => `${c.name}/${c.word}`).join() === "The Turtle Atolls/Daring,The Cape of Storms/Fearsome,The Kraken's Deep/Mythic" &&
+      three.every((c) => c.locked) && three[0].lock === 'Beat the Phantom Galleon' && three[1].lock === 'Locked' && three[2].lock === 'Locked',
+      `voyage: the title's cards 7-9 sit under "Voyage III · The Kraken Seas", locked, card 7 reading "${three[0] && three[0].lock}" (${J({ order: fresh.order, three })})`);
+    const FEATS = (legend) => JSON.stringify({ captures: 3, boardings: 2, rakes: 1, crits: 0, legend, prizes: {} });
+    const mig1 = await title({ 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-feats': FEATS(1) }, 'voyage migration');
+    const mig0 = await title({ 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-unlocked': '6', 'pirates-ahoy-feats': FEATS(0) }, 'voyage no migration');
+    const opened = (r) => r.cards.map((c) => (c.locked ? 'L' : 'P')).join('');
+    check(mig1.unlocked === 7 && mig1.saved === '7' && opened(mig1) === 'PPPPPPPLL' && mig1.cards[6].lock === 'Play',
+      `voyage: a save from before the Kraken Seas with the Far Seas won (6 open, the legend feat) opens card 7 at load and saves it (${J({ unlocked: mig1.unlocked, saved: mig1.saved, cards: opened(mig1), lock7: mig1.cards[6].lock })})`);
+    check(mig0.unlocked === 6 && mig0.saved === '6' && opened(mig0) === 'PPPPPPLLL' && mig0.cards[6].lock === 'Beat the Phantom Galleon',
+      `voyage: without the legend feat (the Phantom not taken yet) it stays at 6, card 7 "${mig0.cards[6].lock}" (${J({ unlocked: mig0.unlocked, saved: mig0.saved, cards: opened(mig0) })})`);
+
+    // The Maelstrom won (the Phantom Galleon taken) with 400 gold of voyage plunder so far.
+    const { ctx, page: wp } = await openV({ label: 'voyage maelstrom', store: { ...STORE, 'pirates-ahoy-unlocked': '6' } });
+    const winL6 = () => ev(wp, async () => {
+      const G = window.__game;
+      T.level(6);
+      G.state.gold = 400;
+      G.state.goldAtLevelStart = 400;
+      for (let w = 0; w < 6 && G.state.mode === 'playing'; w++) {
+        for (const e of G.enemies) {
+          if (!G.fighting(e)) continue;
+          if (e.type.ghost) {
+            e.rise = 0;
+            G.capture.take(e); // (she can't be sunk: the last blow is a capture)
+          } else G.damage(e, 9999);
+        }
+        T.steps(1, () => G.state.mode === 'playing');
+      }
+      T.steps(10, () => G.state.mode === 'playing');
+      await T.redraw();
+      const { ACT3_TEASER } = await import(new URL('src/voyage.js', location.href).href);
+      const panel = document.querySelector('#won-screen .panel') || document.getElementById('won-screen');
+      const first = [...panel.querySelectorAll('button')].find((b) => !b.closest('.hidden') && b.getClientRects().length);
+      return {
+        mode: G.state.mode,
+        gold: G.state.gold,
+        text: T.text('won-text'),
+        teaser: ACT3_TEASER,
+        act2: T.shown('act2-btn'),
+        act2Text: T.text('act2-btn'),
+        first: first && first.id,
+        hint: T.shown('won-hint') ? T.text('won-hint') : null,
+        unlocked: G.state.unlocked,
+        saved: localStorage.getItem('pirates-ahoy-unlocked'),
+      };
+    });
+    const w1 = await winL6();
+    check(w1.mode === 'won' && w1.text.endsWith(` ${w1.teaser}`) && w1.act2 && w1.act2Text === 'Sail on to the Kraken Seas' && w1.first === 'act2-btn' && !!w1.hint && /Enter/.test(w1.hint) && w1.unlocked === 7 && w1.saved === '7' && w1.gold > 400,
+      `voyage: the Maelstrom's Victory ends with the teaser ("${w1.teaser}"), "${w1.act2Text}" is its first button, a hint says Enter sails on, level 7 opens and is saved (${J(w1)})`);
+    const dock = await wp.evaluate(() => {
+      const G = window.__game;
+      G.dock.open('won');
+      const exits = [...document.querySelectorAll('#dock-exits button')].map((b) => b.textContent.trim()).join(' | ');
+      return { from: G.dock.from, exits };
+    });
+    check(dock.exits === 'Set sail for The Turtle Atolls | Back to the title', `voyage: the won shipyard after the Maelstrom sails on: "${dock.exits}"`);
+    const w2 = await winL6();
+    await wp.keyboard.press('Enter');
+    await wp.waitForFunction(() => window.__game.state.mode === 'playing', null, { timeout: 60000 }).catch(() => {});
+    const s2 = await wp.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level, gold: window.__game.state.gold, atStart: window.__game.state.goldAtLevelStart, name: window.__game.LEVELS[window.__game.state.level - 1].env.meta.name }));
+    check(w2.mode === 'won' && s2.mode === 'playing' && s2.level === 7 && s2.name === 'The Turtle Atolls' && s2.gold === w2.gold && s2.atStart === w2.gold,
+      `voyage: Enter on the Maelstrom's Victory sets sail for the Turtle Atolls with the voyage gold (${J({ ...s2, wonGold: w2.gold })})`);
+    await closeV(ctx);
+  });
+
+  // ------------------------------------------------------------------------------------------------ bot v3
+  // Bot v3 (SPEC3 §13.3, agent 3B's balance bot; the late-game ship of §5.9): one seeded run of each Voyage III level
+  // with special shot and one with none (the recipes not owned). Each level is cleared within 900 s of simulated time
+  // (a second try allowed: a lost Kraken fight tries again from the Kraken, as a player would), the bot is never stuck
+  // (60 s without any ship, wave or Kraken bar changing), the Kraken's fight lasts at most 240 s, and the ship never ends
+  // up inside land. (The order L7 < L8 < L9 and the fight's 120-180 s band are Stage 3's 24-seed medians, not CI checks:
+  // §5.9.) Each run reseeds Math.random and the combat dice, so it is the same run every time on the same code.
+  await section('bot', async () => {
+    const { ctx, page: bp } = await openV({ label: 'bot', width: 640, height: 360 });
+    const SPECIAL = await bp.evaluate(async () => JSON.parse(JSON.stringify((await import(new URL('src/specials.js', location.href).href)).SPECIAL)));
+    await bp.evaluate(() => (window.__game.state.mode = 'paused'));
+    const won = (r) => r.result === 'levelDone' || r.result === 'won';
+    for (const specials of [true, false]) {
+      for (const n of [7, 8, 9]) {
+        const tries = [];
+        let r = null;
+        for (let attempt = 1; attempt <= 2; attempt++) {
+          const retry = attempt === 2 && r && r.kraken && r.kraken.checkpoint && r.result === 'over' ? 'kraken' : null;
+          r = await bp.evaluate(botV3, { n, profile: 'late', specials, strategy: 'circle', seed: 1 + (attempt - 1) * 1000, maxT: 900, SPECIAL, retry });
+          tries.push(r);
+          if (won(r)) break;
+        }
+        const last = tries[tries.length - 1];
+        const fight = tries.map((x) => x.kraken && x.kraken.fight).filter((x) => x !== null && x !== undefined);
+        const sum = tries.map((x) => ({ result: x.result, time: x.time, dmg: x.damageTaken, hpLeft: x.hpLeft, noProgress: Math.round(x.noProgress), stuck: x.stuck, spent: x.spent, left: x.left, kraken: x.kraken && { fight: x.kraken.fight, done: x.kraken.done, hpLeft: x.kraken.hpLeft } }));
+        console.log(`      bot L${n} ${specials ? 'specials' : 'no specials'}: ${J(sum)}`);
+        const spent = tries.reduce((k, x) => k + (x.spent ? x.spent.fire + x.spent.frost + x.spent.stink : 0), 0);
+        check(won(last) && tries.every((x) => x.time <= 900) && (specials ? spent > 0 : spent === 0 && J(tries[0].loads) === '{"fire":0,"frost":0,"stink":0}'),
+          `bot: the late-game ship ${specials ? 'with special shot' : 'with no special shot (no recipe owned)'} clears level ${n} within 900 s, a second try allowed (${tries.map((x) => `${x.result} ${x.time} s`).join(' > ')}; ${spent} special loads fired)`);
+        check(tries.every((x) => x.noProgress < 60 && x.stuck === 0),
+          `bot: level ${n} ${specials ? 'with specials' : 'without'}: never 60 s without progress (longest ${Math.max(...tries.map((x) => Math.round(x.noProgress)))} s), never inside land (${tries.reduce((k, x) => k + x.stuck, 0)} frames)`);
+        if (n === 9) {
+          check(fight.length > 0 && fight.every((f) => f <= 240) && !!last.kraken && last.kraken.done,
+            `bot: the Kraken ${specials ? 'with specials' : 'without'} is driven off, each fight within 240 s (${J(fight)} s)`);
+        }
+      }
+    }
+    await closeV(ctx);
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

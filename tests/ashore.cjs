@@ -1,4 +1,4 @@
-// Ashore with the Kraken Seas (SPEC3 §13.2, tests/ashore.cjs): serves the game with ?kraken=1, drives Sparrow's
+// Ashore with the Kraken Seas (SPEC3 §13.2, tests/ashore.cjs): serves the game as everyone gets it, drives Sparrow's
 // Floating Island in headless Chromium through the real controls and the window.__game test API, and checks
 // - bar:     the places bar of six (shipyard, tailor, tavern, quiz, builder, ship) at the 7 town sizes: 44 × 44
 //            icon-only buttons with their aria-labels below 760 px wide and on short landscape, between the
@@ -47,12 +47,9 @@
 // seeded); keys go through the game's own handlers.
 // Run with `node tests/ashore.cjs` (ASHORE_ONLY=bar,keys,walking,quiz,quiztaps,quizrec,build,perks,powder,
 // tabs,layout,quizfit,quizmap,draws,rays runs some sections; ASHORE_ROOT serves another copy of the game;
-// ASHORE_QUERY replaces "?quality=low&kraken=1"; ASHORE_PENDING=<tags> reports the tagged checks that wait for
-// later work as PEND instead of FAIL ("all" for every tagged check): gift, bakery, lighthouse, governor,
-// tabs-island, tabs-quiz
-// wait for main.js (2A / 3A: the island perks, the Governor's coat feat, the -island / -quiz two-tab merge), and
-// quiz-feats too (3A: feats.quiz / feats.stars raised from the quiz record, for Polly's two quiz trophies); mouth
-// waits for town.js (a captain wedged beside a rope bridge's mouth by someone on it, 3D).
+// ASHORE_QUERY replaces "?quality=low" (before the Kraken Seas sailed for everyone: "?quality=low&kraken=1").
+// (The checks once tagged as waiting for later work, gift, bakery, lighthouse, governor, tabs-island, tabs-quiz,
+// quiz-feats and mouth, check work that has landed: they are plain checks now.)
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -61,27 +58,17 @@ const { serve } = require('./server.cjs');
 const ROOT = process.env.ASHORE_ROOT ? path.resolve(process.env.ASHORE_ROOT) : path.join(__dirname, '..');
 const OUT = process.env.SCREENSHOT_DIR || path.join(ROOT, 'tests', 'screenshots');
 const ONLY = (process.env.ASHORE_ONLY || '').split(',').filter(Boolean);
-const PENDING = new Set((process.env.ASHORE_PENDING || '').split(',').filter(Boolean));
-const QUERY = process.env.ASHORE_QUERY || '?quality=low&kraken=1';
+const QUERY = process.env.ASHORE_QUERY || '?quality=low';
 const FIXTURE = path.join(__dirname, 'fixtures', 'sparrow-walk.json');
 const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader'];
 const SCREENSHOT_TIMEOUT = 120000;
 
 let failures = 0;
 let passes = 0;
-let pending = 0;
-// need: the later work a check waits for (ASHORE_PENDING lists the ones not landed yet)
-function check(cond, msg, need = null) {
-  if (cond === true) {
-    console.log(`PASS  ${msg}`);
-    passes++;
-  } else if (need && (PENDING.has(need) || PENDING.has('all'))) {
-    console.log(`PEND  [${need}] ${msg}`);
-    pending++;
-  } else {
-    console.log(`FAIL  ${need ? `[${need}] ` : ''}${msg}`);
-    failures++;
-  }
+function check(cond, msg) {
+  console.log(`${cond === true ? 'PASS' : 'FAIL'}  ${msg}`);
+  if (cond === true) passes++;
+  else failures++;
 }
 const J = (v) => JSON.stringify(v);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -298,6 +285,9 @@ function installHelpers() {
     } catch (err) {
       check(false, `${name}: the section crashed: ${err && err.stack ? err.stack : err}`);
     }
+    // (a section that crashed may leave its pages open, rendering on behind the next sections: every page here
+    // belongs to one section, so whatever is still open goes now)
+    for (const c of browser.contexts()) await c.close().catch(() => {});
     console.log(`     (${name}: ${((Date.now() - t0) / 1000).toFixed(1)} s)`);
   }
   // the town's layout probes (as tests/town.cjs): a control is fine when on screen, ≥ 44 px, uncovered, its label
@@ -844,7 +834,7 @@ function installHelpers() {
     check(setup.drawn === 8 && setup.npcs.join() === 'barnacle,bess' && setup.links.join() === 'plazaGarden,plazaS1,plazaYard,tavernTower', `walking: four Manors on the island record: 8 villagers drawn on dock open, Bess and Barnacle in the town, the four rope bridges (${J(setup)})`);
     const bad = runs.filter((r) => !r.ok || r.stuck > 1);
     const worst = Math.max(...runs.map((r) => r.stuck));
-    check(runs.length === 240 && bad.length === 0 && worst <= 1, `walking (b): a held key, a held stick and a tap-to-walk cross all four rope bridges both ways at 10 moments, never stalled over 1 s: ${runs.filter((r) => r.ok).length}/${runs.length} across, longest stall ${worst} s, slowest ${Math.max(...runs.map((r) => r.secs))} s${bad.length ? ' -> ' + J(bad.slice(0, 6)) : ''}`, 'mouth');
+    check(runs.length === 240 && bad.length === 0 && worst <= 1, `walking (b): a held key, a held stick and a tap-to-walk cross all four rope bridges both ways at 10 moments, never stalled over 1 s: ${runs.filter((r) => r.ok).length}/${runs.length} across, longest stall ${worst} s, slowest ${Math.max(...runs.map((r) => r.secs))} s${bad.length ? ' -> ' + J(bad.slice(0, 6)) : ''}`);
     check(porter.every((r) => r !== null && r < 6), `walking (c): the porter check: W held from the stalls reaches the pier past the porter every time (${J(porter)} s)`);
     check(rnd.worst <= 1, `walking (a): 30 s of random keys, stick drags and taps: never stuck behind a person for more than 1 s (longest ${rnd.worst} s${rnd.worst > 1 ? ' ' + J(rnd.at) : ''})`);
     check(rnd.sampled >= 120 && rnd.nStops === 0, `walking (d): over ${rnd.sampled} s no villager stops on a bridge, in a place circle, a doorway or at the gangplank (${rnd.nStops} stops${rnd.nStops ? ': ' + J(rnd.stops) : ''}; ${rnd.waits} samples of LOOK-2 waits for the captain there, not counted)`);
@@ -1252,7 +1242,7 @@ function installHelpers() {
       `build: every plot to tier 3 for 11,800 gold: "Fully built" everywhere, the ranks ${J(built.ranks)}, "${built.note}", 8 villagers drawn`);
     await all.page.evaluate(() => { window.__game.town.back(); window.__game.town.open('tailor'); });
     const coat1 = await all.page.evaluate(() => { const b = document.querySelector('[data-item="coat.governor"]'); return b && { disabled: b.getAttribute('aria-disabled'), text: T.text(b) }; });
-    check(coat0 === 'true' && coat1 && coat1.disabled === 'false', `build: the Governor's coat at Polly's: locked before (${coat0}), unlocked as the Pirate Capital (${J(coat1)})`, 'governor');
+    check(coat0 === 'true' && coat1 && coat1.disabled === 'false', `build: the Governor's coat at Polly's: locked before (${coat0}), unlocked as the Pirate Capital (${J(coat1)})`);
     await all.page.evaluate(() => window.__game.town.back());
     // island-tier3.png: the built-up west side (the Bakery, the Flower Park, the School, the Market) from the garden
     await all.page.evaluate(() => { const t = T.town(); t.enter({ ...(t.walk.snap(-14.4, -7.6, 3) || { x: -14.4, z: -7.6 }), h: -Math.PI / 2 - 0.25 }); t.recenter(); window.__game.town.simulate(3, { x: 0, z: 0 }); });
@@ -1294,7 +1284,7 @@ function installHelpers() {
       G.bombs.length = 0;
       return { T: T0 };
     });
-    check(Math.abs(bomb.T - 3.3) < 1e-6, `perks: the Lighthouse at tier 3: a lava bomb's 2.4 s warning lasts ${bomb.T} s (+0.9)`, 'lighthouse');
+    check(Math.abs(bomb.T - 3.3) < 1e-6, `perks: the Lighthouse at tier 3: a lava bomb's 2.4 s warning lasts ${bomb.T} s (+0.9)`);
     // the Bakery: the crew patches 55% of the hull when reinforcements arrive
     const patch = await page.evaluate(() => {
       const G = window.__game;
@@ -1308,7 +1298,7 @@ function installHelpers() {
       return { wave: G.state.wave, hp: p.hp, max: p.maxHp, banner: (document.getElementById('banner') || {}).textContent || '' };
     });
     const wantHp = Math.min(patch.max, 10 + patch.max * 0.55);
-    check(patch.wave === 1 && Math.abs(patch.hp - wantHp) < 0.5 && /Your crew patches 55% of the hull/.test(patch.banner), `perks: the Bakery at tier 2: reinforcements arrive and the crew patches 55% of the hull (10 → ${patch.hp.toFixed(1)} of ${patch.max}; "${patch.banner.replace(/\s+/g, ' ').trim()}")`, 'bakery');
+    check(patch.wave === 1 && Math.abs(patch.hp - wantHp) < 0.5 && /Your crew patches 55% of the hull/.test(patch.banner), `perks: the Bakery at tier 2: reinforcements arrive and the crew patches 55% of the hull (10 → ${patch.hp.toFixed(1)} of ${patch.max}; "${patch.banner.replace(/\s+/g, ' ').trim()}")`);
     // the level-cleared card: the villagers' gift (24 villagers × 5 × the Flower Park's 2 = 240, the cap) and the
     // Market Hall's 10% of the level's gold, at most 300
     const card = await page.evaluate(() => {
@@ -1322,7 +1312,7 @@ function installHelpers() {
       for (let i = 0; i < 120 * 10 && G.state.mode === 'playing'; i++) G.step(1 / 120);
       return { mode: G.state.mode, summary: T.text('level-summary') };
     });
-    check(card.mode === 'levelDone' && /Villagers' gift \+240/.test(card.summary) && /Market Hall \+10% \+300/.test(card.summary), `perks: the level-cleared card shows "Villagers' gift +240" and "Market Hall +10% +300" (capped) (${card.mode}: "${card.summary.slice(0, 200)}")`, 'gift');
+    check(card.mode === 'levelDone' && /Villagers' gift \+240/.test(card.summary) && /Market Hall \+10% \+300/.test(card.summary), `perks: the level-cleared card shows "Villagers' gift +240" and "Market Hall +10% +300" (capped) (${card.mode}: "${card.summary.slice(0, 200)}")`);
     await ctx.close();
   });
 
@@ -1385,8 +1375,8 @@ function installHelpers() {
     await frames(A, 3);
     const stored = JSON.parse(await A.evaluate(() => T.stored('pirates-ahoy-island')));
     const a1 = await A.evaluate(() => window.__game.island.config.t);
-    check(b1.t.homeA === 1 && b1.plot === 1, `tabs: a Cottage built in one tab shows in the other (record ${J(b1.t.homeA)}, the 3D plot at tier ${b1.plot})`, 'tabs-island');
-    check(stored.t.homeA === 1 && stored.t.homeB === 1 && a1.homeA === 1 && a1.homeB === 1, `tabs: the other tab's build keeps the first tab's: tiers never go down (saved ${J(stored.t)}, first tab ${J(a1)})`, 'tabs-island');
+    check(b1.t.homeA === 1 && b1.plot === 1, `tabs: a Cottage built in one tab shows in the other (record ${J(b1.t.homeA)}, the 3D plot at tier ${b1.plot})`);
+    check(stored.t.homeA === 1 && stored.t.homeB === 1 && a1.homeA === 1 && a1.homeB === 1, `tabs: the other tab's build keeps the first tab's: tiers never go down (saved ${J(stored.t)}, first tab ${J(a1)})`);
     // A buys Fire shot; B sees it, and B's Frost keeps A's Fire
     await A.evaluate(() => { window.__game.town.back(); window.__game.town.open('tavern'); window.__game.town.api.tavern.powder('fire'); });
     await frames(B, 3);
@@ -1402,8 +1392,8 @@ function installHelpers() {
     await B.evaluate(() => { const q = T.q(); q.start(0, 4); for (let i = 0; i < 5; i++) { q.answer((q.round.question.right + 1) % q.round.question.options.length); q.next(); } });
     await frames(A, 3);
     const qs = JSON.parse(await A.evaluate(() => T.stored('pirates-ahoy-quiz')));
-    check(qb.stars[0] === 1 && /1 of 3 stars/.test(qb.isles[0].words) && !qb.isles[1].disabled, `tabs: a star won in one tab shows in the other (${J(qb.stars)}; ${qb.isles[0].words})`, 'tabs-quiz');
-    check(qs.stars[0] === 1 && qs.paid[0] === 1, `tabs: the other tab's round keeps the first tab's star and its gold paid: stars never go down (saved ${J(qs.stars)}, paid ${J(qs.paid)})`, 'tabs-quiz');
+    check(qb.stars[0] === 1 && /1 of 3 stars/.test(qb.isles[0].words) && !qb.isles[1].disabled, `tabs: a star won in one tab shows in the other (${J(qb.stars)}; ${qb.isles[0].words})`);
+    check(qs.stars[0] === 1 && qs.paid[0] === 1, `tabs: the other tab's round keeps the first tab's star and its gold paid: stars never go down (saved ${J(qs.stars)}, paid ${J(qs.paid)})`);
     await ctx.close();
   });
 
@@ -1659,7 +1649,7 @@ function installHelpers() {
       const p27 = await prize();
       check(p27.join('|') === `${MORTAR}|${MACAW}`, `quizmap: after a reload the map says both trophies were won (${J(p27)})`);
       const w27 = await wardrobe();
-      check(w0.hat === 'true' && w0.pet === 'true' && w27.hat === 'false' && w27.pet === 'false', `quizmap: Polly's: the mortarboard and the Rainbow macaw locked before (${J(w0)}), won after the 9 islands and 27 stars and a reload (${J(w27)})`, 'quiz-feats');
+      check(w0.hat === 'true' && w0.pet === 'true' && w27.hat === 'false' && w27.pet === 'false', `quizmap: Polly's: the mortarboard and the Rainbow macaw locked before (${J(w0)}), won after the 9 islands and 27 stars and a reload (${J(w27)})`);
       await ctx.close();
     }
   });
@@ -1836,7 +1826,7 @@ function installHelpers() {
   check(errors.length === 0, `no page errors (${errors.length})`);
   await browser.close();
   server.close();
-  console.log(`\nashore.cjs: ${passes} passed, ${failures} failed${pending ? `, ${pending} pending (${[...PENDING].join(',')})` : ''}`);
+  console.log(`\nashore.cjs: ${passes} passed, ${failures} failed`);
   process.exit(failures ? 1 : 0);
 })().catch((err) => {
   console.error(err);

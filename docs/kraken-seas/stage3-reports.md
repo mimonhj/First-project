@@ -269,3 +269,154 @@ Screenshots I looked at (Read tool), both sizes unless noted:
 - The villager bridge exemption in sparrow.js stays: a documented deviation from SPEC3 §8.4. Dropping it is safe by the A/B (all walking checks green) but brings no visible gain; the variant is .dock-harness/kraken3/S2-3D/exp/sparrow-noexempt.js if the coordinator wants it later.
 - walking (a) still measures 0.97 s against its 1 s limit, the same as before my changes (the hotfix noted this too). It is deterministic, so it doesn't flake, but it has little headroom.
 - Nothing is committed (as instructed). Progress log: /home/user/First-project/.dock-harness/kraken3/S2-3D/PROGRESS.md (marked DONE). Published copies: .dock-harness/kraken3/S2-3D/published/.
+
+## Round S3
+
+**Coordinator test run:** 3E's files (`src/env/deep.js`, `fx.css`, `src/ships.js`) and its `main.js` hook were tested together with the go-live, below.
+
+### 3E art and sound polish
+
+I played levels 7-9 on a flipped mirror (WITH_KRAKEN forced true) at 390x844 touch and 1280x720 and looked at the screenshots. I fixed what was wrong in my own files and published three of them atomically (copy to a temp name, then mv): src/env/deep.js, fx.css and src/ships.js. The other files I own needed no change.
+
+- **deep.js:** during the Kraken's dread, the two violet eye-fires in the lair's octopus-head rock now burn low. Before, they glowed right behind the rising Kraken and read as a second monster.
+- **fx.css:** on portrait phones, the Kraken and special-shot pop words are now 29 px instead of 34 px. When a grab, a warning and a slam came together, GRABBED! TENTACLE! SLAM! stacked up and covered the ship.
+- **ships.js:** two new exports, crateBeacon() and crateMarkScale(), for the powder crates. They do nothing until main.js calls them, which is a hook request.
+
+The crate and special-shot fixes need that main.js hook, because both live in main.js. On a phone a crate is about 8x17 px at 80-90 u, and when it is straight ahead your own sails hide it. The hook adds a soft orange light pillar over each crate and keeps its diamond the same size on screen far off. It also adds the ember, snowflake and green-fume trails behind Fire, Frost and Stink balls; SPEC3 §2.7 asks for these trails but main.js has none. I tested the hook on a patched mirror (mkc).
+
+Draw-call audit against §14: every budget is met.
+
+LIVE-2: no shader compiles mid-play when the first L7 waterspout or the L9 dread bubbles appear (3A's warmShaders works), so nothing was needed in my files.
+
+Audio: I measured the new sounds against the recorded and synthesised music. They are balanced, so audio.js is unchanged.
+
+Without ?kraken=1 the game is unchanged: the HEAD versions of smoke and battle (draws and the kraken-live sections) pass on an unflipped mirror that has my files. No gameplay numbers were touched.
+
+**Files:** src/env/deep.js, fx.css, src/ships.js
+
+**Brief, item by item**
+
+- Played L7-9 on the flipped mirror at 390x844 touch and 1280x720 and looked at the screenshots: level starts, crates at 90/60/32 u, Fire/Frost/Stink in flight and on ships, every new ship at its beam and far off, spouts forming and full, RAM wind-up, rogue wave (warning, near, crest, past), lit fire ship, mortar ring, geyser and ink rings, and the Kraken's dread, rise, Hunt, Fury, Last Stand, grab and dawn. Shots in .dock-harness/kraken3/S3-3E/shots/ (prefixes L*, c-, t-, f-; subfolders v3, v3g, v3c, v3d). Montages in the scratchpad's kraken/build3/S3-3E/.
+- Crates small at long range: done in ships.js (crateBeacon: a 1-call light pillar that fades upward; crateMarkScale: the diamond and pillar grow beyond 34 u, up to 2.6x). It is wired by the main.js hook request. Checked with screenshots on mkc at phone and desktop, L7 and L9: the crate now reads at 90 u and over your own sails when dead ahead.
+- Special shot readability: the balls already read (flaming ball, spiky frost ball, stinkpot). The §2.7 trails were missing in main.js, so they are part of the hook request (frame()-time ambient particles). Checked with screenshots t-L7-phone-shot-* and f-L7-desk-shot-*.
+- The Kraken's look in every phase: done in deep.js (LAIR_DIM: the lair's eye glows ×0.15 and its eye flames ×0.4, eased with the dread so nothing flashes). Before, it glowed behind the rising Kraken like a second monster. Checked in shots/v3/kraken-rise.png and f-L9-desk/phone-k-*. The phases themselves read well at both sizes.
+- Phone pop clutter in the Kraken fight (GRABBED!/TENTACLE!/SLAM! covering the ship): done in fx.css. Portrait-only rule: fire, frost, stink and kraken pops 29 px, KA-BOOM! 34, BULLSEYE! 33, never under the 24 px floor. Checked in shots/v3g/kraken-grab-390x844.png and with voyage3 kraken-calm-pops (0 overlaps).
+- New ships on a phone: all readable (Shark Raider fin sail, Iron Turtle shell, Bomb Ketch mustard hull with mortar, fire ship's red ring and flames once lit, Squid Skiff, Inkheart). No change needed.
+- Env seas at their busiest: spouts, rogue wave (the crest ducks under the camera, the ship stays visible on a phone), geysers, slicks and jellyfish all read. No change needed in atolls.js or cape.js.
+- Sound balance: measured offline (logs/alevels.log, details in api_notes). Balanced, so audio.js is unchanged. tests/audio.cjs passes 50/0 on mk, and audio.js and the RECORDED files are untouched.
+- LIVE-2: checked on mk with tools/live2.cjs. When the first L7 spout and the L9 dread appear, no new shader program compiles (only 'ship:hole', which is dynamic and already existed in Act I/II). The warm-up works, so nothing was needed in my files. Frame times under the machine's load (median 733-891 ms) are too noisy to compare.
+- Draw-call audit against §14 (?quality=low, 1280x720): all met. Numbers are in verification.
+- Published atomically (cp to a temp name, then mv), each after its checks: src/ships.js and src/env/deep.js at 12:51:46 UTC, fx.css at 13:07:50 UTC. Copies are in .dock-harness/kraken3/S3-3E/published/.
+
+**API notes**
+
+ships.js (new exports; nothing calls them until the main.js hook lands):
+- `crateBeacon()` returns a new THREE.Mesh named 'crate-beacon'. It is a powder-orange open cylinder (radius 0.24 at the top, 0.56 at the foot; height 11, standing from y 0.5), with vertex alpha 0.78 at the foot fading to 0 at the top. It is noOutline, transparent, does not write depth, renderOrder 3, and costs 1 draw call. The geometry and the 'ship:crate-beacon' material are built on the first call (so three.js uuids are rolled only on Voyage III levels), shared, and never disposed.
+- `crateMarkScale(d)` returns clamp(d / 34, 1, 2.6), or 1 for a non-finite value.
+
+deep.js: the internal constant LAIR_DIM = { glow: 0.85, flame: 0.6 }. The glow shader gets an `aDim` attribute and the flame shader uses aFl.w (it was unused). Both shaders get a `uDread` uniform, set to kd every frame. The env API is unchanged.
+
+fx.css: one new rule, `@media (max-width: 520px) and (min-height: 421px)`. It sets .pop-fire, .pop-frost and .pop-stink to 29px, .pop-fire.pop-kaboom to 34px, .pop-kraken to 29px and .pop-kraken.pop-eye to 33px.
+
+Audio levels (momentary max, 0 u; offline renders, linear): cannon -16.5, hit -23.1, crit -19.9, crunch -20.5, bombBoom -14.0, thunder -11.6; ignite -20.4, freeze -19.7, stink -18.1, sizzle -20.8, crackle -27.3 (a loop), blast -14.1, clang -20.4, ram -17.0, mortar -14.0, fuse -18.1, spout -22.7, horn -18.0, rogue -14.5, surf -20.9, ink -19.2, krakenRise -10.0 (played from about 40 u away, -7.8 dB, so about -17.8), slam -17.1, grab -19.3, gurgle -19.1, sneeze -15.2, tentacle -20.7, geyser -18.7, crate -23.1, bell -22.0, bonk -26.0, squawk -24.1, build -20.7. Music, integrated: menu (recorded) -28.5, dock (recorded) -27.9, europe (recorded) -28.8, volcano (recorded) -30.2, atolls -27.8, cape -27.8, deep -29.7, Kraken theme -27.1 to -27.2, dread drone -31.9.
+
+For 3A (LIVE-2): warmShaders() covers the spout and bubble programs; nothing more is needed in 3E files.
+
+**Hook requests raised**
+
+- src/main.js (coordinator or 3A, at the flip). The exact unified diff against the current repo main.js is in /home/user/First-project/.dock-harness/kraken3/S3-3E/hook-main.diff (70 lines). A patched copy that was tested is mkc/src/main.js. Changes: (1) the ships.js import line gains `crateBeacon, crateMarkScale`. (2) In placeCrates(): `const beam = crateBeacon(); g.add(keg, gem, ring, beam);` and `beam` added to the crates.push record. (3) In syncCrates(), before the gem's y: `const far = crateMarkScale(camera.position.distanceTo(c.mesh.position)); c.gem.scale.setScalar(far); c.beam.scale.set(far, 1, far);` and the gem's y becomes `2.3 + 1.1 * (far - 1) + (bob)`. (4) A new SHOT_TRAIL table and trailShots(t) placed just before syncCrates: every 0.04 s of visual time it spawns one ambient particle at each Fire, Frost or Stink ball (glow embers 0xffb020/0xff5a1a, glow flakes 0xffffff/0xbfe8ff, puff fumes 0x8bc34a/0x5a8f2e). It is called as `trailShots(t);` inside frame()'s `if (WITH_KRAKEN) { ... if (!paused) { prebuildStep(); hazardCues(); trailShots(t); } }`. Why: on a phone a crate is about 8 px wide at 80-90 u and is hidden behind your own sails when it is dead ahead (shots L7-phone-crate80.png, c-/t-/f-*crate*), and SPEC3 §2.7's shot trails are missing. Cost: +1 draw call per crate (voyage3 busy on mkc: L7 230 to 232 settled). The trails use Math.random only in frame(), never in step(), so stepped tests and determinism are untouched. Live game: placeCrates returns early without WITH_KRAKEN, trailShots sits inside the WITH_KRAKEN block, and special balls exist only with WITH_KRAKEN.
+- tests (3C, optional): after the hook, a voyage3 check that each uncollected crate has a visible 'crate-beacon' child and that its diamond scale is greater than 1 when the camera is more than 40 u away.
+
+**Live game unchanged**
+
+None of my changes runs without WITH_KRAKEN.
+- **ships.js:** only gains two exports. They build nothing at import and are called by nobody until the main.js hook lands, and that hook sits behind WITH_KRAKEN.
+- **deep.js:** builds only when level 9 starts, and level 9 exists only with WITH_KRAKEN. At import it adds one constant and changed shader strings.
+- **fx.css:** the new rule only styles the .pop-fire, .pop-frost, .pop-stink and .pop-kraken classes, which pops get only from special shots and the Kraken.
+
+Proof: on the unflipped mirror m0 (my files, HEAD versions of the tests), tests/smoke.cjs passes 94/0 and battle draws,kraken-live,kraken-finale-live passes 16/0. The Act I/II level-start draw calls equal today's baselines.
+
+**Verification**
+
+Suites and probes I ran (one browser job at a time, under the coordinator's load):
+
+**Flipped mirror mk** (working tree + my dev files + WITH_KRAKEN forced true; 3C's published tests):
+- VOYAGE3_ONLY=starts,busy,kraken-look: 23 passed, 0 failed.
+  - Starts: 108 / 116 / 141 (≤ 310).
+  - Busiest: L7 180-232 (230 settled), boarding 247-274; L8 141-249, boarding 246-305; L9 191-233, boarding 245-260 (≤ 450). statusfx 5 (≤ 8).
+  - Kraken last stand: 125-137 calls; the Kraken itself 12 (≤ 30); 0 warning rings (≤ 4).
+- VOYAGE3_ONLY=deep,kraken-rise: 11 passed, 0 failed.
+- VOYAGE3_ONLY=kraken-grab,kraken-calm-pops: 11 passed, 0 failed (0 pop overlaps at 320x480 and 568x320).
+- tests/audio.cjs: 50 passed, 0 failed.
+
+**Hook mirror mkc** (mk + the main.js hook): VOYAGE3_ONLY=busy: 10 passed, 0 failed.
+- L7 182-234 (232 settled), boarding 249-276; L8 143-251, boarding 253-307; L9 193-226, boarding 247-262.
+
+**Unflipped mirror m0** (live game with my files; HEAD versions of the tests):
+- tests/smoke.cjs: 94 passed, 0 failed ("All checks passed").
+- BATTLE_ONLY=draws,kraken-live,kraken-finale-live: 16 passed, 0 failed (Act I starts 290, 211, 167 ≤ 320; no Kraken hooks without ?kraken=1).
+
+**Probes (tools/audit.cjs on mk):**
+- Level starts L1-L6: 290 / 211 / 169 / 235 / 189 / 202, exactly the §14 "today" baselines.
+- L7-L9 starts: 97 / 114 / 139; env alone: 12 / 19 / 43 (≤ 220).
+- Models: Man-o'-War 26, shark 12, bombketch 25, ironclad 18, fireship 14, skiff 12, Inkheart 29 (≤ 1.3 × 26 = 33.8).
+
+**Other probes:**
+- live2.cjs: no new shader programs when the spout or the dread bubbles first show.
+- alevels.js offline loudness: see api_notes.
+- play.cjs scene runs: screenshots looked at for L7-9 at phone and desktop, before and after (shots/ and the montages).
+
+I did not run the full npm test (the coordinator does).
+
+**Open issues**
+
+- The crate beacon and the special-shot trails only show once the main.js hook in hook-main.diff is applied. Until then, crates on a phone stay about 8 px wide at 80-90 u and the shots have no trails.
+- LIVE-2 frame timing could not be measured cleanly: under the machine's load, median frames were 733-891 ms. In the L9 dread probe, one frame of 4.2 s came right after G.kraken.rise({dread:true}), with no shader compile. Either an outlier at that load or a real CPU stall (main.js startDread/removeShip). Worth timing again on an idle machine.
+- On a phone the Kraken's words still stack over your ship during a grab (GRABBED!, TENTACLE!, SLAM!). They are smaller now. Fewer words would need main.js to send fewer pops; GRABBED! repeats the grab strip.
+- In portrait, during the Hunt the tentacles often stand right behind your own sails (the camera framing is main.js's). The warning rings and words still show.
+
+## Go-live: WITH_KRAKEN = true
+
+The coordinator applied the go-live edits and tested them together:
+
+- 3E's `main.js` hook (`.dock-harness/kraken3/S3-3E/hook-main.diff`): the crate beacon and the far-off diamond scale in `placeCrates` / `syncCrates`, and `trailShots` in `frame()`.
+- 3C's `tests/balance.cjs` and `package.json`: `npm test` grows to 21 suites, with `test:voyage3`, `test:ashore` and the opt-in `test:balance`.
+- 3C's published test files.
+- `WITH_KRAKEN = true` in `src/voyage.js`, with its header comment and `act3.js`'s updated.
+- SPEC3 §19's Stage 3 build record.
+
+Voyage III, special shot, the steering options, the quiz and the island now sail for everyone.
+
+**Test run.** All 21 suites ran on a frozen copy of the go-live tree, then `BALANCE_RUNS=24 node tests/balance.cjs`.
+
+| Suite | Checks passed |
+|---|---|
+| 13 Node suites | all green |
+| smoke | 93 + 1 (see below) |
+| controls | 232 |
+| audio | 50 |
+| battle | 278 |
+| levels | 75 |
+| town | 135 |
+| voyage3 | 123 |
+| ashore | 143 |
+
+That is 2,258 checks in all, plus balance's 13:
+
+- **Act I:** medians 35 / 90.5 / 96.5, and the Volcano is above Europe.
+- **Act II:** medians 66 / 28 / 132.5, and the Maelstrom is above Doubloon Bay.
+- No runs were lost in either act.
+
+**The smoke flake.** One smoke check failed: 'bot captain clears every level'. The smoke suite's unseeded Act I bot lost the Volcano on both of its tries, sunk mostly by the Man-o'-War (110 of 201 damage). A probe ran the same bot on the Volcano, 40 single tries each way:
+
+| Tree | Tries lost | Median damage | Max damage |
+|---|---|---|---|
+| go-live tree | 1 of 40 | 103 | 187 |
+| tree before the flip | 0 of 40 | 100 | 182 |
+
+So the flip doesn't make the Volcano harder; this was a rare unlucky pair of `Math.random` runs. Re-running `tests/smoke.cjs` on the same copy passed 94 / 0, Volcano won with 75 damage. Making the smoke bot seeded, like voyage3's bot v3, is left to Stage 4.
+
+**Shader warm-up.** 3E's LIVE-2 probe (`tools/live2.cjs`) was re-run on the go-live copy with the machine idle (load about 1.6):
+
+- No shader program compiles when the first L7 spout or the L9 dread bubbles appear.
+- On SwiftShader, the two frames after the dread starts take 1.7 and 1.3 s, against a median of 0.5 s. That is a CPU-side spike at the dread, and Stage 4's performance review looks into it.

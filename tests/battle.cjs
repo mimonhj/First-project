@@ -483,9 +483,9 @@ function ev(page, fn, arg = null) {
 
   // ------------------------------------------------------------------------------------------------ damage
   await section('damage', async () => {
-    // (Act II joins the voyage once levels.js sets WITH_ACT2; until then only with ?act2=1, see 'act2')
+    // (the whole voyage: Acts I and II from levels.js, then the Kraken Seas, SPEC3 §5.1)
     const levels = await page.evaluate(async () => ({ n: window.__game.LEVELS.length, act2: (await import('/src/levels.js')).WITH_ACT2 }));
-    check(levels.n === (levels.act2 ? 6 : 3), `the voyage has ${levels.n} levels (Act II ${levels.act2 ? 'on' : 'only with ?act2=1'})`);
+    check(levels.n === 9, `the voyage has ${levels.n} levels (9: Voyages I, II and III)`);
     // Same centre distance (24 u: every ball's travel is in the flat 14-24 band), crits off: beam-on, stern-on
     // (her keel lies along the shot, which enters over her stern) and bow-on.
     const aspect = await ev(page, () => {
@@ -2744,7 +2744,7 @@ function ev(page, fn, arg = null) {
       }, n));
     }
     const count = await ap.evaluate(() => window.__game.LEVELS.length);
-    check(count === 6, `Act II: ?act2=1 adds levels 4-6 (${count} levels)`);
+    check(count === 9, `Act II: with ?act2=1 the voyage has levels 4-6 and the rest (${count} levels)`);
     const want = { 4: ['Doubloon Bay', 'convoy'], 5: ['Frostbite Straits', 'floes'], 6: ['The Maelstrom', 'current'] };
     for (const l of levels) {
       check(l.name === want[l.n][0] && l.level === l.n && l.wave0 === l.want && l.ids === want[l.n][1] && l.mode === 'playing' && l.time === 4 && l.calls > 0 && (l.n !== 4 || /^Galleons:/.test(l.objective)),

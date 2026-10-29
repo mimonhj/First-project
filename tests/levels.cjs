@@ -415,21 +415,23 @@ function botLevel(args) {
       };
     });
     const c = await read();
-    const WORDS = ['Easy', 'Medium', 'Hard', 'Tricky', 'Tough', 'Legendary'];
-    check(c.order.join(' | ') === 'H:Voyage I · The Old World | C1 | C2 | C3 | H:Voyage II · The Far Seas | C4 | C5 | C6',
-      `title: six level cards in two act groups, each under its heading (${c.order.join(' | ')})`);
-    check(c.heads.length === 2 && c.heads.every((h) => h.tag === 'H3' && !h.card && h.w >= c.gridW - 2),
+    const WORDS = ['Easy', 'Medium', 'Hard', 'Tricky', 'Tough', 'Legendary', 'Daring', 'Fearsome', 'Mythic'];
+    check(c.order.join(' | ') === 'H:Voyage I · The Old World | C1 | C2 | C3 | H:Voyage II · The Far Seas | C4 | C5 | C6 | H:Voyage III · The Kraken Seas | C7 | C8 | C9',
+      `title: nine level cards in three voyage groups, each under its heading (${c.order.join(' | ')})`);
+    check(c.heads.length === 3 && c.heads.every((h) => h.tag === 'H3' && !h.card && h.w >= c.gridW - 2),
       `title: the act headings are h3s spanning the grid, not level cards (${J({ heads: c.heads, gridW: c.gridW })})`);
     const rows = c.cards.map((k) => k.top);
-    check(rows[0] === rows[1] && rows[1] === rows[2] && rows[3] === rows[4] && rows[4] === rows[5] && rows[3] > rows[0] && c.heads[1].top > rows[0] && c.heads[1].top < rows[3],
-      `title: three cards per row at 1280x720, the second act under its own heading (${J({ rows, heads: c.heads.map((h) => h.top) })})`);
-    check(c.cards.length === 6 && !c.cards[0].locked && c.cards.slice(1).every((k) => k.locked), `title: only level 1 is unlocked on a fresh profile (${J(c.cards.map((k) => k.locked))})`);
-    check(c.cards.map((k) => k.word).join() === WORDS.join(), `title: difficulty labels Easy … Legendary (${c.cards.map((k) => k.word).join(', ')})`);
-    check(c.cards.every((k, i) => k.pips === `Difficulty ${i + 1} of 6` && k.role === 'img' && k.on === i + 1 && k.all === 6),
-      `title: skull pips "Difficulty N of 6" with N skulls lit (${J(c.cards.map((k) => [k.pips, k.on, k.all]))})`);
-    check(c.cards[0].lock === 'Play' && c.cards[3].lock === 'Beat the Molten Maw' && [1, 2, 4, 5].every((i) => c.cards[i].lock === 'Locked'),
-      `title: a locked card 4 reads "Beat the Molten Maw", the others "Locked" (${J(c.cards.map((k) => k.lock))})`);
-    check(c.cards.slice(3).map((k) => k.name).join() === 'Doubloon Bay,Frostbite Straits,The Maelstrom', `title: Act II is Doubloon Bay, Frostbite Straits, The Maelstrom (${c.cards.map((k) => k.name).join(', ')})`);
+    check(rows[0] === rows[1] && rows[1] === rows[2] && rows[3] === rows[4] && rows[4] === rows[5] && rows[6] === rows[7] && rows[7] === rows[8] && rows[3] > rows[0] && rows[6] > rows[3] &&
+      c.heads[1].top > rows[0] && c.heads[1].top < rows[3] && c.heads[2].top > rows[3] && c.heads[2].top < rows[6],
+      `title: three cards per row at 1280x720, the second and third voyages each under its own heading (${J({ rows, heads: c.heads.map((h) => h.top) })})`);
+    check(c.cards.length === 9 && !c.cards[0].locked && c.cards.slice(1).every((k) => k.locked), `title: only level 1 is unlocked on a fresh profile (${J(c.cards.map((k) => k.locked))})`);
+    check(c.cards.map((k) => k.word).join() === WORDS.join(), `title: difficulty labels Easy … Mythic (${c.cards.map((k) => k.word).join(', ')})`);
+    check(c.cards.every((k, i) => k.pips === `Difficulty ${i + 1} of 9` && k.role === 'img' && k.on === i + 1 && k.all === 9),
+      `title: skull pips "Difficulty N of 9" with N skulls lit (${J(c.cards.map((k) => [k.pips, k.on, k.all]))})`);
+    check(c.cards[0].lock === 'Play' && c.cards[3].lock === 'Beat the Molten Maw' && c.cards[6].lock === 'Beat the Phantom Galleon' && [1, 2, 4, 5, 7, 8].every((i) => c.cards[i].lock === 'Locked'),
+      `title: a locked card 4 reads "Beat the Molten Maw", card 7 "Beat the Phantom Galleon", the others "Locked" (${J(c.cards.map((k) => k.lock))})`);
+    check(c.cards.slice(3, 6).map((k) => k.name).join() === 'Doubloon Bay,Frostbite Straits,The Maelstrom' && c.cards.slice(6).map((k) => k.name).join() === "The Turtle Atolls,The Cape of Storms,The Kraken's Deep",
+      `title: Act II is Doubloon Bay, Frostbite Straits, The Maelstrom; Act III The Turtle Atolls, The Cape of Storms, The Kraken's Deep (${c.cards.map((k) => k.name).join(', ')})`);
     check(/Far Seas/.test(c.tagline) && /Far Seas/.test(c.meta), `title: the tagline and the page description mention the Far Seas ("${c.tagline.trim()}")`);
     // Beating the Act I finale opens card 4 (and only it); Enter on the focused card starts Doubloon Bay.
     await page.evaluate(() => { window.__game.state.unlocked = 4; window.__game.showMenu(); });
@@ -473,8 +475,10 @@ function botLevel(args) {
       if (scroller) scroller.scrollTop = 0;
       return { problems: out, scrolls: scroller ? scroller.scrollHeight - scroller.clientHeight : 0 };
     };
+    // (every level open, so every card takes a tap: a locked card takes no clicks, style.css; "9" opens all the levels
+    // this game has)
     for (const touch of [true, false]) {
-      const { ctx: tctx, page: tp } = await open({ touch, label: touch ? 'title-touch' : 'title', store: { 'pirates-ahoy-unlocked': '6' } });
+      const { ctx: tctx, page: tp } = await open({ touch, label: touch ? 'title-touch' : 'title', store: { 'pirates-ahoy-unlocked': '9' } });
       const sizes = touch ? [[320, 480], [360, 480], [390, 844], [844, 390], [568, 320], [640, 360]] : [[320, 480], [1280, 720], [568, 320], [640, 360]];
       for (const [w, h] of sizes) {
         await tp.setViewportSize({ width: w, height: h });
@@ -482,12 +486,12 @@ function botLevel(args) {
         await frames(tp, 2);
         await tp.evaluate(() => document.getAnimations().forEach((a) => { try { if (a.effect.getComputedTiming().iterations !== Infinity) a.finish(); } catch { /* */ } }));
         const r = await tp.evaluate(titleProbe);
-        check(r.problems.length === 0, `title ${w}x${h}${touch ? ' touch' : ''}: no page scroll, Set sail! and the Shipyard in view, all 6 cards reachable (panel scrolls ${r.scrolls}px)${r.problems.length ? ' -> ' + r.problems.join('; ') : ''}`);
+        check(r.problems.length === 0, `title ${w}x${h}${touch ? ' touch' : ''}: no page scroll, Set sail! and the Shipyard in view, all 9 cards reachable (panel scrolls ${r.scrolls}px)${r.problems.length ? ' -> ' + r.problems.join('; ') : ''}`);
         // Keyboard: Tab through the cards; each focused card is scrolled into view, not left under the
         // buttons pinned to the panel's foot (§13: a visible focus).
         await tp.evaluate(() => { document.activeElement && document.activeElement.blur && document.activeElement.blur(); const sc = [...document.querySelectorAll('#menu-screen *')].find((e) => e.scrollHeight > e.clientHeight + 1); if (sc) sc.scrollTop = 0; });
         const tabbed = [];
-        for (let i = 0; i < 12 && tabbed.length < 6; i++) {
+        for (let i = 0; i < 16 && tabbed.length < 9; i++) {
           await tp.keyboard.press('Tab');
           const f = await tp.evaluate(() => {
             const el = document.activeElement;
@@ -500,7 +504,7 @@ function botLevel(args) {
           if (f && !tabbed.some((t) => t.n === f.n)) tabbed.push(f);
         }
         const hidden = tabbed.filter((t) => !t.seen || !t.ring).map((t) => `card ${t.n}${t.seen ? '' : ' under ' + t.by}${t.ring ? '' : ' (no focus ring)'}`);
-        check(tabbed.length === 6 && hidden.length === 0, `title ${w}x${h}${touch ? ' touch' : ''}: Tab reaches all 6 cards, each in view with a focus ring${hidden.length ? ' -> ' + hidden.join('; ') : ''}${tabbed.length !== 6 ? ` (${tabbed.length} reached)` : ''}`);
+        check(tabbed.length === 9 && hidden.length === 0, `title ${w}x${h}${touch ? ' touch' : ''}: Tab reaches all 9 cards, each in view with a focus ring${hidden.length ? ' -> ' + hidden.join('; ') : ''}${tabbed.length !== 9 ? ` (${tabbed.length} reached)` : ''}`);
       }
       await tctx.close();
     }
@@ -572,7 +576,8 @@ function botLevel(args) {
     await page.waitForFunction(() => window.__game.state.mode === 'playing', null, { timeout: 60000 }).catch(() => {});
     const s3 = await page.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level, town: window.__game.town.active, aboard: !document.getElementById('aboard-dialog').classList.contains('hidden') }));
     check(s3.mode === 'playing' && s3.level === 4 && !s3.aboard, `All aboard? "Set sail for Doubloon Bay" starts level 4 (${J(s3)})`);
-    // After the Maelstrom (also a finale): the legend's words, no Sail on, and Enter goes to the title.
+    // After the Maelstrom (also a finale): the legend's words and the Kraken Seas' teaser, "Sail on to the Kraken Seas",
+    // and Enter sails on to level 7 (the last level's Enter to the title is voyage3.cjs's kraken-end).
     const w6 = await ev(page, async () => {
       const G = window.__game;
       T.level(6);
@@ -595,24 +600,31 @@ function botLevel(args) {
         return G.state.mode === 'playing';
       });
       await T.redraw();
+      const { ACT3_TEASER } = await import(new URL('src/voyage.js', location.href).href);
+      const panel = document.querySelector('#won-screen .panel') || document.getElementById('won-screen');
+      const first = [...panel.querySelectorAll('button')].find((b) => !b.closest('.hidden') && b.getClientRects().length);
       return {
         mode: G.state.mode,
         level: G.state.level,
         text: T.text('won-text'),
+        teaser: ACT3_TEASER,
         act2: T.shown('act2-btn'),
+        act2Text: T.text('act2-btn'),
+        first: first && first.id,
         hint: T.shown('won-hint'),
         againAlt: document.getElementById('again-btn').classList.contains('alt'),
         legend: G.feats.legend,
         victory: [...new Set(banners)].filter((b) => /Victory/.test(b)),
       };
     });
-    check(w6.mode === 'won' && w6.level === 6 && w6.text === 'The Phantom Galleon is yours! You are the Legend of the Seven Seas.' && !w6.act2 && !w6.hint && !w6.againAlt && w6.legend === 1,
-      `after the Maelstrom: the legend's words, no "Sail on", Main menu is the main button again (${J(w6)})`);
-    check(w6.victory.some((b) => /The Phantom Galleon is yours!/.test(b) && /The seas are yours/.test(b)), `the Maelstrom's victory banner names the captured Phantom (${J(w6.victory)})`);
+    check(w6.mode === 'won' && w6.level === 6 && typeof w6.teaser === 'string' && w6.teaser.length > 0 && w6.text === `The Phantom Galleon is yours! You are the Legend of the Seven Seas. ${w6.teaser}` &&
+      w6.act2 && w6.act2Text === 'Sail on to the Kraken Seas' && w6.first === 'act2-btn' && w6.hint && w6.againAlt && w6.legend === 1,
+      `after the Maelstrom: the legend's words and the teaser, "Sail on to the Kraken Seas" first with its hint, Main menu steps back (${J(w6)})`);
+    check(w6.victory.some((b) => /The Phantom Galleon is yours!/.test(b) && /The Far Seas are yours/.test(b)), `the Maelstrom's victory banner names the captured Phantom (${J(w6.victory)})`);
     await page.keyboard.press('Enter');
     await page.waitForFunction(() => window.__game.state.mode !== 'won', null, { timeout: 60000 }).catch(() => {});
-    const s6 = await page.evaluate(() => ({ mode: window.__game.state.mode, menu: !document.getElementById('menu-screen').classList.contains('hidden') }));
-    check(s6.mode === 'menu' && s6.menu, `Enter after the last level goes to the title (${J(s6)})`);
+    const s6 = await page.evaluate(() => ({ mode: window.__game.state.mode, level: window.__game.state.level, menu: !document.getElementById('menu-screen').classList.contains('hidden') }));
+    check(s6.mode === 'playing' && s6.level === 7 && !s6.menu, `Enter after the Maelstrom sails on to level 7 (${J(s6)})`);
     await ctx.close();
   });
 
@@ -1192,9 +1204,9 @@ function botLevel(args) {
       await frames(page, 2);
       const click = await page.evaluate(() => ({ mode: window.__game.state.mode, live: (document.getElementById('menu-live') || {}).textContent || '' }));
       const locked = cards.filter((c) => c.n > 3);
-      check(locked.length === 3 && locked.every((c) => !c.disabled && c.aria === 'true' && c.tab === 0 && !!c.why) && locked[0].why === 'Beat the Molten Maw' && cards.filter((c) => c.n <= 3).every((c) => c.aria !== 'true') &&
+      check(locked.length === 6 && locked.every((c) => !c.disabled && c.aria === 'true' && c.tab === 0 && !!c.why) && locked[0].why === 'Beat the Molten Maw' && cards.filter((c) => c.n <= 3).every((c) => c.aria !== 'true') &&
         !!ax && ax.focusable && /Beat the Molten Maw/.test(ax.desc || '') && tabs.join() === 'card4,card5,card6',
-        `A11Y-5: locked cards 4-6 are focusable and aria-disabled (not disabled), described by their lock text, and Tab reaches them (${J({ locked, ax, tabs })})`);
+        `A11Y-5: locked cards 4-9 are focusable and aria-disabled (not disabled), described by their lock text, and Tab reaches them (${J({ locked, ax, tabs })})`);
       check(enter.mode === 'menu' && enter.focus === '4' && /Doubloon Bay is locked/.test(enter.live) && space === 'menu' && click.mode === 'menu' && /The Maelstrom is locked/.test(click.live),
         `A11Y-5: Enter, Space or a click on a locked card starts nothing; the title says why ("${enter.live.trim()}" / "${click.live.trim()}") (${J({ enter, space, click: click.mode })})`);
       await ctx.close();
@@ -1232,7 +1244,7 @@ function botLevel(args) {
       const synced = await B.waitForFunction(() => window.__game.state.unlocked === 5, null, { timeout: 20000 }).then(() => true, () => false);
       const b1 = await lockedCards(B);
       const b3 = await win(B, 3);
-      check(b0.cards === 'PPPLLL' && a3.saved === '4' && a4.mode === 'levelDone' && a4.saved === '5' && synced && b1.mode === 'menu' && b1.cards === 'PPPPPL' && b3.mode === 'won' && b3.saved === '5' && b3.unlocked === 5,
+      check(b0.cards === 'PPPLLLLLL' && a3.saved === '4' && a4.mode === 'levelDone' && a4.saved === '5' && synced && b1.mode === 'menu' && b1.cards === 'PPPPPLLLL' && b3.mode === 'won' && b3.saved === '5' && b3.unlocked === 5,
         `ACT-3: progress saved in another tab opens the cards here at once, and a win in the older tab never lowers it (B before ${b0.cards}, after A's wins ${b1.cards}; B beats the Volcano: saved ${b3.saved}) (${J({ a3, a4, synced, b1, b3 })})`);
       await ctx.close();
     }
@@ -1318,7 +1330,7 @@ function botLevel(args) {
     {
       const { ctx, page } = await open({ label: 'progress', store: { 'pirates-ahoy-unlocked': '9', 'pirates-ahoy-tutorial-done': '1', 'pirates-ahoy-tips': '255' } });
       const rows = [{ set: '9', ...(await cardsOf(page)) }];
-      for (const set of ['8', '7', 'lots', '2.5']) {
+      for (const set of ['8', '7', '12', 'lots', '2.5']) {
         await page.evaluate((v) => localStorage.setItem('pirates-ahoy-unlocked', v), set);
         await settle(page);
         await page.reload({ waitUntil: 'domcontentloaded', timeout: 120000 });
@@ -1326,10 +1338,13 @@ function botLevel(args) {
         rows.push({ set, ...(await cardsOf(page)) });
       }
       await settle(page);
-      const want = { 9: ['9', 6], 8: ['8', 6], 7: ['7', 6], lots: ['1', 1], 2.5: ['1', 1] };
-      const bad = rows.filter((r) => r.levels !== 6 || r.saved !== want[r.set][0] || r.unlocked !== want[r.set][1] || r.cards !== 'P'.repeat(r.unlocked) + 'L'.repeat(6 - r.unlocked));
-      check(rows.length === 5 && bad.length === 0,
-        `LIVE-1: the 6-level game opens all 6 cards for progress saved as 9, 8 or 7 and leaves the record as it is (never lowered); an unreadable one ("lots", "2.5") is rewritten to 1 (${J(rows.map((r) => [r.set, r.saved, r.unlocked, r.cards]))})`);
+      // (N: this game's levels, 6 without the Kraken Seas, 9 with them: progress saved above N, as by a later build
+      // with more levels ("12"), opens all N cards and stays on disk as it is)
+      const N = rows[0].levels;
+      const want = { 9: ['9', Math.min(9, N)], 8: ['8', Math.min(8, N)], 7: ['7', Math.min(7, N)], 12: ['12', N], lots: ['1', 1], 2.5: ['1', 1] };
+      const bad = rows.filter((r) => r.levels !== N || r.saved !== want[r.set][0] || r.unlocked !== want[r.set][1] || r.cards !== 'P'.repeat(r.unlocked) + 'L'.repeat(N - r.unlocked));
+      check(rows.length === 6 && (N === 6 || N === 9) && bad.length === 0,
+        `LIVE-1: the ${N}-level game opens the cards for progress saved as 9, 8, 7 or 12 (at most all ${N}) and leaves the record as it is (never lowered); an unreadable one ("lots", "2.5") is rewritten to 1 (${J(rows.map((r) => [r.set, r.saved, r.unlocked, r.cards]))})`);
       await ctx.close();
     }
     {
@@ -1366,9 +1381,11 @@ function botLevel(args) {
       await A.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
       const a1 = await cardsOf(A);
       await settle(A);
-      check(a0.levels === 9 && a0.unlocked === 8 && b0.levels === 6 && b0.unlocked === 6 && b0.saved === '8' && b1.saved === '9' && b1.unlocked === 6 && won.mode === 'won' && won.saved === '9' && won.unlocked === 6 &&
+      // (BN: tab B's levels, 6 without the Kraken Seas, 9 once they sail for everyone)
+      const BN = b0.levels;
+      check(a0.levels === 9 && a0.unlocked === 8 && (BN === 6 || BN === 9) && b0.unlocked === Math.min(8, BN) && b0.saved === '8' && b1.saved === '9' && b1.unlocked === Math.min(9, BN) && won.mode === 'won' && won.saved === '9' && won.unlocked === Math.min(9, BN) &&
         a1.unlocked === 9 && a1.saved === '9' && a1.cards === 'PPPPPPPPP',
-        `LIVE-1: two tabs: the 6-level game opened beside a Kraken Seas tab leaves its progress at ${b0.saved}; the Kraken tab saves 9 and it stays ${b1.saved}, also after a win in the 6-level tab (${won.saved}); the Kraken tab reloads with ${a1.cards.length} cards, ${a1.unlocked} open (${J({ a0, b0, b1, won, a1 })})`);
+        `LIVE-1: two tabs: the ${BN}-level game opened beside a Kraken Seas tab leaves its progress at ${b0.saved}; the Kraken tab saves 9 and it stays ${b1.saved}, also after a win in the ${BN}-level tab (${won.saved}); the Kraken tab reloads with ${a1.cards.length} cards, ${a1.unlocked} open (${J({ a0, b0, b1, won, a1 })})`);
       await ctx.close();
     }
   });
