@@ -105,16 +105,22 @@ holds 2,850 hp in three parts:
   (a grab lets go) and no attack starts for 2 s, then it wears clothes-pegs for 20 s.
 - **Driven off.** At 0 it isn't killed: it sinks away sulking ("THE KRAKEN IS DRIVEN OFF!"), the sky turns to dawn
   and the Kraken's Pearl bobs up in a giant shell. Sail over it (or wait: it drifts to you) for 1,000 gold, paid on
-  every win of level 9. A baby kraken climbs aboard onto your captain's shoulder ("It seems to like you!"); from now
+  every win of level 9. Your special loads refill as the Kraken rises, so Stink shot is always there for its grabs. A baby kraken climbs aboard onto your captain's shoulder ("It seems to like you!"); from now
   on it is a pet at Polly's. Then the level clears and the final Victory reads "The Kraken is driven back to the deep,
   and the Seven Seas are safe! You are the Kraken Tamer!"; `Enter` goes back to the title.
 - **Try again from the Kraken.** If you sink after it has risen, the shipwreck screen's first button (and `Enter`) is
   **Try again from the Kraken**: a full hull and crew, your special loads refilled, the plunder you had when it rose,
   and the Kraken rising again at once at full strength (a 3 s rise). **Try again** (the whole level) and **Main menu**
-  are still there. This checkpoint is never saved: leaving or closing the page forgets it.
+  are still there. The shipyard keeps the checkpoint, whether you reach it from the shipwreck screen's **Visit the
+  dock** or from the pause menu's **Shipyard** during the fight: its way back to sea reads **Try again from the
+  Kraken**, with what you bought there aboard. The main menu or closing the page forgets it (it is never saved), and
+  the pause menu says so. Leaving from the pause menu once the Kraken is driven off, before the Pearl reaches you,
+  still wins the level: the Pearl and the plunder are banked.
 
 On a ship with a tier or two of most upgrades, the Kraken fight lasts two to three minutes (the bots' median was
-139 s).
+139 s). Level 9 is meant for an upgraded ship: before the Kraken comes, the Inkheart wins a broadside race against a
+ship with no Extra cannons or Heavy shot about half the time, and the shipwreck card then says "Extra cannons and Heavy
+shot from the shipyard will help." (those two, 450 gold, make it a fair fight).
 
 Each level comes in two waves. When reinforcements arrive, your crew patches part of the hull and up to 3 more
 hands join you. Clearing a level unlocks the next one and banks the level's plunder in your treasure chest, to spend
@@ -579,9 +585,10 @@ any time ("Your stars are safe!").
 - **Stars.** 3 right answers win a star, 4 two, 5 all three. A star on one island opens the next; the quiz never
   waits for the battles, so a child who prefers riddles can play all nine.
 - **Gold, once.** Each star pays the first time it is won (2,610 for all 27), and finishing an island's round the
-  first time pays 10 ("Good try!", whatever the score): 2,700 in all. Replays reshuffle the questions and pay
+  first time pays 10, whatever the score ("Good try!" after a round with no star, "for your first round here!"
+  after one): 2,700 in all. Replays reshuffle the questions and pay
   nothing more, so the quiz can't be farmed.
-- **A wrong answer** gets a soft marimba bonk (never a buzzer), "Not quite! It's Eight.", a ✓ on the right answer
+- **A wrong answer** gets a soft marimba bonk (never a buzzer), "Not quite! The answer is: 8.", a ✓ on the right answer
   and the fun fact. A right one rings the bell ("Right you are!"). With 2 right: "So close: 2 right! Have another
   go?"
 - **Lifebuoys.** With a Sea School on the island, each round has 1 to 3 lifebuoys (`H`): each takes away one
@@ -633,7 +640,7 @@ Each plot goes up one tier at a time (from `PLOTS` in `src/island.js`):
 |--------|------------------|-------|
 | Walk | `W` `A` `S` `D` or the arrows (they follow the camera) | the stick: put your thumb down on the left part of the screen and drag; a small tilt walks, more jogs |
 | Sprint | hold `Shift` | hold the stick right over for half a second |
-| Walk to a spot | click the boardwalk | tap the boardwalk |
+| Walk to a spot | click the boardwalk (or Bess or the professor: you walk up to them) | tap the boardwalk (or Bess or the professor) |
 | Walk to a place and open it | the places bar (`Tab` to it, then `Enter`) | tap the places bar |
 | Go in at a door (or at the bell, or Bess) | `E`, or `Enter` / `Space` when no button has focus, or the prompt | the round **Go in** button (bottom right; **Play** at the bell, **Build** at Bess), or the prompt |
 | Turn the camera | drag the view (up and down tilts it) | drag a finger outside the stick |
@@ -738,7 +745,8 @@ Everything is saved in the browser's `localStorage`, one record per key:
 - **Saves from before the Kraken Seas** keep everything; no key is renamed or removed. A save that had captured the
   Phantom Galleon with the Maelstrom open opens level 7 as it loads. A ship record without the rudder reads as tier 0
   and is left as it is; a feats record without the four new feats reads them as 0 and is rewritten once.
-- The Kraken checkpoint ("Try again from the Kraken") lives only as long as the page; it is never saved.
+- The Kraken checkpoint ("Try again from the Kraken") lives only as long as the page (the shipyard keeps it; the main
+  menu forgets it); it is never saved.
 
 ## Code
 

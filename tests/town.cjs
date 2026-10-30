@@ -21,10 +21,11 @@
 //   greeting; the rope bridges and their mouths (never pinned beside one, at a phone's frame rate too, never steered
 //   onto one), walkers waiting for the captain, the market awnings, the seam planks, and what tavern buys, Go ashore
 //   and Polly's crew clicks rebuild
+// - the Kraken Seas' Stage 4 review (kraken4): a tap on Builder Bess or Professor Barnacle walks to their place
 // Walking is stepped with __game.town.simulate() (fixed steps, no rendering) inside one evaluate, so the real
 // loop never moves the captain in between; keys go through the game's own handlers. Run with `npm test` or
-// `npm run test:town` (TOWN_ONLY=ashore,walk,places,touch,wardrobe,tavern,records,layout,draws,review4,review4-world
-// runs some sections; TOWN_ROOT serves another copy of the game).
+// `npm run test:town` (TOWN_ONLY=ashore,walk,places,touch,wardrobe,tavern,records,layout,draws,review4,review4-world,
+// kraken4 runs some sections; TOWN_ROOT serves another copy of the game).
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -2118,6 +2119,120 @@ function installHelpers() {
     check(tavern.buys.every((b) => b.ok && b.same === (b.id !== 'grapple')) && tavern.coils > 0,
       `PERF-1: tavern buys rebuild the docked ship only for Long grapples (their coils: ${tavern.coils}) (${J(tavern.buys)})`);
     await ctx.close();
+  });
+
+  // ------------------------------------------------------------------------------------------- kraken4
+  // The Kraken Seas' Stage 4 review (TOWN-TAPNPC): Builder Bess and Professor Barnacle are their places' landmarks,
+  // so a real tap on one (a touchscreen tap at 390 × 844, a mouse click at 1280 × 720), on the body or the feet,
+  // walks the captain into that place's circle, facing it: its prompt (Build / Play) shows, nothing opens, and he
+  // doesn't end up inside them. A tap on the deck beside them still walks where it landed.
+  await section('kraken4', async () => {
+    const runs = [];
+    const plain = [];
+    for (const [W, H, touch] of [[390, 844, true], [1280, 720, false]]) {
+      const { ctx, page } = await open({ width: W, height: H, touch, label: `kraken4-${W}` });
+      await ensureTown(page);
+      // [who, standing spot (null: 5 u out in front of the professor, toward the bell), heading (null: facing them), parts]
+      const plan = touch
+        ? [['bess', [0.6, -4.6], Math.PI + 0.35, ['chest', 'feet']], ['bess', [1.6, -6.2], null, ['chest']], ['bess', [-3.5, -6.35], 2.5, ['chest']], ['barnacle', null, null, ['chest', 'feet']]]
+        : [['bess', [0.6, -4.6], Math.PI + 0.35, ['chest']], ['barnacle', null, null, ['chest']]];
+      for (const [who, spot, head, parts] of plan) {
+        for (const part of parts) {
+          const at = await page.evaluate(([who, spot, head, part]) => {
+            const G = window.__game;
+            const n = G.town.walk.npcs.find((q) => q.id === who);
+            const place = T.town().walk.places.find((q) => q.id === (who === 'bess' ? 'builder' : 'quiz'));
+            let s = spot;
+            if (!s) {
+              const dx = place.x - n.x;
+              const dz = place.z - n.z;
+              const d = Math.hypot(dx, dz) || 1;
+              s = [n.x + (dx / d) * 5, n.z + (dz / d) * 5];
+            }
+            T.at(s[0], s[1], head ?? Math.atan2(n.x - s[0], n.z - s[1]));
+            G.town.simulate(1, { x: 0, z: 0 });
+            G.camera.updateMatrixWorld();
+            const deck = T.walk().heightAt(n.x, n.z) ?? 1.3;
+            const v = G.camera.position.clone().set(n.x, deck + (part === 'chest' ? 1.05 : 0.05), n.z).project(G.camera);
+            const sx = Math.round(((v.x + 1) / 2) * innerWidth);
+            const sy = Math.round(((1 - v.y) / 2) * innerHeight);
+            const hitEl = document.elementFromPoint(sx, sy);
+            return { who, part, from: s.map((q) => +q.toFixed(2)), sx, sy, onCanvas: !!hitEl && hitEl.tagName === 'CANVAS', want: place.id, spot: T.walk().snap(place.x, place.z, 2) };
+          }, [who, spot, head, part]);
+          // (on a phone the left of the screen is the stick's: a tap there walks nowhere)
+          const tappable = at.onCanvas && at.sx > W * 0.45 + 4 && at.sx < W - 4 && at.sy > 4 && at.sy < H - 4;
+          if (tappable) {
+            if (touch) await page.touchscreen.tap(at.sx, at.sy);
+            else await page.mouse.click(at.sx, at.sy);
+          }
+          const r = await page.evaluate(([who, placeId]) => {
+            const G = window.__game;
+            const auto = G.town.api.auto;
+            for (let k = 0; k < 600 && G.town.api.auto; k++) G.town.simulate(1 / 30, { x: 0, z: 0 });
+            G.town.simulate(0.4, { x: 0, z: 0 });
+            const p = T.pos();
+            const n = G.env.folk().find((q) => q.npc === who);
+            const place = T.town().walk.places.find((q) => q.id === placeId);
+            const turn = Math.atan2(Math.sin(p.h - (place.face || 0)), Math.cos(p.h - (place.face || 0)));
+            return { auto, place: G.town.place, view: G.town.view, end: [+p.x.toFixed(2), +p.z.toFixed(2)], dPlace: +Math.hypot(p.x - place.x, p.z - place.z).toFixed(2), r: place.r, dNpc: n ? +Math.hypot(p.x - n.x, p.z - n.z).toFixed(2) : null, turn: +turn.toFixed(2) };
+          }, [who, at.want]);
+          await frames(page, 3);
+          const prompt = await page.evaluate(() => ({ shown: T.shown('town-prompt'), text: T.text('town-prompt'), action: document.getElementById('town-action').getAttribute('aria-disabled') }));
+          runs.push({ W, ...at, tappable, ...r, prompt });
+          if (runs.filter((q) => q.W === W).length === 1) await snap(page, `tap-bess-${W}.png`);
+        }
+      }
+      // a tap on the deck beside Bess (not on her) still walks where it landed: from the pier, a free spot 2.5 - 3.5 u
+      // ahead whose ray from the lens passes nowhere near Bess or the professor
+      const pt = await page.evaluate((W) => {
+        const G = window.__game;
+        T.at(0.6, -4.6, Math.PI + 0.35);
+        G.town.simulate(1, { x: 0, z: 0 });
+        G.camera.updateMatrixWorld();
+        const c = T.pos();
+        const Wk = T.walk();
+        const cam = G.camera.position;
+        const npcs = G.town.walk.npcs;
+        const nearRay = (x, z) => npcs.some((n) => {
+          const ax = x - cam.x;
+          const az = z - cam.z;
+          const t = Math.max(0, Math.min(1, ((n.x - cam.x) * ax + (n.z - cam.z) * az) / (ax * ax + az * az)));
+          return Math.hypot(cam.x + ax * t - n.x, cam.z + az * t - n.z) < 1.2;
+        });
+        for (const d of [3, 2.5, 3.5]) {
+          for (let a = -0.5; a <= 0.5; a += 0.1) {
+            const x = c.x + Math.sin(c.h + a) * d;
+            const z = c.z + Math.cos(c.h + a) * d;
+            if (!Wk.inside(x, z) || Wk.blocked(x, z, 0.4) || nearRay(x, z)) continue;
+            const v = cam.clone().set(x, Wk.heightAt(x, z), z).project(G.camera);
+            const sx = Math.round(((v.x + 1) / 2) * innerWidth);
+            const sy = Math.round(((1 - v.y) / 2) * innerHeight);
+            const el = document.elementFromPoint(sx, sy);
+            if (sx > W * 0.45 + 4 && sx < innerWidth - 4 && sy > 4 && sy < innerHeight - 4 && el && el.tagName === 'CANVAS') return { x: +x.toFixed(2), z: +z.toFixed(2), sx, sy };
+          }
+        }
+        return null;
+      }, W);
+      if (pt) {
+        if (touch) await page.touchscreen.tap(pt.sx, pt.sy);
+        else await page.mouse.click(pt.sx, pt.sy);
+        const r = await page.evaluate(() => {
+          const G = window.__game;
+          const auto = G.town.api.auto;
+          for (let k = 0; k < 600 && G.town.api.auto; k++) G.town.simulate(1 / 30, { x: 0, z: 0 });
+          return { auto, end: T.pos() };
+        });
+        plain.push({ W, pt, auto: r.auto, d: +Math.hypot(r.end.x - pt.x, r.end.z - pt.z).toFixed(2) });
+      } else plain.push({ W, pt: null });
+      await ctx.close();
+    }
+    const want = { builder: /Builder Bess/, quiz: /Riddle Bell/ };
+    const bad = runs.filter((r) => !(r.tappable && r.auto && !r.auto.open && Math.hypot(r.auto.to.x - r.spot.x, r.auto.to.z - r.spot.z) < 0.2 && r.view === 'town' &&
+      r.place === r.want && r.dPlace < 0.5 && r.dNpc >= 0.6 && Math.abs(r.turn) < 0.4 && r.prompt.shown && want[r.want].test(r.prompt.text) && r.prompt.action === 'false'));
+    check(runs.length === 8 && bad.length === 0,
+      `TOWN-TAPNPC: a real tap on Bess or the professor (body or feet; 390 × 844 touch, 1280 × 720 mouse) walks the captain into their place's circle, facing it, not into them; the Build / Play prompt shows and nothing opens (${runs.map((r) => `${r.W} ${r.who} ${r.part} from ${J(r.from)}: at ${r.place}, ${r.dPlace} u from ${r.want}, ${r.dNpc} u from them`).join('; ')})${bad.length ? ' -> ' + J(bad) : ''}`);
+    check(plain.length === 2 && plain.every((p) => p.pt && p.auto && p.auto.place === null && p.d < 0.8),
+      `TOWN-TAPNPC: a tap on the deck beside Bess still walks where it landed (${J(plain)})`);
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);

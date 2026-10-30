@@ -2086,6 +2086,15 @@ body:has(#boss:not(.hidden)):has(#boarding-strip:not(.hidden)) .banner { top: ma
   transform: rotate(-35deg);
 }
 .ammo-tray button:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+/* A banner up while the tray is open on a short phone held upright (320x480 to 360x640): the banner keeps to the
+   left of the tray, so its lines and the tray's labels never cover each other (the hint bubble moves clear of it
+   the same way, §6.2). No pop then: its keyframes would put back the centring transform for 0.45 s. */
+@media (orientation: portrait) and (max-height: 700px) {
+  body:has(#ammo-tray:not(.hidden)) .banner { left: var(--edge); transform: none; animation: none; max-width: calc(100vw - 2 * var(--edge) - 2 * 52px - 6px - 16px); }
+}
+@media (max-width: 640px) and (max-height: 500px) and (orientation: portrait) {
+  body:has(#ammo-tray:not(.hidden)) .banner { max-width: calc(100vw - 2 * var(--edge) - 2 * 44px - 6px - 16px); }
+}
 
 /* Touch steering (§3.2): the steering pad holds the rudder needle of a thumb slide and, when it is chosen, the
    ship's wheel in the arrows' place. */

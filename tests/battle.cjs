@@ -5153,6 +5153,54 @@ function ev(page, fn, arg = null) {
       }
       await closeK(lc);
     }
+
+    // The Stage 4 review (A11Y4-1): the level banner up while the tray is open on a short phone held upright (320x480,
+    // 360x640): the banner keeps to the left of the tray, so none of its lines covers a tray button, also as it pops
+    // again meanwhile (no pop then: the pop's keyframes would put its centring back), and it stays on screen. The
+    // child's 390x844 keeps it centred, clear of the tray.
+    const bannerProbe = () => {
+      const ban = document.getElementById('banner');
+      const R = (r) => ({ l: Math.round(r.left), t: Math.round(r.top), r: Math.round(r.right), b: Math.round(r.bottom) });
+      const lines = [];
+      const walk = document.createTreeWalker(ban, NodeFilter.SHOW_TEXT);
+      const range = document.createRange();
+      for (let t = walk.nextNode(); t; t = walk.nextNode()) {
+        range.selectNodeContents(t);
+        for (const q of range.getClientRects()) if (q.width > 0 && q.height > 0) lines.push(q);
+      }
+      const btns = [...document.querySelectorAll('#ammo-tray button[data-ammo]')].filter((b) => b.getClientRects().length).map((b) => b.getBoundingClientRect());
+      let over = 0;
+      for (const q of lines) for (const b of btns) over += Math.max(0, Math.min(q.right, b.right) - Math.max(q.left, b.left)) * Math.max(0, Math.min(q.bottom, b.bottom) - Math.max(q.top, b.top));
+      return { shown: !ban.classList.contains('hidden') && ban.getClientRects().length > 0, tray: btns.length, lines: lines.length, over: Math.round(over), box: R(ban.getBoundingClientRect()), W: innerWidth, text: ban.textContent.slice(0, 48) };
+    };
+    for (const [w, h] of [[320, 480], [360, 640], [390, 844]]) {
+      const { ctx: bc, page: bp } = await openK({ width: w, height: h, touch: true, label: `kraken-tray banner ${w}x${h}` });
+      const r = await ev(bp, async ([probe, small]) => {
+        const G = window.__game;
+        G.state.tutorialDone = true;
+        G.newGame(7);
+        G.state.intro = 0; // (the fly-in over: the level banner has seconds to go)
+        const open = G.specials.openTray();
+        await K.play(0.05); // (drawn in play: a paused game closes the tray)
+        const ban = document.getElementById('banner');
+        for (const a of ban.getAnimations()) a.finish(); // (its pop as the level started: done)
+        const out = { open, at: eval(`(${probe})`)() };
+        // it pops again while the tray is open (a hazard's how-to, a phase banner): on the short phones on screen and
+        // clear of the tray at once (no pop); on a taller one it pops as ever
+        ban.classList.remove('popped');
+        void ban.offsetWidth;
+        ban.classList.add('popped');
+        out.anims = ban.getAnimations().length;
+        if (!small) for (const a of ban.getAnimations()) a.finish();
+        out.repop = eval(`(${probe})`)();
+        return out;
+      }, [bannerProbe.toString(), h <= 700]);
+      const onScreen = (a) => a.box.l >= 0 && a.box.r <= a.W;
+      const centred = (a) => Math.abs((a.box.l + a.box.r) / 2 - a.W / 2) <= 2;
+      check(r.open && r.at.shown && r.at.tray === 6 && r.at.lines > 0 && r.at.over === 0 && r.repop.over === 0 && onScreen(r.at) && onScreen(r.repop) && (h <= 700 ? r.anims === 0 : centred(r.at) && r.anims > 0),
+        `kraken tray banner ${w}x${h}: the level banner ("${r.at.text}") up while the tray is open covers no tray button (${r.at.over} px², ${r.repop.over} px² as it pops again) and stays on screen${w === 390 ? ', centred' : ''} (${J(r)})`);
+      await closeK(bc);
+    }
   });
 
   // ---------------------------------------------------------------------------- kraken: the records it saves

@@ -3,6 +3,7 @@
 // styles in town.css. townMode.js creates it for its view 'quiz'.
 //
 // createQuizPanel({ root, ctx }) → { open(), close(), onKey(e, down) → handled, refresh(), get active, api }
+// wrongLine(right) → { html, text, live }: Quizzle's words after a wrong answer (pure; tests/ashore.cjs reads it)
 //
 // root: the #quiz-screen section (its ids are looked up inside it, then in the document; a missing one is
 //   replaced by a detached element, so a partial page never throws).
@@ -109,6 +110,22 @@ const GOOD_TRY = Number.isFinite(Q.GOOD_TRY) ? Q.GOOD_TRY : 10;
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
 const now = () => (globalThis.performance ? performance.now() : Date.now());
+
+/**
+ * What Quizzle says after a wrong answer (§7.2): "Not quite! The answer is: …" with the right answer whole, so it
+ * reads for every answer of the bank and every sum ("It's far too salty.", "Hello there!", "Puffs up like a
+ * ball.", "12."); the full stop only when the answer has no ending of its own.
+ * → { html (the .qf-say line), text (that line as read), live (#quiz-live's first sentence) }
+ */
+export function wrongLine(right) {
+  const a = String(right ?? '').trim();
+  const end = /[.!?…]$/.test(a) ? '' : '.';
+  return {
+    html: `<b>Not quite!</b> The answer is: <b>${esc(a)}</b>${end}`,
+    text: `Not quite! The answer is: ${a}${end}`,
+    live: `Not quite. The answer is: ${a}${end}`,
+  };
+}
 
 export function createQuizPanel({ root = null, ctx = null } = {}) {
   const C = ctx && typeof ctx === 'object' ? ctx : {};
@@ -526,7 +543,7 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     fb.className = `quiz-feedback ${ok ? 'good' : 'oops'}`;
     fb.innerHTML =
       `<span class="qf-bird" aria-hidden="true">${QUIZZLE_SVG}</span>` +
-      (ok ? '<p class="qf-say"><b>Right you are!</b></p>' : `<p class="qf-say"><b>Not quite!</b> It's ${esc(right)}.</p>`) +
+      `<p class="qf-say">${ok ? '<b>Right you are!</b>' : wrongLine(right).html}</p>` +
       (q.fact ? `<p class="qf-fact"><span class="qf-label">Fun fact:</span> ${esc(q.fact)}</p>` : '');
     if (ok) {
       sfx('bell');
@@ -546,7 +563,7 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
         if (f.bottom > b.bottom + 1 || f.top < b.top - 1) fb.scrollIntoView({ block: 'nearest', behavior: 'auto' });
       }, 800);
     }
-    announce(`${ok ? 'Right!' : `Not quite. The answer is ${right}.`}${q.fact ? ` ${q.fact}` : ''}`);
+    announce(`${ok ? 'Right!' : wrongLine(right).live}${q.fact ? ` ${q.fact}` : ''}`);
     return true;
   }
 
@@ -697,7 +714,8 @@ export function createQuizPanel({ root = null, ctx = null } = {}) {
     if (R2.saved && R2.gold > 0) {
       if (R2.newGold > 0) lines.push(['gold', `+${R2.newGold} gold — ${R2.newStars > 1 ? `${NUMBER_WORDS[R2.newStars] || R2.newStars} new stars` : 'new star'}!`]);
       if (R2.oldGold > 0) lines.push(['gold', `+${R2.oldGold} gold for the stars you won before!`]);
-      if (R2.goodTry) lines.push(['gold', `+${GOOD_TRY} gold — Good try!`]);
+      // ("Good try!" consoles a round that won no star; after a star it is the island's first-round bonus)
+      if (R2.goodTry) lines.push(['gold', R2.stars > 0 ? `+${GOOD_TRY} gold for your first round here!` : `+${GOOD_TRY} gold — Good try!`]);
     } else if (!R2.saved && R2.owed > 0) {
       lines.push(['warn', R2.reason === 'chest' ? "Couldn't save your gold this time. It waits for you!" : "Couldn't save your stars, so no gold this time. Your gold waits for you!"]);
     } else if (R2.stars > 0 && R2.newStars === 0) {

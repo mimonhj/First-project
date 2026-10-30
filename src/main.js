@@ -1984,7 +1984,7 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   state.tip = { text: '', until: 0 };
   // The special shots' loads (SPEC3 §2.5): 4 of each recipe owned (+ the Powder Windmill's), every level start;
   // nothing carries over.
-  state.loads = specials.startLoads(state.powder, islandRules.tierOf ? islandRules.tierOf(islandCfg, 'windmill') : 0);
+  refillLoads();
   closeTray();
   // New ammo this voyage: say so once the fly-in is over (one-time tips, SPEC2 §5.5); a special shot's the first
   // level start with its recipe owned (SPEC3 §6.5).
@@ -2115,6 +2115,11 @@ function newGame(level = 1) {
   state.gold = 0;
   blurActive();
   startLevel(level);
+}
+
+// The special shots' loads, full (SPEC3 §2.5): at every level start and at the Kraken's checkpoint (its rise).
+function refillLoads() {
+  state.loads = specials.startLoads(state.powder, islandRules.tierOf ? islandRules.tierOf(islandCfg, 'windmill') : 0);
 }
 
 function retryLevel() {
@@ -2293,6 +2298,13 @@ function exitVoyage() {
   showMenu();
 }
 
+// Without Extra cannons or without Heavy shot (the shipyard's guns and shot rows): the Kraken's Deep is a broadside
+// race with the Inkheart, and those two (450 gold) take the stock ship's runs lost on both tries from 1 in 4 to
+// about 1 in 20 (bot v3, SPEC3 §19, Stage 4).
+function fewUpgrades() {
+  const up = (shipConfig && shipConfig.up) || {};
+  return !((Number(up.guns) || 0) >= 1 && (Number(up.shot) || 0) >= 1);
+}
 // What hurt you most on a Voyage III level, and how to beat it (the shipwreck card's tip).
 const SINK_TIPS = {
   shell: 'Tip: mortar shells land inside the orange circles. Steer out of them, or close in on the Bomb Ketch!',
@@ -2325,6 +2337,11 @@ function playerSunk() {
   }
   // After the Kraken's rise: "Try again from the Kraken" first (SPEC3 §5.7.6; Enter does it too).
   const fromKraken = !!(kraken && krakenCheckpoint && krakenCheckpoint.level === state.level && kseq.stage && kseq.stage !== 'dread');
+  // The finale sunk by its ships before the Kraken rose, on a ship with few shipyard upgrades: the shipyard is the
+  // way through (the card's "Visit the dock").
+  if (kraken && !fromKraken && worst && SHIP_TYPES[worst[0]] && fewUpgrades()) {
+    tip = `Tip: the ${SHIP_TYPES[worst[0]].name.replace(/^The /, '')} hits hard! Extra cannons and Heavy shot from the shipyard will help.`;
+  }
   show(ui.krakenRetry, fromKraken);
   ui.overSummary.innerHTML =
     `${SHIP_TYPES.player.name} went down near ${placeName(meta)}.` +
@@ -2779,11 +2796,7 @@ function krakenCtx() {
     sfx: (name, x, z, o) => audio.play(name, sfxAt(x, z, o && o.duration > 0 ? { duration: o.duration } : undefined)),
     tables: { STATUS: specials.STATUS, INK: mechanics3.INK, RAIDERS, WORDS3: specials.WORDS3 },
     // the Pearl's gold goes into this level's plunder, so finishLevel banks it (§5.7.1 step 5)
-    pearl: (gold) => {
-      const g = Math.max(0, Math.round(Number(gold) || 0));
-      state.gold += g;
-      kseq.pearl += g;
-    },
+    pearl: (gold) => takePearl(gold),
   };
 }
 // A level with a Kraken (def.kraken): the beast waits (idle) until the sequence raises it, and its model builds
@@ -2820,6 +2833,16 @@ function disposeKraken() {
 }
 // The fight is on: from the rise until it is driven off.
 const krakenFighting = () => !!kraken && (kseq.stage === 'rise' || kseq.stage === 'fight');
+// Driven off, its Pearl bobbing up or on its way to you (and you afloat): the level is won (§5.7.1 step 5), so
+// leaving now banks it, the Pearl included (askLeave, leaveBattle, levelWinnings).
+const krakenOff = () => !!kraken && (kseq.stage === 'gone' || kseq.stage === 'over') && state.deathTimer <= 0 && !!player && !player.sinking;
+const pearlOwed = () => (krakenOff() && !(kseq.pearl > 0) ? KR.pearl : 0);
+// The Pearl's gold into this level's plunder (finishLevel banks it and says so on the Victory card).
+function takePearl(gold) {
+  const g = Math.max(0, Math.round(Number(gold) || 0));
+  state.gold += g;
+  kseq.pearl += g;
+}
 
 // Your guns' targets (§5.8): each raised part as a pseudo-ship, one wrapper per part id per rise, updated in
 // place each step (a volley's per-target sums are keyed by it). hp: the part's own (a tentacle's) or the bar, so
@@ -2966,6 +2989,9 @@ function startRise(short = false) {
   krakenParts.clear();
   krakenList.length = 0;
   krakenCheckpoint = { level: state.level, gold: state.gold, goldAtLevelStart: state.goldAtLevelStart };
+  // (the loads refill here too, SPEC3 §2.5: a Stink shot spent on the Inkheart's crew is back for the Kraken, so the
+  // banner's "Stink shot makes it let go!" holds; the gun card and the tray redraw from the loads)
+  refillLoads();
   const B = KR.words.banner;
   const how = B.how + (ownsRecipe('stink') ? B.howStink : '');
   showBanner(`${B.rise}<small>${how}</small>`, short ? KR.shortRise : KR.rise, 'rise');
@@ -3045,10 +3071,17 @@ function babyKraken() {
 }
 
 // "Try again from the Kraken" (§5.7.6): the level again from its rise, with the plunder from then; the level's own
-// start stays the gold banked from when the Kraken is driven off.
+// start stays the gold banked from when the Kraken is driven off. On offer at the shipwreck card, and at the
+// shipyard you went to from there or left the fight for (the pause dialog's Shipyard): its way back to sea is the
+// Kraken too, with what you bought there (startLevel builds your ship again). The whole level stays a level card.
+function krakenRetryHere() {
+  const cp = krakenCheckpoint;
+  if (!cp || cp.level !== state.level) return false;
+  return state.mode === 'over' || (state.mode === 'dock' && (dock.from === 'over' || dock.from === 'quit'));
+}
 function retryFromKraken() {
   const cp = krakenCheckpoint;
-  if (!cp || state.mode !== 'over') return false;
+  if (!cp || !krakenRetryHere()) return false;
   blurActive();
   state.gold = cp.gold;
   startLevel(cp.level, { fromKraken: true });
@@ -3800,10 +3833,16 @@ function damagePseudo(t, amount, x, z, info) {
   const hx = x ?? t.x;
   const hz = z ?? t.z;
   const py = (info && info.y) || 3;
-  if (r.word) pops.pop(r.word, hx, py + 2.4, hz, 'kraken', r.word === KR.words.bullseye ? 'eye' : '');
+  const v = info && info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
+  // The part's word (BULLSEYE!, OUCH!, CRIT!) once per volley, as a ship's words are (SPEC2 §2.5: the volley's
+  // summed damage number says how hard it hit); a hit outside a volley says it each time.
+  const TW = v ? volleyTarget(v, t) : null;
+  if (r.word && (!TW || TW.word !== r.word)) {
+    if (TW) TW.word = r.word;
+    pops.pop(r.word, hx, py + 2.4, hz, 'kraken', r.word === KR.words.bullseye ? 'eye' : '');
+  }
   // (a squelch of violet spray where the ball went in)
   puff(hx, py, hz, 4, 0x7a4f86, 2.2, 3, 0.55, 0.5, GRAVITY * 0.5, false, 'glow');
-  const v = info && info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
   const dmg = Math.max(0, Number(r.dmg) || 0);
   if (info && info.status && kraken) {
     const T = v ? volleyTarget(v, kraken) : null; // (once per volley for the whole beast)
@@ -5288,11 +5327,14 @@ function askLeave(to) {
   pauseUi.to = to;
   pauseUi.askedAt = performance.now();
   ui.leaveWhy.textContent = '';
-  // "Level cleared!" is counting down: the level is won, and leaving banks it (see leaveBattle).
-  const won = state.clearTimer > 0;
+  // "Level cleared!" is counting down, or the Kraken is driven off (its Pearl on its way): the level is won, and
+  // leaving banks it (see leaveBattle).
+  const off = state.clearTimer <= 0 && krakenOff();
+  const won = state.clearTimer > 0 || off;
   ui.leaveNo.textContent = won ? 'Stay' : 'Keep fighting';
   if (won) {
-    ui.leaveQ.textContent = to === 'dock' ? 'Level cleared! On to the shipyard?' : 'Level cleared! Back to the main menu?';
+    const head = off ? 'The Kraken is driven off!' : 'Level cleared!';
+    ui.leaveQ.textContent = to === 'dock' ? `${head} On to the shipyard?` : `${head} Back to the main menu?`;
     const b = document.createElement('b');
     b.textContent = `${levelWinnings()} gold`;
     ui.leaveWhy.append('This level is won: its ', b, ' of plunder and bonuses goes into your treasure chest', state.level < LEVELS.length ? ' and the next level opens.' : '.');
@@ -5312,6 +5354,15 @@ function askLeave(to) {
     ui.leaveWhy.append('Nothing plundered in this level yet.');
   }
   ui.leaveWhy.append(' Your treasure chest, upgrades and unlocked levels stay.');
+  // After the Kraken's rise (its checkpoint, §5.7.6): the shipyard's way back to sea is the Kraken; the main menu's
+  // level card is the whole level.
+  if (kraken && krakenCheckpoint && krakenCheckpoint.level === state.level) {
+    ui.leaveWhy.append(
+      to === 'dock'
+        ? ' At the shipyard you can try again from the Kraken, with the plunder you had when it rose.'
+        : ` Next time, ${placeName(LEVELS[state.level - 1].env.meta)} starts from the beginning.`,
+    );
+  }
   show(ui.pauseConfirm, true);
   show(ui.pauseChoices, false);
   ui.leavePrompt.focus({ preventScroll: true });
@@ -5338,8 +5389,11 @@ function leaveBattle(to, now = false) {
   if (to !== 'dock' && to !== 'menu') return false;
   // "Level cleared!" is counting down: the level is won. It is finished first, as when the countdown ends
   // (plunder, loot afloat and bonuses banked, the next level opened), and left as from the level-cleared
-  // screen: the shipyard with its ways on (sail on, or the title), or the title.
-  if (state.clearTimer > 0) {
+  // screen: the shipyard with its ways on (sail on, or the title), or the title. So is a Kraken driven off whose
+  // Pearl hasn't reached you yet: the Pearl comes with you (SPEC3 §5.7.1).
+  const off = state.clearTimer <= 0 && krakenOff();
+  if (state.clearTimer > 0 || off) {
+    if (off) takePearl(pearlOwed());
     state.clearTimer = 0;
     finishLevel(); // mode 'levelDone' ('won' after a finale), that screen up behind the pause dialog
     if (to === 'menu') {
@@ -5367,7 +5421,7 @@ function leaveBattle(to, now = false) {
 function levelWinnings() {
   const def = LEVELS[state.level - 1];
   const mech = Math.max(0, Math.round(Number(mechanics.bonus()) || 0));
-  const loot = state.gold - state.goldAtLevelStart + coins.length * COIN_VALUE;
+  const loot = state.gold - state.goldAtLevelStart + coins.length * COIN_VALUE + pearlOwed();
   return Math.max(0, Math.round(loot + def.bonus + state.captures * CAPTURE.prizeBonus + mech));
 }
 // This level's unbanked plunder is dropped exactly as in a shipwreck: the voyage's gold goes back to what it
@@ -6492,8 +6546,9 @@ function leaveDock(action) {
   if (action === 'menu' && !exits.includes('menu')) action = 'title';
   if (!exits.includes(action)) return false;
   if (action === 'next') nextLevel();
-  else if (action === 'retry') retryLevel();
-  else if (action === 'menu') exitVoyage();
+  else if (action === 'retry') {
+    if (!retryFromKraken()) retryLevel(); // (from the Kraken when its checkpoint holds, §5.7.6)
+  } else if (action === 'menu') exitVoyage();
   else showMenu();
   return true;
 }
@@ -6800,7 +6855,7 @@ function dockExitList() {
   const here = LEVELS[state.level - 1].env.meta.name;
   const label = {
     next: `Set sail for ${next}`,
-    retry: `Try again: ${here}`,
+    retry: krakenRetryHere() ? 'Try again from the Kraken' : `Try again: ${here}`,
     menu: 'Main menu',
     title: 'Back to the title',
   };
@@ -8269,6 +8324,7 @@ const FRAME = {
   landAhead: 0.8, // ... now or this many s ahead
   rmGap: 1.5, // reduced motion: s between cuts at least
   rmSlip: 0.25, // reduced motion: s she must stay outside the held view before it cuts again
+  ringReach: 8, // u: a Kraken warning ring whose edge is this close to your hull is kept in view with your ship
 };
 const frameCam = new THREE.PerspectiveCamera(55, 1, 0.5, 900);
 const framing = {
@@ -8458,7 +8514,33 @@ function framingCollect(e, L0, B) {
   }
   fpAdd(e.x, popHeight(e), e.z, 2, L0, B);
   fpHull(player, 3, L0, B);
+  // the Kraken's warning rings by your hull (frameRings), each as 8 points round its rim, with your hull
+  for (const rg of frameRings) {
+    for (let k = 0; k < 8; k++) {
+      const a = (k / 8) * Math.PI * 2;
+      fpAdd(rg.x + Math.sin(a) * rg.r, 0.2, rg.z + Math.cos(a) * rg.r, 3, L0, B);
+    }
+  }
   return fpN;
+}
+// The Kraken's warning rings close to your hull this frame, or to where your ship will be when they land (a
+// tentacle's slam or grab, its ink blob, SPEC3 §5.7.3): a framing view keeps them on screen with your ship, so the
+// view turned toward its head in the Last Stand never leaves the ring that can grab you off the side of a phone
+// held upright (every threat telegraphed ≥ 1.5 s by a ring, §0.1). The chase view shows them anyway.
+const frameRings = [];
+function collectFrameRings() {
+  frameRings.length = 0;
+  if (!kraken || !player || player.sinking || kseq.stage !== 'fight') return;
+  const V = krakenVis || kraken.visuals();
+  const reach = FRAME.ringReach + player.type.len / 2;
+  const vx = fwdX(player.h) * player.speed;
+  const vz = fwdZ(player.h) * player.speed;
+  for (const rg of (V && V.rings) || []) {
+    if (!rg || !Number.isFinite(rg.x) || !Number.isFinite(rg.z) || !(rg.r > 0)) continue;
+    const left = clamp((Number(rg.T) || 0) - (Number(rg.t) || 0), 0, 3);
+    const d = Math.min(Math.hypot(rg.x - player.x, rg.z - player.z), Math.hypot(rg.x - player.x - vx * left, rg.z - player.z - vz * left));
+    if (d <= rg.r + reach) frameRings.push(rg);
+  }
 }
 // The boxes for one choice of where her hull (bit 1) and her tag and pops (bit 2) go: beside what hangs below
 // the top row (under the row, within [xa, xb]) or below it all (anywhere across).
@@ -8756,6 +8838,7 @@ function updateFraming(dt, paused, chaseLook, side = camSide) {
 }
 function stepFraming(dt, side, tall) {
   const rm = reducedMotion();
+  collectFrameRings();
   // 1. The ship to frame. A different one must stay the one for FRAME.pick s first, unless nothing is framed,
   // the framed one is gone, or you just fired at her.
   const cand = framingFocus();

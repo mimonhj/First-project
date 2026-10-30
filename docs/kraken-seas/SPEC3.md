@@ -1864,6 +1864,57 @@ So L7 < L8 < L9 holds. At hp 2850, L9's medians are 155 / 110.5 / 144 / 91, and 
 | TOWN-SCAFFOLD | 3D: the build scaffold stands round both the old and the new building, with bright poles, braces, a ladder and flags (§8.3). Plus the "Thank you, Captain!" bubble over `env.wavers`, a quiz podium so the captain doesn't hide the professor, and the sparkle on the new building's real top (§7.1, §8.3). |
 | FLIP | `WITH_KRAKEN = true` in `voyage.js`, together with 3C's §13.4 edits and `npm test` gaining `voyage3` and `ashore` (21 suites); `test:balance` is opt-in (§12, §13.5). |
 
+### Stage 4 (review)
+
+A review of the live update (8afd067) in the seven dimensions of §12. Each finding was reproduced, or refuted, by an
+independent skeptic; the record is `docs/kraken-seas/stage4-review.md`. Ten were confirmed and three refuted.
+
+**Confirmed and fixed**
+
+| Finding | Severity | What changed | Sections |
+|---|---|---|---|
+| SPS-1 | major | Special loads refill at the Kraken's rise (the checkpoint), not only on its retry, so the rise banner's "Stink shot makes it let go!" is true (`refillLoads()` in `startLevel` and `startRise`). | §2.5, §5.7.1, §5.7.6 |
+| kraken4:F1 | major | On a portrait phone in the Last Stand, the grab and slam rings near your ship landed off-screen. Rings whose edge is within 8 u (`FRAME.ringReach`) plus half a hull of your ship, now or where it will be when they land, join the framing's must-see group. | §5.7.3, §6.4, §15 |
+| SAVES-1 | major | The shipyard keeps the Kraken checkpoint, reached from the shipwreck card's Visit the dock or from the pause menu's Shipyard in the fight: its main exit is "Try again from the Kraken", with what you bought there aboard. The leave question says what each way out does ("Next time, the Kraken's Deep starts from the beginning" for the main menu). | §5.7.6, §6.3 |
+| SAVES-2 | polish | Leaving once the Kraken is driven off, before the Pearl reaches you, wins the level: the question reads "The Kraken is driven off! …", and the Pearl and plunder are banked. | §5.7.1, §0.1 |
+| kraken4:F2 | minor | BULLSEYE! (and OUCH!, CRIT!) pops once per broadside, not once per ball. | §6.4 |
+| A11Y4-1 | minor | On portrait screens up to 700 px tall, a banner shown while the ammo tray is open moves left of the tray (no pop animation), so neither covers the other. | §6.2, §15 |
+| SPS-3 | minor | On a ship with no Extra cannons or no Heavy shot, level 9 lost before the Kraken rises gets the tip "the Inkheart hits hard! Extra cannons and Heavy shot from the shipyard will help." **No numbers changed** (see below). | §5.6, §5.9 |
+| QUIZ-1 | minor | The wrong-answer line is "Not quite! The answer is: X" (a full stop only when X has no ending of its own), which reads right for all 120 bank answers and the generated sums. It replaced "Not quite! It's X." ("It's It's far too salty."). | §7.2, §7.3 |
+| QUIZ-2 | polish | The one-time 10 gold reads "Good try!" only after a round with no star; after a starred round, "+10 gold for your first round here!". The gold is unchanged. | §7.2 |
+| TOWN-TAPNPC | minor | A tap or click on Builder Bess or Professor Barnacle walks the captain into their place, facing it. Before, he walked past Bess or into her. Nothing opens. | §7.1, §8.3 |
+
+**SPS-3, why no numbers.** Bot v3 on level 9 ran 553 stock-ship runs and 672 late-ship runs, two tries each. The stock
+ship loses a broadside race: the Inkheart's 6 × 5 sinks 120 hp in about 10–12 s, while the stock ship's 3 × 10 needs
+about 28 s for her 360. Results for runs lost on both tries:
+
+- Today's numbers: 16 of 64.
+- Changes that did not help: Inkheart damage 4, `maxAttackers` 2, slower Inkheart reloads, a near-full hull patch at
+  wave 2.
+- Inkheart damage 3: meets the stock target, but cuts the late ship's L9 medians by 16–29% and drops L9 below L8.
+- Extra cannons plus Heavy shot (450 gold): 3 of 64.
+
+So the shipyard is the fix, and the tip says so. With no upgrades, the Kraken fight itself still runs 245–410 s.
+
+**Refuted** (no change):
+- SPS-2: Fire vs the Iron Turtle is as §2.2 and §4.2 say.
+- kraken4:F3: at the default sail the fight is 130–171 s on the late ship.
+- PERF-WARM-FIRSTDRAW: the first draw of the deep bubbles is slow only on SwiftShader, and nothing reaches a child.
+
+**Tests.** New and changed checks:
+- `tests/voyage3.cjs`: sections `kraken-fix4` (8 checks) and `kraken-frame` (1 check).
+- `tests/battle.cjs`: `kraken-tray`'s banner checks at 320×480, 360×640 and 390×844.
+- `tests/town.cjs`: section `kraken4`, taps on Bess and Barnacle.
+- `tests/ashore.cjs`: the QUIZ-1 and QUIZ-2 checks, plus the reworded wrong-answer and results lines.
+
+Each new check fails on 8afd067 and passes after the fix.
+
+Robustness fixes:
+- `tests/controls.cjs` FLOW-5 and `tests/ashore.cjs` `tabs` wait for the other tab's storage event by polling every
+  250 ms for up to 120 s. Under load a tab can be stalled for 10–20 s behind the shared software GPU.
+- `tests/smoke.cjs`'s Act I bot may try a level three times. Its rolls aren't repeatable, because hit-stop is gated by
+  the wall clock.
+
 ---------------------------------------------------------------------------------------------------
 
 ## Appendix A — DOM ids added in Stage 0 (all start `hidden`)

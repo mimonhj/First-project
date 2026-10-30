@@ -2327,6 +2327,10 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
 
     // FLOW-5: two tabs of the game. Tab A buys Boarding party at the tavern, then tab B buys Cutlass drills: both
     // upgrades are kept, each paid once; then each tab captures a ship: both captures are counted in the feats.
+    // (Another tab's write reaches a tab as a storage event when both are free: the two share one software GPU, and
+    // right after a tab builds a battle and the title it can come 10 s later, far more on a busy machine. So the
+    // waits below poll on a timer, not on the tab's frames (a few a second here), and give it two minutes.)
+    const TABS_WAIT = { timeout: 120000, polling: 250 };
     {
       const tabs = await browser.newContext({ viewport: { width: 1024, height: 600 } });
       await tabs.addInitScript(() => { try { if (!sessionStorage.getItem('seeded')) { sessionStorage.setItem('seeded', '1'); if (!localStorage.getItem('pirates-ahoy-purse')) { localStorage.setItem('pirates-ahoy-purse', '1000'); localStorage.setItem('pirates-ahoy-unlocked', '3'); localStorage.setItem('pirates-ahoy-tutorial-done', '1'); } } } catch {} });
@@ -2339,12 +2343,14 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
       const a = await A.evaluate(() => ({ ok: window.__game.armory.buy('boarders'), purse: window.__game.state.purse }));
       // (another tab's writes reach this one a moment later, sometimes seconds under load, and one record at a time:
       // A saves the armory first, then the chest, so B waits for both before it buys)
-      await B.waitForFunction(() => /"boarders":1/.test(localStorage.getItem('pirates-ahoy-armory') || '') && localStorage.getItem('pirates-ahoy-purse') === '800', null, { timeout: 30000 }).catch(() => {});
+      await B.waitForFunction(() => /"boarders":1/.test(localStorage.getItem('pirates-ahoy-armory') || '') && localStorage.getItem('pirates-ahoy-purse') === '800', null, TABS_WAIT).catch(() => {});
       const b = await B.evaluate(() => ({ ok: window.__game.armory.buy('cutlass'), purse: window.__game.state.purse, up: window.__game.armory.config.up }));
       const saved = await savedOf(B);
-      const aSees = await A.waitForFunction(() => window.__game.armory.config.up.cutlass === 1, null, { timeout: 30000 }).then(() => true, () => false);
+      const aSees = await A.waitForFunction(() => window.__game.armory.config.up.cutlass === 1, null, TABS_WAIT).then(() => true, () => false);
+      // (what A has, if it never got there: its game's record and the stored one as A reads it)
+      const aHas = aSees ? null : await A.evaluate(() => ({ up: window.__game.armory.config.up, stored: localStorage.getItem('pirates-ahoy-armory') }));
       check(start.A === 1000 && start.B === 1000 && a.ok && a.purse === 800 && b.ok && b.purse === 650 && b.up.boarders === 1 && b.up.cutlass === 1 && saved.purse === '650' && saved.armory && saved.armory.up.boarders === 1 && saved.armory.up.cutlass === 1 && aSees,
-        `two tabs at the tavern: A buys Boarding party (200), then B buys Cutlass drills (150): both are kept and 350 is paid in all, and A's tavern shows B's purchase (${J({ start, a, b, saved: { purse: saved.purse, armory: saved.armory }, aSees })})`);
+        `two tabs at the tavern: A buys Boarding party (200), then B buys Cutlass drills (150): both are kept and 350 is paid in all, and A's tavern shows B's purchase (${J({ start, a, b, saved: { purse: saved.purse, armory: saved.armory }, aSees, ...(aHas ? { aHas } : {}) })})`);
       await A.evaluate(() => window.__game.dock.leave('title'));
       await B.evaluate(() => window.__game.dock.leave('title'));
       const capture = (p) => p.evaluate(() => {
@@ -2359,12 +2365,13 @@ const BROWSER_ARGS = ['--use-gl=angle', '--use-angle=swiftshader', '--enable-uns
         return { captures: G.feats.captures, prizes: G.feats.prizes };
       });
       const fa = await capture(A);
-      await B.waitForFunction(() => /"captures":1/.test(localStorage.getItem('pirates-ahoy-feats') || ''), null, { timeout: 30000 }).catch(() => {});
+      await B.waitForFunction(() => /"captures":1/.test(localStorage.getItem('pirates-ahoy-feats') || ''), null, TABS_WAIT).catch(() => {});
       const fb = await capture(B);
       const feats = (await savedOf(B)).feats;
-      const aFeats = await A.waitForFunction(() => window.__game.feats.captures === 2, null, { timeout: 30000 }).then(() => true, () => false);
+      const aFeats = await A.waitForFunction(() => window.__game.feats.captures === 2, null, TABS_WAIT).then(() => true, () => false);
+      const aCounts = aFeats ? null : await A.evaluate(() => ({ captures: window.__game.feats.captures, stored: localStorage.getItem('pirates-ahoy-feats') }));
       check(fa.captures === 1 && feats && feats.captures === 2 && feats.prizes && feats.prizes.privateer === 2 && fb.captures === 2 && aFeats,
-        `two tabs, one capture each: the saved feats count both (captures ${feats && feats.captures}, privateers ${feats && feats.prizes && feats.prizes.privateer}), and each tab shows both (${J({ fa, fb, saved: feats, aFeats })})`);
+        `two tabs, one capture each: the saved feats count both (captures ${feats && feats.captures}, privateers ${feats && feats.prizes && feats.prizes.privateer}), and each tab shows both (${J({ fa, fb, saved: feats, aFeats, ...(aCounts ? { aCounts } : {}) })})`);
       await tabs.close();
     }
 

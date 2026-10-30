@@ -411,7 +411,9 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     if (!finite(x, z)) return false;
     const s = walk.snap(x, z, 3);
     if (!s) return false;
-    if (startAuto(s, null, false)) return true;
+    // (a place's own spot, as a tap on Bess or the professor gives: he turns to the place there, as goTo() does)
+    const at = placeSpots.find((q) => Math.hypot(q.x - s.x, q.z - s.z) < 0.01);
+    if (startAuto(s, at ? at.place : null, false)) return true;
     // A corner shut in by props (or one the path graph misses): walk as near to it as he can get.
     const near = walk.graph.nodes
       .map((n) => ({ ...n, d: Math.hypot(n.x - s.x, n.z - s.z) }))
@@ -441,6 +443,24 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     ringGroup.visible = false;
   }
 
+  // Builder Bess and Professor Barnacle are their places' landmarks (SPEC3 §7.1, §8.3), the only places a person
+  // marks rather than a building: a tap on either walks him into that place's circle (where its prompt shows;
+  // nothing opens: a tapped point just walks there). Each is a standing cylinder to the top of the hat; a camera
+  // volume one stands inside (the professor's lookout tower) doesn't hide them, any other in front does.
+  const NPC_PLACE = { bess: 'builder', barnacle: 'quiz' };
+  const NPC_TAP = { r: 0.5, top: 2.0 };
+  const npcSpots = [];
+  for (const n of Array.isArray(data.npcs) ? data.npcs : []) {
+    const place = n && NPC_PLACE[n.id] ? placeById(NPC_PLACE[n.id]) : null;
+    const to = place && finite(n.x, n.z) ? walk.snap(place.x, place.z, 2) : null;
+    if (!to) continue;
+    const base = walk.heightAt(n.x, n.z) ?? 1.3;
+    npcSpots.push({ x: n.x, z: n.z, y0: base - 0.1, top: base + NPC_TAP.top, to });
+  }
+  const npcHiders = camBlocks.filter((o) => !npcSpots.some((n) => insideBlock(o, n.x, n.z)));
+  // each place's own spot (where goTo() walks him), to know a walk to one
+  const placeSpots = places.map((p) => ({ place: p, ...(walk.snap(p.x, p.z, 2) || { x: NaN, z: NaN }) }));
+
   const raycaster = new THREE.Raycaster();
   const ndc = new THREE.Vector2();
   /** Where a tap at normalised device coordinates lands on the walk ({ x, z }), or null. */
@@ -452,8 +472,21 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const o = raycaster.ray.origin;
     const d = raycaster.ray.direction;
     const hit = walk.pick([o.x, o.y, o.z], [d.x, d.y, d.z]);
-    // A building (or the ship) in front of that point: walk up to it instead of through it.
     const far = hit ? Math.hypot(hit.x - o.x, hit.z - o.z) / Math.max(1e-6, Math.hypot(d.x, d.z)) : 80;
+    // Bess or the professor under the finger: to their place. A pass of its own before the buildings' (the
+    // professor stands inside the lookout tower's volume, which the ray meets first).
+    if (npcSpots.length) {
+      for (let s = 0.5; s < far; s += 0.25) {
+        const x = o.x + d.x * s;
+        const y = o.y + d.y * s;
+        const z = o.z + d.z * s;
+        if (y < 0) break;
+        const n = npcSpots.find((q) => y < q.top && y > q.y0 && Math.hypot(x - q.x, z - q.z) < NPC_TAP.r);
+        if (n) return { x: n.to.x, z: n.to.z };
+        if (npcHiders.some((b) => y < b.top && y > b.y0 && insideBlock(b, x, z))) break;
+      }
+    }
+    // A building (or the ship) in front of that point: walk up to it instead of through it.
     for (let s = 0.5; s < far; s += 0.25) {
       const x = o.x + d.x * s;
       const y = o.y + d.y * s;

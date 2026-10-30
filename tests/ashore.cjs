@@ -13,11 +13,13 @@
 //            ever stops on a bridge, in a place circle, a doorway or at the gangplank (sampled over 120 s);
 //            villagers wait for the captain (LOOK-2)
 // - quiz:    by keyboard only (E, Digit1-4, Tab, Enter, a held Enter, H, Esc): 3 / 4 / 5 right give 1 / 2 / 3
-//            stars and the gold of §7.2 once, replays pay nothing, "Good try!" once, a wrong answer shows ✓ on
-//            the right one and the fun fact with the soft bonk (no buzzer), the next island opens, #quiz-live
-//            texts, the record written before the chest
+//            stars and the gold of §7.2 once, replays pay nothing, "Good try!" once (so called after a round
+//            with no star; after a star "for your first round here"), a wrong answer shows ✓ on the right one,
+//            "Not quite! The answer is: …" (read right for every answer of the bank and every sum) and the fun
+//            fact with the soft bonk (no buzzer), the next island opens, #quiz-live texts, the record written
+//            before the chest
 // - quiztaps: the same by taps on a phone (the places bar, the islands, the answers, Next, the lifebuoy, Leave
-//            quiz, Map, Back to town)
+//            quiz, Map, Back to town); a perfect first round's results don't say "Good try!"
 // - quizrec: a seeded round is the same round; storage full: the stars shown, no gold, the words, and the owed
 //            gold paid exactly once when storage works again (the record refused, or only the chest refused);
 //            the record survives a reload; a corrupt -quiz falls back and is rewritten
@@ -891,6 +893,9 @@ function installHelpers() {
             focus: T.focus(),
           };
         });
+        // (a right answer's squawk follows its bell 380 ms later, on the clock: wait for it here, so a busy machine
+        // doesn't hear it among the next answer's sounds)
+        if (plan[i] === 'right' || plan[i] === 'heldRight') await page.waitForFunction(() => window.__sfx.includes('squawk'), null, { timeout: 30000, polling: 50 }).catch(() => {});
         if (nextHeld.includes(i)) {
           await page.keyboard.down('Enter');
           for (let k = 0; k < 3; k++) await page.keyboard.down('Enter');
@@ -933,13 +938,16 @@ function installHelpers() {
     check(bw.buoy && bw.buoy.removed.length === 1 && bw.buoy.removed[0] !== bw.right && bw.buoy.buoys === 0 && bw.buoy.max === 1 && bw.buoy.gone.join() === bw.buoy.removed.join() && bw.buoy.word === 'Lifebuoy (0 left)' && /^Lifebuoy! .+ is gone\. 0 lifebuoys left\.$/.test(bw.buoy.live),
       `quiz: H throws the round's one lifebuoy (Sea School tier 1): a wrong answer goes (${J(bw.buoy)})`);
     const wrong = A.log[4];
-    const wantWrongLive = `Not quite. The answer is ${wrong.rightText}.${wrong.fact ? ` ${wrong.fact}` : ''}`;
-    check(wrong.after.mode === 'answered' && wrong.after.rightMark && wrong.after.rightMark.answer === wrong.right && wrong.after.rightMark.mark === '✓' && wrong.after.say === `Not quite! It's ${wrong.rightText}.` && wrong.after.fact === `Fun fact: ${wrong.fact}` && wrong.after.live === wantWrongLive && wrong.after.sfx.join() === 'bonk' && bw.after.sfx.filter((n) => n !== 'splash').join() === 'bonk',
+    // (QUIZ-1: "Not quite! The answer is: …" with the answer whole, a full stop only when it has no ending of its own)
+    const wantSay = (t) => `Not quite! The answer is: ${t}${/[.!?…]$/.test(t) ? '' : '.'}`;
+    const wantWrongLive = `Not quite. The answer is: ${wrong.rightText}${/[.!?…]$/.test(wrong.rightText) ? '' : '.'}${wrong.fact ? ` ${wrong.fact}` : ''}`;
+    check(wrong.after.mode === 'answered' && wrong.after.rightMark && wrong.after.rightMark.answer === wrong.right && wrong.after.rightMark.mark === '✓' && wrong.after.say === wantSay(wrong.rightText) && wrong.after.fact === `Fun fact: ${wrong.fact}` && wrong.after.live === wantWrongLive && wrong.after.sfx.join() === 'bonk' && bw.after.sfx.filter((n) => n !== 'splash').join() === 'bonk',
       `quiz: a wrong answer shows ✓ on the right one, "${wrong.after.say}", the fun fact, and only the soft bonk (sounds ${J(wrong.after.sfx)}, with a lifebuoy first ${J(bw.after.sfx)}; #quiz-live "${wrong.after.live.slice(0, 70)}")`);
     const goldA = QUIZ_GOLD[0][0] + GOOD_TRY;
     check(A.result.correct === 3 && A.result.stars === 1 && A.purse === purse0 + goldA && A.chest === String(purse0 + goldA) && A.rec.stars[0] === 1 && A.rec.paid[0] === 1 && A.rec.tried[0] === 1 && A.writes.join() === 'pirates-ahoy-quiz,pirates-ahoy-purse' && A.stored === Q.serializeQuiz(Q.parseQuiz(A.stored)),
       `quiz: 3 right → 1 star and ${goldA} gold (60 + Good try 10): ${purse0} → ${A.purse}, the record written before the chest (${A.writes.join(' → ')})`);
-    check(A.lines.includes('3 of 5 right: a star!') && A.lines.includes('+60 gold — new star!') && A.lines.includes('+10 gold — Good try!') && A.lines.includes('Seagull Sands is open!') && /^Round over at Shallow Shoals\. 3 of 5 right: a star! \+60 gold: new star! \+10 gold: Good try! Seagull Sands is open!/.test(A.live) && A.focus === 'act:next-quiz',
+    // (QUIZ-2: the one-time 10 is "Good try!" only after a round that won no star)
+    check(A.lines.includes('3 of 5 right: a star!') && A.lines.includes('+60 gold — new star!') && A.lines.includes('+10 gold for your first round here!') && !A.lines.some((l) => /Good try/.test(l)) && A.lines.includes('Seagull Sands is open!') && /^Round over at Shallow Shoals\. 3 of 5 right: a star! \+60 gold: new star! \+10 gold for your first round here! Seagull Sands is open!/.test(A.live) && A.focus === 'act:next-quiz',
       `quiz: the results say so (${J(A.lines)}), focus on Next quiz; #quiz-live "${A.live}"`);
     // Round B: 4 right → 2 stars, +15; Round C: 5 right → 3 stars, +15; Round D: 5 right again → nothing
     const fB = await pressResult('again');
@@ -966,6 +974,32 @@ function installHelpers() {
     const F = await round(['wrong', 'right', 'wrong', 'wrong', 'right']);
     check(f1 === 'level:1' && E.result.level === 1 && E.result.stars === 0 && E.purse === D.purse + GOOD_TRY && E.lines.includes('So close: 2 right! Have another go?') && E.lines.includes('+10 gold — Good try!') && F.purse === E.purse && !F.lines.some((l) => /gold/.test(l)) && F.rec.tried[1] === 1 && F.rec.stars[1] === 0,
       `quiz: Seagull Sands, 2 right: "So close: 2 right! Have another go?", Good try +${E.purse - D.purse} once, nothing the second time (${J(E.lines)} ${J(F.lines)})`);
+    // QUIZ-1: every wrong answer of these rounds reads "Not quite! The answer is: …" on screen and in #quiz-live, and
+    // the panel's wrongLine() reads right for every answer of the bank and for sums of every band
+    const wrongs = [A, B, E, F].flatMap((R) => R.log.filter((st) => st.pick !== undefined));
+    const badWrong = wrongs.filter((st) => st.after.say !== wantSay(st.rightText) || st.after.live !== `${wantSay(st.rightText).replace('Not quite!', 'Not quite.')}${st.fact ? ` ${st.fact}` : ''}`);
+    const bank = await page.evaluate(async () => {
+      const P = await import('/src/quizPanel.js');
+      const B = await import('/src/quizBank.js');
+      const Qm = await import('/src/quiz.js');
+      if (typeof P.wrongLine !== 'function') return { err: 'src/quizPanel.js has no wrongLine()' };
+      const answers = B.QUESTIONS.map((q) => q.right);
+      const n = answers.length;
+      for (const band of [1, 2, 3]) for (let k = 1; k <= 40; k++) answers.push(Qm.sumQuestion(band, Qm.rng(k * 131 + band)).right);
+      const bad = [];
+      const p = document.createElement('p');
+      for (const a of answers) {
+        const L = P.wrongLine(a);
+        p.innerHTML = L.html;
+        const end = /[.!?…]$/.test(a) ? '' : '.';
+        const ok = L.text === `Not quite! The answer is: ${a}${end}` && p.textContent === L.text && L.live === `Not quite. The answer is: ${a}${end}` &&
+          !/It's It's|[.!?…][.!?]$/.test(L.text) && p.querySelectorAll('b').length === 2 && p.querySelectorAll('b')[1].textContent === a;
+        if (!ok) bad.push(L.text);
+      }
+      return { n, sums: answers.length - n, bad, eg: ['sea-drink', 'pirates-ahoy'].map((id) => B.QUESTIONS.find((q) => q.id === id)).filter(Boolean).map((q) => P.wrongLine(q.right).text) };
+    });
+    check(wrongs.length === 9 && badWrong.length === 0 && !bank.err && bank.n >= 100 && bank.sums === 120 && bank.bad.length === 0,
+      `QUIZ-1: ${wrongs.length} wrong answers read "Not quite! The answer is: …" on screen and in #quiz-live${badWrong.length ? ' -> ' + J(badWrong.map((st) => st.after.say)) : ''}; wrongLine() reads right for all ${bank.n} bank answers and ${bank.sums} sums (${bank.err || J(bank.eg)}${bank.bad && bank.bad.length ? ' -> ' + J(bank.bad.slice(0, 6)) : ''})`);
     // Esc in a round: back to the map, "Your stars are safe"; Esc on the map: the town, focus on the bell's button
     await pressResult('again');
     await page.keyboard.press(`Digit1`);
@@ -1008,10 +1042,13 @@ function installHelpers() {
       await tap(`#quiz-answers [data-answer="${q.right}"]`);
       await tap('#quiz-next-btn');
     }
-    const res = await page.evaluate(() => ({ result: T.q().result, purse: window.__game.state.purse, lines: T.resultLines() }));
+    const res = await page.evaluate(() => ({ result: T.q().result, purse: window.__game.state.purse, lines: T.resultLines(), live: T.text('quiz-live') }));
     const missed1 = missed.splice(0);
     check(missed1.length === 0 && r.view === 'quiz' && st.mode === 'question' && st.buoys === 2 && buoy.removed.length === 1 && buoy.left === 1 && res.result && res.result.correct === 5 && res.result.stars === 3 && res.purse === purse0 + 90 + GOOD_TRY,
       `quiztaps: a places-bar tap walks to the bell; taps play Shallow Shoals (the lifebuoy ${J(buoy)}, School tier 2: 2 a round): 5 right, 3 stars, +${res.purse - purse0} gold (${J(res.lines)})${missed1.length ? ' -> never shown: ' + missed1.join(', ') : ''}`);
+    // QUIZ-2: a perfect first round doesn't say "Good try!": its one-time 10 is the first round's
+    check(!!res.result && res.result.correct === 5 && res.lines.includes('5 of 5 right: all three stars!') && res.lines.includes('+10 gold for your first round here!') && !res.lines.some((l) => /Good try/.test(l)) && /\+10 gold for your first round here!/.test(res.live) && !/Good try/.test(res.live),
+      `QUIZ-2: a perfect first round's results: "+10 gold for your first round here!", no "Good try!" (${J(res.lines)}; #quiz-live "${res.live}")`);
     // Next quiz by a tap, an answer, Leave quiz; Map; Back to town
     await tap('#quiz-results [data-act="next-quiz"]');
     const nq = await page.evaluate(() => T.q().round && T.q().round.level);
@@ -1367,30 +1404,34 @@ function installHelpers() {
     const { ctx, page: A } = await open({ label: 'tab-A', store: { ...STORE, 'pirates-ahoy-purse': '3000', 'pirates-ahoy-quiz': null, 'pirates-ahoy-island': null, 'pirates-ahoy-powder': null } });
     const { page: B } = await open({ label: 'tab-B', ctx, store: null });
     for (const p of [A, B]) await walkView(p);
+    // (one tab's write reaches the other as a storage event when both are free: they share one software GPU, so it
+    // can come seconds later, more on a busy machine (tests/controls.cjs FLOW-5). Each wait below is on what the
+    // write changes, polled on a timer, for up to two minutes; the checks then say what each tab has.)
+    const until = (p, fn, arg) => p.waitForFunction(fn, arg, { timeout: 120000, polling: 250 }).catch(() => {});
     // A builds a Cottage; B sees it, and B's own build keeps A's
     await A.evaluate(() => { window.__game.town.open('builder'); T.b().build('homeA'); T.b().skip(); });
-    await frames(B, 3);
+    await until(B, () => window.__game.island.config.t.homeA === 1);
     const b1 = await B.evaluate(() => ({ t: window.__game.island.config.t, plot: window.__game.env.plots.find((p) => p.id === 'homeA').tier }));
     await B.evaluate(() => { window.__game.town.open('builder'); T.b().build('homeB'); T.b().skip(); });
-    await frames(A, 3);
+    await until(A, () => window.__game.island.config.t.homeB === 1);
     const stored = JSON.parse(await A.evaluate(() => T.stored('pirates-ahoy-island')));
     const a1 = await A.evaluate(() => window.__game.island.config.t);
     check(b1.t.homeA === 1 && b1.plot === 1, `tabs: a Cottage built in one tab shows in the other (record ${J(b1.t.homeA)}, the 3D plot at tier ${b1.plot})`);
     check(stored.t.homeA === 1 && stored.t.homeB === 1 && a1.homeA === 1 && a1.homeB === 1, `tabs: the other tab's build keeps the first tab's: tiers never go down (saved ${J(stored.t)}, first tab ${J(a1)})`);
     // A buys Fire shot; B sees it, and B's Frost keeps A's Fire
     await A.evaluate(() => { window.__game.town.back(); window.__game.town.open('tavern'); window.__game.town.api.tavern.powder('fire'); });
-    await frames(B, 3);
+    await until(B, () => window.__game.specials.powder.own.fire === 1);
     const pb = await B.evaluate(() => { const o = window.__game.specials.powder.own; window.__game.town.back(); window.__game.town.open('tavern'); return { own: o, row: T.text(document.querySelector('[data-powder="fire"]')) }; });
     await B.evaluate(() => window.__game.town.api.tavern.powder('frost'));
-    await frames(A, 3);
+    await until(A, () => window.__game.specials.powder.own.frost === 1);
     const pa = await A.evaluate(() => ({ own: window.__game.specials.powder.own, stored: T.stored('pirates-ahoy-powder') }));
     check(pb.own.fire === 1 && /Owned/.test(pb.row) && pa.own.fire === 1 && pa.own.frost === 1 && pa.stored === '{"v":1,"own":{"fire":1,"frost":1,"stink":0}}', `tabs: a recipe bought in one tab shows in the other ("${pb.row}"), and the other's purchase keeps it (${pa.stored})`);
     // A wins a star; B sees it, and B's round with no right answers keeps it
     await A.evaluate(() => { window.__game.town.back(); window.__game.town.open('quiz'); const q = T.q(); q.start(0, 3); for (let i = 0; i < 5; i++) { q.answer(i < 3 ? q.round.question.right : (q.round.question.right + 1) % q.round.question.options.length); q.next(); } });
-    await frames(B, 3);
+    await until(B, () => window.__game.quiz.record.stars[0] === 1);
     const qb = await B.evaluate(() => { window.__game.town.back(); window.__game.town.open('quiz'); return { stars: window.__game.quiz.record.stars, isles: T.isles().slice(0, 2) }; });
     await B.evaluate(() => { const q = T.q(); q.start(0, 4); for (let i = 0; i < 5; i++) { q.answer((q.round.question.right + 1) % q.round.question.options.length); q.next(); } });
-    await frames(A, 3);
+    await until(A, (v) => localStorage.getItem('pirates-ahoy-quiz') === v, await B.evaluate(() => T.stored('pirates-ahoy-quiz')));
     const qs = JSON.parse(await A.evaluate(() => T.stored('pirates-ahoy-quiz')));
     check(qb.stars[0] === 1 && /1 of 3 stars/.test(qb.isles[0].words) && !qb.isles[1].disabled, `tabs: a star won in one tab shows in the other (${J(qb.stars)}; ${qb.isles[0].words})`);
     check(qs.stars[0] === 1 && qs.paid[0] === 1, `tabs: the other tab's round keeps the first tab's star and its gold paid: stars never go down (saved ${J(qs.stars)}, paid ${J(qs.paid)})`);

@@ -29,6 +29,11 @@
 //   rise's banner clear of the rising head, "All stop!" (kraken-calm-look); a grab's pops clear of the grab strip on
 //   small phones (kraken-calm-pops); FIRE SHIP! and RAM! arrows at the screen edge for threats off the view, the WAVE!
 //   arrow clear of the minimap and the REPEL BOARDERS! strip, a hazard's how-to banner keeps its time (seas-cues)
+// - the Stage 4 review's fixes (kraken-fix4): the loads refill at the Kraken's rise; sunk in the fight (or left for the
+//   shipyard from the pause dialog), the shipyard's way back to sea is "Try again from the Kraken", with what was bought
+//   there, and the leave question says what each way out does; leaving once it is driven off banks the level and the
+//   Pearl; BULLSEYE! once per volley; level 9 lost to its ships on a ship with few upgrades: the tip says the shipyard.
+//   On a phone held upright, the warning rings landing by your hull stay on screen in the last stand (kraken-frame)
 // - the journey (voyage): the title's cards 7-9 under "Voyage III · The Kraken Seas", card 7 "Beat the Phantom
 //   Galleon"; the save migration (6 open + the legend feat opens card 7 at load; without the feat nothing opens); the
 //   Maelstrom's Victory "Sail on to the Kraken Seas" with the teaser, the won shipyard's way out to the Turtle Atolls,
@@ -68,7 +73,7 @@ const STORE = { 'pirates-ahoy-unlocked': '9', 'pirates-ahoy-tutorial-done': '1',
 async function krakenNumbers() {
   const src = fs.readFileSync(path.join(ROOT, 'src', 'kraken.js'), 'utf8');
   const { KRAKEN } = await import(`data:text/javascript;base64,${Buffer.from(src).toString('base64')}`);
-  return { hp: KRAKEN.hp, n1: KRAKEN.notches[0], n2: KRAKEN.notches[1] };
+  return { hp: KRAKEN.hp, n1: KRAKEN.notches[0], n2: KRAKEN.notches[1], pearl: KRAKEN.pearl };
 }
 let KR = null;
 
@@ -2169,6 +2174,281 @@ function ev(page, fn, arg = null) {
       `kraken retry: Enter tries again from the Kraken: level 9, the plunder from the rise (${again.gold}), the level's own start kept (${again.start}), no ships, a full hull and crew, loads refilled (${J(again)})`);
     check(!!again.rise && again.rise.rising && again.rise.dur === 3 && again.rise.hp === KR.hp && !!again.fight && again.fight.phase === 1 && again.fight.hp === KR.hp,
       `kraken retry: the Kraken rises again at once, the short rise (${again.rise && again.rise.dur} s), at full ${KR.hp} hp (${J({ rise: again.rise, fight: again.fight })})`);
+    await closeV(ctx);
+  });
+
+  // ------------------------------------------------------------------ the Stage 4 review's fixes (kraken-fix4)
+  // - SPS-1: the special shots' loads refill at the Kraken's rise (its checkpoint, SPEC3 §2.5): Stink spent on the
+  //   Inkheart's crew is back, so the banner's "Stink shot makes it let go!" holds and 6 loads it
+  // - SAVES-1: sunk in the fight, "Visit the dock" keeps the Kraken: the shipyard's way back to sea is "Try again
+  //   from the Kraken" (with the hull bought there), not the whole level; so is the pause dialog's Shipyard during
+  //   the fight, and the leave question says so (and that the main menu's level 9 starts from the beginning)
+  // - SAVES-2: leaving while the Kraken is driven off, before its Pearl reaches you, banks the level and the Pearl
+  // - kraken4:F2: BULLSEYE! pops once per volley at the eye, not once per ball
+  // - SPS-3: level 9 lost to its ships before the rise on a ship without Extra cannons or Heavy shot: the shipwreck
+  //   card's tip sends you to the shipyard for them
+  await section('kraken-fix4', async () => {
+    const store = { ...STORE, 'pirates-ahoy-purse': '2000' };
+    const { ctx, page: kp } = await openV({ label: 'kraken-fix4', store });
+    await kp.evaluate(installFinale);
+    const loadsOf = (l) => J({ fire: l.fire, frost: l.frost, stink: l.stink });
+
+    // SPS-1: Stink spent before the Inkheart falls, then the dread and the rise
+    const refill = await ev(kp, () => {
+      const G = window.__game;
+      const { p, ink } = T.toInkheart();
+      if (!ink) return null;
+      const full = { ...G.specials.loads };
+      G.specials.setLoads({ fire: 1, frost: 0, stink: 0 });
+      const spent = { ...G.specials.loads };
+      G.damage(ink, 9999);
+      T.stepUntil(() => T.k() && T.k().rising, 20, () => (p.hp = p.maxHp));
+      const out = { full, spent, rising: !!(T.k() && T.k().rising), rise: { ...G.specials.loads }, banner: T.banner(), cp: !!G.kraken.checkpoint };
+      G.combat.setAmmo('stink');
+      out.ammo = G.combat.ammo;
+      return out;
+    });
+    check(!!refill && refill.rising && refill.cp && refill.full.stink > 0 && loadsOf(refill.spent) !== loadsOf(refill.full) && loadsOf(refill.rise) === loadsOf(refill.full) && /Stink shot makes it let go!/.test(refill.banner) && refill.ammo === 'stink',
+      `kraken fix4: the loads refill at the Kraken's rise (${loadsOf((refill && refill.spent) || {})} spent on the way -> ${loadsOf((refill && refill.rise) || {})}, as at the level start), so "${refill && refill.banner}" holds and Stink loads (${refill && refill.ammo}) (${J(refill)})`);
+
+    // SAVES-1: sunk in the fight -> Visit the dock -> a hull upgrade -> the shipyard's main way out
+    const wreck = await ev(kp, () => {
+      const G = window.__game;
+      const p = T.level(9);
+      G.state.gold = 700;
+      G.state.goldAtLevelStart = 300;
+      if (!G.kraken.rise()) return null;
+      const cp = G.kraken.checkpoint;
+      T.steps(0.5);
+      G.state.gold += 450; // (plunder after the rise goes down with the ship)
+      const maxHp = p.maxHp;
+      G.damage(p, 99999, p.x, p.z, 'slam');
+      T.stepUntil(() => G.state.mode !== 'playing', 8);
+      return { cp, mode: G.state.mode, maxHp, retry: T.shown('kraken-retry-btn') };
+    });
+    await kp.click('#over-dock-btn');
+    await kp.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 120000 }).catch(() => {});
+    const yard = await kp.evaluate(() => {
+      const G = window.__game;
+      const exits = [...document.querySelectorAll('#dock-exits button')].map((b) => ({ id: b.id, text: b.textContent.trim() }));
+      const purse = G.state.purse;
+      const ok = G.dock.buy('hull');
+      return { from: G.dock.from, exits, bought: ok && G.state.purse < purse, cp: G.kraken.checkpoint };
+    });
+    if (yard.exits.length) await kp.click(`#${yard.exits[0].id}`);
+    const fromYard = await ev(kp, () => {
+      const G = window.__game;
+      const p = G.player;
+      return { mode: G.state.mode, level: G.state.level, gold: G.state.gold, start: G.state.goldAtLevelStart, stage: T.k() && T.k().stage, wave: G.state.wave, ships: G.enemies.filter(G.fighting).length, maxHp: p && p.maxHp, cp: G.kraken.checkpoint };
+    });
+    check(!!wreck && wreck.mode === 'over' && wreck.retry && yard.from === 'over' && !!yard.cp && yard.exits.length > 0 && yard.exits[0].text === 'Try again from the Kraken',
+      `kraken fix4: sunk in the fight, the shipyard from the shipwreck card keeps the Kraken: its way back to sea reads "${yard.exits[0] && yard.exits[0].text}" (${J({ wreck, yard })})`);
+    check(fromYard.mode === 'playing' && fromYard.level === 9 && ['retry', 'rise', 'fight'].includes(fromYard.stage) && fromYard.gold === 700 && fromYard.start === 300 && fromYard.ships === 0 && !!fromYard.cp && yard.bought && fromYard.maxHp > wreck.maxHp,
+      `kraken fix4: ... and takes you back to the Kraken (${fromYard.stage}), not to the level's first wave: the plunder from its rise (${fromYard.gold}), no ships, the hull bought there aboard (${wreck && wreck.maxHp} -> ${fromYard.maxHp} hp) (${J(fromYard)})`);
+
+    // SAVES-1: the pause dialog during the fight: the leave question for the main menu and for the shipyard, then
+    // the shipyard's way back to sea
+    const quitCp = await ev(kp, () => {
+      const G = window.__game;
+      T.level(9);
+      G.state.gold = 640;
+      G.state.goldAtLevelStart = 240;
+      if (!G.kraken.rise()) return null;
+      T.steps(0.1);
+      T.key('x', 'KeyX');
+      T.key('x', 'KeyX', { type: 'keyup' });
+      T.stepUntil(() => T.k() && !T.k().rising, 8);
+      G.state.gold += 60;
+      return G.kraken.checkpoint;
+    });
+    const ask = async (btn) => {
+      await kp.click(btn);
+      return kp.evaluate(() => ({ q: T.text('leave-q'), why: T.text('leave-why'), no: T.text('leave-no-btn') }));
+    };
+    await kp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await kp.keyboard.press('p');
+    const askMenu = await ask('#quit-menu-btn');
+    await kp.click('#leave-no-btn');
+    const askDock = await ask('#quit-dock-btn');
+    await kp.waitForTimeout(400);
+    await kp.click('#leave-yes-btn');
+    await kp.waitForFunction(() => window.__game.state.mode === 'dock', null, { timeout: 120000 }).catch(() => {});
+    const quitYard = await kp.evaluate(() => ({ from: window.__game.dock.from, exits: [...document.querySelectorAll('#dock-exits button')].map((b) => b.textContent.trim()), cp: window.__game.kraken.checkpoint }));
+    await kp.evaluate(() => window.__game.dock.leave());
+    const fromQuit = await ev(kp, () => {
+      const G = window.__game;
+      return { mode: G.state.mode, gold: G.state.gold, stage: T.k() && T.k().stage, ships: G.enemies.filter(G.fighting).length };
+    });
+    check(!!quitCp && /starts from the beginning/.test(askMenu.why) && /try again from the Kraken/.test(askDock.why) && !/try again from the Kraken/.test(askMenu.why) && quitYard.from === 'quit' && quitYard.exits[0] === 'Try again from the Kraken',
+      `kraken fix4: the pause dialog in the fight says what each way out does: Main menu "${askMenu.why}"; Shipyard "${askDock.why}", whose way back to sea reads "${quitYard.exits[0]}" (${J({ quitCp, askMenu, askDock, quitYard })})`);
+    check(fromQuit.mode === 'playing' && ['retry', 'rise', 'fight'].includes(fromQuit.stage) && !!quitCp && fromQuit.gold === quitCp.gold && fromQuit.ships === 0,
+      `kraken fix4: ... and it is the Kraken again, with the plunder from its rise (${fromQuit.gold}) (${J(fromQuit)})`);
+
+    // SAVES-2: driven off, the Pearl not taken yet: Main menu banks the level, the Pearl included
+    const gone = await ev(kp, () => {
+      const G = window.__game;
+      if (!T.toFight()) return null;
+      G.state.gold = G.state.goldAtLevelStart + 234;
+      G.kraken.setHp(0);
+      T.steps(1 / 120);
+      return { stage: T.k().stage, pearlGold: T.k().pearlGold, plunder: G.state.gold - G.state.goldAtLevelStart, purse: G.state.purse, chest: Number(localStorage.getItem('pirates-ahoy-purse')) };
+    });
+    await kp.evaluate(() => { window.__game.state.mode = 'playing'; });
+    await kp.keyboard.press('p');
+    const askGone = await ask('#quit-menu-btn');
+    await kp.waitForTimeout(400);
+    await kp.click('#leave-yes-btn');
+    await kp.waitForFunction(() => window.__game.state.mode === 'menu', null, { timeout: 120000 }).catch(() => {});
+    const left = await kp.evaluate(() => ({ mode: window.__game.state.mode, purse: window.__game.state.purse, chest: Number(localStorage.getItem('pirates-ahoy-purse')) }));
+    const said = Number(((askGone.why.match(/([\d,]+) gold/) || [])[1] || '0').replace(/,/g, ''));
+    const banked = gone ? left.chest - gone.chest : 0;
+    check(!!gone && gone.stage === 'gone' && gone.pearlGold === 0 && /driven off/i.test(askGone.q) && askGone.no === 'Stay' && said >= KR.pearl + gone.plunder && left.mode === 'menu' && banked >= said && left.purse === left.chest,
+      `kraken fix4: driven off, its Pearl still on its way: "${askGone.q}" "${askGone.why}" [${askGone.no}]; leaving banks ${banked} gold (the Pearl's ${KR.pearl} and the plunder ${gone && gone.plunder}) (${J({ gone, left })})`);
+
+    // kraken4:F2: broadsides at the eye (the last stand, the late-game ship's four guns a side)
+    const eye = await ev(kp, async () => {
+      const G = window.__game;
+      G.setShipConfig({ up: { guns: 1, shot: 2, crew: 2, hull: 2 } });
+      if (!T.toFight()) return null;
+      const p = G.player;
+      G.kraken.setHp(T.KR.n2);
+      T.stepUntil(() => { const h = T.k().head; return !!h && h.up; }, 8, () => (p.hp = p.maxHp));
+      T.stepUntil(() => false, 1.2, () => (p.hp = p.maxHp));
+      const head = T.k().head;
+      const side = head ? Math.sign((head.x - p.x) * -Math.cos(p.h) + (head.z - p.z) * Math.sin(p.h)) || 1 : 1;
+      const vols = [];
+      for (let k = 0; k < 4; k++) {
+        G.kraken.setHp(T.KR.n2);
+        T.stepUntil(() => !T.k().grabbed, 5, () => (p.hp = p.maxHp));
+        T.watchPops();
+        p.reload.port = p.reload.star = 0;
+        const fired = G.playerFire(side);
+        T.stepUntil(() => !G.balls.some((b) => b.owner === 'player'), 4, () => (p.hp = p.maxHp));
+        // (real frames: every pop of the volley is shown, none held back by the pops' rate)
+        await T.play(1.2, () => ((p.speed = 0), (p.hp = p.maxHp)));
+        const pops = T.pops();
+        vols.push({ fired, bull: pops.filter((t) => /^BULLSEYE!/.test(t)).length, dmg: pops.filter((t) => /^\d+$/.test(t)).length });
+      }
+      G.setShipConfig({ up: {} });
+      return { side, guns: p.type.guns, vols };
+    });
+    const bulls = eye ? eye.vols.map((v) => v.bull) : [];
+    check(!!eye && eye.vols.every((v) => v.fired) && bulls.reduce((a, b) => a + b, 0) >= 1 && bulls.every((n) => n <= 1),
+      `kraken fix4: BULLSEYE! once per broadside at the eye (${eye && eye.guns} guns a side): ${J(bulls)} per volley (${J(eye)})`);
+
+    // SPS-3: level 9 lost to the Inkheart before the rise: on a stock ship the tip says the shipyard; on the late-game
+    // ship, on level 8 and after the rise it is today's
+    const tips = await ev(kp, () => {
+      const G = window.__game;
+      const sunk = (n, cfg, rise) => {
+        G.setShipConfig({ up: cfg });
+        const p = T.level(n);
+        if (rise) G.kraken.rise();
+        T.steps(0.2);
+        G.damage(p, 99999, p.x, p.z, 'inkheart');
+        T.stepUntil(() => G.state.mode !== 'playing', 8);
+        return T.text('over-summary');
+      };
+      const out = { stock9: sunk(9, {}), late9: sunk(9, { guns: 1, shot: 2, crew: 2, hull: 2 }), noShot9: sunk(9, { guns: 2, crew: 2, hull: 2 }), stock8: sunk(8, {}), risen9: sunk(9, {}, true) };
+      G.setShipConfig({ up: {} });
+      return out;
+    });
+    const yardTip = /Tip: the Inkheart hits hard! Extra cannons and Heavy shot from the shipyard will help\./;
+    check(yardTip.test(tips.stock9) && yardTip.test(tips.noShot9) && !yardTip.test(tips.late9) && /Inkheart did the most damage/.test(tips.late9) && !yardTip.test(tips.stock8) && !yardTip.test(tips.risen9),
+      `kraken fix4: level 9 lost to the Inkheart before the rise on a stock ship: "${tips.stock9}"; without Heavy shot "${tips.noShot9}"; on the late-game ship "${tips.late9}"; level 8 "${tips.stock8}"; after the rise "${tips.risen9}"`);
+    await closeV(ctx);
+  });
+
+  // kraken4:F1: the Last Stand on a phone held upright (390x844), your ship circling its head at cruising speed: the
+  // view turns toward the head (the portrait framing), and every warning ring that lands by your hull (the first ring
+  // of an attack lands where you were heading, outside your circle) is on screen (≥ 5 of its 9 points: the centre
+  // and 8 round its rim) for ≥ 80 % of its warning, in game time (real frames).
+  await section('kraken-frame', async () => {
+    const { ctx, page: kp } = await openV({ label: 'kraken-frame', width: 390, height: 844, touch: true });
+    await kp.evaluate(installFinale);
+    const set = await ev(kp, () => {
+      const G = window.__game;
+      if (!T.toFight()) return null;
+      const p = G.player;
+      G.kraken.setHp(T.KR.n2);
+      const hold = { x: p.x, z: p.z, h: p.h };
+      T.stepUntil(() => { const h = T.k().head; return !!h && h.up; }, 8, () => {
+        p.x = hold.x;
+        p.z = hold.z;
+        p.h = hold.h;
+        p.hp = p.maxHp;
+      });
+      const h = T.k().head;
+      T.ring = { th: Math.atan2(p.x - h.x, p.z - h.z), R: Math.max(18, Math.min(24, Math.hypot(p.x - h.x, p.z - h.z))) };
+      return { phase: T.k().phase, head: !!h && h.up };
+    });
+    const runRings = () =>
+      ev(kp, async () => {
+        const G = window.__game;
+        const p = G.player;
+        const cam = G.camera;
+        const V = 8; // u/s (about a stock ship's cruising speed)
+        const proj = (x, z) => {
+          // (x, 0.2, z) through the camera: on screen in front of it?
+          const e = cam.matrixWorldInverse.elements;
+          const P = cam.projectionMatrix.elements;
+          const vx = e[0] * x + e[4] * 0.2 + e[8] * z + e[12];
+          const vy = e[1] * x + e[5] * 0.2 + e[9] * z + e[13];
+          const vz = e[2] * x + e[6] * 0.2 + e[10] * z + e[14];
+          const cx = P[0] * vx + P[4] * vy + P[8] * vz + P[12];
+          const cy = P[1] * vx + P[5] * vy + P[9] * vz + P[13];
+          const cw = P[3] * vx + P[7] * vy + P[11] * vz + P[15];
+          return cw > 0 && Math.abs(cx / cw) <= 1 && Math.abs(cy / cw) <= 1;
+        };
+        const place = () => {
+          const h = T.k().head;
+          if (!h) return;
+          p.x = h.x + T.ring.R * Math.sin(T.ring.th);
+          p.z = h.z + T.ring.R * Math.cos(T.ring.th);
+          p.h = T.ring.th + Math.PI / 2; // (the head on your port beam)
+          p.speed = V;
+          p.hp = p.maxHp;
+        };
+        const rings = new Map();
+        const t0 = G.state.time;
+        let last = t0;
+        place();
+        G.state.mode = 'playing';
+        let frames = 0;
+        while (G.state.time - t0 < 20 && frames < 4000) {
+          await new Promise((r) => requestAnimationFrame(r));
+          frames++;
+          const now = G.state.time;
+          const dt = Math.max(0, now - last);
+          last = now;
+          T.ring.th += (V / T.ring.R) * dt;
+          place();
+          if (T.k().grabbed) for (let i = 0; i < 3; i++) G.kraken.cut();
+          const f = G.framing;
+          const framed = !!f.focus && !!f.focus.pseudo && f.w >= 0.99;
+          const vis = G.kraken.visuals();
+          for (const rg of (vis && vis.rings) || []) {
+            if (rg.kind !== 'tentacle') continue;
+            const key = `${rg.x.toFixed(3)},${rg.z.toFixed(3)}`;
+            let R = rings.get(key);
+            if (!R) rings.set(key, (R = { T: rg.T, r: rg.r, secs: 0, on: 0, framed: 0 }));
+            R.secs += dt;
+            if (framed) R.framed += dt;
+            let n = proj(rg.x, rg.z) ? 1 : 0;
+            for (let k = 0; k < 8; k++) if (proj(rg.x + Math.sin((k / 8) * Math.PI * 2) * rg.r, rg.z + Math.cos((k / 8) * Math.PI * 2) * rg.r)) n++;
+            if (n >= 5) R.on += dt;
+            R.end = Math.hypot(rg.x - p.x, rg.z - p.z);
+            R.len = p.type.len;
+          }
+        }
+        const r2 = (v) => Math.round(v * 100) / 100;
+        return { secs: r2(G.state.time - t0), frames, rings: [...rings.values()].map((R) => ({ T: r2(R.T), r: R.r, secs: r2(R.secs), on: r2(R.on), framed: r2(R.framed), end: r2(R.end), len: R.len })) };
+      });
+    const run = set && set.head ? await runRings() : null;
+    // the rings that land by your hull (its centre within the ring's radius + half your length + 2 u)
+    const near = run ? run.rings.filter((R) => R.end <= R.r + R.len / 2 + 2 && R.secs >= R.T * 0.8) : [];
+    check(!!run && set.phase === 3 && near.length >= 2 && near.some((R) => R.framed >= R.T * 0.8 - 0.02) && near.every((R) => R.on >= R.T * 0.8 - 0.02),
+      `kraken frame 390x844: circling the head in the last stand for ${run && run.secs} s, each of the ${near.length} warning rings landing by your hull is on screen for ≥ 80 % of its warning (on screen / warning, s: ${J(near.map((R) => [R.on, R.T]))}; framed toward the head: ${J(near.map((R) => R.framed))}) (${J(run && run.rings)})`);
     await closeV(ctx);
   });
 
