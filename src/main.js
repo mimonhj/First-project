@@ -6,8 +6,9 @@ import { toon, noOutline, gradientMap, setOutline } from './style.js';
 import { createAudio } from './audio.js';
 import { buildPerson, animatePerson, disposePerson, releaseSharedPeople } from './people.js';
 import * as sparrow from './env/sparrow.js';
-// The voyage's levels: Voyages I and II (levels.js), then Voyage III, The Kraken Seas, once it sails (voyage.js).
-import { LEVELS, WITH_KRAKEN, ACT3_TEASER } from './voyage.js';
+// The voyage's levels: Voyages I and II (levels.js), then Voyage III, The Kraken Seas, once it sails, then Voyage IV,
+// The Sunset Isles, behind ?v4=1 until it sails (voyage.js).
+import { LEVELS, WITH_KRAKEN, WITH_V4, ACT3_TEASER, ACT4_TEASER } from './voyage.js';
 // "The Kraken Seas" (SPEC3): special ammo, Voyage III's rules, the Kraken (its simulation and its model), the
 // statuses drawn on ships, the island's buildings, the quiz and the player's settings. Imported whole (each
 // module's own names are read where they are used), so a module that is still being built never stops the game
@@ -21,6 +22,16 @@ import * as islandRules from './island.js';
 import * as quizRules from './quiz.js';
 import { QUESTIONS as QUIZ_BANK } from './quizBank.js';
 import * as settingsRules from './settings.js';
+// "The Sunset Isles" (SPEC4): the wave pools and the voyage4 record, Voyage IV's rules, its pseudo foes and their
+// models, the Shellback and its model. Imported whole, as the Kraken Seas' modules are. Stage 0 only lays the seams
+// (levelWaves, levelSeed, the parts registry, the three-part composeMechanics, warnSlots, warmDraw): nothing new
+// spawns, draws or is saved yet.
+import * as poolRules from './pools.js';
+import * as mechanics4 from './mechanics4.js';
+import * as foes4Rules from './foes4.js';
+import * as shellbackRules from './shellback.js';
+import * as foesView from './foesView.js';
+import * as shellbackView from './shellbackView.js';
 // "Boarders Away!" (SPEC2): the combat rules, the tavern upgrades, the looks and feats records, the enemy
 // name tags, the pop words and the sailors that go overboard.
 import * as combat from './combat.js';
@@ -877,6 +888,9 @@ const state = {
   // the recipes owned (§10.1, the tavern's Powder room)
   powder: WITH_KRAKEN ? loadRecord(POWDER_KEY, specials.parsePowder, specials.serializePowder) : specials.defaultPowder(),
   grabbed: false, // a Kraken tentacle holds your ship (§5.7.3)
+  // "The Sunset Isles" (SPEC4; Stage 0: placeholders that nothing changes yet)
+  waves: null, // a pool level's waves, drawn once at its start (§3.5; null: the level's own def.waves)
+  netted: null, // a Net Sloop's net on your ship ({ t, max }, §3.1)
 };
 seen[PURSE_KEY] = readRaw(PURSE_KEY);
 seen[SHIP_KEY] = readRaw(SHIP_KEY);
@@ -905,6 +919,14 @@ let volleyId = 0;
 // checkpoint taken at its rise (session memory only, §5.7.6).
 let kraken = null;
 let krakenCheckpoint = null;
+// "The Sunset Isles" (SPEC4 §10.1, §11.2): the voyage4 record (plays, the kinds met, the Shellback won, Voyage IV's
+// tips and prizes), the new plots' record, and the boss checkpoint that becomes the Kraken's and the Shellback's
+// (§3.6.4). Stage 0: in-memory defaults only; nothing reads or writes -voyage4 or -island4 until Stage 2 loads them
+// with WITH_V4 (a stub parser would rewrite a stored record with its default).
+let voyage4Rec = poolRules.defaultVoyage4();
+let island4Cfg = typeof islandRules.defaultIsland4 === 'function' ? islandRules.defaultIsland4() : null;
+let bossCheckpoint = null;
+let v4Seed = null; // tests: __game.v4.seed(s), for every later start of levels 10-12 (Stage 2)
 // Its model (krakenView.js: built one part a frame from the level start, so the rise never stalls), the level 9
 // sequence main runs round it (§5.7.1: 'dread' → 'rise' → 'fight' → 'gone' → 'over'; null before), its raised
 // parts wrapped as pseudo-ships for the guns (§5.8: one wrapper per part id per rise, updated in place), and this
@@ -1230,7 +1252,7 @@ function queuePrebuild(index) {
   prebuilt.queue.length = 0;
   prebuilt.at = Infinity;
   if (!WITH_KRAKEN) return;
-  const wave = LEVELS[state.level - 1].waves[index];
+  const wave = levelWaves()[index];
   if (!wave) return;
   // (models already built and not yet taken count: a wave never builds more than it needs)
   const have = new Map();
@@ -1864,9 +1886,21 @@ function pickSpawns(count, index) {
   return used;
 }
 
+// The waves a level plays (SPEC4 §3.5, §11.2): its def's, or on a pool level (Voyage IV) the waves drawn from its
+// pool at its start (state.waves). Every read of a level's waves goes through here. Stage 0: def.waves everywhere.
+function levelWaves(def = LEVELS[state.level - 1]) {
+  if (!def) return [];
+  return def.pool && Array.isArray(state.waves) ? state.waves : def.waves;
+}
+// The combatRng seed of a level's start (SPEC4 §3.5): n x 7919 + 13 on levels 1-9 (and in Stage 0 on every level);
+// from Stage 2 on, poolSeed(n, plays) on levels 10-12 (or __game.v4.seed's).
+function levelSeed(n) {
+  return n * 7919 + 13;
+}
+
 function spawnWave(index) {
   const def = LEVELS[state.level - 1];
-  const wave = def.waves[index];
+  const wave = levelWaves(def)[index];
   const spots = pickSpawns(wave.length, index);
   const fresh = [];
   wave.forEach((typeName, i) => {
@@ -1960,7 +1994,10 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   if (n !== lastLevelStarted) releaseSharedPeople();
   lastLevelStarted = n;
   // The same level always rolls the same crits (tests pin them with __game.combat.seed()).
-  combatRng = mulberry32(n * 7919 + 13);
+  combatRng = mulberry32(levelSeed(n));
+  state.waves = null; // (a pool level draws its waves here from Stage 2 on, SPEC4 §3.5)
+  state.netted = null;
+  warnSlots.reset(LEVELS[n - 1]);
   // Round shot loaded, every hand aboard (the tavern's Boarding party decides how many).
   const stats = armoryStats(armoryCfg);
   state.ammo = 'round';
@@ -2044,10 +2081,12 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     turnRate: (s) => turnRate(s),
   };
   m3 = mechanics3.createMechanics3(ids, ctx3);
-  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3]);
+  // (Voyage IV's rules join as the third part in Stage 2, SPEC4 §11.2: createMechanics4(ids, ctx4) with ctx4 = ctx3 +
+  // { warn: warnSlots, cutHold, spyglass, summon, puffersAlive, tables }. A null third part composes exactly as two.)
+  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3, null]);
   if (cp) {
     // (from the Kraken: no ships and no geysers, only the Kraken rising at once, its short rise)
-    state.wave = def.waves.length - 1;
+    state.wave = levelWaves(def).length - 1;
     state.nextBomb = Infinity;
     flagshipDown();
   } else spawnWave(0);
@@ -2058,7 +2097,7 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   createKrakenFor(def);
   if (cp && kraken) kseq.stage = 'retry';
   // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
-  const types = [...new Set(def.waves.flat())];
+  const types = [...new Set(levelWaves(def).flat())];
   overboard.prepare(types.flatMap((t) => [enemyCrewOpts(t, 1), enemyCrewOpts(t, 2)]));
   // Your boarding party (captain and four hands in your looks) and, where raiders sail, their boarders:
   // built one per frame during the fly-in (boarding.js).
@@ -2089,11 +2128,11 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   if (cp && kraken) {
     showBanner(`Try again!<small>The Kraken rises!</small>`, 2);
   } else if (retry) {
-    showBanner(`Try again!<small>${describeWave(def.waves[0])}</small>`, 2);
+    showBanner(`Try again!<small>${describeWave(levelWaves(def)[0])}</small>`, 2);
   } else {
     // (A level whose mechanic names a key has touch wording too: def.mechanicTouch.)
     const sub = firstVoyage ? controlsLine() : (isTouch() && def.mechanicTouch) || def.mechanic || m.subtitle;
-    showBanner(`Level ${n}: ${m.name}<small>${sub}</small><small>${describeWave(def.waves[0])}</small>`, firstVoyage ? 6 : 4.5);
+    showBanner(`Level ${n}: ${m.name}<small>${sub}</small><small>${describeWave(levelWaves(def)[0])}</small>`, firstVoyage ? 6 : 4.5);
   }
   warmShaders();
   updateHud(true);
@@ -2109,6 +2148,104 @@ function warmShaders() {
   } catch {
     // (a lost context: they compile when they first show, as before)
   }
+}
+
+// The warning-shape slots (SPEC4 §0.1): a new telegraph (a ring, a lane, a sight line...) takes one before it shows
+// and gives it back when it lands, so at most `max` shapes are ever on screen (a new one, and its attack, waits for a
+// free slot). Passed as ctx.warn to mechanics4, foes4 and the Shellback (with `boss`, the Shellback's two-at-once);
+// main's own launchBomb takes one on act-4 levels. max: mechanics4.WARN.max on act 4 from Stage 2, unlimited on
+// Voyages I-III (and everywhere in Stage 0: nothing takes a slot yet).
+const warnSlots = {
+  max: Infinity,
+  boss: Infinity,
+  count: 0,
+  take(kind) {
+    if (this.count >= this.max) return false;
+    this.count++;
+    return true;
+  },
+  give(kind) {
+    this.count = Math.max(0, this.count - 1);
+  },
+  // every level start: all slots free; the cap is the level's (Stage 0: none)
+  reset(def) {
+    this.count = 0;
+    this.max = Infinity;
+    this.boss = Infinity;
+  },
+};
+
+// A real first draw of hidden objects (SPEC4 §11.2, §14.1): each is drawn once, now, through the view's own render
+// path, both passes (the colour pass and the outline pass, scenery.js createRenderer().render), so its programs and
+// its outline material's are built here and not in the frame it first shows. The draw goes to the canvas through a
+// 1 x 1 scissor that the next frame paints over (a render target would build the programs for a linear output, not
+// the canvas's sRGB, and they would compile again at the first real draw). Only the given objects (and the lights)
+// are drawn: they go on a layer of their own for the draw, shown, with no frustum culling, then everything is put
+// back. Called by nothing yet (Stage 2: the envs', foesView's and the Shellback's warmables() at level start, behind
+// the fly-in; the construction scene's at dock open). Returns how many objects it drew.
+const WARM_LAYER = 31;
+let warmCamera = null;
+function warmDraw(objects) {
+  const list = (Array.isArray(objects) ? objects : [objects]).filter((o) => o && o.isObject3D);
+  if (!list.length || state.contextLost) return 0;
+  const R = view.renderer;
+  if (!R || (gl && gl.isContextLost())) return 0;
+  const undo = [];
+  const viewport = new THREE.Vector4();
+  const scissor = new THREE.Vector4();
+  R.getViewport(viewport);
+  R.getScissor(scissor);
+  const scissorTest = R.getScissorTest();
+  const target = R.getRenderTarget();
+  try {
+    for (const root of list) {
+      // (a hidden ancestor would stop the draw at it: shown for the draw)
+      for (let p = root.parent; p; p = p.parent) {
+        if (p.visible === false) {
+          const o = p;
+          o.visible = true;
+          undo.push(() => (o.visible = false));
+        }
+      }
+      root.traverse((o) => {
+        const mask = o.layers.mask;
+        o.layers.enable(WARM_LAYER);
+        undo.push(() => (o.layers.mask = mask));
+        if (o.visible === false) {
+          o.visible = true;
+          undo.push(() => (o.visible = false));
+        }
+        if (o.frustumCulled) {
+          o.frustumCulled = false;
+          undo.push(() => (o.frustumCulled = true));
+        }
+      });
+    }
+    // the scene's lights light the draw (so the programs are the ones a frame uses)
+    scene.traverse((o) => {
+      if (!o.isLight) return;
+      const mask = o.layers.mask;
+      o.layers.enable(WARM_LAYER);
+      undo.push(() => (o.layers.mask = mask));
+    });
+    if (!warmCamera) warmCamera = camera.clone();
+    warmCamera.copy(camera);
+    warmCamera.layers.set(WARM_LAYER);
+    R.setRenderTarget(null);
+    R.setViewport(0, 0, 1, 1);
+    R.setScissor(0, 0, 1, 1);
+    R.setScissorTest(true);
+    view.render(scene, warmCamera);
+  } catch (err) {
+    console.warn('warmDraw:', err);
+  } finally {
+    for (let i = undo.length - 1; i >= 0; i--) undo[i]();
+    R.setRenderTarget(target);
+    R.setViewport(viewport);
+    R.setScissor(scissor);
+    R.setScissorTest(scissorTest);
+  }
+  return list.length;
 }
 
 function newGame(level = 1) {
@@ -2430,11 +2567,14 @@ const GRAPPLE_WHY = {
   cooldown: 'Hooks coiling…',
   crew: 'Not enough hands!',
   monster: krakenRules.KRAKEN.words.noBoard, // "You can't board a sea monster!" (the Kraken's parts, SPEC3 §5.7.2)
+  // (Voyage IV's pseudo foes, SPEC4 §3.3: the jollyboats; a Rock Fort)
+  small: 'Too small to board!',
+  fort: 'Too big to board! Knock it down.',
 };
 function canGrapple(e) {
   if (state.mode !== 'playing' || state.intro > 0 || state.clearTimer > 0 || state.deathTimer > 0) return 'busy';
   if (!player || player.sinking || player.hp <= 0 || boarding.active) return 'busy';
-  if (e && e.pseudo) return 'monster';
+  if (e && e.pseudo) return pseudoBoardWhy(e);
   if (!e || e.kind !== 'enemy' || e.hp <= 0 || e.sinking || e.captured || e.escaped || e.rise > 0) return 'none';
   if (!fighting(e) && !e.surrendered) return 'none';
   if (e.type.boardable === false) return 'immune';
@@ -2844,49 +2984,89 @@ function takePearl(gold) {
   kseq.pearl += g;
 }
 
-// Your guns' targets (§5.8): each raised part as a pseudo-ship, one wrapper per part id per rise, updated in
-// place each step (a volley's per-target sums are keyed by it). hp: the part's own (a tentacle's) or the bar, so
-// fighting() holds while it is up. `mesh` is a stand-in for the portrait framing (where its pops start).
-function syncKrakenTargets() {
-  krakenList.length = 0;
-  for (const w of krakenParts.values()) w.hp = 0;
-  if (!kraken) return;
-  for (const p of kraken.targets()) {
-    let w = krakenParts.get(p.id);
-    if (!w) {
-      w = {
-        pseudo: true,
-        part: p.id,
-        partKind: p.kind,
-        kind: 'kraken',
-        typeName: 'kraken',
-        id: `kraken-${p.id}`,
-        x: p.x,
-        z: p.z,
-        h: 0,
-        speed: 0,
-        hp: 0,
-        maxHp: KR.hp,
-        y0: 0,
-        y1: 0,
-        aimY: 0.8,
-        type: { len: 2, wid: 2, name: 'The Kraken' },
-        mesh: { position: { y: 0 }, userData: { deckY: 4 } },
-        status: null,
-      };
-      krakenParts.set(p.id, w);
+// The parts registry (SPEC4 §3.7, generalising SPEC3 §5.8): every source of pseudo-targets your guns aim at, each
+// pure ({ targets(), hits(id, x, y, z), hit(id, info), special(id, ammo), boardWhy(id) }), with its parts wrapped
+// as pseudo-ships: one wrapper per part id per spawn (a rise), updated in place each step (a volley's per-target
+// sums are keyed by it). A wrapper is SPEC3's shape plus `src`, its source. hp: the part's own (a tentacle's) or
+// the bar, so fighting() holds while it is up; `mesh` is a stand-in for the portrait framing (where its pops start).
+// Stage 0: the Kraken is the only source (its wrappers come out exactly as before); Stage 2 adds foes4 and the
+// Shellback, each `<src>-<part>`.
+const PARTS = [
+  {
+    id: 'kraken',
+    get: () => kraken,
+    parts: krakenParts,
+    list: krakenList,
+    wrap: (p, src) => ({
+      pseudo: true,
+      part: p.id,
+      partKind: p.kind,
+      kind: 'kraken',
+      typeName: 'kraken',
+      id: `kraken-${p.id}`,
+      x: p.x,
+      z: p.z,
+      h: 0,
+      speed: 0,
+      hp: 0,
+      maxHp: KR.hp,
+      y0: 0,
+      y1: 0,
+      aimY: 0.8,
+      type: { len: 2, wid: 2, name: 'The Kraken' },
+      mesh: { position: { y: 0 }, userData: { deckY: 4 } },
+      status: null,
+      src,
+    }),
+    place(w, p) {
+      // (the guns aim a ball to come down through the part: an eye's middle, a head's or a tentacle's lower half)
+      w.aimY = p.kind === 'eye' ? clamp((p.y0 + p.y1) / 2, 0.8, 5) : clamp(p.y0 + 1.6, 0.8, 3);
+      w.mesh.userData.deckY = Math.max(1, p.y1 - 2.2);
+    },
+  },
+];
+// Each source's raised parts, wrapped (once a step, and when a source rises).
+function syncParts() {
+  for (const S of PARTS) {
+    S.list.length = 0;
+    for (const w of S.parts.values()) w.hp = 0;
+    const src = S.get();
+    if (!src) continue;
+    for (const p of src.targets()) {
+      let w = S.parts.get(p.id);
+      if (!w) {
+        w = S.wrap(p, src);
+        S.parts.set(p.id, w);
+      }
+      w.x = p.x;
+      w.z = p.z;
+      w.hp = p.hp > 0 ? p.hp : 0;
+      w.y0 = p.y0;
+      w.y1 = p.y1;
+      w.type.len = w.type.wid = 2 * p.r;
+      S.place(w, p);
+      S.list.push(w);
     }
-    w.x = p.x;
-    w.z = p.z;
-    w.hp = p.hp > 0 ? p.hp : 0;
-    w.y0 = p.y0;
-    w.y1 = p.y1;
-    w.type.len = w.type.wid = 2 * p.r;
-    // (the guns aim a ball to come down through the part: an eye's middle, a head's or a tentacle's lower half)
-    w.aimY = p.kind === 'eye' ? clamp((p.y0 + p.y1) / 2, 0.8, 5) : clamp(p.y0 + 1.6, 0.8, 3);
-    w.mesh.userData.deckY = Math.max(1, p.y1 - 2.2);
-    krakenList.push(w);
   }
+}
+// A wrapper's source while it is still in play (a disposed source's wrappers hit nothing). A hand-made
+// { pseudo, part } target without a src (as the tests pass to G.damage) is the Kraken's, as before SPEC4.
+function partSrc(w) {
+  if (!w) return null;
+  const src = w.src ?? (w.pseudo ? kraken : null);
+  return src && PARTS.some((S) => S.get() === src) ? src : null;
+}
+// Why G can't board a pseudo-target (SPEC4 §3.3): its source's boardWhy ('small' | 'monster' | 'fort'); a source
+// with none (the Kraken) is a sea monster.
+function pseudoBoardWhy(e) {
+  const src = partSrc(e);
+  let why = null;
+  try {
+    why = src && typeof src.boardWhy === 'function' ? src.boardWhy(e.part) : null;
+  } catch {
+    why = null;
+  }
+  return why === 'small' || why === 'fort' ? why : 'monster';
 }
 
 // The level 9 sequence (§5.7.1), every simulation step on a level with a Kraken: the Inkheart falls and her crew
@@ -2905,7 +3085,7 @@ function stepKraken(dt, def) {
     if (state.intro > 0) return;
     // (a struck ship nobody boarded is taken once the fight is over, as at a level clear: an Inkheart that struck
     // falls then, SPEC3 §4.2; a boarding of her plays out its result first)
-    const last = state.wave === def.waves.length - 1;
+    const last = state.wave === levelWaves(def).length - 1;
     if (last && !enemies.some(fighting)) {
       for (const e of enemies) {
         if (!e.surrendered || e.captured || e.hp <= 0 || e.sinking) continue;
@@ -2924,7 +3104,7 @@ function stepKraken(dt, def) {
   // the phase this sequence last saw: a ball's hit (after this step) can move the Kraken on a phase too
   const phaseWas = kseq.phaseSeen || kraken.phase;
   kraken.step(dt);
-  syncKrakenTargets();
+  syncParts();
   const grabbed = kraken.grabbed;
   if (grabbed && !state.grabbed) {
     kseq.grabs++;
@@ -3284,13 +3464,15 @@ function outOfSpecial(id) {
 // as pseudo-targets (Stage 2). aimTarget, playerFire, rakeCue, the FIRE! light, the tutorial, the minimap, the
 // chase camera and the portrait framing all read this one list. side: −1 port, +1 starboard, 0 either.
 function targetsFor(side = 0) {
-  if (!krakenList.length) return enemies;
-  krakenAll.length = 0;
-  for (const e of enemies) krakenAll.push(e);
-  for (const w of krakenList) krakenAll.push(w);
-  return krakenAll;
+  let n = 0;
+  for (const S of PARTS) n += S.list.length;
+  if (!n) return enemies;
+  partsAll.length = 0;
+  for (const e of enemies) partsAll.push(e);
+  for (const S of PARTS) for (const w of S.list) partsAll.push(w);
+  return partsAll;
 }
-const krakenAll = []; // (enemies and the Kraken's raised parts, reused)
+const partsAll = []; // (enemies and every source's raised parts, reused)
 
 // What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
 // firing arc (inArc: true), failing that the nearest one roughly abeam.
@@ -3828,7 +4010,8 @@ function splinters(hx, hz, n = 7) {
 // damage() applies: no hole (no hull mesh), no feats, no hit flash, no 'hit' sound, no surrender.
 // A special ball also puts its status on the Kraken (§5.7.5), once per volley, with its word, sound and line.
 function damagePseudo(t, amount, x, z, info) {
-  const r = kraken ? kraken.hit(t.part, info || { dmg: amount }) : null;
+  const src = partSrc(t); // (the Kraken: the only source until Stage 2, SPEC4 §3.7)
+  const r = src ? src.hit(t.part, info || { dmg: amount }) : null;
   if (!r) return;
   const hx = x ?? t.x;
   const hz = z ?? t.z;
@@ -3844,11 +4027,11 @@ function damagePseudo(t, amount, x, z, info) {
   // (a squelch of violet spray where the ball went in)
   puff(hx, py, hz, 4, 0x7a4f86, 2.2, 3, 0.55, 0.5, GRAVITY * 0.5, false, 'glow');
   const dmg = Math.max(0, Number(r.dmg) || 0);
-  if (info && info.status && kraken) {
-    const T = v ? volleyTarget(v, kraken) : null; // (once per volley for the whole beast)
+  if (info && info.status && src) {
+    const T = v ? volleyTarget(v, src) : null; // (once per volley for the whole beast)
     if (!T || !T.status) {
       if (T) T.status = true;
-      const word = kraken.special(t.part, info.status);
+      const word = src.special(t.part, info.status);
       if (word) {
         const W = specials.WORDS3;
         const is = (k) => word === W[k] || word === KR.words[k];
@@ -3969,7 +4152,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
       }
       const left = enemies.filter(fighting).length;
       const def = LEVELS[state.level - 1];
-      const moreWaves = state.wave < def.waves.length - 1;
+      const moreWaves = state.wave < levelWaves(def).length - 1;
       if (left > 0 || moreWaves) {
         const title = ship.type.boss ? `${ship.type.name} is sunk!` : `${ship.type.name} sunk!`;
         showBanner(`${title}${left ? `<small>${left} to go</small>` : ''}`, 1.8, 'routine');
@@ -4666,8 +4849,11 @@ function separateShips(dt) {
 // Does ball b hit ship s? Each ammo has its own reach (chain shot also tears through the sails, AMMO.top);
 // balls pass through ships that are out of the fight (struck, captured, escaped).
 function hitsShip(b, s) {
-  // One of the Kraken's raised parts (a pseudo-target, SPEC3 §5.8): kraken.js knows its shape.
-  if (s.pseudo) return !!kraken && kraken.hits(s.part, b.x, b.y, b.z);
+  // A raised part (a pseudo-target, SPEC3 §5.8, SPEC4 §3.7): its source (kraken.js) knows its shape.
+  if (s.pseudo) {
+    const src = partSrc(s);
+    return !!src && src.hits(s.part, b.x, b.y, b.z);
+  }
   if (s.hp <= 0 || s.captured || s.surrendered || s.escaped || s.rise > 0) return false;
   const A = ammoRow(b.ammo);
   if (b.y > A.top) return false;
@@ -5059,9 +5245,10 @@ function step(dt) {
   }
 
   const alive = enemies.filter(fighting).length;
-  if (state.wave < def.waves.length - 1 && alive <= def.nextWaveAt) {
+  const waves = levelWaves(def);
+  if (state.wave < waves.length - 1 && alive <= def.nextWaveAt) {
     spawnWave(state.wave + 1);
-  } else if (alive === 0 && state.wave === def.waves.length - 1 && (!kraken || kraken.over)) {
+  } else if (alive === 0 && state.wave === waves.length - 1 && (!kraken || kraken.over)) {
     // (level 9 clears once the Kraken is driven off and its Pearl taken, SPEC3 §5.7.1)
     state.clearTimer = 2.5;
     clearProjectiles(true); // enemy shots and lava still in the air fizzle out
@@ -6184,7 +6371,7 @@ function titleClickTooSoon(e) {
 // Level select cards on the title screen, one group per act (SPEC2 §5.6): a heading spanning the grid, then
 // that act's cards. Each card: number, name, difficulty word and skull pips ("Difficulty 4 of 6"), and Play
 // or why it is locked ("Beat the Molten Maw"). With a single act there are no headings.
-const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas', 3: 'Voyage III · The Kraken Seas' };
+const ACT_NAMES = { 1: 'Voyage I · The Old World', 2: 'Voyage II · The Far Seas', 3: 'Voyage III · The Kraken Seas', 4: 'Voyage IV · The Sunset Isles' };
 // Once the Kraken Seas sail, the title's tagline and the page's description name them too (SPEC3 §6.6; the words
 // "Far Seas" stay). Until then they read as index.html has them.
 if (WITH_KRAKEN) {
@@ -6483,8 +6670,8 @@ function openDock(from) {
   pausedDrawn = false;
 
   // (kraken: the island's new places, builders and villagers come with the Kraken Seas, SPEC3 §8; until they
-  // sail, the town is exactly today's)
-  setEnvironment(sparrow, 77, { kraken: WITH_KRAKEN });
+  // sail, the town is exactly today's. v4: the Sunset Isles' town, SPEC4 §6-§7; Stage 0: still today's town)
+  setEnvironment(sparrow, 77, { kraken: WITH_KRAKEN, v4: WITH_V4 });
   showIsland(); // (the Kraken Seas: the buildings, villagers and rank as built, SPEC3 §8)
   // The prize ships moored off the town are built here, behind the "Rowing to…" transition, not in the frame the
   // first Go ashore swoops in (sparrow keeps them hidden until the town view; ashore keeps ships of the same kind).
@@ -7383,7 +7570,7 @@ function updateHud(force = false, dt = 0) {
   const def = LEVELS[state.level - 1];
   setText(ui.levelName, 'level', `${state.level}. ${def.env.meta.name}`, force);
   const alive = enemies.filter(fighting).length;
-  const pending = def.waves.slice(state.wave + 1).reduce((n, w) => n + w.length, 0);
+  const pending = levelWaves(def).slice(state.wave + 1).reduce((n, w) => n + w.length, 0);
   setText(ui.ships, 'ships', pending ? `${alive} +${pending}` : `${alive}`, force);
   setText(ui.gold, 'gold', state.gold, force);
   setText(ui.sails, 'sails', `${SAIL_NAMES[state.sail]} ${'▮'.repeat(state.sail)}${'▯'.repeat(3 - state.sail)}`, force);
@@ -9610,11 +9797,11 @@ window.__game = {
       boarding.cancel('level');
       for (const e of enemies) removeShip(e);
       enemies.length = 0;
-      state.wave = LEVELS[state.level - 1].waves.length - 1;
+      state.wave = levelWaves().length - 1;
       state.intro = 0;
       startDread();
       if (!dread) startRise(false);
-      syncKrakenTargets();
+      syncParts();
       return true;
     },
     // Any key or tap during the rise (true when it skipped).
@@ -9676,6 +9863,23 @@ window.__game = {
       }
       return { ok: !!r.ok, reason: r.ok ? null : r.reason };
     },
+    // The construction scene (SPEC4 §5.4). Stage 0: none ever runs (the montage still plays).
+    scene: {
+      get running() {
+        return false;
+      },
+      get stage() {
+        return null;
+      },
+      get t() {
+        return 0;
+      },
+      get kind() {
+        return null;
+      },
+      skip: () => false,
+      advance: (dt) => false,
+    },
   },
   // The quiz record (in memory: set() is not saved), and a round played through the Riddle Bell's panel (in the
   // dock: start() walks to the quiz first). start(level, seed) → true when the round began; round: the panel's.
@@ -9705,6 +9909,69 @@ window.__game = {
     get WITH_KRAKEN() {
       return WITH_KRAKEN;
     },
+    get WITH_V4() {
+      return WITH_V4;
+    },
+  },
+  // ---- "The Sunset Isles" test API (SPEC4 §11.3). Stage 0: placeholders with safe answers (nothing spawns, no
+  // net, no fog, no tide, no Shellback); Stage 2 makes them live.
+  v4: {
+    get WITH_V4() {
+      return WITH_V4;
+    },
+    // A pool seed for every later start of levels 10-12 (null clears it); combat.seed keeps its meaning.
+    seed(s) {
+      v4Seed = s === null || s === undefined ? null : Number.isFinite(Number(s)) ? Number(s) >>> 0 : null;
+      return v4Seed;
+    },
+    // The waves this level plays (a copy), or null with no level on.
+    get waves() {
+      return state.level >= 1 && LEVELS[state.level - 1] ? levelWaves().map((w) => [...w]) : null;
+    },
+    get plays() {
+      return [...voyage4Rec.plays];
+    },
+    get met() {
+      return voyage4Rec.met;
+    },
+    meet: (kind) => false,
+    spawn: (kind, x, z, opts) => null,
+    get foes() {
+      return null;
+    },
+    get warnSlots() {
+      return { count: warnSlots.count, max: warnSlots.max, boss: warnSlots.boss };
+    },
+    net: () => false,
+    cut: () => false,
+    cutHold(down) {},
+    fog: (x, z) => !!mechanics.fogAt(x, z),
+    tide: (on) => false,
+    get mechanics4() {
+      return mechanics.state.m4 ?? null;
+    },
+    shellback: {
+      wake: (opts) => false,
+      setHp: (n) => null,
+      phase: (n) => null,
+      get state() {
+        return null;
+      },
+      get targets() {
+        return [];
+      },
+      get checkpoint() {
+        return bossCheckpoint ? { ...bossCheckpoint } : null;
+      },
+    },
+  },
+  // The new plots' record (pirates-ahoy-island4, SPEC4 §10.1). Stage 0: no record; nothing can be built.
+  island4: {
+    get config() {
+      return island4Cfg ? JSON.parse(JSON.stringify(island4Cfg)) : null;
+    },
+    set: (cfg) => null,
+    build: (id) => ({ ok: false, reason: 'closed' }),
   },
   armory: {
     get config() {
@@ -9817,6 +10084,26 @@ window.__game = {
     get api() {
       return townMode.api;
     },
+    // (SPEC4 §11.3: the islanders and the animals, talk, pet, hops, the Island map, the districts and the lookout.
+    // Stage 0: nobody, nothing, never.)
+    get islanders() {
+      return [];
+    },
+    get critters() {
+      return [];
+    },
+    talk: (id) => false,
+    pet: (i) => false,
+    hop: (id) => false,
+    map: {
+      open: () => false,
+      close: () => false,
+      get active() {
+        return false;
+      },
+    },
+    districtAt: (x, z) => null,
+    lookout: (on) => false,
   },
   // The shipyard: open('menu' | 'levelDone' | 'over' | 'won' | 'quit'), at once (the buttons wait two frames);
   // 'quit' leaves the battle in play as the pause dialog's Shipyard does (this level's plunder is dropped as

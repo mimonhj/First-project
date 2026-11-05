@@ -822,8 +822,8 @@ islandPlan's `KEEP_OFF` lists every circle and envelope; a Node test checks it.
 - **A porch** of ≥ **1.6 u** of deck stays free between the pad and the platform's edge on every side a link reaches,
   and in front of the plot's board (the pad limits of §4.1 build this in). Only where less would be left (a pad limit
   under 3.0 × 3.0 u, or one of the ten measured SPEC3 pads) does the platform gain a **porch extension** (new planks on
-  stilts outside its edge, from districts.js): the exception, not the rule. Where a scenery bridge's mouth would land inside a pad, that plot's kit
-  group is offset up to 0.6 u away from the mouth in the plot's frame (a group offset: no art change, no `rand()` change).
+  stilts outside its edge, from districts.js): the rule on all ten SPEC3 plots and the four small new pad limits (§19 S0-D3). Where a scenery bridge's mouth would land inside a pad, that plot's kit
+  group is offset up to 1.0 u (§19 S0-D3) away from the mouth in the plot's frame (a group offset: no art change, no `rand()` change).
   A test checks every tier's chunk fits its pad (every vertex above deck + 0.3 inside the pad, 0.05 u tolerance) and
   every mouth lands on free deck.
 - **Props on newly walkable decks** (laundry lines, porch folk, barrels, nets, the "Build me!" boards): each is inside
@@ -983,7 +983,7 @@ Animals never block (§6.5): no blocker, not in `folk()`, a hop aside within 1.2
 
 - **One cap**, `PEOPLE_DRAWN`, covers **every full-detail person in the town walk view**: townsfolk, villagers,
   islanders, NPCs (Bess, Barnacle), builders and merfolk. Stage 0 measures **P₀**, today's peak count of people drawn in
-  the walk view at the probe (the 401-call view), and sets `PEOPLE_DRAWN = P₀ + 2` (starting value 20, recorded in §19).
+  the walk view at the probe (the 401-call view), and sets `PEOPLE_DRAWN = P₀ + 2` (measured: P₀ 39, so 41; §19 S0-D1).
 - `islanders.plan(viewer, people, prev, t)` (pure) picks who is drawn every 0.25 s, **in this priority order, with a
   hard cap of `PEOPLE_DRAWN`**: (1) the islander he is chatting with; (2) everyone within 2 u of the captain; (3)
   everyone within 6 u, nearest first; (4) the nearest in front of the camera within **34 u** (today's townsfolk cull of
@@ -996,7 +996,7 @@ Animals never block (§6.5): no blocker, not in `folk()`, a hop aside within 1.2
   frame, and ashore.cjs's hand-driven `P.step`, which calls it directly at :624) runs the director with no change.
 - **The shipyard view** hides islanders, builders and animals (as it hides villagers today, SPEC3 §8.4).
 - Islanders, builders and merfolk are **built one per frame from dock open** behind the "Rowing to…" toast (never on Go
-  ashore), `share: true`, `detail: 'low'` (≤ 4,000 triangles each); the dock frame stays ≤ 1.5 M triangles (the summed
+  ashore), `share: true`, `detail: 'low'` (≤ 4,000 triangles each); the dock frame stays within §19 S0-D2's triangle caps (the summed
   plan of §14.2).
 - **Drop order:** §14.2's (animals beyond five species first, then the people cap back to P₀).
 
@@ -1561,7 +1561,7 @@ after 1N has generated it). **The `v4` walk fixture is generated once, in Stage 
 | **1L Env: Sunken Spires** | `src/env/spires.js` | §2.4 | as 1K; `currents` clear of colliders and the start |
 | **1M Env: Shellback Shoals** | `src/env/shoals.js` | §2.5 | as 1K; the arena clear by 12 of colliders and 6 of tide bars; every bar sail-round; `setAwake` / `setCalm` within §15's caps |
 | **1N Town layout** | `src/env/sparrow.js`, `src/islandPlan.js`, `src/env/districts.js`, `tests/walk.test.cjs` (new `v4` sections only; every existing check unchanged), `tests/fixtures/sparrow-walk-v4.json` (new, generated once in 1b) | §6 (districts, pads, porches, the seven bridges, keep-offs, signposts, arches, the lookout and its pose), the seven shacks into plot kits, the dev layer's second half, `setIsland4`, the seams to construction / folk4 / critters, the crowd director in place of `cull()`'s radius, `plotPose` for 21 plots | with `v4` false the town and `sparrow-walk.json` are byte-identical to today's; with `v4`: the §13.1 walk checks green on the v4 fixture; every rendered bridge has a link; every tier fits its pad; the shipyard showcase ray probe (every new building at tier 3) and the walk camera on every porch; the 48 × 8 town probe ≤ 450 with mock people at the cap |
-| **1O Buildings** | `src/env/buildings4.js` | §4.1's tier art for the eleven new plots, §4.3 | harness: every plot × tier at 3 angles at 1280×720 and 390×844; each tier fits its pad (islandPlan); ≤ 25k triangles per tier-3 building; the dev layer's half rebake ≤ 40 ms |
+| **1O Buildings** | `src/env/buildings4.js` | §4.1's tier art for the eleven new plots, §4.3 | harness: every plot × tier at 3 angles at 1280×720 and 390×844; each tier fits its pad (islandPlan); ≤ 20k triangles per tier-3 building (§19 S0-D2); the dev layer's half rebake ≤ 40 ms |
 | **1P Construction** | `src/env/construction.js` | §5.3 | harness with a mock chunk: every stage new and upgrade, skip, reduced motion; **no ink outline of an unbuilt part** in screenshots at the cut line; the build view ≤ 145 calls added; the warm draw; nothing else in the scene clipped |
 | **1Q Islanders & animals view** | `src/env/folk4.js`, `src/critters.js` | §7's people and animals | harness: every islander's look and a whole ashore day; LOOK-2 waiting with a mock captain; no pause on a link or within 2 u of a mouth; animals 2 calls a species and never in `folk()` |
 | **1R Panels & map** | `src/buildPanel.js`, `src/islandMap.js`, `town.css` | §8.5 the map, §8.6 the panel, §5.2 the strip and folded bar, the talk bubble's and toast's styles | harness at the 7 town sizes: no page scroll, ≥ 44 px, contrast ≥ 4.5:1, keyboard only, the screen-reader texts; a built row (with Watch again) no taller than today's at 320×480; with `v4` off the panel is today's |
@@ -1791,7 +1791,7 @@ existing suites' link loops stay on today's four links, §13.4 A3 / T1). Every n
 - Draw calls (§14): the town walk view ≤ 450 at **48 spots × 8 headings** (the old 30 spots plus the hilltop, the
   hill's shoulder, Sunset Beach, Fisher's Pier's end, the Long Walk's middle, the High Walk, Lighthouse Walk, the lookout
   panorama and the zip line's top and middle); the shipyard view ≤ 450; the build view during a scene ≤ 450; the dock
-  frame ≤ 1.5 M triangles (§14.2's sum, reported beside Stage 0's baseline). Screenshots `district-*.png`, `scene-*.png`, `map.png`, `lookout.png`, `crowd.png`.
+  frame within §19 S0-D2's triangle caps (§14.2's sum, reported beside Stage 0's baseline). Screenshots `district-*.png`, `scene-*.png`, `map.png`, `lookout.png`, `crowd.png`.
 
 **`tests/battle.cjs`** (new sections only) — the parts registry on any level with a spawned pack, patch and fort (aim,
 FIRE!, hits, a word once per volley, no capture); nets cut by G and CUT!; on levels 1–9 nothing changes (the warn cap is
@@ -1918,7 +1918,7 @@ starts from **B = the larger of the two**, with its breakdown and **P₀**; the 
 | Item | Calls added | How |
 |---|---|---|
 | Today's worst view, **B** | max(401, the panorama / hill baseline) | measured in Stage 0 |
-| The new districts' statics (platform decks, porches, 16 boardwalks, 5 rope bridges, the islets, Fisher's Pier, signposts, arches, lanterns) | **+0** (≤ +2 if a bake group splits at 65k vertices) | baked by sparrow into the town's existing ink-weight meshes; ≤ 150k triangles |
+| The new districts' statics (platform decks, porches, 16 boardwalks, 5 rope bridges, the islets, Fisher's Pier, signposts, arches, lanterns) | **+0** (≤ +2 if a bake group splits at 65k vertices) | baked by sparrow into the town's existing ink-weight meshes; ≤ 120k triangles (§19 S0-D2) |
 | The development layer's second half (11 plots) | **+6** | ≤ 3 outlined meshes × 2 passes; boards in its texture mesh |
 | New animated parts (forge glow, water wheel, the dome, aquarium shimmer, music notes, windpump) | **+6** | one mesh or InstancedMesh each |
 | Animals | **+14** | 7 species × (InstancedMesh + ink twin) |
@@ -1932,7 +1932,7 @@ starts from **B = the larger of the two**, with its breakdown and **P₀**; the 
 | Build view during a construction scene | ≤ 450 | today ≤ 96 + ≈ 49 (§5.3) ≈ **145** |
 | The lookout panorama | ≤ 450 | the walk view's table from the panorama baseline (the whole island in view is the table's sum) |
 | Quiz view | unchanged (≈ 52) | — |
-| Dock frame triangles (as smoke.cjs:511 counts them) | ≤ 1.5 M | a sum, like the draw calls: **today's dock frame** (Stage 0 item 10(f); it already holds the ten SPEC3 plots) + the districts ≤ 150k + the **11** new tier-3 buildings ≤ 25k each (≤ 275k) + the islanders and builders drawn in that frame (the light build, ≤ 4,000 each; 33 islanders + 3 builders ≤ 144k at most, fewer where the shipyard view hides them) + the animals (1Q reports their triangles). If the sum passes 1.5 M, the new buildings' budget drops to 20k each first, then the drop order applies |
+| Dock frame triangles (as smoke.cjs:511 counts them) | fresh save ≤ 1.75 M; fully built ≤ 2.0 M (§19 S0-D2) | a sum, like the draw calls: **today's dock frame** (Stage 0 item 10(f); it already holds the ten SPEC3 plots) + the districts ≤ 120k + the **11** new tier-3 buildings ≤ 20k each (≤ 220k) + the islanders and builders drawn in that frame (the light build, ≤ 4,000 each; 33 islanders + 3 builders ≤ 144k at most, fewer where the shipyard view hides them) + the animals ≤ 15k (1Q reports them). If the sum passes the cap, the drop order applies |
 
 **CPU:** both halves of the development layer rebake in ≤ 40 ms each (behind the scene's dust or the "Rowing to…"
 toast); islanders and builders are built one per frame from dock open; routines are O(islanders) a frame; animals update
@@ -2136,7 +2136,57 @@ noted) and fixed where their numbers live.
 
 ### Stage 0 (measurements)
 
-(empty)
+Measured by the Stage 0 agent on `eedb108`'s code (full method and tables: `docs/sunset-isles/stage0-report.md`);
+`?quality=low`, 1280×720, SwiftShader, both outline passes.
+
+- **Level starts L1–L9:** 290, 211, 167–169, 235, 189–190, 202, 99, 116, 140–143 (seeded: 290, 211, 164, 238, 186,
+  204, 108, 121, 140). **Shipyard view** 308–315. **Town walk view** (30 spots × 8 headings) max **401**, min 40, mean
+  190. **Panorama** from today's crow's nest **410** (pulled out 400); over `s12` at the hilltop's height 355; the
+  hilltop walk view 224–227. So **B = 410** and §14.2's worst planned B + 36 = 446 ≤ 450. All within ±2 after Stage 0.
+- **Worst walk view** (−13.6, −23.4, π/4): townsfolk 150 (30 people), villagers 35, NPCs 10, docked ship 58, its crew
+  35, prize ships 38, visiting cutter 18, animated parts 34, statics 9, development layer 7, captain 5, sea and sky 2.
+  **P₀ = 39, so `PEOPLE_DRAWN` = 41** (§7.2's starting value 20 replaced; today's townsfolk already fill 30 of it at
+  the worst view, so 1D's and 1Q's crowd plans use 41).
+- **Pads:** the ten SPEC3 pads and the seven new pad limits are in `islandPlan.PADS` (report table (c)). No SPEC3
+  platform keeps a 1.6 u strip beside its pad (widest 0.72 u); four pads hang over their platform's edge (bakery,
+  market, park, windmill); six scenery-bridge mouths land inside a pad (homeA, homeC, homeD × 2, school, park). Four of
+  the seven new pad limits are under 3.0 × 3.0 u (forge 2.4 × 3.0, music 4.4 × 2.0, fishing 3.0 × 1.8, aquarium
+  6.2 × 2.3; farm, museum and homeF 4.0 × 3.4–3.5).
+- **A Man-o'-War:** 26 calls, so the Shellback's cap is **33** (1.3 × 26 < 40). Cutter 18, Privateer 24, Bomb Ketch
+  25, Galleon 24.
+- **`#6b2a55`:** 9.18 : 1 on `--paper`, 8.29 : 1 on `--paper-2`; kept.
+- **Dock-frame triangles** (smoke.cjs:511's count): 1,479,588 on a fresh save, **1,586,020** with every SPEC3 plot at
+  tier 3 and 8 villagers: today's game is already over §14.2's 1.5 M with a built-up island.
+- **Walk graph, today's walk.js:** today's fixture 475 nodes / 2,513 edges, cold 55.7–62.8 ms, worst place-to-place
+  path 2.7 ms; a 2.48× synthetic island 1,179 / 6,156, cold 108.7–137.0 ms, worst path 2.6 ms. §6.6's budgets already
+  hold; 1E's work is still done (identical graph, faster build).
+
+**Coordinator decisions on Stage 0's open issues (these override the sections named):**
+
+- **S0-D1 (§7.2, §14.2):** `PEOPLE_DRAWN = 41`.
+- **S0-D2 (§7.2, §12 1O, §13.2, §14.2 triangles):** the 1.5 M triangle cap was set before the island had buildings;
+  today's built-up island already exceeds it, and the frame draws fine. New caps, measured as smoke.cjs:511 counts:
+  the **fresh-save** dock frame ≤ **1.75 M** (smoke.cjs's check moves from 1.5 M to 1.75 M in Stage 3, a §13.4 row for
+  3C), and the **fully built** dock frame (every one of the 21 plots at tier 3, the crowd at its cap, the animals)
+  ≤ **2.0 M**. To fit: each new tier-3 building ≤ **20k** triangles (§14.2's fallback is now the rule), the districts
+  ≤ **120k**, the animals ≤ 15k, and islanders use the light build (≤ 4,000 each). Draw calls stay the binding budget.
+- **S0-D3 (§6.3, §4.1):** porch extensions are **the rule** for all ten SPEC3 plots and for the four small new pad
+  limits, not the exception. Where a scenery bridge's mouth lands inside a pad, 1N may offset that plot's kit group up
+  to **1.0 u** (not 0.6), provided any overhang past the platform's edge sits over a porch extension and the walk
+  camera, the shipyard showcase ray probe and the fit test pass; homeD may combine an offset with moving one walk
+  mouth along the deck edge. **The school (s13) is ruled like homeD:** its two scenery mouths pull opposite ways, and
+  s13S14's plain run-in points out of s13 along its left edge (0.24 u over the water) after crossing the school pad's
+  back-left corner for 1.77 u, so its s13 end meets no walk area (review S0-STUB-1). 1N connects it with a porch
+  extension at s13's back-left corner that the walk band meets within 2.05 u of the end post (or a combination with
+  the school's kit offset), and checks every bridge's mouths on a walk area with the fit test, never by `PADS`'
+  `inPad` flag (`onDeck` / `edge` / `overEdge` mark the exceptions). Never changed: the bridges' art, their curves'
+  ends and every `rand()` draw. 1N records each plot's choice in its report.
+- **S0-D4 (§11.1, §14.1):** the Shellback ≤ 33 calls; every new ship model ≤ 26.
+- **S0-D5 (§11.2, §14.1):** `warmDraw` draws to the canvas through a 1 × 1 scissor, not into a render target (a
+  render target compiles the linear-output program variant, not the canvas's sRGB one; measured).
+- **S0-D6 (§11.2):** the `-voyage4` and `-island4` records are not loaded until Stage 2 (a stub parser would rewrite a
+  stored record with its default); `ACT_NAMES[4]` and the act-4 card colours landed early, harmlessly (no act-4 card
+  exists with the flag off).
 
 ### Stage 3 (tuning and go-live)
 

@@ -4977,6 +4977,11 @@ const BUILDERS = {
   fireship: buildFireship,
   skiff: buildSkiff,
   inkheart: buildInkheart,
+  // Voyage IV (SPEC4 §11.1): stand-ins until 1H's models replace these three lines (each builder sizes its hull
+  // from the type's len and wid), so buildShip never throws for them
+  stinger: buildCutter,
+  netsloop: buildPrivateer,
+  witch: buildBombKetch,
 };
 
 // ---------------------------------------------------------------------------

@@ -8,9 +8,12 @@ house being built), the whole island walkable, and an island with different kind
 | `SPEC4.md` | The final build spec: Voyage IV (levels 10-12) and its hazards, seven new foes and the seeded wave pools, the Shellback finale, eleven new buildings, the construction scene, the walkable island, the islanders and animals, economy, saves, architecture, the staged build plan (section 12), tests, budgets, accessibility, cut list, and the defaults the player can change (section 18). Checked by a critic before building (section 19, "Spec check"). |
 | `design-arcade.md`, `design-depth.md`, `design-spectacle.md` | The three competing designs; two of three judges chose the depth one as the base, with grafts from the others (SPEC4 appendix B). |
 | `design4.js` | The design workflow script. |
+| `stage0-report.md` | Stage 0's measurements (draw-call baselines, pads, walk graph timings), the stub APIs, deviations and how it was verified. |
 
 ## Progress
 
 - Design and spec check: done.
-- Stage 0 (scaffolding, no behaviour change) to Stage 4 (review, README): to do. Voyage IV and the new town
-  features stay behind `?v4=1` until Stage 3.
+- Stage 0 (scaffolding, no behaviour change): done. The stubs, the `?v4=1` flag, the measurements and the
+  coordinator's decisions S0-D1..D6 are in `stage0-report.md` and SPEC4 section 19; all 27 suites green.
+- Stage 1 (foundations) to Stage 4 (review, README): to do. Voyage IV and the new town features stay behind
+  `?v4=1` until Stage 3.

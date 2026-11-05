@@ -2331,3 +2331,15 @@ body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(24
 @media (max-height: 500px) {
   body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(27%, 172px); }
 }
+
+/* ---------- The Sunset Isles (SPEC4): scaffolding ---------- */
+/* Voyage IV on the title (only with ?v4=1 until it sails): the three seas' cards and their heading (#6b2a55: 9.2:1
+   on the parchment, 8.3:1 on --paper-2; SPEC4 §2.2 asks for >= 7:1). The compact difficulty pill ("☠ ×10") of 12
+   levels is Stage 3's. */
+.level-cards .act-head.act-4 { color: #6b2a55; }
+.lvl-10 { background: linear-gradient(180deg, #2f4f6f 0%, #d9a95a 45%, #4f9e7c 46%, #1f5a4a 100%); }
+.lvl-11 { background: linear-gradient(180deg, #2a7fd8 0%, #7ccdf0 45%, #3fd6cc 46%, #0e8aa0 100%); }
+.lvl-12 { background: linear-gradient(180deg, #5a3a8a 0%, #ffa88a 45%, #4fd0c8 46%, #1a5a8a 100%); }
+.lvl-10 .lvl-diff { background: #e3f0c8; }
+.lvl-11 .lvl-diff { background: #d2f6fb; }
+.lvl-12 .lvl-diff { background: #ffd9cc; }

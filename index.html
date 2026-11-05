@@ -68,6 +68,14 @@
          a rogue wave's warning: a teal arrow with "WAVE!" at the screen edge it comes from. -->
     <div id="grab-strip" class="grab-strip hidden" aria-hidden="true"></div>
     <div id="edge-arrow" class="edge-arrow hidden" aria-hidden="true"></div>
+    <!-- (SPEC4 §3.4, §8.2) Meeting a new kind: its icon, name and one counter line in the banner slot (its text goes
+         to #game-live); and the HIDDEN chip while your ship is inside a fog bank. -->
+    <div id="meet-card" class="meet-card hidden" aria-hidden="true">
+      <span id="meet-icon" class="meet-icon"></span>
+      <b id="meet-name" class="meet-name"></b>
+      <span id="meet-line" class="meet-line"></span>
+    </div>
+    <div id="fog-chip" class="fog-chip hidden" aria-hidden="true"></div>
     <canvas id="minimap" width="150" height="150" aria-label="Minimap"></canvas>
     <div id="hitmark" class="hitmark" aria-hidden="true"></div>
     <!-- Pop words over the 3D view (pops.js). -->
@@ -247,6 +255,8 @@
     <div class="panel">
       <h2>Shipwrecked!</h2>
       <p id="over-summary"></p>
+      <!-- (SPEC4 §3.6.4) After the Shellback's checkpoint: try again from there. -->
+      <button id="shellback-retry-btn" class="btn hidden" type="button">Try again from the Shellback</button>
       <!-- (SPEC3 §5.7.6) After the Kraken's rise: try again from there. -->
       <button id="kraken-retry-btn" class="btn hidden" type="button">Try again from the Kraken</button>
       <button id="retry-btn" class="btn" type="button">Try again</button>
@@ -348,6 +358,15 @@
     </nav>
     <button id="town-action" class="town-action" type="button" aria-disabled="true">Go in</button>
     <div id="town-joystick" class="town-joystick" aria-hidden="true"><div class="town-knob"></div></div>
+    <!-- (SPEC4 §7.4, §6.7, §8.5) An islander's chat bubble (read by #town-live), the lookout's Climb down, and the
+         2 s toast of a district's name under its arch (also said in #town-live). Shown with the Sunset Isles. -->
+    <div id="talk-bubble" class="talk-bubble hidden">
+      <b id="talk-name" class="talk-name"></b>
+      <p id="talk-text" class="talk-text"></p>
+      <button id="talk-next-btn" class="btn talk-next" type="button">Next</button>
+    </div>
+    <button id="lookout-down-btn" class="btn lookout-down hidden" type="button">Climb down</button>
+    <p id="town-toast" class="town-toast hidden" aria-hidden="true"></p>
     <p id="town-keys" class="town-keys">Walk <kbd>W</kbd><kbd>A</kbd><kbd>S</kbd><kbd>D</kbd> &middot; Sprint <kbd>Shift</kbd> &middot; Go in <kbd>E</kbd> &middot; Camera <kbd>C</kbd> &middot; Menu <kbd>Esc</kbd></p>
     <p id="town-live" class="sr-only" role="status" aria-live="polite"></p>
   </section>
@@ -390,6 +409,8 @@
         <ul id="tavern-powder-list" class="up-list powder-list hidden" aria-label="Powder room"></ul>
         <section id="tavern-rumour" class="tavern-rumour" aria-label="Rumour board"></section>
         <section id="tavern-log" class="tavern-log" aria-label="Captain's log"></section>
+        <!-- (SPEC4 §8.7) The Sea Guide: a card per foe kind (shown with the Sunset Isles). -->
+        <section id="tavern-guide" class="tavern-guide hidden" aria-label="Sea Guide"></section>
       </div>
       <div class="dock-exits">
         <button id="tavern-back-btn" class="btn" type="button">Back to town</button>
@@ -410,6 +431,8 @@
         <!-- (SPEC3 §7.1, §8.3: shown once the Kraken Seas sail) -->
         <button id="harbour-quiz-btn" class="btn alt hidden" type="button">Quiz</button>
         <button id="harbour-build-btn" class="btn alt hidden" type="button">Build</button>
+        <!-- (SPEC4 §8.5: shown with the Sunset Isles; its one-time "New!" badge, §8.4 tip 64) -->
+        <button id="harbour-map-btn" class="btn alt hidden" type="button">Island map <span class="new-badge hidden">New!</span></button>
       </div>
       <div id="harbour-exits" class="more-actions"></div>
     </div>
@@ -456,6 +479,12 @@
   <!-- Builder Bess (SPEC3 §8.3): build homes and amenities on the island's plots. buildPanel.js fills it (styles
        in town.css); like the tavern it lets pointer events through to the town. Before #recover-screen too. -->
   <section id="build-screen" class="overlay town build hidden" aria-labelledby="build-title">
+    <!-- (SPEC4 §5.2) The construction scene's strip: the stage pill ("Walls" and six pips) and Skip. -->
+    <div id="build-scene" class="build-scene hidden">
+      <span id="scene-stage" class="scene-stage"></span>
+      <span id="scene-pips" class="scene-pips" aria-hidden="true"></span>
+      <button id="scene-skip-btn" class="btn scene-skip" type="button" aria-label="Skip">Skip &#9656;&#9656;</button>
+    </div>
     <div id="build-panel" class="panel dock-panel town-panel">
       <header class="dock-head">
         <p class="dock-kicker">Builder Bess</p>
@@ -465,15 +494,41 @@
       <div class="dock-tabs" role="tablist" aria-label="Build">
         <button id="build-tab-homes" type="button" role="tab" aria-selected="true" aria-controls="build-homes">Homes</button>
         <button id="build-tab-amenities" type="button" role="tab" aria-selected="false" aria-controls="build-amenities" tabindex="-1">Amenities</button>
+        <!-- (SPEC4 §8.6: with the Sunset Isles the tabs are the four districts; Homes and Amenities stay for today's panel) -->
+        <button id="build-tab-windmill" class="hidden" type="button" role="tab" aria-selected="false" aria-controls="build-windmill" tabindex="-1">Windmill Row</button>
+        <button id="build-tab-lantern" class="hidden" type="button" role="tab" aria-selected="false" aria-controls="build-lantern" tabindex="-1">Lantern Lane</button>
+        <button id="build-tab-lighthouse" class="hidden" type="button" role="tab" aria-selected="false" aria-controls="build-lighthouse" tabindex="-1">Lighthouse Point</button>
+        <button id="build-tab-beach" class="hidden" type="button" role="tab" aria-selected="false" aria-controls="build-beach" tabindex="-1">Beach &amp; Hill</button>
       </div>
       <div class="dock-body">
         <ul id="build-homes" class="up-list" role="tabpanel" aria-labelledby="build-tab-homes"></ul>
         <ul id="build-amenities" class="up-list" role="tabpanel" aria-labelledby="build-tab-amenities" hidden></ul>
+        <ul id="build-windmill" class="up-list" role="tabpanel" aria-labelledby="build-tab-windmill" hidden></ul>
+        <ul id="build-lantern" class="up-list" role="tabpanel" aria-labelledby="build-tab-lantern" hidden></ul>
+        <ul id="build-lighthouse" class="up-list" role="tabpanel" aria-labelledby="build-tab-lighthouse" hidden></ul>
+        <ul id="build-beach" class="up-list" role="tabpanel" aria-labelledby="build-tab-beach" hidden></ul>
       </div>
       <div class="dock-exits">
         <button id="build-back-btn" class="btn" type="button">Back to town</button>
       </div>
       <p id="build-live" class="sr-only" role="status" aria-live="polite"></p>
+    </div>
+  </section>
+
+  <!-- (SPEC4 §8.5) The Island map (islandMap.js fills it; I or the Harbour menu's Island map): a parchment map with
+       "You are here" and a district-grouped list of every district, plot and islander, with Walk there and Hop
+       there. Non-modal like the tavern; a class overlay, so it joins the backdrops, and before #recover-screen. -->
+  <section id="island-map" class="overlay town island-map hidden" aria-labelledby="map-title">
+    <div class="panel dock-panel town-panel">
+      <h2 id="map-title">Island map</h2>
+      <svg id="map-svg" class="map-svg" role="img" aria-label="Map of Sparrow's Floating Island"></svg>
+      <div id="map-list" class="map-list"></div>
+      <div class="dock-exits">
+        <button id="map-walk-btn" class="btn" type="button">Walk there</button>
+        <button id="map-hop-btn" class="btn alt" type="button">Hop there</button>
+        <button id="map-close-btn" class="btn alt" type="button">Close</button>
+      </div>
+      <p id="map-live" class="sr-only" role="status" aria-live="polite"></p>
     </div>
   </section>
 

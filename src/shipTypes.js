@@ -142,6 +142,30 @@ export const SHIP_TYPES = {
     gold: 35, engage: 24, spread: 0.07, crew: 26, grit: 1.6,
     flagship: true,
   },
+
+  // Voyage IV · The Sunset Isles (SPEC4 §3.1). Their behaviours follow these flags on any level (mechanics4.js):
+  // kiter (the Sting Sloop holds a spot behind you and dances out of your broadside), nets (the Net Sloop throws
+  // nets), summoner (the Coral Witch calls puffers and mends her fleet; she has no guns and never fires).
+  // Level 10: Misty Mangroves
+  stinger: {
+    name: 'Sting Sloop',
+    hp: 60, len: 8.5, wid: 2.6, maxSpeed: 14, accel: 4.6, turn: 1.7, reload: 2.2, guns: 2, dmg: 4,
+    gold: 6, engage: 26, spread: 0.1, crew: 9, grit: 1.1,
+    kiter: true,
+  },
+  netsloop: {
+    name: 'Net Sloop',
+    hp: 65, len: 8.5, wid: 3.0, maxSpeed: 10, accel: 3.2, turn: 1.3, reload: 3.2, guns: 1, dmg: 4,
+    gold: 5, engage: 16, spread: 0.12, crew: 10, grit: 1.0,
+    nets: true,
+  },
+  // Level 11: The Sunken Spires
+  witch: {
+    name: "Coral Witch's Barge",
+    hp: 120, len: 10, wid: 3.6, maxSpeed: 5.5, accel: 1.6, turn: 0.7, reload: 99, guns: 0, dmg: 0,
+    gold: 8, engage: 34, spread: 0, crew: 6, grit: 0.7,
+    summoner: true,
+  },
 };
 
 /** z position (along the hull, bow = +z) of gun i on a ship type. */

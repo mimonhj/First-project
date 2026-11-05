@@ -110,7 +110,7 @@ export const FEAT_IDS = Object.freeze(['captures', 'boardings', 'rakes', 'crits'
 export const MAX_FEATS = Object.freeze(['legend', 'kraken', 'quiz', 'stars', 'island']);
 const FEAT_MAX = { legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30 }; // every other counter: MAX_COUNT
 /** Enemy ship types whose captures are counted in feats.prizes (SHIP_TYPES minus the player). */
-export const FEAT_PRIZE_TYPES = Object.freeze(['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom', 'shark', 'bombketch', 'ironclad', 'fireship', 'skiff', 'inkheart']);
+export const FEAT_PRIZE_TYPES = Object.freeze(['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom', 'shark', 'bombketch', 'ironclad', 'fireship', 'skiff', 'inkheart', 'stinger', 'netsloop', 'witch']);
 
 // ---------------------------------------------------------------------------
 // The catalogue

@@ -6,6 +6,15 @@ import { waveHeight } from '../scenery.js';
 import { buildShip, animateShip, disposeShip, hoistFlag } from '../ships.js';
 import { buildPerson, animatePerson, disposePerson, walkSpeed, WALL_Z, SEAT_HEIGHT, RAIL } from '../people.js';
 import * as islandRules from '../island.js';
+// The Sunset Isles' town (SPEC4 §6-§7, ctx.v4): the plan, the districts, the new buildings, the construction scene,
+// the islanders and the animals, each in a module of its own that sparrow hands its art helpers (the frozen `kit`).
+// Imported whole, so a module still being built never stops the town from loading.
+import * as islandPlan from '../islandPlan.js';
+import * as districts4 from './districts.js';
+import * as buildings4 from './buildings4.js';
+import * as construction4 from './construction.js';
+import * as folk4 from './folk4.js';
+import * as critters4 from '../critters.js';
 
 // Sparrow's Floating Island: the pirate town on the water where the player's ship docks
 // for repairs, upgrades and a fresh coat of paint (the shipyard screen).
@@ -1640,6 +1649,10 @@ export function build(scene, ctx = {}) {
   // The Kraken Seas (SPEC3 §8, ctx.kraken): the island's plots, Builder Bess, Professor Barnacle's Riddle Bell and
   // the villagers. Without it the town is exactly today's (the same draws, the same bake, the same walk).
   const KRAKEN = ctx.kraken === true;
+  // The Sunset Isles (SPEC4 §6-§7, ctx.v4; only with the Kraken Seas): the districts, the eleven new plots, the
+  // construction scene, the islanders and the animals. Stage 0 lays the seam only: the new modules get the kit and
+  // draw nothing, and with v4 the town is still exactly today's (the same draws, the same bake, the same walk).
+  const V4 = KRAKEN && ctx.v4 === true;
   const root = new THREE.Group();
   root.name = 'env-sparrow';
   scene.add(root);
@@ -6328,6 +6341,47 @@ export function build(scene, ctx = {}) {
     return along > 0 && along < WAIT.ahead && Math.abs(dx * fz - dz * fx) < WAIT.side && Math.hypot(dx, dz) > WAIT.inside;
   };
 
+  // ----- the Sunset Isles' seam (SPEC4 §11.1, ctx.v4) -----
+  // The art helpers the new modules build with, frozen: the town's parts, colours and baking, LOOK-2's inTheWay, and
+  // stream(seed), a random stream of a module's own (the town's rand() is never drawn by them).
+  const kit = Object.freeze({
+    THREE,
+    add,
+    rbox,
+    cyl,
+    sphere,
+    rope,
+    rod,
+    beam,
+    ink,
+    thin,
+    flat,
+    COL,
+    WALLS,
+    ROOFS,
+    lantern,
+    shack,
+    sagCurve,
+    bake,
+    inTheWay,
+    stream: (seed) => mulberry32(seed),
+  });
+  // (Stage 0: each module answers as a null object; 1N wires their art, walks and people in)
+  const v4 = { kit, districts: null, folk: null, critters: null, buildings: buildings4, construction: construction4 };
+  if (V4) {
+    const call = (f, ...args) => {
+      try {
+        return typeof f === 'function' ? f(...args) : null;
+      } catch (err) {
+        console.warn('sparrow v4:', err);
+        return null;
+      }
+    };
+    v4.districts = call(districts4.buildDistricts, kit, islandPlan);
+    v4.folk = call(folk4.createFolk4, kit, { people: [], walk: walkData });
+    v4.critters = call(critters4.createCritters, root, { reducedMotion: () => !!(typeof ctx.reducedMotion === 'function' ? ctx.reducedMotion() : ctx.reducedMotion) });
+  }
+
   function update(t, dt0, ctx) {
     if (ctx && ctx.camera && ctx.camera.position) lastCam = { x: ctx.camera.position.x, z: ctx.camera.position.z };
     const amp = palette.waveAmp;
@@ -6523,6 +6577,7 @@ export function build(scene, ctx = {}) {
   }
 
   function dispose() {
+    for (const m of [v4.districts, v4.folk, v4.critters]) if (m && typeof m.dispose === 'function') m.dispose();
     if (crewRig.parent) crewRig.parent.remove(crewRig);
     if (anim.visitor) disposeShip(anim.visitor); // its own clean-up (keeps the shared materials)
     for (const z of prizes) {

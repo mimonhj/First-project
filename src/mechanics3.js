@@ -1391,31 +1391,41 @@ export function createMechanics3(ids, ctx) {
 // ------------------------------------------------------------------------------ composeMechanics
 
 /**
- * One `mechanics` for main from a = createMechanics(ids, ctx) and b = createMechanics3(ids, ctx3) (two
- * instances: each factory keeps the ids it knows). The rules (SPEC3 §11.1):
- * - init, onSpawn, onCapture, onSink, onRemove, step, dispose fan out, a first;
- * - steer: a's if non-null, else b's; holdFire: either;
- * - drift: summed (as createMechanics sums its parts), null when both are null;
- * - avoid, minimap, summary: a's then b's; bonus: summed;
- * - objective: a's string unchanged when b's is null (b's alone when a's is null, else "a · b");
- * - shipMods: the multipliers multiplied, the adds added (identity when neither has any);
- * - state: { ...a.state, m3: b.state }, so Act II's ids, convoy, floes and current stay top-level;
- * - visuals, krakenDue, addSlick: b's.
- * A missing or broken part counts as one that does nothing; nothing here throws on junk.
+ * One `mechanics` for main from its parts, in order: a = createMechanics(ids, ctx), b = createMechanics3(ids, ctx3)
+ * and, from Voyage IV on, c = createMechanics4(ids, ctx4) (instances: each factory keeps the ids it knows). The
+ * rules (SPEC3 §11.1, generalised to any number of parts by SPEC4 §11.1), applied left to right:
+ * - init, onSpawn, onCapture, onSink, onRemove, step, dispose fan out to every part, in order;
+ * - steer: the first part's that is non-null; holdFire: any;
+ * - drift: summed (as createMechanics sums its parts), null when all are null (one alone passes through);
+ * - avoid, minimap, summary: concatenated in order; bonus: summed;
+ * - objective: the non-null ones joined with " · " (a's string unchanged when the others are null);
+ * - shipMods: the multipliers multiplied, the adds added (identity when none has any);
+ * - state: { ...a.state, m3: b.state }, plus m4: c.state only when a third part exists, so Act II's ids, convoy,
+ *   floes and current stay top-level and m3 where the tests read it;
+ * - visuals: { ...b.visuals(), ...c.visuals() } (b's alone without c); krakenDue, addSlick: b's;
+ * - hidden, fogAt, playerMods, cut, cutHold: c's (fog and nets, SPEC4 §2.6; identity when there is no c).
+ * With two parts, or a null third part, it returns exactly what it returned before SPEC4. A missing or broken
+ * part counts as one that does nothing; nothing here throws on junk.
  */
+const NO_PLAYER_MODS = Object.freeze({ speedMul: 1, turnMul: 1, netted: null });
 export function composeMechanics(parts) {
-  const [pa, pb] = Array.isArray(parts) ? parts : [];
-  const a = isObj(pa) ? pa : {};
-  const b = isObj(pb) ? pb : {};
+  const given = Array.isArray(parts) ? parts : [];
+  const a = isObj(given[0]) ? given[0] : {};
+  const b = isObj(given[1]) ? given[1] : {};
+  // the parts after b that exist (Voyage IV's from SPEC4 on); a null third part is no part at all
+  const more = given.slice(2).filter(isObj);
+  const c = more.length ? more[0] : null;
+  const all = [a, b, ...more];
   const fn = (m, name) => (typeof m[name] === 'function' ? m[name] : null);
   const call = (m, name, ...args) => {
     const f = fn(m, name);
     return f ? f.apply(m, args) : undefined;
   };
-  const both = (name) => (...args) => {
-    call(a, name, ...args);
-    call(b, name, ...args);
+  const fan = (name) => (...args) => {
+    for (const m of all) call(m, name, ...args);
   };
+  // the first of the parts after b that has this hook (c's, SPEC4 §11.1)
+  const late = (name) => more.find((m) => fn(m, name)) || null;
   const list = (v) => (Array.isArray(v) ? v : []);
   const text = (v) => (typeof v === 'string' && v ? v : null);
   const num = (v, d) => (finite(v) ? v : d);
@@ -1429,63 +1439,89 @@ export function composeMechanics(parts) {
   };
 
   return {
-    init: both('init'),
-    onSpawn: both('onSpawn'),
-    onCapture: both('onCapture'),
-    onSink: both('onSink'),
-    onRemove: both('onRemove'),
-    step: both('step'),
-    dispose: both('dispose'),
+    init: fan('init'),
+    onSpawn: fan('onSpawn'),
+    onCapture: fan('onCapture'),
+    onSink: fan('onSink'),
+    onRemove: fan('onRemove'),
+    step: fan('step'),
+    dispose: fan('dispose'),
     steer(e, dt) {
-      return call(a, 'steer', e, dt) || call(b, 'steer', e, dt) || null;
+      for (const m of all) {
+        const s = call(m, 'steer', e, dt);
+        if (s) return s;
+      }
+      return null;
     },
     holdFire(e) {
-      return !!call(a, 'holdFire', e) || !!call(b, 'holdFire', e);
+      for (const m of all) if (call(m, 'holdFire', e)) return true;
+      return false;
     },
     drift(s) {
-      const da = call(a, 'drift', s);
-      const db = call(b, 'drift', s);
       const ok = (d) => isObj(d) && finite(d.vx) && finite(d.vz);
-      if (!ok(db)) return ok(da) ? da : null;
-      if (!ok(da)) return db;
-      return { vx: da.vx + db.vx, vz: da.vz + db.vz };
+      const got = [];
+      for (const m of all) {
+        const d = call(m, 'drift', s);
+        if (ok(d)) got.push(d);
+      }
+      if (!got.length) return null;
+      if (got.length === 1) return got[0];
+      let vx = got[0].vx;
+      let vz = got[0].vz;
+      for (let i = 1; i < got.length; i++) {
+        vx += got[i].vx;
+        vz += got[i].vz;
+      }
+      return { vx, vz };
     },
     avoid() {
-      return [...list(call(a, 'avoid')), ...list(call(b, 'avoid'))];
+      return all.flatMap((m) => list(call(m, 'avoid')));
     },
     shipMods(s) {
-      const ma = call(a, 'shipMods', s);
-      const mb = call(b, 'shipMods', s);
-      const ia = !isObj(ma) || ma === IDENTITY;
-      const ib = !isObj(mb) || mb === IDENTITY;
-      if (ia && ib) return IDENTITY;
-      const A = ia ? IDENTITY : ma;
-      const B = ib ? IDENTITY : mb;
-      return {
-        speedMul: num(A.speedMul, 1) * num(B.speedMul, 1),
-        capAdd: num(A.capAdd, 0) + num(B.capAdd, 0),
-        turnMul: num(A.turnMul, 1) * num(B.turnMul, 1),
-        spin: num(A.spin, 0) + num(B.spin, 0),
-      };
+      const mods = all.map((m) => {
+        const v = call(m, 'shipMods', s);
+        return !isObj(v) || v === IDENTITY ? IDENTITY : v;
+      });
+      if (mods.every((m) => m === IDENTITY)) return IDENTITY;
+      let speedMul = num(mods[0].speedMul, 1);
+      let capAdd = num(mods[0].capAdd, 0);
+      let turnMul = num(mods[0].turnMul, 1);
+      let spin = num(mods[0].spin, 0);
+      for (let i = 1; i < mods.length; i++) {
+        speedMul *= num(mods[i].speedMul, 1);
+        capAdd += num(mods[i].capAdd, 0);
+        turnMul *= num(mods[i].turnMul, 1);
+        spin += num(mods[i].spin, 0);
+      }
+      return { speedMul, capAdd, turnMul, spin };
     },
     objective() {
       const ta = call(a, 'objective');
-      const tb = text(call(b, 'objective'));
-      if (!tb) return ta ?? null;
+      const rest = all.slice(1).map((m) => text(call(m, 'objective'))).filter(Boolean);
+      if (!rest.length) return ta ?? null;
       const sa = text(ta);
-      return sa ? `${sa} · ${tb}` : tb;
+      return (sa ? [sa, ...rest] : rest).join(' · ');
     },
     minimap() {
-      return [...list(call(a, 'minimap')), ...list(call(b, 'minimap'))];
+      return all.flatMap((m) => list(call(m, 'minimap')));
     },
     summary() {
-      return [...list(call(a, 'summary')), ...list(call(b, 'summary'))];
+      return all.flatMap((m) => list(call(m, 'summary')));
     },
     bonus() {
-      return num(Number(call(a, 'bonus')), 0) + num(Number(call(b, 'bonus')), 0);
+      let sum = num(Number(call(a, 'bonus')), 0);
+      for (let i = 1; i < all.length; i++) sum += num(Number(call(all[i], 'bonus')), 0);
+      return sum;
     },
     visuals() {
-      return call(b, 'visuals') || NO_VISUALS;
+      const vb = call(b, 'visuals') || NO_VISUALS;
+      if (!c) return vb;
+      let out = vb;
+      for (const m of more) {
+        const v = call(m, 'visuals');
+        if (isObj(v)) out = { ...out, ...v };
+      }
+      return out;
     },
     addSlick(x, z) {
       call(b, 'addSlick', x, z);
@@ -1497,8 +1533,32 @@ export function composeMechanics(parts) {
         return false;
       }
     },
+    // (Voyage IV's: fog hides a ship from a viewer, the net on you, cutting it; SPEC4 §2.6, §3.1)
+    hidden(target, viewer) {
+      const m = late('hidden');
+      return m ? !!call(m, 'hidden', target, viewer) : false;
+    },
+    fogAt(x, z) {
+      const m = late('fogAt');
+      return m ? !!call(m, 'fogAt', x, z) : false;
+    },
+    playerMods() {
+      const m = late('playerMods');
+      const v = m ? call(m, 'playerMods') : null;
+      return isObj(v) ? v : NO_PLAYER_MODS;
+    },
+    cut() {
+      const m = late('cut');
+      return m ? !!call(m, 'cut') : false;
+    },
+    cutHold(down) {
+      const m = late('cutHold');
+      if (m) call(m, 'cutHold', down);
+    },
     get state() {
-      return { ...readState(a), m3: readState(b) };
+      const st = { ...readState(a), m3: readState(b) };
+      if (c) st.m4 = readState(c);
+      return st;
     },
   };
 }
