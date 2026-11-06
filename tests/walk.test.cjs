@@ -798,14 +798,62 @@ function pathProblems(W, p, from, to) {
             }
           }
         }
-        // (straight along the line every new link; 5° off it too, but over the five long scenery bridges, whose curves
-        // are today's art: there a walker drifting into the rope for 4-7 u may meet a pad by the far end)
-        const stuck = runs.filter((r) => !r.ok && (r.deg === 0 || (Math.abs(r.deg) <= 5 && !(info[r.id.replace(/[<>].*/, '')] || {}).long)));
-        const stuck15 = runs.filter((r) => !r.ok && !stuck.includes(r));
+        // (today's rule on every new link, the five long scenery bridges too: straight along the line, and 5° or 15° off
+        // it into a rope; no pad, post or prop by the far end pins a walker sliding along the rope)
+        const stuck = runs.filter((r) => !r.ok);
         check(lips.length === 0, `the new links' bands are free right up to their edges wherever they run over the water, past their posts too (their ropes the only edges there)${lips.length ? ' -> ' + lips.slice(0, 4).join(' ') : ''}`);
-        console.log(`INFO  on the decks a band's edge may meet a pad or a post where a link runs in (a walker slides round it): ${lipsDeck.length} such points`);
-        check(stuck.length === 0 && runs.length === (d4.links.length - data.links.length) * 10, `a jog held across each of the ${d4.links.length - data.links.length} new links from either end, straight along its line, or 5° off it (but over the five long scenery bridges), gets across${stuck.length ? ' -> stuck: ' + stuck.map((r) => r.id).slice(0, 8).join(', ') : ''}`);
-        console.log(`INFO  held off the line into a rope (15°, or 5° over a long scenery bridge), ${runs.length - stuck.length - stuck15.length} of ${runs.length} jogs get across${stuck15.length ? '; pinned at a pad or post by the far end: ' + stuck15.map((r) => r.id).join(', ') : ''}`);
+        console.log(`INFO  on the decks a band's edge may meet a pad or a post where a link runs in along it (a walker slides along it): ${lipsDeck.length} such points`);
+        check(stuck.length === 0 && runs.length === (d4.links.length - data.links.length) * 10, `a jog held across each of the ${d4.links.length - data.links.length} new links from either end, straight along its line or 5° or 15° off it (sliding along the rope), gets across: nothing by the far end pins it${stuck.length ? ' -> stuck: ' + stuck.map((r) => r.id).slice(0, 8).join(', ') : ` (slowest ${Math.max(...runs.map((r) => r.s)).toFixed(1)} s)`}`);
+      }
+      // -- a walker already out on a new link (a quarter, half and three quarters along, in the middle of the band or
+      // near either rope) and held toward either end, straight at its mouth or 5°, 10° or 15° off: a loosely held
+      // stick still gets him off at the far end (nothing pins him by a pad, a post or a prop)
+      {
+        const at = (pts, u) => {
+          const L = [];
+          let tot = 0;
+          for (let i = 1; i < pts.length; i++) {
+            L.push(Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][2] - pts[i - 1][2]));
+            tot += L[L.length - 1];
+          }
+          let s = u * tot;
+          for (let i = 0; i < L.length; i++) {
+            if (s <= L[i] || i === L.length - 1) {
+              const k = L[i] ? s / L[i] : 0;
+              const [a, b] = [pts[i], pts[i + 1]];
+              return { x: a[0] + (b[0] - a[0]) * k, z: a[2] + (b[2] - a[2]) * k, tx: (b[0] - a[0]) / (L[i] || 1), tz: (b[2] - a[2]) / (L[i] || 1) };
+            }
+            s -= L[i];
+          }
+          return null;
+        };
+        let n = 0;
+        const stuck = [];
+        for (const l of d4.links.slice(data.links.length)) {
+          for (const dir of [1, -1]) {
+            const pts = dir === 1 ? l.pts : [...l.pts].reverse();
+            const m1 = pts[pts.length - 2];
+            const b = pts[pts.length - 1];
+            for (const u of [0.25, 0.5, 0.75]) {
+              const P = at(pts, u);
+              for (const side of [-0.8, 0, 0.8]) {
+                const sx = P.x - P.tz * side * l.hw;
+                const sz = P.z + P.tx * side * l.hw;
+                if (!W4.inside(sx, sz) || W4.blocked(sx, sz, R)) continue;
+                const H = Math.atan2(m1[0] - sx, m1[2] - sz);
+                for (const deg of [0, 5, -5, 10, -10, 15, -15]) {
+                  const h = H + (deg * Math.PI) / 180;
+                  let p = { x: sx, z: sz, y: W4.heightAt(sx, sz) };
+                  let t = 0;
+                  for (; t < 10 && Math.hypot(p.x - b[0], p.z - b[2]) > 1.0 && Math.hypot(p.x - m1[0], p.z - m1[2]) > 0.6; t += 1 / 60) p = W4.move(p, Math.sin(h) * 3.0 / 60, Math.cos(h) * 3.0 / 60, R);
+                  n++;
+                  if (t >= 10) stuck.push(`${l.id}${dir > 0 ? '>' : '<'}${u}/${side}/${deg}°`);
+                }
+              }
+            }
+          }
+        }
+        check(stuck.length === 0 && n > 2500, `${n} jogs from out on the new links (a quarter, half, three quarters along; mid-band or near a rope) held toward either end within 15° all get off at the far end${stuck.length ? ' -> stuck: ' + stuck.slice(0, 6).join(', ') : ''}`);
       }
       // -- 10,000 seeded random steps on the v4 town
       {

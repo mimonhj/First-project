@@ -156,9 +156,11 @@ const SITES = {
   // Windmill Row
   s16: { plot: 'homeA', off: [-1.0, 0], board: 0.4, porch: [['f', -3.7, 3.3, 1.0], ['l', -2.5, 2.5, 1.0], ['r', -1.2, 3.5, 0.6]] },
   s15: { plot: 'market', off: [0, 0], board: 0, porch: [['f', -4.6, 4.6, 1.15], ['l', -3.4, 2.6, 2.2], ['r', -3.2, 2.6, 1.8]] },
-  s14: { plot: 'park', off: [-0.5, 0], board: -0.4, porch: [['f', -4.5, 2.6, 1.15], ['b', -4.5, 3.9, 1.9], ['l', -4.4, 3.65, 1.9], ['r', -4.4, 1.0, 1.3]] },
+  // (park and school: their pads' corners kept 0.55 u (half the band + the captain) off s13S14's band, so a jog held
+  // 15° into either rope is never pinned by a corner at the far end)
+  s14: { plot: 'park', off: [-0.85, 0], board: -0.4, porch: [['f', -4.5, 2.6, 1.15], ['b', -4.5, 3.9, 1.9], ['l', -4.4, 3.65, 1.9], ['r', -4.4, 1.0, 1.3]] },
   s8: { plot: 'bakery', off: [0.7, 0], board: 0.1, porch: [['f', -2.7, 4.8, 1.9], ['r', -1.0, 4.4, 2.1]] },
-  s13: { plot: 'school', off: [0.6, 0.8], board: 0.6, porch: [['f', -4.3, 4.4, 1.7], ['l', -0.6, 2.5, 1.6], ['r', -2.5, 2.5, 1.7]] },
+  s13: { plot: 'school', off: [0.88, 0.47], board: 0.6, porch: [['f', -4.3, 4.4, 1.7], ['l', -0.6, 2.5, 1.6], ['r', -2.5, 2.5, 1.7]] },
   s6: { plot: 'windmill', off: [0, 0], board: 0, porch: [['f', -4.5, 2.8, 1.0], ['l', -3.4, 2.6, 2.0]] },
   // Lantern Lane
   s3: { plot: 'homeB', off: [0, -0.85], board: 1.1, porch: [['b', -3.0, 4.2, 2.5], ['r', -2.7, 2.7, 1.2]] },
@@ -349,7 +351,8 @@ const LINK_PLAN = {
   gardenS8: { kind: 'board', a: ['garden', 180], b: ['s8', 'r', 2.2] },
   s14S15: { kind: 'board', a: ['s14', 'b', 0], b: ['s15', 'f', -1.0] },
   s15S16: { kind: 'board', name: 'Market Walk', a: ['s15', 'r', 1.0], b: ['s16', 'l', 2.9] },
-  s15S6: { kind: 'board', a: ['s15', 'r', -1.8], b: ['s6', 'l', 2.3] },
+  // (s15S6 runs in at the porch's back end, its band 1 u clear of the market pad's back corner)
+  s15S6: { kind: 'board', a: ['s15', 'r', -2.6], b: ['s6', 'l', 2.3] },
   s10S4: { kind: 'board', name: 'the High Walk', a: ['s10', 'r', -0.6], b: ['s4', 'l', -1.5] },
   s3S12: { kind: 'board', name: 'the High Walk', a: ['s3', 'b', -0.5], b: ['s12', 'f', -1.3] },
   s12S5: { kind: 'board', name: 'the High Walk', a: ['s12', 'f', 2.4], b: ['s5', 'l', -1.4] },
@@ -767,7 +770,7 @@ const LOOPS = [
   ['lars', [['lamp', 0], ['porch', 2]], [[34.63, 1.3, -9.42], [31.77, 1.3, -12.43], [31.82, 1.3, -13.22], [31.77, 1.3, -12.43], [34.63, 1.3, -9.42]]],
   ['tam', [['stall', 0], ['store', 3]], [[-28.54, 1.3, -13.53], [-33.9, 1.3, -13.32], [-34.27, 1.3, -14.03], [-34.53, 1.3, -15.14], [-34.27, 1.3, -14.03], [-33.9, 1.3, -13.32], [-28.54, 1.3, -13.53]]],
   ['page', [['desk', 0], ['porch', 2]], [[-22.27, 1.3, 5.46], [-21.86, 1.3, 5.57], [-17.97, 1.3, 3.19], [-21.86, 1.3, 5.57], [-22.27, 1.3, 5.46]]],
-  ['rosa', [['beds', 0], ['pump', 4]], [[-32.36, 1.3, -7.15], [-33.47, 1.3, -6.46], [-32.99, 1.3, -4.56], [-32.36, 1.3, -2.1], [-30.88, 1.3, -1.34], [-32.36, 1.3, -2.1], [-32.99, 1.3, -4.56], [-33.47, 1.3, -6.46], [-32.36, 1.3, -7.15]]],
+  ['rosa', [['beds', 0], ['pump', 5]], [[-32.36, 1.3, -7.15], [-33.47, 1.3, -6.46], [-32.99, 1.3, -4.56], [-32.36, 1.3, -2.1], [-32.16, 1.3, -1.32], [-30.88, 1.3, -1.34], [-32.16, 1.3, -1.32], [-32.36, 1.3, -2.1], [-32.99, 1.3, -4.56], [-33.47, 1.3, -6.46], [-32.36, 1.3, -7.15]]],
   ['dance', [['spot0', 0], ['spot1', 1], ['spot2', 2], ['spot3', 3], ['spot4', 4]], [[-3.5, 1.3, -11.15], [-0.98, 1.3, -10.75], [1.45, 1.3, -11.14], [2.66, 1.3, -12.04], [-0.5, 1.3, -9.25]]],
 ];
 export const ISLANDER_PATHS = freeze(LOOPS.map(([who, st, pts]) => (who === 'dance'
@@ -1090,7 +1093,9 @@ export const ANIMAL_SPOTS = freeze({
   pen: { ...plotW('farm', -0.6, -0.6), r: 0.9 },
   hill: { x: -4.6, y: r2(profY(HILL.profile, Math.hypot(-4.6 - HILL.x, -52.6 - HILL.z))), z: -52.6, r: 1.6 },
   barnRoof: { ...plotW('farm', -1.3, -1.2, 2.72), r: 0.1 },
-  pool: { ...plotW('aquarium', 0.2, 2.35), r: 0.6 },
+  // (the Aquarium's tide pool, buildings4's tidePool at (-1.75, 0) in its frame: tier 3's turtle pool with its sand
+  // island; out of plot:aquarium's place circle, where the captain reads the board)
+  pool: { ...plotW('aquarium', -1.75, 0, 0.3), r: 0.25, along: [0.3, 0] },
   grotto: { ...plotW('grotto', 0, 0.15, -0.12), r: 0.7 },
 });
 

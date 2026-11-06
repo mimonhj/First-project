@@ -15,7 +15,7 @@ import * as buildings4 from './buildings4.js';
 import * as construction4 from './construction.js';
 import * as folk4 from './folk4.js';
 import * as critters4 from '../critters.js';
-import { plan as crowdPlan } from '../islanders.js';
+import { plan as crowdPlan, danceAt as danceAt4, DANCE as DANCE4 } from '../islanders.js';
 
 // Sparrow's Floating Island: the pirate town on the water where the player's ship docks
 // for repairs, upgrades and a fresh coat of paint (the shipyard screen).
@@ -5046,7 +5046,7 @@ export function build(scene, ctx = {}) {
     let changed = false;
     const was = new Map(plotList.map((p) => [p.id, p.tier]));
     if (dev.montage) finishMontage();
-    if (V4) skipScene();
+    if (V4) skipScene(true); // (a new record replaces the scene at once, its wave too)
     for (const plot of plotList) {
       if (plot.v4) continue; // (setIsland4's)
       const tier = t[plot.id];
@@ -5071,7 +5071,7 @@ export function build(scene, ctx = {}) {
     let changed = false;
     const was = new Map(plotList.map((p) => [p.id, p.tier]));
     if (dev.montage) finishMontage();
-    skipScene();
+    skipScene(true);
     for (const plot of plotList) {
       if (!plot.v4) continue;
       const tier = t[plot.id];
@@ -5098,11 +5098,43 @@ export function build(scene, ctx = {}) {
     }
     startMontage(plot, from);
   }
-  function skipScene() {
-    if (!V4 || !v4.scene || !dev.scenePlot) return false;
-    v4call(() => v4.scene.skip());
-    dev.scenePlot = null;
-    rebuildDev();
+  /** Skip the scene (§5.2: the building stands at once, the people moving in wave for SCENE.skipWave s, still
+   * stepped by update()); now: end it at once, the wave too (a new island record replaces it). */
+  function skipScene(now = false) {
+    if (!V4 || !v4.scene) return false;
+    const running = !!v4call(() => v4.scene.running);
+    if (!dev.scenePlot && !(now && running)) return false;
+    v4call(() => (now ? v4.scene.finish() : v4.scene.skip()));
+    if (dev.scenePlot) {
+      dev.scenePlot = null;
+      rebuildDev();
+    }
+    return true;
+  }
+  /** Step the construction scene by dt of scene time (update() each frame; env.scene.advance for frozen-loop tests),
+   * a skipped scene's wave included; when it ends the plot goes back into the layer. */
+  function stepScene(dt) {
+    if (!V4 || !v4.scene || !(dev.scenePlot || v4call(() => v4.scene.running))) return false;
+    v4call(() => v4.scene.step(dt));
+    if (dev.scenePlot && !v4call(() => v4.scene.running)) {
+      dev.scenePlot = null;
+      rebuildDev();
+    }
+    return true;
+  }
+  /** Watch again (§8.6): the construction scene of a plot's current tier (from tier - 1: 'new' at tier 1, else
+   * 'upgrade'), with no tier changed and nothing written. Refused (false) while a scene or the montage runs, for a plot
+   * at tier 0, or when the scene cannot start. */
+  function replayBuild(id) {
+    if (!V4 || !v4.scene || typeof id !== 'string') return false;
+    if (dev.scenePlot || dev.montage || v4call(() => v4.scene.running)) return false;
+    const plot = plotList.find((p) => p.id === id);
+    if (!plot || !(plot.tier >= 1)) return false;
+    const reduced = reducedMotion();
+    const ok = v4call(() => v4.scene.start({ id: plot.id, ...plotInfo(plot), tier: plot.tier, v4: !!plot.v4 }, plot.tier - 1, plot.tier, { kind: plot.kind === 'home' ? 'home' : 'amenity', reduced }));
+    if (!ok) return false;
+    rebuildDev({ [plot.id]: null }); // (the scene draws the plot apart meanwhile)
+    dev.scenePlot = plot;
     return true;
   }
   /** The camera pose framing a plot (for the build panel: it glides there, beside the panel): looking at the plot
@@ -6056,6 +6088,7 @@ export function build(scene, ctx = {}) {
   // the captain, and never on a bridge, near a bridge mouth, in a place circle, a doorway or at the gangplank.
   const villagerLoops = [];
   const villagers = []; // their folk entries
+  let vdance = null; // (v4) the plaza dance while it runs: { t0, who: Map<villager entry, { spot, from, s0 }> }
   if (KRAKEN) {
     const P = (x, z, y = DECK) => V3(x, y, z);
     // a lane: out along one track and back along another `gap` to its side, round both ends
@@ -6113,6 +6146,7 @@ export function build(scene, ctx = {}) {
    */
   function setVillagers(list) {
     if (!KRAKEN) return 0;
+    vdance = null; // (a new crowd: nobody is dancing)
     for (const f of villagers) {
       const i = folk.indexOf(f);
       if (i >= 0) folk.splice(i, 1);
@@ -6447,6 +6481,7 @@ export function build(scene, ctx = {}) {
     const f = folk[index];
     if (!f || !f.greets) return false;
     if (f.villager && !quietSpot(f.p.position.x, f.p.position.z)) return false; // (never stops on a bridge, in a place...)
+    if (vdance && vdance.who.has(f)) return false; // (dancing on the plaza)
     const at = toward && Number.isFinite(toward.x) && Number.isFinite(toward.z) ? { x: toward.x, z: toward.z } : lastCam ? { ...lastCam } : null;
     const s0 = f.greet ? f.greet.s0 : lastT + (f.off || 0);
     f.greet = { until: lastT + Math.max(0, Number.isFinite(seconds) ? seconds : 2), at, s0 };
@@ -6546,6 +6581,8 @@ export function build(scene, ctx = {}) {
    */
   function cull(x, z, radius = 40, near = 0) {
     townView = Number.isFinite(x) && Number.isFinite(z);
+    // (v4) the animals walk the town only: none in the shipyard view (§7.2)
+    if (V4 && v4.critters) v4call(() => v4.critters.visible(townView));
     if (V4 && townView) {
       direct(x, z, near);
       for (const zz of prizes) zz.ship.visible = true;
@@ -6582,6 +6619,8 @@ export function build(scene, ctx = {}) {
     const chat = v4.chat;
     const s = v4call(crowdPlan, { x, z, cx: cap.x, cz: cap.z, chat: chat || null }, people, v4.drawn, lastT);
     v4.drawn = s instanceof Set ? s : new Set(people.map((q) => q.id));
+    // (an islander nearer than `near` to the lens is hidden, as today's townsfolk are; they still wait for the captain)
+    if (Array.isArray(crowd)) for (const q of crowd) if (q && Math.hypot(q.x - x, q.z - z) < near) v4.drawn.delete(q.id);
     for (let i = 0; i < folk.length; i++) {
       const f = folk[i];
       const w = f.p.parent === root ? f.p.position : f.p.getWorldPosition(tmpW);
@@ -6649,6 +6688,101 @@ export function build(scene, ctx = {}) {
     return along > 0 && along < WAIT.ahead && Math.abs(dx * fz - dz * fx) < WAIT.side && Math.hypot(dx, dz) > WAIT.inside;
   };
 
+  // ----- (v4) the Music Hall's plaza dance (§4.1): with the Music Hall at tier 3 the villagers dance on the plaza for
+  // DANCE.dur s every DANCE.every s. As it begins, each of the plan's dance spots the islanders left free (folk4 takes
+  // those within its reach) takes the nearest villager on the plaza within VDANCE.join of it whose way there is clear:
+  // he leaves his loop (his clock held), runs out, dances, walks back (folk4.danceStep) and goes on where he left it.
+  // A dance already under way when the town first sees it (the dock just opened) is let be. ----
+  const VDANCE = { join: 6, late: 0.5, clear: 0.32 };
+  let musicPlot = null;
+  const danceSpots = () => {
+    const out = [];
+    for (const q of islandPlan.ISLANDER_PATHS || []) {
+      if (!q || q.kind !== 'dance') continue;
+      for (const st of q.stations || []) {
+        const p = q.pts[st.i];
+        if (p) out.push({ x: p[0], z: p[2] });
+      }
+    }
+    return out;
+  };
+  // (the straight way from a to b keeps `clear` off every walk blocker: the stalls, barrels and posts of the plaza)
+  const wayClear = (a, b) => {
+    const L = Math.hypot(b.x - a.x, b.z - a.z);
+    const n = Math.max(1, Math.ceil(L / 0.2));
+    for (let i = 0; i <= n; i++) {
+      const x = a.x + ((b.x - a.x) * i) / n;
+      const z = a.z + ((b.z - a.z) * i) / n;
+      for (const q of walkData.blockers) {
+        if (q.r !== undefined) {
+          if (q.r > 0 && Math.hypot(x - q.x, z - q.z) < q.r + VDANCE.clear) return false;
+          continue;
+        }
+        const c = Math.cos(q.ry || 0);
+        const sn = Math.sin(q.ry || 0);
+        const lx = Math.abs((x - q.x) * c - (z - q.z) * sn) - q.w / 2;
+        const lz = Math.abs((x - q.x) * sn + (z - q.z) * c) - q.d / 2;
+        if (Math.hypot(Math.max(lx, 0), Math.max(lz, 0)) < VDANCE.clear) return false;
+      }
+    }
+    return true;
+  };
+  function stepVillagerDance(t) {
+    if (!musicPlot) musicPlot = plotList.find((p) => p.id === DANCE4.plot && p.v4) || null;
+    const isl4 = { v: 1, t: { [DANCE4.plot]: musicPlot ? musicPlot.tier : 0 } };
+    const k = v4call(danceAt4, t, isl4) || 0;
+    if (k <= 0) {
+      if (vdance) {
+        // the dance is over: everyone back on his loop where he left it
+        for (const [f, d] of vdance.who) {
+          f.off = d.s0 - t;
+          walkerPose(f, t);
+        }
+        vdance = null;
+      }
+      return;
+    }
+    const every = DANCE4.every;
+    const u = ((t % every) + every) % every;
+    if (!vdance) {
+      vdance = { t0: t - u, who: new Map() };
+      if (u > VDANCE.late) return;
+      const plaza = walkData.areas.find((a) => a.id === 'plaza');
+      const onPlaza = (x, z) => !!plaza && Math.abs(x - plaza.x) <= plaza.w / 2 && Math.abs(z - plaza.z) <= plaza.d / 2;
+      const taken = (v4.folk && v4call(() => v4.folk.danceSpots)) || [];
+      const spots = danceSpots().filter((s) => !taken.some((q) => Math.hypot(q.x - s.x, q.z - s.z) < 0.3));
+      if (!spots.length) return;
+      const all = danceSpots();
+      const cx = all.reduce((a, q) => a + q.x, 0) / all.length;
+      const cz = all.reduce((a, q) => a + q.z, 0) / all.length;
+      const cands = [];
+      for (const f of villagers) {
+        if (f.greet || f.p.parent !== root) continue;
+        const p = f.p.position;
+        if (!onPlaza(p.x, p.z) || nearBridge(p.x, p.z)) continue;
+        for (const s of spots) {
+          const d = Math.hypot(s.x - p.x, s.z - p.z);
+          if (d <= VDANCE.join && wayClear(p, s)) cands.push({ f, s, d });
+        }
+      }
+      cands.sort((a, b) => a.d - b.d);
+      const used = new Set();
+      for (const c of cands) {
+        if (vdance.who.has(c.f) || used.has(c.s)) continue;
+        used.add(c.s);
+        const p = c.f.p.position;
+        vdance.who.set(c.f, { spot: { x: c.s.x, z: c.s.z, h: Math.atan2(cx - c.s.x, cz - c.s.z) }, from: { x: p.x, y: p.y, z: p.z, h: c.f.p.rotation.y }, s0: t + c.f.off });
+      }
+    }
+    for (const [f, d] of vdance.who) {
+      const st = folk4.danceStep(d.from, d.spot, t - vdance.t0, DANCE4.dur);
+      f.off = d.s0 - t; // (his loop's clock waits where he left it)
+      f.p.position.set(st.x, d.from.y, st.z);
+      f.p.rotation.y = st.h;
+      if (f.p.visible) animatePerson(f.p, t, st.action, f.aopts);
+    }
+  }
+
   // ----- the Sunset Isles' seam (SPEC4 §6-§7, §11.1, ctx.v4) -----
   // With v4: the plan's walk merged into env.walk (in place, so every holder of it sees it), the islanders (folk4),
   // the animals (critters), the construction scene, and the crowd director in cull().
@@ -6683,7 +6817,7 @@ export function build(scene, ctx = {}) {
         const f = plotFrame(plot);
         f.updateMatrixWorld(true);
         const w = f.localToWorld(V3(inf.door.x ?? 0, plot.P.y, inf.door.z ?? 0));
-        return { x: w.x, y: w.y, z: w.z };
+        return { x: w.x, y: w.y + (Number.isFinite(inf.door.y) ? inf.door.y : 0), z: w.z };
       },
       walkPoint: (x, z) => ({ x, z }),
       builders: () => (v4.folk ? v4.folk.builders() : []),
@@ -6800,6 +6934,7 @@ export function build(scene, ctx = {}) {
     const dt = clamp(t - lastT, 0, 0.1);
     lastT = t;
     for (const f of folk) {
+      if (vdance && vdance.who.has(f)) continue; // (dancing on the plaza: stepVillagerDance poses them)
       const G = f.greet;
       if (G && t >= G.until) {
         if (f.path) f.off = G.s0 - t;
@@ -6847,13 +6982,8 @@ export function build(scene, ctx = {}) {
         v4call(() => v4.folk.update(t, dt, townView ? captainAt : null, townView ? v4.drawn : false));
       }
       if (v4.critters) v4call(() => v4.critters.update(t, dt, townView ? captainAt : null));
-      if (v4.scene && dev.scenePlot) {
-        v4call(() => v4.scene.step(dt));
-        if (!v4call(() => v4.scene.running)) {
-          dev.scenePlot = null;
-          rebuildDev();
-        }
-      }
+      if (v4.scene) stepScene(dt);
+      if (KRAKEN && villagers.length) stepVillagerDance(t);
     }
     if (polly.pole) polly.pole.rotation.y = t * 2.4;
     for (const z of prizes) {
@@ -6973,6 +7103,7 @@ export function build(scene, ctx = {}) {
     setIslanders(roster, opts = {}) {
       if (!V4) return false;
       if (v4.folk) v4call(() => v4.folk.set(roster, opts));
+      v4.prepared = false; // (prepare() builds the new roster, one a frame)
       if (v4.critters) v4call(() => v4.critters.set(roster && Array.isArray(roster.animals) ? roster.animals : []));
       return true;
     },
@@ -6981,10 +7112,30 @@ export function build(scene, ctx = {}) {
     setChat(id) {
       if (V4) v4.chat = typeof id === 'string' ? id : null;
     },
-    // the construction scene: { running, stage, t, kind } (null while none runs)
+    // Watch again: the scene of a plot's current tier, nothing changed or written (false while a scene runs)
+    replayBuild,
+    // the construction scene's warm-draw objects (main draws them once behind the 'Rowing to…' toast, with local
+    // clipping on), [] when there is none
+    constructionWarm: () => (V4 && v4.scene ? v4call(() => v4.scene.warm()) || [] : []),
+    // the construction scene (§5.4, __game.island.scene): { id, running (true through a skipped scene's wave), stage,
+    // t, kind ('new' | 'upgrade'), skipping, info (construction.js's), skip(), advance(dt) (steps it by dt of scene
+    // time, for frozen-loop tests) }; null while none runs
     get scene() {
-      if (!V4 || !v4.scene || !dev.scenePlot) return null;
-      return { id: dev.scenePlot.id, running: !!v4call(() => v4.scene.running), stage: v4call(() => v4.scene.stage), t: v4call(() => v4.scene.t) };
+      if (!V4 || !v4.scene) return null;
+      const S = v4.scene;
+      const running = !!v4call(() => S.running);
+      if (!dev.scenePlot && !running) return null;
+      return {
+        id: dev.scenePlot ? dev.scenePlot.id : v4call(() => S.plot),
+        running,
+        stage: v4call(() => S.stage),
+        t: v4call(() => S.t),
+        kind: v4call(() => S.kind),
+        skipping: !!v4call(() => S.skipping),
+        info: v4call(() => S.info),
+        skip: () => skipScene(),
+        advance: (dt) => stepScene(Number.isFinite(dt) ? Math.max(0, dt) : 0),
+      };
     },
     // the lookout (§6.7): its place at the ladder's foot and the crow's nest's view (world)
     get lookout() {
@@ -6995,6 +7146,12 @@ export function build(scene, ctx = {}) {
     },
     get islanders() {
       return V4 && v4.folk ? v4call(() => v4.folk.crowd()) || [] : [];
+    },
+    // (v4) the Music Hall's plaza dance (§4.1): the villagers dancing now ({ home, loop, x, z, spot: { x, z } }), [] when
+    // none is
+    get villagerDance() {
+      if (!V4 || !vdance) return [];
+      return [...vdance.who].map(([f, d]) => ({ home: f.home, loop: f.loop, x: f.p.position.x, z: f.p.position.z, spot: { x: d.spot.x, z: d.spot.z } }));
     },
     get critters() {
       return V4 ? v4.critters : null;

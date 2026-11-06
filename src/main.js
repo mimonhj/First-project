@@ -32,6 +32,9 @@ import * as foes4Rules from './foes4.js';
 import * as shellbackRules from './shellback.js';
 import * as foesView from './foesView.js';
 import * as shellbackView from './shellbackView.js';
+// (the net drape on a TANGLED hull, SPEC4 §3.1: ships.js setNet, read through the namespace so a ships.js without it
+// still links)
+import * as shipModels from './ships.js';
 // "Boarders Away!" (SPEC2): the combat rules, the tavern upgrades, the looks and feats records, the enemy
 // name tags, the pop words and the sailors that go overboard.
 import * as combat from './combat.js';
@@ -130,6 +133,10 @@ const POWDER_KEY = 'pirates-ahoy-powder'; // the special-shot recipes bought at 
 const SETTINGS_KEY = 'pirates-ahoy-settings'; // how the ship steers on a touch screen (see settings.js, SPEC3 §3.2)
 const ISLAND_KEY = 'pirates-ahoy-island'; // the buildings on Sparrow's Floating Island (see island.js, SPEC3 §8)
 const QUIZ_KEY = 'pirates-ahoy-quiz'; // the Riddle Bell's stars and the gold paid for them (see quiz.js, SPEC3 §7)
+// The Sunset Isles' records (SPEC4 §10.1), read and written only with WITH_V4: the voyage4 record (plays, the kinds
+// met, the Shellback won, Voyage IV's tips and prizes; pools.js) and the new plots' tiers (island.js).
+const VOYAGE4_KEY = 'pirates-ahoy-voyage4';
+const ISLAND4_KEY = 'pirates-ahoy-island4';
 const HELM_SCALE = 1.1; // the captain at the helm: his hands meet the Sea Biscuit's wheel at this scale (people.js WHEEL)
 const LIST_BATTERED = 0.04; // radians a battered ship lists toward the side with more hits
 const LIST_WRECKED = 0.09;
@@ -921,12 +928,31 @@ let kraken = null;
 let krakenCheckpoint = null;
 // "The Sunset Isles" (SPEC4 §10.1, §11.2): the voyage4 record (plays, the kinds met, the Shellback won, Voyage IV's
 // tips and prizes), the new plots' record, and the boss checkpoint that becomes the Kraken's and the Shellback's
-// (§3.6.4). Stage 0: in-memory defaults only; nothing reads or writes -voyage4 or -island4 until Stage 2 loads them
-// with WITH_V4 (a stub parser would rewrite a stored record with its default).
-let voyage4Rec = poolRules.defaultVoyage4();
-let island4Cfg = typeof islandRules.defaultIsland4 === 'function' ? islandRules.defaultIsland4() : null;
+// (§3.6.4). Read (each validated by its module, a record that needed fixing rewritten) only with WITH_V4: without it
+// the game runs on the defaults and never touches -voyage4 or -island4 (§0.1). island4 is only read in Stage 2 (its
+// Forge's shorter net cut, its Observatory's spyglass); building on it is Stage 3's.
+let voyage4Rec = WITH_V4 ? loadRecord(VOYAGE4_KEY, poolRules.parseVoyage4, poolRules.serializeVoyage4) : poolRules.defaultVoyage4();
+let island4Cfg =
+  WITH_V4 && typeof islandRules.parseIsland4 === 'function'
+    ? loadRecord(ISLAND4_KEY, islandRules.parseIsland4, islandRules.serializeIsland4)
+    : typeof islandRules.defaultIsland4 === 'function'
+      ? islandRules.defaultIsland4()
+      : null;
 let bossCheckpoint = null;
-let v4Seed = null; // tests: __game.v4.seed(s), for every later start of levels 10-12 (Stage 2)
+let v4Seed = null; // tests: __game.v4.seed(s), the pool seed of every later start of levels 10-12 (null: poolSeed's)
+// Voyage IV's battle (SPEC4 §3, §11.2), with WITH_V4: the pseudo foes (foes4.js: jollyboat packs, puffer patches,
+// Old Coilback, the Rock Forts; one instance a level start), the level's Voyage IV rules on their own (mechanics4.js,
+// the third part of the composed mechanics: its test hooks net() and tide() are not composed), the foes' model
+// (foesView.js, built one mesh a frame from the level start on act 4, lazily elsewhere) and the Shellback (R5: null).
+let foes4 = null;
+let m4 = null;
+let fView = null;
+let shellback = null;
+let foes4Vis = null; // this frame's { ...foes4.visuals(), ...mechanics.visuals() } (the view, the minimap, the arrows)
+const foes4Parts = new Map();
+const foes4List = [];
+const shellParts = new Map();
+const shellList = [];
 // Its model (krakenView.js: built one part a frame from the level start, so the rise never stalls), the level 9
 // sequence main runs round it (§5.7.1: 'dread' → 'rise' → 'fight' → 'gone' → 'over'; null before), its raised
 // parts wrapped as pseudo-ships for the guns (§5.8: one wrapper per part id per rise, updated in place), and this
@@ -1052,7 +1078,9 @@ const pops = createPops(ui.pops, camera, {
     return list;
   },
   // (while a tentacle holds you, the pops stay below its grab strip: "Hold CUT! to cut it loose" stays readable)
-  insetTop: () => (WITH_KRAKEN && state.grabbed ? Math.max(hudTopInset(), grabStripBottom()) : hudTopInset()),
+  insetTop: () => (WITH_KRAKEN && (state.grabbed || state.netted) ? Math.max(hudTopInset(), grabStripBottom()) : hudTopInset()),
+  // (SPEC4 §0.1: a word a portrait phone holds back, one new word a target per 0.5 s, is read by #game-live)
+  ...(WITH_V4 ? { live: (text) => gameAnnounce(text) } : {}),
 });
 function grabStripBottom() {
   const el = ui.grabStrip;
@@ -1197,6 +1225,8 @@ function createShip(typeName, kind, x, z, h) {
   };
   scene.add(mesh);
   if (isPlayer) addHelmCaptain(ship);
+  // (the Coral Witch at her barge's helm, SPEC4 §3.1)
+  if (WITH_V4 && typeName === 'witch' && kind === 'enemy') addWitchFigure(ship);
   // The boss has its own HUD bar, so it gets no floating tag (tags.add returns null for it).
   if (kind === 'enemy') ship.tag = tags.add(ship);
   return ship;
@@ -1234,6 +1264,12 @@ function removeShip(s) {
     if (s.captain.parent) s.captain.parent.remove(s.captain);
     disposePerson(s.captain);
     s.captain = null;
+  }
+  // (and so is the Coral Witch at her helm)
+  if (s.figure) {
+    if (s.figure.parent) s.figure.parent.remove(s.figure);
+    disposePerson(s.figure);
+    s.figure = null;
   }
   tags.remove(s);
   s.tag = null;
@@ -1546,7 +1582,7 @@ function hazardTips(dt) {
 // and off each other. edgeMarks: [{ kind, el, on, at, w, h }] (WITH_KRAKEN).
 const edgeMarks = [];
 const edgeV = new THREE.Vector3();
-const EDGE_KEEP_OFF = '#minimap, #boss, #boarding-strip, #grab-strip, #objective, #banner, #hint, .hud-bottom .card, #touch .pad, #ammo-tray';
+const EDGE_KEEP_OFF = '#minimap, #boss, #boarding-strip, #grab-strip, #objective, #banner, #hint, .hud-bottom .card, #touch .pad, #ammo-tray, #meet-card';
 function setEdgeMark(m, on) {
   if (m.on === on) return;
   m.on = on;
@@ -1558,6 +1594,7 @@ function kidCues() {
   const out = [];
   if (ui.grabStrip && !ui.grabStrip.classList.contains('hidden')) out.push(ui.grabStrip);
   for (const m of edgeMarks) if (m.on) out.push(m.el);
+  if (WITH_V4 && meetUi.on) out.push(meetCardUi.card); // (and the meet card, SPEC4 §3.4)
   return out;
 }
 // Is (x, y, z) in the clear part of the view (inside the top HUD row, the gun card or the touch pads, `more` px in)?
@@ -1574,6 +1611,65 @@ function inClearView(x, y, z, more = 0) {
   return sx >= 24 + more && sx <= W - 24 - more && sy >= top && sy <= bottom;
 }
 // The arrows this frame (frame(), after the camera has moved).
+// Voyage IV's arrows (SPEC4 §8.2): the nearest Sting Sloop behind you (mechanics4's stingers[].behind) off the view;
+// the nearest warning shape off the view whose edge is within FRAME.ringReach of your hull, with its word.
+const SHAPE_WORD = { coconut: 'coconut', puff: 'puff', lunge: 'lunge', fort: 'aim', net: 'net', summon: 'puffers' };
+function edgeCues4(want, off) {
+  const v = hazardVis;
+  const mb = edgeMarks.find((m) => m.kind === 'behind');
+  if (mb && v && v.stingers) {
+    let best = null;
+    let bd = Infinity;
+    for (const s of v.stingers) {
+      if (!s.behind) continue;
+      const d = Math.hypot(s.x - player.x, s.z - player.z);
+      if (d < bd && off(mb, s.x, s.z)) {
+        bd = d;
+        best = s;
+      }
+    }
+    if (best) want.behind = best;
+  }
+  const ms = edgeMarks.find((m) => m.kind === 'shape');
+  const V = foes4Vis;
+  if (!ms || !V) return;
+  const reach = FRAME.ringReach + player.type.len / 2;
+  let best = null;
+  let bd = Infinity;
+  // (d: how far the shape's edge is from your ship; the arrow points at (x, z), where it comes from)
+  const look = (x, z, d, kind) => {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !Number.isFinite(d)) return;
+    if (d <= reach && d < bd && off(ms, x, z)) {
+      bd = d;
+      best = { x, z, kind };
+    }
+  };
+  const seg = (x0, z0, x1, z1) => {
+    const dx = x1 - x0;
+    const dz = z1 - z0;
+    const L2 = dx * dx + dz * dz;
+    const k = L2 > 1e-9 ? clamp(((player.x - x0) * dx + (player.z - z0) * dz) / L2, 0, 1) : 0;
+    return Math.hypot(player.x - x0 - dx * k, player.z - z0 - dz * k);
+  };
+  for (const s of V.rings || []) look(s.x, s.z, Math.hypot(s.x - player.x, s.z - player.z) - (s.r || 0), s.kind);
+  for (const s of V.summons || []) look(s.x, s.z, Math.hypot(s.x - player.x, s.z - player.z) - (s.r || 0), 'summon');
+  for (const s of V.lanes || []) look(s.x0, s.z0, seg(s.x0, s.z0, s.x1, s.z1) - (s.w || 4) / 2, 'lunge');
+  for (const s of V.lines || []) look(s.x0, s.z0, seg(s.x0, s.z0, s.x1, s.z1) - 1, 'fort');
+  for (const s of V.nets || []) {
+    const L = Number(s.len) || 18;
+    look(s.x, s.z, seg(s.x, s.z, s.x + Math.sin(s.h) * L, s.z + Math.cos(s.h) * L) - L * 0.4, 'net');
+  }
+  if (!best) return;
+  const word = (W4.pop && W4.pop[SHAPE_WORD[best.kind]]) || 'LOOK OUT!';
+  if (ms.word !== word) {
+    ms.word = word;
+    const el = ms.el.querySelector('.ea-word');
+    if (el) el.textContent = word;
+    ms.w = 0;
+    ms.at = '';
+  }
+  want.shape = best;
+}
 function edgeCues() {
   const v = hazardVis;
   if (!edgeMarks.length) return;
@@ -1600,6 +1696,7 @@ function edgeCues() {
     }
   }
   if (best) want.ram = best;
+  if (WITH_V4) edgeCues4(want, off);
   const placed = [];
   for (const m of edgeMarks) {
     const w = want[m.kind];
@@ -1747,6 +1844,10 @@ function removeBomb(b) {
   if (b.mesh) scene.remove(b.mesh);
   scene.remove(b.zone);
   if (b.whistle) b.whistle.stop();
+  if (b.slot) {
+    b.slot = false;
+    warnSlots.give(b.kind);
+  }
 }
 
 function clearProjectiles(enemyOnly = false) {
@@ -1763,6 +1864,7 @@ function clearLevelEntities() {
   boarding.clear();
   boardView = null;
   disposeKraken(); // (level 9's Kraken and its model, if one was there)
+  disposeFoes4(); // (Voyage IV's pseudo foes, their model and a meet card, if there were any)
   for (const e of enemies) removeShip(e);
   if (player) removeShip(player);
   clearProjectiles();
@@ -1887,44 +1989,83 @@ function pickSpawns(count, index) {
 }
 
 // The waves a level plays (SPEC4 §3.5, §11.2): its def's, or on a pool level (Voyage IV) the waves drawn from its
-// pool at its start (state.waves). Every read of a level's waves goes through here. Stage 0: def.waves everywhere.
-const shipOnlyWaves = new WeakMap();
+// pool at its start (state.waves: pseudo kinds included, spawnWave routes them to foes4). Every read of a level's
+// waves goes through here.
 function levelWaves(def = LEVELS[state.level - 1]) {
   if (!def) return [];
-  const waves = def.pool && Array.isArray(state.waves) ? state.waves : def.waves;
-  if (def.act !== 4 || !Array.isArray(waves)) return waves;
-  // Stage 1 stop-gap, removed in Stage 2 R1 when 2A routes pseudo foes to foes4 (SPEC4 §3.7): a Voyage IV wave
-  // keeps only its ship types (a wave left empty sails one cutter), so the ?v4=1 preview still starts levels
-  // 10-12. Levels 1-9 never get here. One filtered copy per waves array.
-  let out = shipOnlyWaves.get(waves);
-  if (!out) {
-    out = waves.map((w) => {
-      const ships = (Array.isArray(w) ? w : []).filter((t) => SHIP_TYPES[t] && t !== 'player');
-      return ships.length ? ships : ['cutter'];
-    });
-    shipOnlyWaves.set(waves, out);
-  }
-  return out;
+  return def.pool && Array.isArray(state.waves) ? state.waves : def.waves;
 }
-// The combatRng seed of a level's start (SPEC4 §3.5): n x 7919 + 13 on levels 1-9 (and in Stage 0 on every level);
-// from Stage 2 on, poolSeed(n, plays) on levels 10-12 (or __game.v4.seed's).
+// A Voyage IV level whose waves are drawn from its pool at its start (§3.5; only with WITH_V4).
+const poolLevel = (def) => WITH_V4 && !!def && def.act === 4 && !!def.pool;
+// The level's plays so far (the voyage4 record; 0 before its first clear), on levels 10-12.
+const playsOf = (n) => (Number.isInteger(voyage4Rec.plays[n - 10]) ? voyage4Rec.plays[n - 10] : 0);
+// The combatRng seed of a level's start (SPEC4 §3.5): n x 7919 + 13 on levels 1-9; on a pool level poolSeed(n, plays)
+// (or __game.v4.seed's, for every start of levels 10-12 until it is cleared), so a run replays from (level, plays).
 function levelSeed(n) {
+  if (poolLevel(LEVELS[n - 1])) return v4Seed !== null ? v4Seed : poolRules.poolSeed(n, playsOf(n));
   return n * 7919 + 13;
+}
+// The attack slots of the wave in play: a pool entry's `attackers` (level 11's third wave: 3, §2.4), else the level's.
+function waveAttackers(def) {
+  if (poolLevel(def) && Array.isArray(def.pool)) {
+    const e = def.pool[state.wave];
+    if (e && Number.isInteger(e.attackers) && e.attackers > 0) return e.attackers;
+  }
+  return def.maxAttackers;
+}
+// The wave slots of a wave (a ship, a pack, a patch, the Coilback, a fort: one each, §3.5).
+const waveSlots = (w) => (WITH_V4 ? poolRules.slotsOf(w) : w.length);
+// The name of a wave entry: a pseudo kind's (foes4 FOE_NAMES) or a ship type's (§3.7: no SHIP_TYPES[kind] unguarded).
+function foeName(kind) {
+  if (poolRules.isPseudo(kind)) return (foes4Rules.FOE_NAMES && foes4Rules.FOE_NAMES[kind]) || String(kind);
+  return SHIP_TYPES[kind] ? SHIP_TYPES[kind].name : String(kind);
+}
+// The ships fighting now plus the pseudo foes' wave slots alive (packs, patches, Old Coilback, forts): every "alive"
+// count (the HUD, the sunk banner's "N to go", the next wave and the clear check, §3.7).
+function aliveCount() {
+  const n = enemies.filter(fighting).length;
+  return foes4 ? n + Math.max(0, Number(foes4.slots()) || 0) : n;
 }
 
 function spawnWave(index) {
   const def = LEVELS[state.level - 1];
   const wave = levelWaves(def)[index];
-  const spots = pickSpawns(wave.length, index);
   const fresh = [];
-  wave.forEach((typeName, i) => {
-    const s = spots[i];
-    const px = player ? player.x : 0;
-    const pz = player ? player.z : 0;
-    const e = createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z));
-    enemies.push(e);
-    fresh.push(e);
-  });
+  if (WITH_V4 && foes4 && wave.some((t) => poolRules.isPseudo(t))) {
+    // Voyage IV (§3.7): ship kinds sail in as today, pseudo kinds are foes4's (a pack and Old Coilback at a spawn
+    // point like a ship, a puffer patch in open water ahead of you, a fort on a free sea stack).
+    const spotted = wave.filter((t) => !poolRules.isPseudo(t) || t === 'jolly' || t === 'coilback');
+    const spots = pickSpawns(spotted.length, index);
+    let k = 0;
+    for (const typeName of wave) {
+      if (typeName === 'puffer' || typeName === 'fort' || typeName === 'shellback') {
+        if (typeName !== 'shellback') spawnPseudo(typeName, null);
+        continue;
+      }
+      const s = spots[k++];
+      if (poolRules.isPseudo(typeName)) {
+        spawnPseudo(typeName, s);
+        continue;
+      }
+      const px = player ? player.x : 0;
+      const pz = player ? player.z : 0;
+      const e = createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z));
+      enemies.push(e);
+      fresh.push(e);
+    }
+  } else {
+    const spots = pickSpawns(wave.length, index);
+    wave.forEach((typeName, i) => {
+      const s = spots[i];
+      const px = player ? player.x : 0;
+      const pz = player ? player.z : 0;
+      const e = createShip(typeName, 'enemy', s.x, s.z, Math.atan2(px - s.x, pz - s.z));
+      enemies.push(e);
+      fresh.push(e);
+    });
+  }
+  // A kind met for the first time ever on this save (§3.4): its met bit saved at once, its meet card queued.
+  if (WITH_V4) for (const typeName of new Set(wave)) meetKind(typeName, fresh);
   state.wave = index;
   // The next wave's ship models are built ahead, hidden, one a frame (PERF-4: reinforcements never stall a frame).
   queuePrebuild(index + 1);
@@ -1940,7 +2081,7 @@ function spawnWave(index) {
     hands = state.crew - before;
   }
   if (index > 0) {
-    const boss = wave.find((t) => SHIP_TYPES[t].boss);
+    const boss = wave.find((t) => !poolRules.isPseudo(t) && SHIP_TYPES[t] && SHIP_TYPES[t].boss);
     // (Right after a capture its fanfare plays out first: the horn waits, SPEC2 §9.1 audio.)
     const pitch = boss ? 0.8 : 1;
     if (state.time - state.lastCaptureAt < 1.5) state.waveHorn = { at: state.lastCaptureAt + 1.5, pitch };
@@ -1959,7 +2100,7 @@ function describeWave(wave) {
   const counts = {};
   for (const t of wave) counts[t] = (counts[t] || 0) + 1;
   return Object.entries(counts)
-    .map(([t, n]) => `${n} &times; ${SHIP_TYPES[t].name}`)
+    .map(([t, n]) => `${n} &times; ${foeName(t)}`)
     .join(' &middot; ');
 }
 
@@ -2008,8 +2149,19 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   if (n !== lastLevelStarted) releaseSharedPeople();
   lastLevelStarted = n;
   // The same level always rolls the same crits (tests pin them with __game.combat.seed()).
-  combatRng = mulberry32(levelSeed(n));
-  state.waves = null; // (a pool level draws its waves here from Stage 2 on, SPEC4 §3.5)
+  const seed = levelSeed(n);
+  combatRng = mulberry32(seed);
+  // A pool level (Voyage IV, SPEC4 §3.5) draws all of its waves now, from the same seed: Try again replays them, a
+  // new play after a clear draws new ones (the plays are saved).
+  state.waves = null;
+  if (poolLevel(LEVELS[n - 1])) {
+    try {
+      const w = poolRules.drawWaves(n, LEVELS[n - 1].pool, seed);
+      state.waves = Array.isArray(w) && w.length ? w : null;
+    } catch (err) {
+      console.warn('pool:', err);
+    }
+  }
   state.netted = null;
   warnSlots.reset(LEVELS[n - 1]);
   // Round shot loaded, every hand aboard (the tavern's Boarding party decides how many).
@@ -2095,9 +2247,20 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     turnRate: (s) => turnRate(s),
   };
   m3 = mechanics3.createMechanics3(ids, ctx3);
-  // (Voyage IV's rules join as the third part in Stage 2, SPEC4 §11.2: createMechanics4(ids, ctx4) with ctx4 = ctx3 +
-  // { warn: warnSlots, cutHold, spyglass, summon, puffersAlive, tables }. A null third part composes exactly as two.)
-  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3, null]);
+  // Voyage IV's rules (SPEC4 §11.2, with WITH_V4): the third part, on every level (the Sting Sloop, the Net Sloop
+  // and the Coral Witch follow their type flags anywhere; its hazards only where def.mechanics names them), and its
+  // pseudo foes. Without WITH_V4 the third part is null, which composes exactly as two.
+  m4 = null;
+  if (WITH_V4) {
+    createFoes4For(def);
+    try {
+      m4 = mechanics4.createMechanics4(ids, mechanics4Ctx(def, ctx3));
+    } catch (err) {
+      console.warn('mechanics4:', err);
+      m4 = null;
+    }
+  }
+  mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3, m4]);
   if (cp) {
     // (from the Kraken: no ships and no geysers, only the Kraken rising at once, its short rise)
     state.wave = levelWaves(def).length - 1;
@@ -2111,7 +2274,8 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
   createKrakenFor(def);
   if (cp && kraken) kseq.stage = 'retry';
   // Sailors of this level's ships, ready to go overboard (built one per frame during the fly-in).
-  const types = [...new Set(levelWaves(def).flat())];
+  // (a pseudo kind has no sailors: Voyage IV's packs, creatures and forts, SPEC4 §0.1 "not ships")
+  const types = [...new Set(levelWaves(def).flat())].filter((t) => !poolRules.isPseudo(t));
   overboard.prepare(types.flatMap((t) => [enemyCrewOpts(t, 1), enemyCrewOpts(t, 2)]));
   // Your boarding party (captain and four hands in your looks) and, where raiders sail, their boarders:
   // built one per frame during the fly-in (boarding.js).
@@ -2181,11 +2345,13 @@ const warnSlots = {
   give(kind) {
     this.count = Math.max(0, this.count - 1);
   },
-  // every level start: all slots free; the cap is the level's (Stage 0: none)
+  // every level start: all slots free; the cap is the level's (Voyage IV's WARN.max and WARN.boss, with WITH_V4)
   reset(def) {
     this.count = 0;
-    this.max = Infinity;
-    this.boss = Infinity;
+    const act4 = WITH_V4 && !!def && def.act === 4;
+    const W = mechanics4.WARN || {};
+    this.max = act4 && Number.isFinite(W.max) ? W.max : Infinity;
+    this.boss = act4 && Number.isFinite(W.boss) ? W.boss : Infinity;
   },
 };
 
@@ -2300,6 +2466,15 @@ function blurActive() {
 // waits while a 'hold' shows (the latest one only, shown when it ends: frame()); 'rise' the Kraken's rise banner,
 // placed clear of the rising head (style.css .banner.rise). Any other banner shows at once and drops a waiting one.
 function showBanner(html, seconds, kind = null) {
+  // A meet card holds the banner slot (SPEC4 §8.2): news waits for it (the latest only; a level's end or a sinking
+  // takes the slot back at once).
+  if (WITH_V4 && meetUi.on) {
+    if (state.mode === 'playing' && state.clearTimer <= 0 && state.deathTimer <= 0) {
+      state.bannerNext = { html, seconds, kind };
+      return;
+    }
+    hideMeet(false);
+  }
   if (WITH_KRAKEN) {
     if (kind === 'routine' && state.bannerHold && state.bannerTimer > 0) {
       state.bannerNext = { html, seconds };
@@ -2321,7 +2496,7 @@ function finishLevel() {
   boarding.cancel('level');
   clearProjectiles();
   // Sweep up any loot still floating around.
-  state.gold += coins.length * COIN_VALUE;
+  for (const c of coins) state.gold += c.value ?? COIN_VALUE;
   for (const c of coins) scene.remove(c.mesh);
   coins.length = 0;
   const def = LEVELS[state.level - 1];
@@ -2341,6 +2516,15 @@ function finishLevel() {
     if (gift > 0) islandLines.push(`Villagers' gift <b>+${gift}</b>`);
     if (market > 0) islandLines.push(`Market Hall +${pct}% <b>+${market}</b>`);
     state.gold += market + gift;
+  }
+  // A pool level cleared (SPEC4 §3.5, §10.2): its plays + 1 in the voyage4 record, written before the level's gold
+  // is banked (the record first, then the chest), so the next play draws new waves; the card says so.
+  if (poolLevel(def)) {
+    syncVoyage4();
+    voyage4Rec = poolRules.notePlay(voyage4Rec, state.level);
+    saveVoyage4();
+    const seas = W4.card && W4.card.seas;
+    if (seas) islandLines.push(seas);
   }
   // The Kraken's Pearl (SPEC3 §5.7.1, §6.6), already in the plunder: said on the Victory card. The checkpoint goes.
   if (kraken && kseq.pearl > 0) islandLines.unshift(`The Kraken's Pearl <b>+${String(kseq.pearl).replace(/\B(?=(\d{3})+(?!\d))/g, ',')}</b>`);
@@ -2467,6 +2651,11 @@ const SINK_TIPS = {
   fireship: 'Tip: sink a fire ship far away, or freeze her with Frost shot, before she reaches you!',
   slam: 'Tip: when a violet ring bubbles up round you, steer out of it before the tentacle slams down!',
   grab: 'Tip: when a tentacle grabs you, hold G (or CUT!) to cut it loose. A shot on it, or Stink shot, makes it let go!',
+  // (Voyage IV's foes, SPEC4 §3.1)
+  coconut: 'Tip: coconuts land inside the brown circles. Steer out of them, or tip the boats over with grape shot!',
+  puffer: 'Tip: pop the puffers from far away, before they puff up beside you!',
+  lunge: 'Tip: Old Coilback lunges down its green lane. Steer out of it, then hit its head while it is dizzy!',
+  fort: 'Tip: when a Rock Fort\'s red line points at you, change course before it goes solid!',
 };
 function playerSunk() {
   boarding.cancel('player');
@@ -2582,8 +2771,8 @@ const GRAPPLE_WHY = {
   crew: 'Not enough hands!',
   monster: krakenRules.KRAKEN.words.noBoard, // "You can't board a sea monster!" (the Kraken's parts, SPEC3 §5.7.2)
   // (Voyage IV's pseudo foes, SPEC4 §3.3: the jollyboats; a Rock Fort)
-  small: 'Too small to board!',
-  fort: 'Too big to board! Knock it down.',
+  small: (mechanics4.WORDS4 && mechanics4.WORDS4.board && mechanics4.WORDS4.board.small) || 'Too small to board!',
+  fort: (mechanics4.WORDS4 && mechanics4.WORDS4.board && mechanics4.WORDS4.board.fort) || 'Too big to board! Knock it down.',
 };
 function canGrapple(e) {
   if (state.mode !== 'playing' || state.intro > 0 || state.clearTimer > 0 || state.deathTimer > 0) return 'busy';
@@ -2653,6 +2842,11 @@ function boardPress() {
     return false;
   }
   if (state.intro > 0) return false; // the key fast-forwards the fly-in instead
+  // A Net Sloop's net holds you (SPEC4 §3.1): G / CUT! cuts it (3 presses, or hold it), never a grapple.
+  if (netted()) {
+    mechanics.cut();
+    return true;
+  }
   // A Kraken tentacle holds you: G / CUT! cuts it (3 presses, or hold it); with nothing grabbing you in its fight,
   // there is nothing to board but a sea monster (SPEC3 §5.7.3).
   if (kraken && state.grabbed) {
@@ -2668,8 +2862,30 @@ function boardPress() {
     return boarding.start({ kind: 'counter', enemy: ct, getSides: () => boardingSides(ct, 'counter') });
   }
   const r = grapple();
-  if (!r.ok && GRAPPLE_WHY[r.reason]) flashHint(grappleWhy(r.reason, r.reason === 'immune' ? boardPick().near : null), 2);
+  // (G at one of Voyage IV's pseudo foes, nearer than any ship: "Too small to board!", "You can't board a sea
+  // monster!", "Too big to board! Knock it down.", SPEC4 §3.3)
+  const pw = !r.ok && WITH_V4 ? nearPseudo() : null;
+  if (pw) flashHint(GRAPPLE_WHY[pseudoBoardWhy(pw)] || GRAPPLE_WHY.monster, 2);
+  else if (!r.ok && GRAPPLE_WHY[r.reason]) flashHint(grappleWhy(r.reason, r.reason === 'immune' ? boardPick().near : null), 2);
   return r.ok;
+}
+// The nearest of Voyage IV's pseudo foes within grapple reach (+ 12 u), when no ship is nearer: G names why it
+// can't be boarded (SPEC4 §3.3).
+function nearPseudo() {
+  if (!player || !foes4List.length) return null;
+  let best = null;
+  let bd = state.grappleRange + 12;
+  for (const w of foes4List) {
+    if (!fighting(w)) continue;
+    const d = Math.hypot(w.x - player.x, w.z - player.z);
+    if (d < bd) {
+      bd = d;
+      best = w;
+    }
+  }
+  if (!best) return null;
+  for (const e of enemies) if (fighting(e) && Math.hypot(e.x - player.x, e.z - player.z) <= bd) return null;
+  return best;
 }
 // The words for why G can't board: a fire ship that hasn't struck says how to beat her (SPEC3 §4.2).
 function grappleWhy(reason, near = null) {
@@ -2848,6 +3064,13 @@ function captureShip(e, how = 'boarded', gold = captureGold(e.type.gold)) {
   feats.captures++;
   feats.prizes = feats.prizes || {};
   feats.prizes[e.typeName] = (feats.prizes[e.typeName] || 0) + 1;
+  // (the three new ship types are mirrored in the voyage4 record too, so an older tab's feats can be re-derived,
+  // SPEC4 §0.1, §10.1)
+  if (WITH_V4 && (e.typeName === 'stinger' || e.typeName === 'netsloop' || e.typeName === 'witch')) {
+    syncVoyage4();
+    voyage4Rec = poolRules.notePrize(voyage4Rec, e.typeName);
+    saveVoyage4();
+  }
   if (e.type.ghost) feats.legend = 1;
   featsDirty = true;
   saveFeats();
@@ -3038,7 +3261,59 @@ const PARTS = [
       w.mesh.userData.deckY = Math.max(1, p.y1 - 2.2);
     },
   },
+  // Voyage IV's pseudo foes (foes4.js, SPEC4 §3.7): kind the foe's ('jolly' | 'puffer' | 'coilback' | 'fort'),
+  // partKind the part's ('boat' | 'puffer' | 'head' | 'hump' | 'fort'), id foes4-<part id> (a part id is used for one
+  // spawn only). Old Coilback under water is listed hidden: no wrapper while it is (the guns can't see it).
+  {
+    id: 'foes4',
+    get: () => foes4,
+    parts: foes4Parts,
+    list: foes4List,
+    wrap: (p, src) => pseudoWrap(p, src, 'foes4', p.kind, p.part),
+    place: placePseudo,
+  },
+  // The Shellback (shellback.js, §3.6; R5): kind 'shellback', partKind the part's ('tower' | 'eye' | 'claw' | 'shell').
+  {
+    id: 'shellback',
+    get: () => shellback,
+    parts: shellParts,
+    list: shellList,
+    wrap: (p, src) => pseudoWrap(p, src, 'shellback', 'shellback', p.kind),
+    place: placePseudo,
+  },
 ];
+// A Voyage IV part as a pseudo-ship (SPEC3 §5.8's shape plus src; type.len / wid are set to 2r by syncParts).
+function pseudoWrap(p, src, prefix, kind, partKind) {
+  const name = typeof p.name === 'string' && p.name ? p.name : foeName(kind);
+  return {
+    pseudo: true,
+    part: p.id,
+    partKind,
+    kind,
+    typeName: kind,
+    id: `${prefix}-${p.id}`,
+    x: p.x,
+    z: p.z,
+    h: 0,
+    speed: 0,
+    hp: 0,
+    maxHp: Number(p.maxHp) > 0 ? p.maxHp : 1,
+    y0: 0,
+    y1: 0,
+    aimY: 0.8,
+    type: { len: 2, wid: 2, name },
+    mesh: { position: { y: 0 }, userData: { deckY: 1.2 } },
+    status: null,
+    src,
+  };
+}
+// (the guns aim a ball to come down through the part's middle; its pops start over its top)
+function placePseudo(w, p) {
+  const y0 = Number(p.y0) || 0;
+  const y1 = Number(p.y1) || 0;
+  w.aimY = clamp((y0 + y1) / 2, 0.4, 6);
+  w.mesh.userData.deckY = Math.max(0.6, y1 - 1.2);
+}
 // Each source's raised parts, wrapped (once a step, and when a source rises).
 function syncParts() {
   for (const S of PARTS) {
@@ -3047,6 +3322,7 @@ function syncParts() {
     const src = S.get();
     if (!src) continue;
     for (const p of src.targets()) {
+      if (p.hidden) continue; // (under water: the guns can't see it, SPEC4 §3.7)
       let w = S.parts.get(p.id);
       if (!w) {
         w = S.wrap(p, src);
@@ -3081,6 +3357,621 @@ function pseudoBoardWhy(e) {
     why = null;
   }
   return why === 'small' || why === 'fort' ? why : 'monster';
+}
+
+// ---------------------------------------------------------------------------
+// The Sunset Isles' battle (SPEC4 §3, §11.2), with WITH_V4 only. foes4.js runs the pseudo foes (the Monkey
+// Jollyboats, Puffer Mines, Old Coilback, the Rock Forts), mechanics4.js the three new ships' behaviours and the
+// nets (and the hazards, whose HUD and targeting are R3's), foesView.js draws them; main places a wave's pseudo kinds,
+// shows the meet card of a kind met for the first time ever, keeps the warning-shape slots, and saves the voyage4
+// record (plays, the kinds met, the tips, the prizes). With WITH_V4 false none of this runs (foes4 stays null).
+// ---------------------------------------------------------------------------
+const W4 = mechanics4.WORDS4 || {};
+const MEET4 = poolRules.MEET || { card: 3.5, grace: 4, newTag: 10 };
+const MEET_WAIT = 5; // s of play a meet card waits at most for a showing banner (a banner waits for it, §8.2)
+// The voyage4 record changed in another tab (§10.2): plays the larger, met and tips or-ed, prizes the larger. Writes
+// nothing. Returns whether this tab's record changed.
+function syncVoyage4() {
+  if (!WITH_V4) return false;
+  const raw = readRaw(VOYAGE4_KEY);
+  if (raw === null) return false;
+  const merged = poolRules.mergeVoyage4(voyage4Rec, raw);
+  if (poolRules.serializeVoyage4(merged) === poolRules.serializeVoyage4(voyage4Rec)) return false;
+  voyage4Rec = merged;
+  return true;
+}
+function saveVoyage4() {
+  return WITH_V4 && saveRecord(VOYAGE4_KEY, poolRules.serializeVoyage4, voyage4Rec);
+}
+// The new plots' perks (island.js perks4: the Forge's net cut, the Observatory's spyglass), read on act 4 only (§0.1).
+function perks4() {
+  try {
+    return typeof islandRules.perks4 === 'function' ? islandRules.perks4(island4Cfg) : {};
+  } catch {
+    return {};
+  }
+}
+// A Voyage IV one-time tip (§8.4: voyage4's `tips`, not pirates-ahoy-tips), by WORDS4.tips' key, in the hint bubble.
+function showTip4(key, seconds = 6) {
+  const T = W4.tips && W4.tips[key];
+  if (!T || !Number.isInteger(T.bit) || voyage4Rec.tips & T.bit) return false;
+  if (state.time < state.tip.until || boarding.active) return false;
+  voyage4Rec = poolRules.markTip(voyage4Rec, T.bit);
+  saveVoyage4();
+  state.tip = { text: isTouch() ? T.touch : T.keys, until: state.time + seconds, bit: -T.bit };
+  return true;
+}
+
+// ---- Meeting a new kind (§3.4): its met bit saved at once, then the meet card in the banner slot for MEET.card s
+// (its icon, its name and its counter line, also read by #game-live, a two-note bugle), and its grace: it starts no
+// attack until MEET.grace s after its card shows (foes4's isNew, mechanics4's meeting, a new ship's guns).
+const meetUi = { queue: [], on: null };
+const meetGrace = new Map(); // kind -> { at (queued), shownAt (null until its card shows) }
+const meetCardUi = { card: $('meet-card'), icon: $('meet-icon'), name: $('meet-name'), line: $('meet-line') };
+function meetKind(kind) {
+  if (!WITH_V4 || !poolRules.V4_KINDS.includes(kind)) return false;
+  syncVoyage4();
+  const r = poolRules.meet(voyage4Rec, kind);
+  if (!r.first) return false;
+  voyage4Rec = r.rec;
+  saveVoyage4(); // (storage blocked or full: it lasts for the visit)
+  queueMeet(kind);
+  return true;
+}
+function queueMeet(kind) {
+  if ((meetUi.on && meetUi.on.kind === kind) || meetUi.queue.some((q) => q.kind === kind)) return;
+  meetUi.queue.push({ kind, at: state.time });
+  meetGrace.set(kind, { at: state.time, shownAt: null });
+}
+// Its first-meeting grace is running: from its spawn until MEET.grace s after its card shows.
+function graceRunning(kind) {
+  const g = meetGrace.get(kind);
+  return !!g && (g.shownAt === null || state.time < g.shownAt + MEET4.grace);
+}
+// Its tag wears the gold NEW: from its spawn until MEET.newTag s after its card shows.
+function newTagOn(kind) {
+  const g = meetGrace.get(kind);
+  return !!g && (g.shownAt === null || state.time < g.shownAt + MEET4.newTag);
+}
+// The counter line of a kind's card (§3.1; the Net Sloop's names the key, or CUT! on a touch screen).
+function meetLine(kind) {
+  const L = W4.meet && W4.meet[kind];
+  if (L && typeof L === 'object') return isTouch() ? L.touch : L.keys;
+  return typeof L === 'string' ? L : '';
+}
+// Each kind's picture on its card (shape and colour, never colour alone): ink outlines on its own colour (§3.1).
+const MEET_SVG = 'viewBox="0 0 48 48" aria-hidden="true" focusable="false"';
+const MEET_INK = 'stroke="#1d1330" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round"';
+const MEET_ICONS = {
+  // a little rowboat with a monkey's face and a coconut
+  jolly:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M6 30h36l-5 9H11z" fill="#3fae5a"/><circle cx="24" cy="20" r="8" fill="#a5683a"/>` +
+    '<ellipse cx="24" cy="22.5" rx="5.2" ry="4" fill="#f4d7a8"/><circle cx="15.6" cy="18" r="3" fill="#f4d7a8"/><circle cx="32.4" cy="18" r="3" fill="#f4d7a8"/>' +
+    '<circle cx="38.5" cy="12" r="4.2" fill="#6b4425"/></g><g fill="#1d1330"><circle cx="21.2" cy="18.6" r="1.3"/><circle cx="26.8" cy="18.6" r="1.3"/></g>' +
+    '<path d="M21.6 24.2c1.5 1.2 3.3 1.2 4.8 0" fill="none" stroke="#1d1330" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  // a wasp-striped sail on a sleek hull
+  stinger:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M7 33h34l-6 7H13z" fill="#2b2b2b"/><path d="M24 6v27" fill="none"/>` +
+    '<path d="M25.5 8c9 6 12 15 11 23H25.5z" fill="#f2c230"/></g><g fill="#1d1330"><path d="M27 13.5l5.6 4.2v3.4L27 17z"/><path d="M27 21.5l8.6 3.6v3.4L27 25z"/></g>' +
+    '<path d="M22.5 9L14 30h8.5z" fill="#f2c230" stroke="#1d1330" stroke-width="2.4" stroke-linejoin="round"/></svg>',
+  // a bottle-green hull under a white net
+  netsloop:
+    `<svg ${MEET_SVG}><path d="M6 32h36l-6 8H12z" fill="#1f6b3a" ${MEET_INK}/><path d="M9 10h30l-4 18H13z" fill="#fff" ${MEET_INK}/>` +
+    '<path d="M12.5 15.5h23M14 22h20M17 10l3 18M24 10v18M31 10l-3 18" fill="none" stroke="#1d1330" stroke-width="1.6"/></svg>',
+  // an orange puffer with brown spots and spikes
+  puffer:
+    `<svg ${MEET_SVG}><g fill="#f2f0e6" ${MEET_INK}><path d="M24 4l3 6h-6zM24 44l-3-6h6zM4 24l6-3v6zM44 24l-6 3v-6zM9.9 9.9l6.4 2.3-4.2 4.2zM38.1 38.1l-6.4-2.3 4.2-4.2zM38.1 9.9l-2.3 6.4-4.2-4.2zM9.9 38.1l2.3-6.4 4.2 4.2z"/></g>` +
+    `<circle cx="24" cy="24" r="13.5" fill="#f28a1e" ${MEET_INK}/><g fill="#8a4a1e"><circle cx="18" cy="29" r="2.1"/><circle cx="29.5" cy="30.5" r="1.8"/><circle cx="31" cy="18.5" r="1.6"/></g>` +
+    '<circle cx="19.5" cy="20" r="3.2" fill="#fff" stroke="#1d1330" stroke-width="1.6"/><circle cx="20" cy="20.4" r="1.4" fill="#1d1330"/></svg>',
+  // a conch shell in coral pink and sea green
+  witch:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M8 30c0-12 8-22 20-22 7 0 12 5 12 11 0 8-7 13-14 13-5 0-8-3-8-7 0-3 2-5 5-5" fill="#f27a8a"/>` +
+    '<path d="M8 30l-2 9 10-4z" fill="#2fb79c"/></g><path d="M23 19.5c2.5-3.5 8-3.5 10 0M20 26c3-1 5 1 4.5 3" fill="none" stroke="#1d1330" stroke-width="1.6" stroke-linecap="round"/></svg>',
+  // a teal sea serpent's head over its humps, a purple fin
+  coilback:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M4 38c4-8 8-8 12 0M18 38c4-9 9-9 13 0" fill="#2f9e8a"/><path d="M30 38c0-14 2-24 10-26 4-1 6 3 3 6l-5 2c-1 6-1 12-2 18z" fill="#2f9e8a"/>` +
+    '<path d="M34 16l-6-6 1 8z" fill="#8a4ab8"/><path d="M40 21l3 1" fill="none"/></g><circle cx="40" cy="14.6" r="1.6" fill="#1d1330"/>' +
+    '<path d="M3 39.5h42" stroke="#1d1330" stroke-width="2.4" stroke-linecap="round"/></svg>',
+  // a sandstone tower on a rock with a red flag
+  fort:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M5 42l6-9h26l6 9z" fill="#7a6a5a"/><path d="M13 33V17h22v16z" fill="#d9b07a"/>` +
+    '<path d="M11 17v-5h5v3h4v-3h8v3h4v-3h5v5z" fill="#d9b07a"/><path d="M24 12V3" fill="none"/><path d="M24 3.5h10l-3 3.5 3 3.5H24z" fill="#e63946"/></g>' +
+    '<rect x="20" y="22" width="8" height="5" rx="2.5" fill="#1d1330"/></svg>',
+  // a coral-red crab with stalked eyes
+  shellback:
+    `<svg ${MEET_SVG}><g ${MEET_INK}><path d="M8 30c0-8 7-13 16-13s16 5 16 13c0 4-7 7-16 7S8 34 8 30z" fill="#e2483d"/>` +
+    '<path d="M18 17v-6M30 17v-6" fill="none"/><circle cx="18" cy="9" r="3.2" fill="#fff"/><circle cx="30" cy="9" r="3.2" fill="#fff"/>' +
+    '<path d="M8 26c-4-1-6-5-5-8 3 0 5 2 6 5M40 26c4-1 6-5 5-8-3 0-5 2-6 5" fill="#e2483d"/><path d="M12 36l-4 5M20 37l-2 5M28 37l2 5M36 36l4 5" fill="none"/></g>' +
+    '<g fill="#1d1330"><circle cx="18" cy="9.4" r="1.3"/><circle cx="30" cy="9.4" r="1.3"/></g></svg>',
+};
+// A card shows now (step(), simulated time): the banner slot is its.
+function showMeet(kind) {
+  const name = foeName(kind);
+  const full = meetLine(kind);
+  // (the line names its kind first, "Rock Fort! When…": the card's name is above it, so the card shows the rest)
+  const line = kind === 'shellback' ? full : full.replace(/^[^!]{1,40}!\s+/, '');
+  const U = meetCardUi;
+  U.icon.innerHTML = MEET_ICONS[kind] || '';
+  U.name.textContent = name;
+  U.line.textContent = line;
+  U.card.dataset.kind = kind;
+  if (state.bannerTimer > 0) {
+    // (a banner it waited for at most MEET_WAIT s goes now: news waits behind the card)
+    show(ui.banner, false);
+    state.bannerTimer = 0;
+  }
+  show(U.card, true);
+  retrigger(U.card, 'popped');
+  audio.play('newFoe');
+  gameAnnounce(full);
+  meetUi.on = { kind, shownAt: state.time, until: state.time + MEET4.card };
+  const g = meetGrace.get(kind) || { at: state.time, shownAt: null };
+  g.shownAt = state.time;
+  meetGrace.set(kind, g);
+}
+// The card goes (its time is up, a key or a tap, the level ends); news that waited for it shows now.
+function hideMeet(flush = true) {
+  if (!meetUi.on) return;
+  meetUi.on = null;
+  show(meetCardUi.card, false);
+  const next = state.bannerNext;
+  if (flush && next && state.mode === 'playing') {
+    state.bannerNext = null;
+    showBanner(next.html, next.seconds, next.kind ?? null);
+  }
+}
+// Any key or tap in play takes a card that has been read a moment away early (it never pauses the game; the grace
+// still counts from when it showed).
+function dismissMeet() {
+  if (meetUi.on && state.time - meetUi.on.shownAt >= 0.6) hideMeet();
+}
+function stepMeet() {
+  if (meetUi.on) {
+    if (state.time >= meetUi.on.until || state.clearTimer > 0 || state.deathTimer > 0) hideMeet();
+    return;
+  }
+  if (!meetUi.queue.length || state.clearTimer > 0 || state.deathTimer > 0 || !player || player.sinking) return;
+  const q = meetUi.queue[0];
+  if (state.bannerTimer > 0 && state.time - q.at < MEET_WAIT) return;
+  meetUi.queue.shift();
+  showMeet(q.kind);
+}
+function clearMeet() {
+  meetUi.queue.length = 0;
+  meetUi.on = null;
+  meetGrace.clear();
+  show(meetCardUi.card, false);
+}
+
+// ---- The pseudo foes (foes4.js) and their model (foesView.js), one of each a level start (with WITH_V4).
+// What foes4.js asks of the game (§11.1).
+function foes4Ctx() {
+  return {
+    player: () =>
+      player && !player.sinking ? { x: player.x, z: player.z, h: player.h, speed: player.speed, len: player.type.len, wid: player.type.wid } : null,
+    // the pirates still fighting (their coconuts, pops and lines hit pirates too)
+    ships: () =>
+      enemies.filter((e) => fighting(e) && !e.sinking).map((e) => ({ id: e.id, x: e.x, z: e.z, h: e.h, len: e.type.len, wid: e.type.wid, kind: e.typeName })),
+    damage: (target, amount, x, z, source) => {
+      const s = target === 'player' ? player : enemies.find((e) => e.id === target);
+      if (!s || s.sinking || s.hp <= 0 || (s !== player && !fighting(s))) return;
+      damage(s, amount, x, z, source);
+    },
+    land: (x, z, r) => colliders.some((c) => Math.hypot(x - c.x, z - c.z) < c.r + (Number(r) || 0)),
+    world: { x: 0, z: 0, r: env ? env.worldRadius : 140 },
+    rng: () => combatRng(),
+    warnBonus: () => warnBonus(),
+    warn: warnSlots,
+    pop: (text, x, y, z, style) => pop4(text, x, y, z, style),
+    announce: (text) => gameAnnounce(text),
+    // (a warning's sound is told how long its warning lasts, so it ends on the hit: coconut, puff, hiss)
+    sfx: (name, x, z, o) => audio.play(name, sfxAt(x, z, o && o.duration > 0 ? { duration: o.duration } : undefined)),
+    coins: (x, z, gold) => dropCoin(x, z, gold),
+    gold: (n, why) => payGold(n, why),
+    drift: (x, z) => {
+      try {
+        return m4 ? m4.drift({ x, z }) : null; // (the coral currents: puffers ride them)
+      } catch {
+        return null;
+      }
+    },
+    isNew: (kind) => graceRunning(kind),
+    hold: () => state.intro > 0 || boarding.truce,
+    tables: { STATUS: specials.STATUS, WORDS4: W4, WORDS3: specials.WORDS3, POOL_RULES: poolRules.POOL_RULES, PACKS: poolRules.PACKS, MEET: poolRules.MEET },
+  };
+}
+// What mechanics4.js asks of the game (§11.1, 1B): SPEC3's ctx3 plus the warning slots, the net's cut hold (the
+// Forge's shorter one on act 4, else RAIDERS'), the Observatory's spyglass (act 4), the Witch's summons (foes4's
+// puffers, owned by her), her puffers sent home when she falls, main's broadside arcs, and a newcomer's grace.
+function mechanics4Ctx(def, ctx3) {
+  const act4 = !!def && def.act === 4;
+  return {
+    ...ctx3,
+    pop: (text, x, y, z, style) => pop4(text, x, y, z, style),
+    warn: warnSlots,
+    cutHold: () => {
+      const v = act4 ? Number(perks4().cutHold) : NaN;
+      return Number.isFinite(v) && v > 0 ? v : RAIDERS.cutHold;
+    },
+    spyglass: () => {
+      const v = act4 ? Number(perks4().spyglass) : 0;
+      return Number.isFinite(v) && v > 0 ? v : 0;
+    },
+    summon: (kind, x, z, n, owner) => {
+      const id = foes4 ? foes4.spawn(kind, x, z, { n, owner }) : null;
+      if (id !== null && id !== undefined) ensureFoesView();
+      return id;
+    },
+    puffersAlive: () => (foes4 ? foes4.alive('puffer') : 0),
+    sendHome: (owner) => {
+      if (foes4) foes4.sendHome(owner);
+    },
+    inArc: (ship, e, side) => inArc(ship, e, side),
+    awake: () => false, // (the Shellback's dread stops the tide for good: R5)
+    meeting: (e) => !!e && graceRunning(e.typeName),
+    tables: { RAIDERS, STATUS: specials.STATUS, POOL_RULES: poolRules.POOL_RULES },
+  };
+}
+// Floating loot worth `gold` (a jollyboat 10, a puffer 2): one coin (step()'s updateCoins pays its value).
+function dropCoin(x, z, gold) {
+  const g = Math.max(0, Math.round(Number(gold) || 0));
+  if (!g || !Number.isFinite(x) || !Number.isFinite(z)) return;
+  const mesh = new THREE.Mesh(coinGeo, coinMat);
+  scene.add(mesh);
+  coins.push({ mesh, x, z, spin: Math.random() * 6, from: 0, value: g });
+}
+// Gold paid at once (a fort's 100, Old Coilback's scale +150), into this level's plunder.
+function payGold(n, why) {
+  const g = Math.max(0, Math.round(Number(n) || 0));
+  if (!g) return;
+  state.gold += g;
+  audio.play('coin', { pitch: 1.1 });
+  if (player && !player.sinking) pops.pop(`+${g} gold`, player.x, popHeight(player) + 1.2, player.z, 'gold');
+  gameAnnounce(why === 'scale' ? `Old Coilback dropped a scale! Plus ${g} gold.` : `Plus ${g} gold.`);
+}
+// A Voyage IV word over the sea (foes4's and mechanics4's pops): a telegraph's word in the foes' style, bigger
+// ('warn'); and the thing it is over as the pop's target, so a portrait phone shows one new word a target per 0.5 s
+// (the rest go to #game-live, pops.js §0.1).
+const WARN_WORDS4 = new Set(['coconut', 'puff', 'lunge', 'aim', 'net', 'puffers', 'mending', 'lowTide'].map((k) => W4.pop && W4.pop[k]).filter(Boolean));
+const pops4 = { swallow: false, recent: [] };
+function pop4(text, x, y, z, style) {
+  if (pops4.swallow) return false;
+  // (the same word again within 7 u in 0.6 s, a puffer patch puffing or a pair of coconuts landing: one word shows)
+  const now = state.time;
+  pops4.recent = pops4.recent.filter((r) => now - r.t < 0.6 && now >= r.t);
+  if (pops4.recent.some((r) => r.text === text && (r.x - x) * (r.x - x) + (r.z - z) * (r.z - z) < 49)) return false;
+  pops4.recent.push({ text, x, z, t: now });
+  const warn = WARN_WORDS4.has(text);
+  const st = warn ? 'foe4' : style || 'foe4';
+  return pops.pop(text, x, y, z, st, warn ? 'warn' : '', popTarget4(x, z));
+}
+// The nearest of a pseudo part, a ship or your ship within 8 u of a pop's spot (else the spot itself, on a 6 u grid).
+function popTarget4(x, z) {
+  let best = null;
+  let bd = 64;
+  const look = (o) => {
+    const d = (o.x - x) * (o.x - x) + (o.z - z) * (o.z - z);
+    if (d < bd) {
+      bd = d;
+      best = o;
+    }
+  };
+  for (const w of foes4List) look(w);
+  for (const e of enemies) if (e.hp > 0) look(e);
+  if (player) look(player);
+  return best || `@${Math.round(x / 6)},${Math.round(z / 6)}`;
+}
+// A word pop's target on a Voyage IV level (§0.1's per-target throttle); none elsewhere (levels 1-9 as today).
+function popTarget(s) {
+  return WITH_V4 && LEVELS[state.level - 1] && LEVELS[state.level - 1].act === 4 ? s : undefined;
+}
+function createFoes4For(def) {
+  disposeFoes4();
+  if (!WITH_V4 || typeof foes4Rules.createFoes4 !== 'function') return;
+  try {
+    foes4 = foes4Rules.createFoes4(foes4Ctx());
+  } catch (err) {
+    console.warn('foes4:', err);
+    foes4 = null;
+  }
+  // (its model: built one mesh a frame from now on a Voyage IV level; elsewhere only once something shows)
+  if (foes4 && def && def.act === 4) ensureFoesView();
+}
+function ensureFoesView() {
+  if (fView || !WITH_V4 || typeof foesView.createFoesView !== 'function') return fView;
+  try {
+    fView = foesView.createFoesView(scene, {
+      reducedMotion: () => reducedMotion(),
+      seaY: (x, z, t) => ocean.heightAt(x, z, t),
+      camera: () => camera,
+      foamColor,
+    });
+    fView.warmed = false;
+  } catch (err) {
+    console.warn('foes view:', err);
+    fView = null;
+  }
+  return fView;
+}
+function disposeFoes4() {
+  if (foes4) foes4.dispose();
+  foes4 = null;
+  if (fView) fView.dispose();
+  fView = null;
+  foes4Parts.clear();
+  foes4List.length = 0;
+  shellParts.clear();
+  shellList.length = 0;
+  foes4Vis = null;
+  v4Avoid.list.length = 0;
+  v4Avoid.at = -Infinity;
+  clearMeet();
+  state.netted = null;
+  netUi.on = false;
+}
+// Where a wave's pseudo kind is placed (§3.7): a puffer patch 18-24 u ahead of you in open water (puffers only drift
+// at hulls within 25 u), a fort on the FIRST free env.fortSpots entry in order (a sea stack, never a spawn point;
+// level 12's first one is 35 u abeam of the start), a pack and Old Coilback at a spawn point like a ship.
+function spawnPseudo(kind, spot) {
+  if (!foes4) return null;
+  let s = spot;
+  if (kind === 'puffer') s = patchSpot();
+  else if (kind === 'fort') s = fortSpot() || spot || patchSpot();
+  if (!s) return null;
+  const id = foes4.spawn(kind, s.x, s.z);
+  if (id !== null && id !== undefined) {
+    ensureFoesView();
+    syncParts();
+  }
+  return id;
+}
+function patchSpot() {
+  const p = player;
+  const ps = env ? env.playerStart : { x: 0, z: 0, h: 0 };
+  const px = p ? p.x : ps.x;
+  const pz = p ? p.z : ps.z;
+  const ph = p ? p.h : ps.h || 0;
+  const R = env ? env.worldRadius : 140;
+  for (let i = 0; i < 16; i++) {
+    const d = 18 + combatRng() * 6;
+    const a = ph + (combatRng() - 0.5) * (i < 8 ? 0.7 : 2.6);
+    const x = px + Math.sin(a) * d;
+    const z = pz + Math.cos(a) * d;
+    if (Math.hypot(x, z) < R - 12 && freeSpot(x, z, 6)) return { x, z };
+  }
+  return { x: px + fwdX(ph) * 21, z: pz + fwdZ(ph) * 21 };
+}
+function fortSpot() {
+  const spots = env && Array.isArray(env.fortSpots) ? env.fortSpots : [];
+  const forts = foes4 ? foes4.targets().filter((t) => t.kind === 'fort') : [];
+  for (const s of spots) {
+    if (!s || !Number.isFinite(s.x) || !Number.isFinite(s.z)) continue;
+    if (!forts.some((f) => Math.hypot(f.x - s.x, f.z - s.z) < 3)) return { x: s.x, z: s.z };
+  }
+  return null;
+}
+// The warning shapes pirates keep off "like lava" (§3.3): foes4's coconut and puffer rings, Old Coilback's lane (as
+// circles along it) and the forts' lines, worked out at most 10 times a second of play.
+const v4Avoid = { at: -Infinity, list: [] };
+function foesAvoid() {
+  if (!foes4) return v4Avoid.list;
+  if (state.time - v4Avoid.at < 0.1) return v4Avoid.list;
+  v4Avoid.at = state.time;
+  const L = v4Avoid.list;
+  L.length = 0;
+  let V = null;
+  try {
+    V = foes4.visuals();
+  } catch {
+    V = null;
+  }
+  if (!V) return L;
+  for (const r of V.rings || []) if (Number.isFinite(r.x) && Number.isFinite(r.z)) L.push({ x: r.x, z: r.z, r: Number(r.r) || 3 });
+  const along = (x0, z0, x1, z1, r) => {
+    const len = Math.hypot(x1 - x0, z1 - z0);
+    const n = Math.min(12, Math.max(1, Math.ceil(len / 5)));
+    for (let k = 0; k <= n; k++) L.push({ x: x0 + ((x1 - x0) * k) / n, z: z0 + ((z1 - z0) * k) / n, r });
+  };
+  for (const ln of V.lanes || []) if (Number.isFinite(ln.x0) && Number.isFinite(ln.x1)) along(ln.x0, ln.z0, ln.x1, ln.z1, (Number(ln.w) || 4) / 2 + 1);
+  for (const ln of V.lines || []) if (Number.isFinite(ln.x0) && Number.isFinite(ln.x1)) along(ln.x0, ln.z0, ln.x1, ln.z1, 1.5);
+  return L;
+}
+// After separateShips (§3.6.3, 1C): the Coilback's shove out of its lane (and, from R5, the Shellback's push) as a
+// velocity on every ship, yours included; land and the world's edge still hold them.
+function pushShips(dt) {
+  const srcs = [foes4, shellback].filter((s) => s && typeof s.push === 'function');
+  if (!srcs.length) return;
+  const all = player ? [player, ...enemies] : enemies;
+  for (const s of all) {
+    if (!s || s.sinking || s.captured || s.escaped || boarding.moves(s)) continue;
+    let vx = 0;
+    let vz = 0;
+    for (const src of srcs) {
+      let p = null;
+      try {
+        p = src.push(s);
+      } catch {
+        p = null;
+      }
+      if (p && Number.isFinite(p.vx) && Number.isFinite(p.vz)) {
+        vx += p.vx;
+        vz += p.vz;
+      }
+    }
+    if (!vx && !vz) continue;
+    s.x += vx * dt;
+    s.z += vz * dt;
+    resolveLand(s, dt);
+    const d = Math.hypot(s.x, s.z);
+    if (env && d > env.worldRadius) {
+      s.x *= env.worldRadius / d;
+      s.z *= env.worldRadius / d;
+    }
+  }
+}
+// The net on your ship (§3.1): TANGLED (mechanics4 playerMods: speed cap × 0.5, turns × 0.6) for at most 4 s.
+const NO_NET_MODS = Object.freeze({ speedMul: 1, turnMul: 1, netted: null });
+function netMods(s) {
+  if (!WITH_V4 || !player || s !== player) return NO_NET_MODS;
+  const m = mechanics.playerMods();
+  return m && typeof m === 'object' ? m : NO_NET_MODS;
+}
+const netted = () => WITH_V4 && !!player && !player.sinking && !!mechanics.playerMods().netted;
+// Every step: the state mirror (state.netted), the first-net tip (bit 2), the dive and fort-sighting tips (bits 4, 8).
+const netUi = { on: false };
+function stepV4(dt) {
+  const n = player && !player.sinking ? mechanics.playerMods().netted : null;
+  state.netted = n ? { t: n.t, max: n.max } : null;
+  if (n && !netUi.on) showTip4('net', 4);
+  netUi.on = !!n;
+  stepMeet();
+  // (looked at 10 times a second until both are seen)
+  state.v4TipT = (state.v4TipT || 0) - dt;
+  if (state.v4TipT > 0 || !foes4 || state.intro > 0 || (voyage4Rec.tips & 12) === 12) return;
+  state.v4TipT = 0.1;
+  let V = null;
+  try {
+    V = foes4.visuals();
+  } catch {
+    V = null;
+  }
+  if (!V) return;
+  if (V.coilback && (V.coilback.state === 'dive' || V.coilback.state === 'under')) showTip4('dive');
+  if ((V.lines || []).some((l) => l.state === 'track')) showTip4('fort');
+}
+// foes4's tags this frame (§3.3), a pack's over its lead boat: its boats ring you at 10-14 u, so the pack's middle (where
+// foes4 puts its tag) is your own ship, and its tag would sit in your sails.
+function foes4Tags() {
+  let list = [];
+  try {
+    list = foes4.tags() || [];
+  } catch {
+    return [];
+  }
+  const packs = foes4Vis && foes4Vis.packs;
+  if (!packs || !packs.length) return list;
+  for (const tg of list) {
+    const pk = packs.find((q) => q.id === tg.id);
+    const lead = pk && (pk.boats || []).find((b) => b.state === 'row');
+    if (lead) {
+      tg.x = lead.x;
+      tg.z = lead.z;
+    }
+  }
+  return list;
+}
+// Has foes4 (or mechanics4's shapes) anything to show?
+function anyFoes4Vis(V) {
+  if (!V) return false;
+  for (const k of ['packs', 'coconuts', 'puffers', 'forts', 'rings', 'lanes', 'lines', 'nets', 'songs', 'summons']) if (Array.isArray(V[k]) && V[k].length) return true;
+  return !!V.coilback;
+}
+// Each frame (WITH_V4): what foes4 and mechanics4 show (worked out once a frame: the view, the minimap, the edge
+// arrows and the framing read it), the foes' model (prepared one mesh a frame, then warm-drawn once, both outline
+// passes, behind the fly-in: §14.1), the net drape on your ship while TANGLED, the Net Sloop's whirl over her deck
+// while her net is coming (the NET! warning), and the Coral Witch at her helm.
+function frameV4(t, dt, paused) {
+  const live = state.mode === 'playing' || state.mode === 'paused';
+  if (!paused) {
+    let fv = null;
+    if (foes4 && live) {
+      try {
+        fv = foes4.visuals();
+      } catch {
+        fv = null;
+      }
+    }
+    const hv = hazardVis || {};
+    foes4Vis = fv ? { ...fv, nets: hv.nets || [], songs: hv.songs || [], summons: hv.summons || [] } : null;
+  }
+  if (!fView && anyFoes4Vis(foes4Vis)) ensureFoesView();
+  if (fView) {
+    if (!fView.ready && live) fView.prepare();
+    if (fView.ready && !fView.warmed && live) {
+      fView.warmed = true;
+      warmDraw(fView.warmables());
+    }
+    fView.update(foes4Vis, t, paused ? 0 : dt);
+  }
+  if (player) {
+    const on = !!state.netted && !player.sinking;
+    if (on !== !!player.netOn) {
+      player.netOn = on;
+      try {
+        if (typeof shipModels.setNet === 'function') shipModels.setNet(player.mesh, on);
+      } catch (err) {
+        console.warn('net drape:', err);
+      }
+    }
+  }
+  const nets = hazardVis && hazardVis.nets;
+  for (const e of enemies) {
+    const w = e.mesh && e.mesh.userData.whirl;
+    if (w) w.on = !e.sinking && !!nets && nets.some((n) => n.id === e.id);
+  }
+  animateFigures(t);
+}
+// The Voyage IV warning shapes by your hull, or by where your ship will be when they land, for the portrait
+// framing's must-see group (§8.2, SPEC3 §19 kraken4:F1): each as a ring (a lane or a line by its end near you, a net
+// by its fan's far half).
+function v4FrameRings(out, reach, vx, vz) {
+  const V = foes4Vis;
+  if (!V || !player) return;
+  const add = (x, z, r, left) => {
+    if (!Number.isFinite(x) || !Number.isFinite(z) || !(r > 0)) return;
+    const l = clamp(left, 0, 3);
+    const d = Math.min(Math.hypot(x - player.x, z - player.z), Math.hypot(x - player.x - vx * l, z - player.z - vz * l));
+    if (d <= r + reach) out.push({ x, z, r });
+  };
+  const left = (s) => (Number(s.T) || 0) - (Number(s.t) || 0);
+  for (const s of V.rings || []) add(s.x, s.z, Number(s.r) || 3, left(s));
+  for (const s of V.summons || []) add(s.x, s.z, Number(s.r) || 3, left(s));
+  for (const s of V.lanes || []) add(s.x1, s.z1, (Number(s.w) || 4) / 2 + 1, left(s));
+  for (const s of V.lines || []) add(s.x1, s.z1, 2, left(s));
+  for (const s of V.nets || []) {
+    const L = (Number(s.len) || 18) * 0.7;
+    add(s.x + Math.sin(s.h) * L, s.z + Math.cos(s.h) * L, L * Math.sin(Number(s.half) || 0.44) + 1, left(s));
+  }
+}
+// The Witch at her helm (ships.js userData.helm on the Coral Witch's Barge, §3.1): a person of her crew's colours,
+// coral hair and a sea-green dress; she sings with her arms up and points where her puffers will rise.
+function addWitchFigure(ship) {
+  const h = ship.mesh.userData.helm;
+  if (!h) return;
+  let person = null;
+  try {
+    const crew = enemyCrewOpts('witch', 1);
+    person = buildPerson({ ...crew, kind: 'woman', hat: 'none', hair: 0xff7f86, shirt: 0x2fb79c, shirt2: 0x2fb79c, accent: 0xff6f86, earring: true, seed: 7, scale: 1.15 });
+  } catch (err) {
+    console.warn('the Coral Witch:', err);
+    return;
+  }
+  person.position.set(h.x, h.y, h.z);
+  person.rotation.y = h.h || 0;
+  person.name = 'coral-witch';
+  ship.mesh.add(person);
+  ship.figure = person;
+}
+// What she does this frame (visual time): 'wave' (arms up) while she sings, 'point' while her puffers' rings show.
+function animateFigures(t) {
+  const V = hazardVis;
+  for (const e of enemies) {
+    const f = e.figure;
+    if (!f) continue;
+    if (e.sinking || e.hp <= 0) {
+      // (she dives off and swims home as her barge goes down: nobody goes down with a ship, §0.1)
+      if (f.visible) {
+        f.visible = false;
+        foam(e.x, 0.6, e.z, 8, 2.5, 4, 0.5, 0.7);
+      }
+      continue;
+    }
+    let act = 'idle';
+    if (V && V.songs && V.songs.some((s) => s.id === e.id)) act = 'wave';
+    else if (V && V.summons && V.summons.some((s) => s.owner === e.id)) act = 'point';
+    else if (e.captured) act = 'cheer';
+    animatePerson(f, t, act);
+  }
 }
 
 // The level 9 sequence (§5.7.1), every simulation step on a level with a Kraken: the Inkheart falls and her crew
@@ -3325,7 +4216,7 @@ function turnMul(s) {
   let m = 1;
   if (f.slowTurn > 0) m = Math.min(m, EFFECTS.chain.turn);
   if (f.rudder > 0) m = Math.min(m, EFFECTS.rudder.turn);
-  return Math.min(m, specials.statusMuls(s.status).turn) * mechanics.shipMods(s).turnMul * krakenMods(s).turnMul;
+  return Math.min(m, specials.statusMuls(s.status).turn) * mechanics.shipMods(s).turnMul * krakenMods(s).turnMul * netMods(s).turnMul;
 }
 // What the Kraken does to your ship now (SPEC3 §5.7.3: a grab holds her, speed and turn 0 and 2 hp/s; phase 3
 // pulls her toward the head): kraken.playerMods() → { speedMul, turnMul, dps, vx, vz }. Nothing for any other
@@ -3359,6 +4250,7 @@ function mayFire(ship) {
   if (ship.kind === 'player') return !boarding.active || (boarding.kind === 'defend' && boarding.phase === 'threat');
   if (ship.surrendered || ship.captured || ship.escaped || boarding.truce || boarding.target === ship) return false;
   if (specials.statusMuls(ship.status).noFire) return false; // a stinky ship can't shoot (SPEC3 §2.2)
+  if (WITH_V4 && graceRunning(ship.typeName)) return false; // (a kind met for the first time: its grace, SPEC4 §3.4)
   return !mechanics.holdFire(ship); // e.g. a treasure galleon only fires at a player abeam and close
 }
 
@@ -3496,8 +4388,13 @@ function aimTarget(side) {
   let bestDist = Infinity;
   let fallback = null;
   let fallbackDist = Infinity;
-  for (const e of targetsFor(side)) {
+  // (a puffer only with grape loaded or nothing else in that arc, SPEC4 §3.3: a broadside is never wasted on a puffer
+  // beside a pirate)
+  const list = targetsFor(side);
+  const skipPuffers = WITH_V4 && state.ammo !== 'grape' && foes4List.length > 0 && list.some((e) => e.kind !== 'puffer' && fighting(e) && inArc(player, e, side, range));
+  for (const e of list) {
     if (!fighting(e)) continue;
+    if (skipPuffers && e.kind === 'puffer') continue;
     const r = relative(player, e.x, e.z);
     if (inArc(player, e, side, range)) {
       if (r.dist < bestDist) {
@@ -3956,7 +4853,7 @@ function hullHit(ship, hx, hz, amount, info, effect) {
     featsDirty = true;
     if (!T || !T.rake) {
       if (T) T.rake = true;
-      pops.pop(info.aspect === 'stern' ? WORDS.stern : WORDS.bow, hx, py + 0.4, hz, 'rake');
+      pops.pop(info.aspect === 'stern' ? WORDS.stern : WORDS.bow, hx, py + 0.4, hz, 'rake', '', popTarget(ship));
       audio.play('rake', sfxAt(hx, hz));
       shakeCamera(0.15);
       splinters(hx, hz, 9); // a double burst down her length
@@ -3968,7 +4865,7 @@ function hullHit(ship, hx, hz, amount, info, effect) {
     // One CRIT! word per volley and target (with the effect's line when one took hold), a star burst per crit.
     if (!T || !T.crit || effect) {
       if (T) T.crit = true;
-      pops.pop(effect ? `CRIT! ${WORDS[effect]}` : WORDS.crit, hx, py + 0.8, hz, 'crit');
+      pops.pop(effect ? `CRIT! ${WORDS[effect]}` : WORDS.crit, hx, py + 0.8, hz, 'crit', '', popTarget(ship));
       audio.play('crit', sfxAt(hx, hz));
     }
     for (let i = 0; i < 12; i++) {
@@ -3979,7 +4876,7 @@ function hullHit(ship, hx, hz, amount, info, effect) {
   }
   if (info.pointBlank && (!T || !T.blank)) {
     if (T) T.blank = true;
-    pops.pop(WORDS.pointBlank, hx, py - 0.6, hz, 'info');
+    pops.pop(WORDS.pointBlank, hx, py - 0.6, hz, 'info', '', popTarget(ship));
   }
   // An armoured hull took a beam hit at half (the Iron Turtle, SPEC3 §4.2): CLANG! once a volley, and sparks.
   if (info.clang && (!T || !T.clang)) {
@@ -4001,8 +4898,8 @@ function hullHit(ship, hx, hz, amount, info, effect) {
     // already slowed only adds time: "SAILS SHREDDED!".
     if (!T || !T.chain) {
       if (T) T.chain = true;
-      if (info.firstSlow) pops.pop('SLOWED!', hx, py - 0.2, hz, 'slow');
-      else pops.pop(WORDS.chain, hx, py - 0.2, hz, 'info');
+      if (info.firstSlow) pops.pop('SLOWED!', hx, py - 0.2, hz, 'slow', '', popTarget(ship));
+      else pops.pop(WORDS.chain, hx, py - 0.2, hz, 'info', '', popTarget(ship));
     }
   }
   // Grape sweeps a sailor over the side (one per volley per ship).
@@ -4025,21 +4922,37 @@ function splinters(hx, hz, n = 7) {
 // A special ball also puts its status on the Kraken (§5.7.5), once per volley, with its word, sound and line.
 function damagePseudo(t, amount, x, z, info) {
   const src = partSrc(t); // (the Kraken: the only source until Stage 2, SPEC4 §3.7)
-  const r = src ? src.hit(t.part, info || { dmg: amount }) : null;
+  // (a Voyage IV source pops its own words for what a hit does, a tipped boat's SPLOSH!, FORT DOWN!: the hit's word
+  // below says it once per foe per volley, so those are swallowed while it is hit)
+  if (src && src !== kraken) pops4.swallow = true;
+  let r = null;
+  try {
+    r = src ? src.hit(t.part, info || { dmg: amount }) : null;
+  } finally {
+    pops4.swallow = false;
+  }
   if (!r) return;
   const hx = x ?? t.x;
   const hz = z ?? t.z;
   const py = (info && info.y) || 3;
   const v = info && info.owner === 'player' && info.volley ? volleys.get(info.volley) : null;
+  // (Voyage IV's foes, SPEC4 §3.7: their own pop style, one word a foe per volley (a pack's five boats, a patch's
+  // puffers say it once), and the foe as the pop's target for the portrait phones' word throttle, §0.1)
+  const v4src = src !== kraken;
+  const foeKey = v4src ? `${t.kind}:${String(t.part).split('-')[0]}` : null;
   // The part's word (BULLSEYE!, OUCH!, CRIT!) once per volley, as a ship's words are (SPEC2 §2.5: the volley's
   // summed damage number says how hard it hit); a hit outside a volley says it each time.
-  const TW = v ? volleyTarget(v, t) : null;
+  const TW = v ? volleyTarget(v, v4src ? foeKey : t) : null;
   if (r.word && (!TW || TW.word !== r.word)) {
     if (TW) TW.word = r.word;
-    pops.pop(r.word, hx, py + 2.4, hz, 'kraken', r.word === KR.words.bullseye ? 'eye' : '');
+    if (!v4src) pops.pop(r.word, hx, py + 2.4, hz, 'kraken', r.word === KR.words.bullseye ? 'eye' : '');
+    else pops.pop(r.word, hx, py + 2.4, hz, src === shellback ? 'shell' : 'foe4', r.word === (W4.pop && W4.pop.bullseye) ? 'eye' : '', foeKey);
   }
-  // (a squelch of violet spray where the ball went in)
-  puff(hx, py, hz, 4, 0x7a4f86, 2.2, 3, 0.55, 0.5, GRAVITY * 0.5, false, 'glow');
+  // (a squelch of violet spray where the ball went in; on Voyage IV's foes, splinters, stone dust or spray)
+  if (!v4src) puff(hx, py, hz, 4, 0x7a4f86, 2.2, 3, 0.55, 0.5, GRAVITY * 0.5, false, 'glow');
+  else if (t.partKind === 'fort' || t.partKind === 'tower') puff(hx, py, hz, 6, 0xd8c08a, 3, 3, 0.5, 0.6);
+  else if (t.partKind === 'boat') splinters(hx, hz, 5);
+  else foam(hx, Math.max(0.4, py), hz, 6, 2.2, 4, 0.5, 0.6);
   const dmg = Math.max(0, Number(r.dmg) || 0);
   if (info && info.status && src) {
     const T = v ? volleyTarget(v, src) : null; // (once per volley for the whole beast)
@@ -4053,14 +4966,17 @@ function damagePseudo(t, amount, x, z, info) {
         pops.pop(word, hx, py + 3.4, hz, style, is('kaboom') ? 'kaboom' : 'keep');
         if (info.status === 'fire' || info.status === 'frost') audio.play(info.status === 'fire' ? 'ignite' : 'freeze', sfxAt(hx, hz));
         // (#game-live; its sneeze says itself)
+        const who = v4src ? t.type.name : 'The Kraken';
         const live = is('fireOut')
-          ? W.live.fireOut('The Kraken')
+          ? W.live.fireOut(who)
           : is('pegs')
-            ? "Clothes-pegs! The Kraken won't sneeze again for a while"
+            ? v4src && typeof W.live.pegs === 'function'
+              ? W.live.pegs(who)
+              : "Clothes-pegs! The Kraken won't sneeze again for a while"
             : is('kaboom')
-              ? W.live.kaboom('The Kraken')
+              ? W.live.kaboom(who)
               : info.status === 'fire' || info.status === 'frost'
-                ? W.live[info.status]('The Kraken')
+                ? W.live[info.status](who)
                 : '';
         if (live) gameAnnounce(live);
         if (is('kaboom')) kaboomFlash();
@@ -4068,7 +4984,7 @@ function damagePseudo(t, amount, x, z, info) {
     }
   }
   if (v) {
-    const T = volleyTarget(v, t);
+    const T = volleyTarget(v, v4src ? foeKey : t); // (a Voyage IV foe's damage summed over its parts: one number)
     T.dmg += dmg;
     T.ammo = info.ammo;
     T.x = hx;
@@ -4164,7 +5080,7 @@ function damage(ship, amount, x, z, source = 'other', info = null) {
         scene.add(mesh);
         coins.push({ mesh, x: ship.x + Math.cos(a) * 2.5, z: ship.z + Math.sin(a) * 2.5, spin: Math.random() * 6, from: ship.id });
       }
-      const left = enemies.filter(fighting).length;
+      const left = aliveCount();
       const def = LEVELS[state.level - 1];
       const moreWaves = state.wave < levelWaves(def).length - 1;
       if (left > 0 || moreWaves) {
@@ -4216,7 +5132,7 @@ function applyShotStatus(s, info, hx, hz) {
   if (r.pop) {
     const style = ev.includes('immune') ? 'info' : ev.includes('kaboom') ? 'fire' : ev.includes('fireOut') ? 'frost' : ev.includes('pegs') ? 'stink' : info.status;
     // (IMMUNE! is never dropped from a crowded volley: it says why the shot did nothing, SPEC3 §0.1)
-    pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : ev.includes('immune') ? 'keep' : '');
+    pops.pop(r.pop, hx, py, hz, style, ev.includes('kaboom') ? 'kaboom' : ev.includes('immune') ? 'keep' : '', popTarget(s));
   }
   if (r.sfx) audio.play(r.sfx, sfxAt(hx, hz));
   if (ev.includes('immune')) gameAnnounce(r.why || W.immunePop);
@@ -4344,6 +5260,9 @@ function placeBomb(spec) {
   const damage = num(spec.damage, BOMB_DAMAGE);
   const v = env.volcano;
   let src = spec.from && Number.isFinite(spec.from.x) && Number.isFinite(spec.from.z) ? spec.from : kind === 'lava' && v ? { x: v.x, y: v.craterY, z: v.z } : null;
+  // (a Voyage IV level: the shell's ring is a warning shape and takes a slot, SPEC4 §0.1; none free: no shell)
+  const slot = WITH_V4 && warnSlots.max < Infinity;
+  if (slot && !warnSlots.take(kind)) return null;
   const potted = isBomb3(kind) && (kind === 'shell' || kind === 'ink'); // (the Bomb Ketch's shells, the Inkheart's ink pots)
   if (src && potted) src = mortarMuzzle(src);
   const zone = buildZone(kind, radius);
@@ -4352,6 +5271,7 @@ function placeBomb(spec) {
   if (isBomb3(kind) && kind === 'geyser') audio.play('geyser', sfxAt(tx, tz, { duration: T }));
   if (!src) {
     const bomb = { kind, mesh: null, zone, tx, tz, t: 0, T, radius, damage, whistle: null };
+    if (slot) bomb.slot = true;
     bombs.push(bomb);
     return bomb;
   }
@@ -4361,6 +5281,7 @@ function placeBomb(spec) {
   const whistle = potted && kind === 'ink' ? null : audio.play('bombWhistle', sfxAt(tx, tz, { duration: T }));
   const H = kind === 'lava' ? 30 + Math.random() * 15 : num(spec.H, potted ? (kind === 'shell' ? 14 : 10) : 12);
   const bomb = { kind, mesh, zone, sx: src.x, sy: num(src.y, 2), sz: src.z, tx, tz, t: 0, T, H, radius, damage, whistle };
+  if (slot) bomb.slot = true;
   bombs.push(bomb);
   return bomb;
 }
@@ -4541,7 +5462,7 @@ function speedCap(s) {
   if (s.onReef && s.reefIce) cap *= ICE_SLOW;
   else if (s.onReef && !s.type.shallow) cap *= REEF_SLOW;
   const mods = mechanics.shipMods(s);
-  return (cap + mods.capAdd) * speedMul(s) * mods.speedMul * krakenMods(s).speedMul;
+  return (cap + mods.capAdd) * speedMul(s) * mods.speedMul * krakenMods(s).speedMul * netMods(s).speedMul;
 }
 // How hard a ship may slow down (× her accel a second): 1.5, or a stinky ship's coast to a stop (SPEC3 §2.2:
 // statusMuls().decel, 2 × her accel).
@@ -4703,6 +5624,7 @@ function updateEnemy(e, dt, attacking) {
   if (!t.shallow) for (const reef of reefs) avoid(reef, 2);
   for (const c of colliders) avoid(c, t.wid + 5);
   for (const o of mechanics.avoid()) avoid(o, t.wid + 2); // e.g. the maelstrom's eye
+  if (foes4) for (const o of foesAvoid()) avoid(o, t.wid + 2); // (Voyage IV's warning shapes, "like lava", SPEC4 §3.3)
   for (const o of enemies) {
     if (o === e || o.sinking || o.captured || o.escaped) continue;
     const r = relative(e, o.x, o.z);
@@ -4952,7 +5874,7 @@ function updateCoins(dt) {
       c.z += (dz / d) * Math.min(pull, d);
     }
     if (!player.sinking && d < 3) {
-      state.gold += COIN_VALUE;
+      state.gold += c.value ?? COIN_VALUE; // (a Voyage IV foe's coin is worth its own gold)
       audio.play('coin', { pitch: 0.95 + Math.random() * 0.15 });
       puff(c.x, 1.5, c.z, 5, 0xffd23f, 3, 5, 0.3, 0.5, GRAVITY, false, 'glow');
       scene.remove(c.mesh);
@@ -5190,7 +6112,7 @@ function step(dt) {
   for (const e of enemies
     .filter((e) => fighting(e) && !e.type.merchant && player && e.escapeUntil <= state.time)
     .sort((a, b) => Math.hypot(a.x - player.x, a.z - player.z) - Math.hypot(b.x - player.x, b.z - player.z))
-    .slice(0, def.maxAttackers)) {
+    .slice(0, waveAttackers(def))) {
     attackSet.add(e);
   }
   for (const e of enemies) updateEnemy(e, dt, attackSet.has(e));
@@ -5207,8 +6129,14 @@ function step(dt) {
   serviceFireQueue(); // (the reloads just ticked down: a queued shot goes the moment its side is loaded)
   for (const e of enemies) moveShip(e, dt);
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
+  if (foes4) {
+    // (Voyage IV's pseudo foes, SPEC4 §3.1: their own clocks; their parts wrapped for the guns again)
+    foes4.step(dt);
+    syncParts();
+  }
   if (kraken) stepKraken(dt, def); // (level 9: the Inkheart's fall, the dread, the rise, the Kraken, SPEC3 §5.7.1)
   separateShips(dt);
+  if (foes4 || shellback) pushShips(dt); // (Old Coilback's shove out of its lane; the Shellback's push from R5)
   if (kraken) keepOffKrakenHead();
   updateBalls(dt);
   updateCoins(dt);
@@ -5219,6 +6147,7 @@ function step(dt) {
   if (player) emitShipFx(player, dt);
   for (const e of enemies) emitShipFx(e, dt);
   updateHints(dt);
+  if (WITH_V4) stepV4(dt); // (the net's mirror and tip, the meet card's time, Voyage IV's one-time tips)
 
   // The horn of reinforcements waits for a capture's fanfare to finish (stingers don't stack).
   if (state.waveHorn && state.time >= state.waveHorn.at) {
@@ -5258,7 +6187,7 @@ function step(dt) {
     state.nextBomb = state.combatTime + rand(...def.bombs.every);
   }
 
-  const alive = enemies.filter(fighting).length;
+  const alive = aliveCount(); // (ships fighting + Voyage IV's pseudo foes' slots, SPEC4 §3.7)
   const waves = levelWaves(def);
   if (state.wave < waves.length - 1 && alive <= def.nextWaveAt) {
     spawnWave(state.wave + 1);
@@ -5469,6 +6398,7 @@ function pauseGame() {
   stopCrackle();
   clearFireQueue(); // a shot queued before the pause never goes off after it
   boarding.cutHold(false); // a held G (or Board) is let go too
+  if (WITH_V4) mechanics.cutHold(false);
   saveFeats();
   audio.stopAll(0.2);
   audio.setMusicVolume(0.35);
@@ -5633,6 +6563,7 @@ function levelWinnings() {
 function abandonLevel() {
   clearSteering();
   boarding.cutHold(false);
+  if (WITH_V4) mechanics.cutHold(false);
   state.gold = state.goldAtLevelStart;
   raiseBest(state.gold);
 }
@@ -5716,6 +6647,7 @@ ui.recoverBtn.addEventListener('click', continueAfterRecovery);
 function skipIntro(fresh = true) {
   if (state.mode === 'playing' && state.intro > 0.5) state.introRate = Math.max(state.introRate, state.intro / 0.5);
   if (kraken && state.mode === 'playing' && fresh) skipRise();
+  if (WITH_V4 && state.mode === 'playing' && fresh) dismissMeet(); // (any key or tap: the meet card goes early)
 }
 
 const KEYMAP = {
@@ -5826,6 +6758,7 @@ window.addEventListener('keydown', (e) => {
     if (!e.repeat) boardPress();
     boarding.cutHold(true);
     if (kraken) kraken.cutHold(true); // (a tentacle holding you: held 0.8 s it cuts loose)
+    if (WITH_V4) mechanics.cutHold(true); // (a net on you: held 0.8 s, the Forge's less, it cuts free)
   } else if (ammoKey) {
     const n = Number(ammoKey[1]);
     if (!e.repeat && n <= AMMO_IDS.length) setAmmo(AMMO_IDS[n - 1]);
@@ -5850,6 +6783,7 @@ window.addEventListener('keyup', (e) => {
   if (e.key.toLowerCase() === 'g' || e.code === 'KeyG') {
     boarding.cutHold(false);
     if (kraken) kraken.cutHold(false);
+    if (WITH_V4) mechanics.cutHold(false);
   }
   const src = keySource(e);
   for (const dir of ['left', 'right']) if (steerSources[dir].has(src)) steerRelease(dir, src);
@@ -5860,6 +6794,7 @@ window.addEventListener('blur', () => {
   clearSteering();
   boarding.cutHold(false);
   if (kraken) kraken.cutHold(false);
+  if (WITH_V4) mechanics.cutHold(false);
 });
 
 document.addEventListener('visibilitychange', () => {
@@ -6217,6 +7152,12 @@ function pickFromTray(btn) {
   closeTray();
 }
 // A tap anywhere but the tray and the Ammo pill closes the tray (that tap still does what it does).
+// (a tap anywhere in play takes a meet card that has been read a moment away early, SPEC4 §8.1)
+if (WITH_V4) {
+  document.addEventListener('pointerdown', () => {
+    if (state.mode === 'playing') dismissMeet();
+  }, { capture: true, passive: true });
+}
 document.addEventListener(
   'pointerdown',
   (e) => {
@@ -6268,6 +7209,7 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
   const release = () => {
     boarding.cutHold(false);
     if (kraken) kraken.cutHold(false);
+    if (WITH_V4) mechanics.cutHold(false);
   };
   btn.addEventListener('pointerdown', (e) => {
     try {
@@ -6277,6 +7219,7 @@ for (const btn of document.querySelectorAll('[data-tap]')) {
     }
     boarding.cutHold(true);
     if (kraken) kraken.cutHold(true); // (CUT! held on a tentacle, SPEC3 §5.7.3)
+    if (WITH_V4) mechanics.cutHold(true); // (CUT! held on a net, SPEC4 §8.1)
   });
   btn.addEventListener('pointerup', release);
   btn.addEventListener('pointercancel', release);
@@ -6340,6 +7283,7 @@ window.addEventListener('storage', (e) => {
   if (WITH_KRAKEN && (any || e.key === SETTINGS_KEY)) syncSettings();
   // (the island and the quiz: tiers, stars and paid gold only ever go up; the feats they mirror follow. The build
   // panel and the quiz map redraw on their own when the record they read changes.)
+  if (WITH_V4 && (any || e.key === VOYAGE4_KEY)) syncVoyage4(); // (SPEC4 §10.2: met, tips and plays only go up)
   const built = WITH_KRAKEN && (any || e.key === ISLAND_KEY) && syncIsland();
   const quizzed = WITH_KRAKEN && (any || e.key === QUIZ_KEY) && syncQuiz();
   const won = (built || quizzed) && raiseRecordFeats();
@@ -6685,11 +7629,26 @@ function openDock(from) {
 
   // (kraken: the island's new places, builders and villagers come with the Kraken Seas, SPEC3 §8; until they
   // sail, the town is exactly today's. v4: the Sunset Isles' town, SPEC4 §6-§7; Stage 0: still today's town)
-  setEnvironment(sparrow, 77, { kraken: WITH_KRAKEN, v4: WITH_V4 });
+  // (v4: the construction scene's cues through sparrow's build ctx, SPEC4 §5.3)
+  setEnvironment(sparrow, 77, WITH_V4 ? { kraken: WITH_KRAKEN, v4: WITH_V4, sfx: (name) => audio.play(name) } : { kraken: WITH_KRAKEN, v4: WITH_V4 });
   showIsland(); // (the Kraken Seas: the buildings, villagers and rank as built, SPEC3 §8)
   // The prize ships moored off the town are built here, behind the "Rowing to…" transition, not in the frame the
   // first Go ashore swoops in (sparrow keeps them hidden until the town view; ashore keeps ships of the same kind).
   if (env.setPrizes) env.setPrizes(prizeShips());
+  // The construction scene's programs (SPEC4 §5.3, §14.2): a real first draw now, behind the "Rowing to…" toast,
+  // with local clipping on for the draw (its clipped variants compile only then), so the first scene never stalls.
+  if (WITH_V4 && typeof env.constructionWarm === 'function') {
+    const R = view.renderer;
+    const was = R.localClippingEnabled;
+    try {
+      R.localClippingEnabled = true;
+      warmDraw(env.constructionWarm() || []);
+    } catch (err) {
+      console.warn('construction warm:', err);
+    } finally {
+      R.localClippingEnabled = was;
+    }
+  }
   dock.sup = null;
   placeDockShip(buildPlayerMesh());
   restyleCrew(); // the cleaning crew in the uniform from Polly's (the default one leaves them as they are)
@@ -7511,6 +8470,11 @@ const townMode = createTownMode({
   quiz: { record: () => quizRec, save: saveQuiz },
   hints: () => islandRules.perks(islandCfg).hints, // (the Sea School's lifebuoys a round)
   rebuildShip: () => rebuildDockShip(),
+  // (SPEC4 §5.3, §11.2: the construction scene's cut parts need local clipping, on in the town view only; townMode
+  // holds no renderer)
+  setClipping: (on) => {
+    if (view && view.renderer) view.renderer.localClippingEnabled = !!on;
+  },
 });
 
 // ---------------------------------------------------------------------------
@@ -7584,8 +8548,8 @@ function updateHud(force = false, dt = 0) {
   }
   const def = LEVELS[state.level - 1];
   setText(ui.levelName, 'level', `${state.level}. ${def.env.meta.name}`, force);
-  const alive = enemies.filter(fighting).length;
-  const pending = levelWaves(def).slice(state.wave + 1).reduce((n, w) => n + w.length, 0);
+  const alive = aliveCount();
+  const pending = levelWaves(def).slice(state.wave + 1).reduce((n, w) => n + waveSlots(w), 0);
   setText(ui.ships, 'ships', pending ? `${alive} +${pending}` : `${alive}`, force);
   setText(ui.gold, 'gold', state.gold, force);
   setText(ui.sails, 'sails', `${SAIL_NAMES[state.sail]} ${'▮'.repeat(state.sail)}${'▯'.repeat(3 - state.sail)}`, force);
@@ -7713,6 +8677,7 @@ function updateHud(force = false, dt = 0) {
     }
   }
   if (kraken) updateGrabStrip(force);
+  else if (WITH_V4) updateNetStrip(force);
   if (boss) {
     // The Phantom Galleon, spectral (or struck): only a boarding takes her (SPEC2 §5.3).
     const boardHer = boss.type.ghost && (boss.spectral || boss.surrendered);
@@ -7790,6 +8755,41 @@ function updateGrabStrip(force) {
   }
 }
 
+// The net strip (SPEC4 §8.2, the grab strip reused): "NETTED! Hold G to cut it" (touch: "Hold CUT! to cut it"),
+// "TANGLED: half speed, slow turns", the 4 s it can hold you running down, and your cut (3 taps, or the hold).
+function updateNetStrip(force) {
+  const n = netted() ? mechanics.playerMods().netted : null;
+  const touch = isTouch();
+  const key = n ? `net${touch ? 't' : 'k'}` : '';
+  if (force || shown.grab !== key) {
+    shown.grab = key;
+    if (n && !grabUi.built) {
+      grabUi.built = true;
+      ui.grabStrip.innerHTML = '<div class="gs-title"></div><div class="gs-bar"><span class="gs-fill"></span></div><div class="gs-pips"><i></i><i></i><i></i></div>';
+      grabUi.title = ui.grabStrip.querySelector('.gs-title');
+      grabUi.fill = ui.grabStrip.querySelector('.gs-fill');
+      grabUi.pips = [...ui.grabStrip.querySelectorAll('.gs-pips i')];
+    }
+    if (n) {
+      const H = W4.hud || {};
+      const words = (H.netted && (touch ? H.netted.touch : H.netted.keys)) || 'NETTED!';
+      grabUi.title.innerHTML = `${words}<small class="gs-sub">${H.tangled || ''}</small>`;
+    }
+    ui.grabStrip.classList.toggle('net', !!n);
+    show(ui.grabStrip, !!n);
+  }
+  if (!n) return;
+  setWidth(grabUi.fill, 'grabLeft', clamp(1 - n.t / (n.max || 4), 0, 1) * 100, force);
+  const k = Math.min(3, Math.floor((Number(n.cut) || 0) * 3 + 1e-6));
+  const pk = String(k);
+  if (force || shown.grabPips !== pk) {
+    shown.grabPips = pk;
+    grabUi.pips.forEach((p, i) => {
+      p.className = i < k ? 'on' : '';
+    });
+  }
+}
+
 // ---- Board (G, the touch Board button): what it does now and the odds (SPEC2 §5.2, §5.3), the boarding
 // strip during a set-piece, and the level's objective pill.
 const BOARD_SVG = 'viewBox="0 0 24 24" aria-hidden="true" focusable="false"';
@@ -7841,6 +8841,11 @@ let boardView = null; // this frame's grapple pick (frame() works it out once; t
 // What G / the Board button does right now.
 function boardButtonState() {
   if (!player || player.sinking) return { key: 'off', state: 'idle', tag: '—', word: 'Board', aria: 'Board', disabled: true };
+  // A Net Sloop's net on you (SPEC4 §8.2): the Board pill reads CUT! (hold it, or tap three times).
+  if (netted()) {
+    const word = (W4.hud && W4.hud.cut) || 'CUT!';
+    return { key: 'cutNet', state: 'cut', tag: word, word, aria: 'Cut the net: hold, or tap three times', disabled: false };
+  }
   // The Kraken's fight (SPEC3 §6.2): CUT! while a tentacle holds you; "—" with nothing to board.
   if (kraken && state.grabbed) {
     return { key: 'cutKraken', state: 'cut', tag: 'CUT!', word: KR.words.cutButton, aria: 'Cut the tentacle loose: tap three times or hold', disabled: false };
@@ -8085,6 +9090,126 @@ function drawKrakenMarks(toMap, scale, c) {
   }
 }
 
+// Voyage IV's marks on the minimap (SPEC4 §8.2), from this frame's foes4Vis: the warning shapes first (coconut rings
+// brown dashed, a puffing puffer's ring orange, the Witch's summons rings green, Old Coilback's lane green dashes, a
+// fort's sight line red, dashed while it tracks and solid once it locks), then the foes: a pack as small yellow
+// dots, puffers as orange dots with spikes, Old Coilback as a teal squiggle (not while it is under water), a fort as
+// a sandstone square (pinned to the rim when off the map, as ships are).
+function drawFoes4Marks(toMap, scale, c) {
+  const V = foes4Vis;
+  const pin = (x, y, m = 7) => {
+    const dx = x - c;
+    const dy = y - c;
+    const dl = Math.hypot(dx, dy);
+    return dl > c - m ? [c + (dx / dl) * (c - m), c + (dy / dl) * (c - m)] : [x, y];
+  };
+  mm.lineWidth = 2;
+  for (const r of V.rings || []) {
+    const [x, y] = toMap(r.x, r.z);
+    mm.setLineDash(r.kind === 'coconut' ? [3, 2] : []);
+    mm.strokeStyle = r.kind === 'coconut' ? '#7a4a1e' : '#ff8a1e';
+    mm.beginPath();
+    mm.arc(x, y, Math.max(3, (r.r || 2) * scale), 0, Math.PI * 2);
+    mm.stroke();
+  }
+  for (const r of V.summons || []) {
+    const [x, y] = toMap(r.x, r.z);
+    mm.setLineDash([2, 2]);
+    mm.strokeStyle = '#3ee08f';
+    mm.beginPath();
+    mm.arc(x, y, Math.max(3, (r.r || 2) * scale), 0, Math.PI * 2);
+    mm.stroke();
+  }
+  for (const ln of V.lanes || []) {
+    const [x0, y0] = toMap(ln.x0, ln.z0);
+    const [x1, y1] = toMap(ln.x1, ln.z1);
+    mm.setLineDash([4, 3]);
+    mm.strokeStyle = '#3ee08f';
+    mm.lineWidth = Math.max(2, (ln.w || 4) * scale);
+    mm.beginPath();
+    mm.moveTo(x0, y0);
+    mm.lineTo(x1, y1);
+    mm.stroke();
+    mm.lineWidth = 2;
+  }
+  for (const ln of V.lines || []) {
+    const [x0, y0] = toMap(ln.x0, ln.z0);
+    const [x1, y1] = toMap(ln.x1, ln.z1);
+    mm.setLineDash(ln.state === 'track' ? [3, 3] : []);
+    mm.strokeStyle = '#e63946';
+    mm.beginPath();
+    mm.moveTo(x0, y0);
+    mm.lineTo(x1, y1);
+    mm.stroke();
+  }
+  mm.setLineDash([]);
+  for (const pk of V.packs || []) {
+    for (const b of pk.boats || []) {
+      if (b.state === 'tip') continue;
+      const [x, y] = pin(...toMap(b.x, b.z));
+      mm.fillStyle = '#1d1330';
+      mm.beginPath();
+      mm.arc(x, y, 3, 0, Math.PI * 2);
+      mm.fill();
+      mm.fillStyle = '#f2c230';
+      mm.beginPath();
+      mm.arc(x, y, 2, 0, Math.PI * 2);
+      mm.fill();
+    }
+  }
+  for (const u of V.puffers || []) {
+    if (u.state === 'home') continue;
+    const [x, y] = toMap(u.x, u.z);
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 1.5;
+    mm.beginPath();
+    for (let k = 0; k < 6; k++) {
+      const a = (k / 6) * Math.PI * 2;
+      mm.moveTo(x + Math.cos(a) * 3, y + Math.sin(a) * 3);
+      mm.lineTo(x + Math.cos(a) * 5.5, y + Math.sin(a) * 5.5);
+    }
+    mm.stroke();
+    mm.fillStyle = '#f28a1e';
+    mm.beginPath();
+    mm.arc(x, y, 3.2, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
+  }
+  const cb = V.coilback;
+  if (cb && cb.state !== 'under' && cb.state !== 'dive' && cb.head) {
+    const pts = [cb.head, ...(cb.humps || [])].map((p) => toMap(p.x, p.z));
+    const [hx, hy] = pin(...pts[0], 9);
+    const dx = hx - pts[0][0];
+    const dy = hy - pts[0][1];
+    mm.lineCap = 'round';
+    for (const [col, wd] of [['#1d1330', 6], ['#2f9e8a', 3.5]]) {
+      mm.strokeStyle = col;
+      mm.lineWidth = wd;
+      mm.beginPath();
+      pts.forEach(([x, y], i) => (i ? mm.lineTo(x + dx, y + dy) : mm.moveTo(x + dx, y + dy)));
+      mm.stroke();
+    }
+    mm.lineCap = 'butt';
+    mm.fillStyle = '#2f9e8a';
+    mm.strokeStyle = '#1d1330';
+    mm.lineWidth = 1.5;
+    mm.beginPath();
+    mm.arc(hx, hy, 4, 0, Math.PI * 2);
+    mm.fill();
+    mm.stroke();
+  }
+  for (const f of V.forts || []) {
+    if (f.state === 'down') continue;
+    const [x, y] = pin(...toMap(f.x, f.z));
+    mm.fillStyle = '#1d1330';
+    mm.fillRect(x - 5.5, y - 5.5, 11, 11);
+    mm.fillStyle = '#d9b07a';
+    mm.fillRect(x - 4, y - 4, 8, 8);
+    mm.fillStyle = '#e63946';
+    mm.fillRect(x - 1, y - 8, 4, 3);
+  }
+}
+
 // Minimap rotates with the ship so "up" is always the bow.
 const BOMB_MAP = { shell: '#ff9f1c', ink: '#b48aff', geyser: '#bff4ff', slam: '#c06aff' };
 function drawMinimap() {
@@ -8299,6 +9424,8 @@ function drawMinimap() {
   }
   // The Kraken (SPEC3 §6.3): its warning rings, its shadow (a violet blob with an eye), its raised parts, the Pearl.
   if (krakenVis) drawKrakenMarks(toMap, scale, c);
+  // Voyage IV's foes (SPEC4 §8.2): packs, puffers, Old Coilback, forts and their warning shapes.
+  if (WITH_V4 && foes4Vis) drawFoes4Marks(toMap, scale, c);
   // The player: a little arrow pointing up.
   mm.fillStyle = '#fff4d6';
   mm.strokeStyle = '#1d1330';
@@ -8402,6 +9529,8 @@ function updateTagState(e) {
     if (fuse) fuse.lit = !!(hazardVis && hazardVis.fireRings.length && hazardVis.fireRings.some((r) => r.id === e.id));
   }
   e.tagIcon = icon;
+  // (a kind met for the first time: the gold NEW on her tag for MEET.newTag s after its card shows, SPEC4 §3.4)
+  if (WITH_V4) e.tagNew = newTagOn(e.typeName);
 }
 
 // The captain at the helm steers with your turn input, points "Fire!" after a broadside and cheers a sinking.
@@ -8732,6 +9861,10 @@ function framingCollect(e, L0, B) {
 const frameRings = [];
 function collectFrameRings() {
   frameRings.length = 0;
+  // (Voyage IV's warning shapes join the group too, SPEC4 §8.2)
+  if (WITH_V4 && foes4Vis && player && !player.sinking) {
+    v4FrameRings(frameRings, FRAME.ringReach + player.type.len / 2, fwdX(player.h) * player.speed, fwdZ(player.h) * player.speed);
+  }
   if (!kraken || !player || player.sinking || kseq.stage !== 'fight') return;
   const V = krakenVis || kraken.visuals();
   const reach = FRAME.ringReach + player.type.len / 2;
@@ -9393,10 +10526,15 @@ function frame() {
     audio.setMusicPhase?.(n);
     kseq.music = n;
   }
+  // Voyage IV's foes (SPEC4 §3.1): their model draws what foes4 and mechanics4 show (the net fan, the Witch's notes
+  // and summons rings are mechanics4's shapes), built one mesh a frame from the level start (the fly-in), then warm-
+  // drawn once (a real first draw of every program, §14.1). Its net on your ship, the Net Sloop's whirl, the Witch.
+  if (WITH_V4) frameV4(t, dt, paused);
   updateCamera(dt, paused);
   camera.updateMatrixWorld();
   // After the ships and the camera have moved: name tags, statuses on the ships, sailors going overboard, pop words.
-  tags.update(enemies, camera, t, paused ? 0 : dt);
+  if (foes4) tags.update(enemies, camera, t, paused ? 0 : dt, foes4Tags()); // (+ the packs', forts' and Old Coilback's)
+  else tags.update(enemies, camera, t, paused ? 0 : dt);
   if (statusFxView) {
     // (the Kraken's status stands on the part that burns, its head or its shadow: krakenView.statusShip)
     let fxShips = enemies;
@@ -9456,6 +10594,21 @@ if (WITH_KRAKEN) {
     after.after(el);
     after = el;
     edgeMarks.push({ kind, el, on: false, at: '', w: 0, h: 0 });
+  }
+  // (SPEC4 §8.2: a gold BEHIND YOU! for a Sting Sloop at your stern off the view, and a red arrow with its word to a
+  // Voyage IV warning shape off the view within FRAME.ringReach of your hull: a coconut, a puff, Old Coilback's lane,
+  // a fort's line, a net)
+  if (WITH_V4) {
+    for (const [kind, word, cls] of [['behind', (W4.hud && W4.hud.behind) || 'BEHIND YOU!', 'behind'], ['shape', 'LUNGE!', 'danger']]) {
+      const el = document.createElement('div');
+      el.id = `edge-arrow-${kind}`;
+      el.className = `edge-arrow ${cls} hidden`;
+      el.setAttribute('aria-hidden', 'true');
+      el.innerHTML = arrowHtml(word);
+      after.after(el);
+      after = el;
+      edgeMarks.push({ kind, el, on: false, at: '', w: 0, h: 0, word });
+    }
   }
   const btn = ui.steerModeBtn;
   btn.innerHTML = '<span class="steer-label"></span><span class="new-badge hidden" aria-hidden="true">New!</span>';
@@ -9949,19 +11102,93 @@ window.__game = {
     get met() {
       return voyage4Rec.met;
     },
-    meet: (kind) => false,
-    spawn: (kind, x, z, opts) => null,
+    // Meet a kind now (§3.4): its met bit saved and its card shown at once (whatever the banner); true when it shows.
+    meet(kind) {
+      if (!WITH_V4 || !poolRules.V4_KINDS.includes(kind) || state.mode !== 'playing') return false;
+      syncVoyage4();
+      voyage4Rec = poolRules.meet(voyage4Rec, kind).rec;
+      saveVoyage4();
+      hideMeet(false);
+      meetUi.queue = meetUi.queue.filter((q) => q.kind !== kind);
+      meetGrace.set(kind, { at: state.time, shownAt: null });
+      showMeet(kind);
+      return true;
+    },
+    // The meet card showing now ({ kind, name, line, t }) or null, and the kinds waiting for theirs.
+    get card() {
+      if (!meetUi.on) return null;
+      return { kind: meetUi.on.kind, name: meetCardUi.name.textContent, line: meetCardUi.line.textContent, t: state.time - meetUi.on.shownAt, queue: meetUi.queue.map((q) => q.kind) };
+    },
+    grace: (kind) => graceRunning(kind),
+    // Put a Voyage IV foe on the sea (tests): a pseudo kind through foes4 (a fort on the first free fortSpot, a patch
+    // ahead of you when no spot is given) → its foes4 id; a ship kind as G.spawn → the ship. null when nothing came.
+    spawn(kind, x, z, opts) {
+      if (!WITH_V4 || !player) return null;
+      if (poolRules.isPseudo(kind) && kind !== 'shellback') {
+        if (!foes4) return null;
+        let px = Number(x);
+        let pz = Number(z);
+        if (!Number.isFinite(px) || !Number.isFinite(pz)) {
+          const s = kind === 'fort' ? fortSpot() || patchSpot() : kind === 'puffer' ? patchSpot() : { x: player.x + fwdX(player.h) * 40, z: player.z + fwdZ(player.h) * 40 };
+          px = s.x;
+          pz = s.z;
+        }
+        const id = foes4.spawn(kind, px, pz, opts);
+        if (id !== null && id !== undefined) {
+          ensureFoesView();
+          syncParts();
+        }
+        return id ?? null;
+      }
+      if (!SHIP_TYPES[kind] || kind === 'player') return null;
+      const sx = Number.isFinite(x) ? x : player.x + 30;
+      const sz = Number.isFinite(z) ? z : player.z;
+      const e = createShip(kind, 'enemy', sx, sz, Math.atan2(player.x - sx, player.z - sz));
+      enemies.push(e);
+      mechanics.onSpawn(e, -1);
+      return e;
+    },
     get foes() {
-      return null;
+      return foes4 ? foes4.state : null;
+    },
+    // The pseudo-ships your guns aim at (foes4's raised parts, wrapped), as plain data.
+    get wrappers() {
+      return foes4List.map((w) => ({ id: w.id, part: w.part, kind: w.kind, partKind: w.partKind, x: w.x, z: w.z, hp: w.hp, aimY: w.aimY, len: w.type.len }));
+    },
+    get targets() {
+      return foes4 ? foes4.targets() : [];
+    },
+    // Hit one of those parts now, as a ball would (G.damage for a wrapper): its word, the summed pops; true when hit.
+    damage(id, amount) {
+      const w = foes4List.find((x) => x.id === id) || shellList.find((x) => x.id === id);
+      if (!w) return false;
+      damage(w, Math.max(0, Number(amount) || 0), w.x, w.z, 'other', { dmg: Math.max(0, Number(amount) || 0), ammo: state.ammo, y: w.aimY, owner: 'test' });
+      syncParts();
+      return true;
+    },
+    visuals: () => (WITH_V4 ? foes4Vis : null),
+    view: () => (fView && typeof fView.read === 'function' ? fView.read() : null),
+    get slots() {
+      return foes4 ? foes4.slots() : 0;
+    },
+    get alive() {
+      return player ? aliveCount() : 0;
     },
     get warnSlots() {
       return { count: warnSlots.count, max: warnSlots.max, boss: warnSlots.boss };
     },
-    net: () => false,
-    cut: () => false,
-    cutHold(down) {},
+    // A net lands on you now (mechanics4's test hook); cut() a G / CUT! press; cutHold(down) the hold.
+    net: () => (m4 && typeof m4.net === 'function' ? !!m4.net() : false),
+    get netted() {
+      return state.netted ? { ...state.netted } : null;
+    },
+    cut: () => (WITH_V4 ? !!mechanics.cut() : false),
+    cutHold(down) {
+      if (WITH_V4) mechanics.cutHold(!!down);
+    },
+    // (R3 wires the fog's hiding and the tide's HUD; these already answer from mechanics4)
     fog: (x, z) => !!mechanics.fogAt(x, z),
-    tide: (on) => false,
+    tide: (on) => (m4 && typeof m4.tide === 'function' ? m4.tide(!!on) : null),
     get mechanics4() {
       return mechanics.state.m4 ?? null;
     },

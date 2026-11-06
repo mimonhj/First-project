@@ -666,6 +666,10 @@ export function createFolk4(kit, opts = {}) {
     get dancing() {
       return dance ? [...dance.who.keys()] : [];
     },
+    /** The plaza dance's spots the islanders took ([{ x, z }]; [] while none dances): sparrow's villagers take the rest. */
+    get danceSpots() {
+      return dance ? [...dance.who.values()].map((d) => ({ x: d.spot.x, z: d.spot.z })) : [];
+    },
     /** The islander the captain is chatting with (face() began it), or null: the crowd director's `chat`. */
     get chatting() {
       for (const E of order) if (E.chat) return E.id;

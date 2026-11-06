@@ -18,7 +18,21 @@
 //     (views: 'tailor', 'tavern', and the Kraken Seas' 'quiz' and 'build' (the place 'builder'); subject:
 //     'captain', 'lineup' (the tailor's), or a pose { pos, target, points } to glide to, e.g. a plot, SPEC3 §8.3)
 //   sparkle(x, y, z), simulate(seconds, input) → { x, y, z, h, place, arrived, moving, greet },
-//   get captain, get walk, get lineup, get auto, dispose()
+//   get captain, get walk, get lineup, get auto, dispose(),
+//   and with the Sunset Isles (SPEC4 §5.2, §6.7, §7.4, §8.5; townMode calls them only with its flag):
+//   setOrbit(rad)                          the panel view's pose turned round its target (the construction scene's
+//                                          slow orbit, §5.2; eased, 0 brings it back)
+//   hop(point, h) → { x, z } | null        lands him on a free, snapped point of the walk, facing h, the camera
+//                                          straight behind him (a fresh boom, §8.5)
+//   talkTo(x, z, reach) → bool             walks him up to someone standing at (x, z) and turns him to them (§7.4)
+//   pickPerson(ndcX, ndcY, people) → i | -1   who a tap lands on ([{ x, y, z }]: a standing cylinder each)
+//   lookout({ foot, nest, yaw, secs }), lookoutDown({ secs }) → bool, lookoutTurn(rad), get nest
+//                                          the crow's nest (§6.7): he climbs from the ladder's foot to the nest in
+//                                          secs (0: a cut) and the camera pulls out to a panorama round the nest,
+//                                          turned by lookoutTurn; down again he stands at the foot, the walk camera
+//                                          swooping in behind him
+//   createTown's options gain graph (true: the walk's path graph is built now, SPEC4 §6.6) and hidden (true: the
+//   captain stays out of sight until enter() or park(), when the town is made ahead of Go ashore)
 // }
 import * as THREE from 'three';
 import { createWalk } from './walk.js';
@@ -76,9 +90,10 @@ const smooth = (u) => u * u * (3 - 2 * u);
 const vec = (v) => (Array.isArray(v) ? new THREE.Vector3(v[0], v[1], v[2]) : new THREE.Vector3(v.x, v.y, v.z));
 const finite = (...v) => v.every(Number.isFinite);
 
-export function createTown({ scene, camera, walkData, audio = null, reducedMotion = () => false, env = null } = {}) {
+export function createTown({ scene, camera, walkData, audio = null, reducedMotion = () => false, env = null, graph = false, hidden = false } = {}) {
   const data = walkData && typeof walkData === 'object' ? walkData : {};
   const walk = createWalk(data);
+  if (graph) void walk.graph; // SPEC4 §6.6: build the path graph now, not at the first tap-to-walk
   const places = walk.places;
   // Each rope bridge's two mouths: its end { x, z } and the way onto it (ux, uz: a unit vector).
   const mouths = [];
@@ -183,6 +198,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   let panel = null; // { view, el, subject, from, t }
   let time = 0;
   let quiet = false; // simulate(): no footsteps
+  let shown = !hidden; // (made ahead of Go ashore: the captain out of sight until he steps ashore or onto a podium)
+  let look = null; // the crow's nest (SPEC4 §6.7): { phase: 'up' | 'on' | 'down', t, secs, foot, nest, yaw, from }
   const cam = { yaw: 0, pitch: CAM.pitch, pitchEff: CAM.pitch, boom: 1, sinceDrag: 99, swoop: null, ty: 1.3 };
   const greeted = new Map();
   let bubble = null; // { index, until }
@@ -251,7 +268,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     cap.opts = { ...(opts && typeof opts === 'object' ? opts : {}) };
     const mesh = buildPerson({ ...cap.opts, scale: SCALE });
     mesh.name = 'town-captain';
-    mesh.visible = old ? old.visible : true;
+    mesh.visible = old ? old.visible : shown;
     scene.add(mesh);
     cap.mesh = mesh;
     if (old) disposePerson(old);
@@ -349,6 +366,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     cam.boom = 1;
     cam.swoop = null;
     active = true;
+    look = null;
+    shown = true;
     if (cap.mesh) cap.mesh.visible = true;
     placeMesh();
     updateCamera(0, true);
@@ -662,11 +681,12 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
         // there
         const p = auto.place;
         const open = auto.open;
+        const face = auto.face;
         cancelAuto();
         if (p) {
           cap.move = p.face || 0;
           if (open) arrivedNow = p.id;
-        }
+        } else if (face) cap.move = Math.atan2(face.x - cap.x, face.z - cap.z); // (walked up to someone: he turns to them)
       } else {
         dir = Math.atan2(tgt.x - cap.x, tgt.z - cap.z);
         want = last ? Math.min(SPEED.jog, 0.5 + d * 3.5) : SPEED.jog;
@@ -815,6 +835,20 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
   // ---------------------------------------------------------------------------------------------
   const camPos = new THREE.Vector3();
   const camLook = new THREE.Vector3();
+  const HILL_PITCH = 0.3;
+  let hillAt = { x: NaN, z: NaN, on: false };
+  function onHill() {
+    if (Math.hypot(cap.x - hillAt.x, cap.z - hillAt.z) < 0.5) return hillAt.on;
+    const e = envNow();
+    let on = false;
+    try {
+      on = !!(e && typeof e.districtAt === 'function' && e.districtAt(cap.x, cap.z) === 'hill');
+    } catch {
+      on = false;
+    }
+    hillAt = { x: cap.x, z: cap.z, on };
+    return on;
+  }
   function updateCamera(dt, snap = false) {
     const portrait = (globalThis.innerHeight || 1) > (globalThis.innerWidth || 1);
     const dist = portrait ? CAM.distPortrait : CAM.dist;
@@ -825,6 +859,8 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       camera.updateProjectionMatrix();
     }
     cam.ty = snap ? cap.yVis : cam.ty + (cap.yVis - cam.ty) * Math.min(1, dt * 6);
+    // (the Sunset Isles, SPEC4 §6.4: on Lookout Hill the camera looks out over the town, pitched down at least 0.3 rad)
+    if (cam.pitch < HILL_PITCH && onHill()) cam.pitch = snap ? HILL_PITCH : Math.min(HILL_PITCH, cam.pitch + 0.6 * dt);
     const tx = cap.x;
     const ty = cam.ty + CAM.lift;
     const tz = cap.z;
@@ -1022,6 +1058,11 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const c = p.cam && Array.isArray(p.cam.pos) ? p.cam.pos : null;
     const h0 = c ? Math.atan2(c[0] - x, c[2] - z) + (p.podium ? 0 : 0.35) : (p.face || 0) + Math.PI;
     parked = { id, x, y, z, h0, h: h0, held: 0, sway: 0 };
+    look = null;
+    if (!shown) {
+      shown = true;
+      if (cap.mesh) cap.mesh.visible = true;
+    }
     cap.x = p.x;
     cap.z = p.z;
     cap.y = walk.heightAt(p.x, p.z, cap.y) ?? cap.y;
@@ -1094,7 +1135,19 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     const from = cut ? to : currentPanelPose();
     // a glide to a pose of its own (across the island to a plot) arcs up over the roofs and palms on its way
     const arc = !cut && subject && typeof subject === 'object' ? clamp(from.pos.distanceTo(to.pos) * 0.35, 0, 9) : 0;
-    panel = { view, el: panelEl || null, subject, from, to, dur, arc, t: cut ? dur : 0 };
+    // (the Sunset Isles: the construction scene's strip along the top of the free view on a wide screen, the camera
+    // framing below it; its orbit carried over a glide within the scene)
+    const top = opts && opts.top && typeof opts.top.getBoundingClientRect === 'function' ? opts.top : null;
+    const orbit = panel && panel.view === view && opts && opts.keepOrbit ? panel.orbit : 0;
+    panel = { view, el: panelEl || null, subject, from, to, dur, arc, t: cut ? dur : 0, top, orbit, orbitTo: orbit };
+    return true;
+  }
+  /** The panel view's pose turned by rad round its target's upright axis (eased; 0 brings it back): the construction
+   * scene's slow orbit round the pad (SPEC4 §5.2). */
+  function setOrbit(rad) {
+    if (!panel) return false;
+    panel.orbitTo = Number.isFinite(rad) ? clamp(rad, -0.6, 0.6) : 0;
+    if (rm()) panel.orbit = panel.orbitTo;
     return true;
   }
   function currentPanelPose() {
@@ -1114,11 +1167,21 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     if (!panel) return;
     panel.t += dt;
     const P = currentPanelPose();
+    if (panel.orbit !== panel.orbitTo) panel.orbit += clamp(panel.orbitTo - panel.orbit, -0.5 * dt, 0.5 * dt);
+    if (panel.orbit) {
+      // round the target's upright axis (the plot's middle)
+      const dx = P.pos.x - P.target.x;
+      const dz = P.pos.z - P.target.z;
+      const c = Math.cos(panel.orbit);
+      const sn = Math.sin(panel.orbit);
+      P.pos.x = P.target.x + dx * c + dz * sn;
+      P.pos.z = P.target.z - dx * sn + dz * c;
+    }
     camera.position.copy(P.pos);
     camera.lookAt(P.target);
     camera.updateMatrixWorld();
     if (!panel.el) return;
-    let fr = frameBeside(panel.el, P.points);
+    let fr = frameBeside(panel.el, P.points, panel.top);
     // The new places' views (and a plot) keep their whole subject in the free area: where even the widest lens
     // can't fit it beside the panel (a plot above a phone's bottom sheet), the camera backs off along its view.
     if (panel.to.fit) {
@@ -1126,7 +1189,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
         fitBack.setFromMatrixColumn(camera.matrixWorld, 2); // (the camera's back)
         camera.position.addScaledVector(fitBack, fr.depth * (fr.need / fr.max - 1) + 0.05);
         camera.updateMatrixWorld();
-        fr = frameBeside(panel.el, P.points);
+        fr = frameBeside(panel.el, P.points, panel.top);
       }
     }
   }
@@ -1140,7 +1203,7 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
    * shipyard's dockFraming(): the camera's full frame is that free area, shifted with setViewOffset.
    * The camera must already be placed and turned.
    */
-  function frameBeside(panelEl, points) {
+  function frameBeside(panelEl, points, topEl = null) {
     const W = globalThis.innerWidth || 1;
     const H = globalThis.innerHeight || 1;
     let fx = 0;
@@ -1155,6 +1218,15 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
       else {
         fx = r.left + r.width;
         fw = W - fx;
+      }
+    }
+    // (the Sunset Isles) a strip along the top of the free view (the construction scene's, on a wide screen): the
+    // subject is framed below it; a strip folded into a phone's bottom bar is no top
+    if (topEl && !sheet) {
+      const t = topEl.getBoundingClientRect();
+      if (t.height > 0 && t.bottom > 0 && t.bottom < H * 0.4) {
+        fy = Math.round(t.bottom + 6);
+        fh = Math.max(H * 0.4, fh - fy);
       }
     }
     camera.updateMatrixWorld();
@@ -1205,6 +1277,187 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     return { fx, fy, fw, fh, sheet, need, max, depth: zN ? zSum / zN : 0 };
   }
 
+  // ---------------------------------------------------------------------------------------------
+  // The Sunset Isles (SPEC4 §6.7, §7.4, §8.5): the crow's nest, hops, walking up to someone, a tap on someone
+  // ---------------------------------------------------------------------------------------------
+  // The crow's nest's panorama: the camera pulled out high over the nest (8 u over its floor, above its roof and vane,
+  // which stay out of the picture), looking out over the island (turned by ← → or a drag), 0.45 rad down: Stage 0's
+  // "nestHigh" panorama (SPEC4 §19, the draw-call probe's pose)
+  const LOOK = { back: 0.5, up: 6.4, ahead: 24, drop: 5.2, fov: 58 };
+  const lookPos = new THREE.Vector3();
+  const lookAt = new THREE.Vector3();
+  function lookPose(yaw) {
+    const n = look.nest;
+    const fx = Math.sin(yaw);
+    const fz = Math.cos(yaw);
+    lookPos.set(n.x - fx * LOOK.back, n.y + 1.6 + LOOK.up, n.z - fz * LOOK.back);
+    lookAt.set(n.x + fx * LOOK.ahead, n.y + 1.6 - LOOK.drop, n.z + fz * LOOK.ahead);
+    return { pos: lookPos, target: lookAt };
+  }
+  /** Up the ladder to the crow's nest (SPEC4 §6.7): from foot ({ x, z, h }) to nest ({ x, y, z }: where he stands up
+   * there) in secs (0: a cut), the camera pulling out to the panorama looking along yaw. */
+  function lookout({ foot, nest, yaw = Math.PI, secs = 1.2 } = {}) {
+    if (!nest || !finite(nest.x, nest.y, nest.z)) return false;
+    const f = foot && finite(foot.x, foot.z) ? foot : { x: cap.x, z: cap.z, h: cap.h };
+    cancelAuto();
+    funnel = null;
+    input.x = 0;
+    input.z = 0;
+    hold = null;
+    cap.speed = 0;
+    cap.act = 0;
+    bubble = null;
+    parked = null;
+    panel = null;
+    setLineup(null);
+    camera.clearViewOffset();
+    const s = rm() ? 0 : Number.isFinite(secs) ? Math.max(0, secs) : 1.2;
+    look = {
+      phase: s > 0 ? 'up' : 'on',
+      t: 0,
+      secs: s,
+      foot: { x: f.x, y: walk.heightAt(f.x, f.z, cap.y) ?? cap.y, z: f.z, h: Number.isFinite(f.h) ? f.h : cap.h },
+      nest: { x: nest.x, y: nest.y, z: nest.z },
+      yaw: Number.isFinite(yaw) ? yaw : Math.PI,
+      from: { pos: camera.position.clone(), target: camera.getWorldDirection(new THREE.Vector3()).multiplyScalar(8).add(camera.position) },
+    };
+    active = false;
+    tellEnv(false);
+    return true;
+  }
+  /** Down from the nest (secs: the climb; 0 a cut): he stands at the ladder's foot and walks on, the walk camera
+   * swooping in behind him. */
+  function lookoutDown({ secs = 1.2 } = {}) {
+    if (!look) return false;
+    const s = rm() ? 0 : Number.isFinite(secs) ? Math.max(0, secs) : 1.2;
+    if (s > 0 && look.phase !== 'down') {
+      look.phase = 'down';
+      look.t = 0;
+      look.secs = s;
+      return true;
+    }
+    endLookout();
+    return true;
+  }
+  function endLookout() {
+    if (!look) return;
+    const f = look.foot;
+    look = null;
+    enter({ x: f.x, z: f.z, h: f.h }, { swoopFrom: rm() ? null : 'camera' });
+  }
+  function lookoutTurn(rad) {
+    if (!look || !Number.isFinite(rad)) return;
+    look.yaw = wrap(look.yaw + rad);
+  }
+  function stepLookout(dt) {
+    const L = look;
+    L.t += dt;
+    const u = L.secs > 0 ? clamp(L.t / L.secs, 0, 1) : 1;
+    const k = smooth(u);
+    // where he is: on the ladder (straight up from the foot to the nest's floor), or in the nest
+    const up = L.phase === 'up' ? k : L.phase === 'down' ? 1 - k : 1;
+    const m = cap.mesh;
+    if (m) {
+      m.position.set(L.foot.x + (L.nest.x - L.foot.x) * up, L.foot.y + (L.nest.y - L.foot.y) * up, L.foot.z + (L.nest.z - L.foot.z) * up);
+      m.rotation.y = L.phase === 'on' ? L.yaw : L.foot.h;
+      if (L.phase === 'on') animatePerson(m, time, time < cap.cheerUntil ? 'cheer' : 'proud');
+      else animatePerson(m, L.t * 1.6, 'haul');
+    }
+    // the camera: from the walk view out to the panorama (and back up the ladder's way down)
+    const P = lookPose(L.yaw);
+    if (camera.isPerspectiveCamera && camera.fov !== LOOK.fov) {
+      camera.fov = LOOK.fov;
+      camera.updateProjectionMatrix();
+    }
+    if (L.phase === 'up') {
+      camera.position.copy(L.from.pos).lerp(P.pos, k);
+      camLook.copy(L.from.target).lerp(P.target, k);
+    } else {
+      camera.position.copy(P.pos);
+      camLook.copy(P.target);
+    }
+    camera.lookAt(camLook);
+    camera.updateMatrixWorld();
+    if (u >= 1) {
+      if (L.phase === 'up') {
+        L.phase = 'on';
+        L.t = 0;
+      } else if (L.phase === 'down') endLookout();
+    }
+  }
+
+  /** A hop (SPEC4 §8.5): he lands on a free, snapped point of the walk near `point` ({ x, z }), facing h, the walk camera
+   * straight behind him. Returns where he landed, or null (nowhere to stand there). */
+  function hop(point, h) {
+    if (!point || !finite(point.x, point.z)) return null;
+    let s = walk.snap(point.x, point.z, 2);
+    if (s && walk.blocked && walk.blocked(s.x, s.z, RADIUS)) s = null;
+    if (!s) {
+      // (a point taken by a prop: the nearest graph node that is free)
+      const near = walk.graph.nodes
+        .map((n) => ({ x: n.x, z: n.z, d: Math.hypot(n.x - point.x, n.z - point.z) }))
+        .filter((n) => n.d <= 4)
+        .sort((a, b) => a.d - b.d);
+      s = near[0] || null;
+    }
+    if (!s) return null;
+    look = null;
+    enter({ x: s.x, z: s.z, h: Number.isFinite(h) ? h : cap.h });
+    tellEnv(true);
+    return { x: s.x, z: s.z };
+  }
+
+  /** Walk up to someone standing at (x, z) (SPEC4 §7.4: a tap on an islander): to a free point `reach` short of them on
+   * his side, turning to them there. False when there is no way. */
+  function talkTo(x, z, reach = 1.1) {
+    if (!finite(x, z) || parked || look) return false;
+    const d = Math.hypot(cap.x - x, cap.z - z);
+    const r = clamp(Number.isFinite(reach) ? reach : 1.1, 0.6, 1.5);
+    if (d <= r + 0.15) {
+      cancelAuto();
+      cap.move = Math.atan2(x - cap.x, z - cap.z);
+      return true;
+    }
+    const ux = (cap.x - x) / (d || 1);
+    const uz = (cap.z - z) / (d || 1);
+    const s = walk.snap(x + ux * r, z + uz * r, 1.5);
+    if (!s || !startAuto(s, null, false)) return walkTo(x, z);
+    auto.face = { x, z };
+    return true;
+  }
+
+  /** Who a tap at normalised device coordinates lands on: the index of the nearest of `people` ([{ x, y, z }], each a
+   * standing cylinder 0.5 u round and 2 u tall) the ray meets before any building or camera volume, or -1. */
+  function pickPerson(nx, ny, people) {
+    if (!finite(nx, ny) || !Array.isArray(people) || !people.length) return -1;
+    camera.updateMatrixWorld();
+    ndc.set(nx, ny);
+    raycaster.setFromCamera(ndc, camera);
+    const o = raycaster.ray.origin;
+    const d = raycaster.ray.direction;
+    for (let s = 0.5; s < 60; s += 0.2) {
+      const x = o.x + d.x * s;
+      const y = o.y + d.y * s;
+      const z = o.z + d.z * s;
+      if (y < -0.5) break;
+      let best = -1;
+      let bd = 0.5;
+      people.forEach((q, i) => {
+        if (!q || !finite(q.x, q.z)) return;
+        const y0 = Number.isFinite(q.y) ? q.y : 1.3;
+        if (y < y0 - 0.1 || y > y0 + 2.0) return;
+        const dd = Math.hypot(x - q.x, z - q.z);
+        if (dd < bd) {
+          bd = dd;
+          best = i;
+        }
+      });
+      if (best >= 0) return best;
+      if (camBlocked(x, y, z)) break;
+    }
+    return -1;
+  }
+
   function pose(view) {
     if (view === 'town') return { pos: camPos.toArray(), target: camLook.toArray() };
     const p = placeOf(view);
@@ -1223,7 +1476,12 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     result.greet = null;
     result.bubble = null;
     readFolk();
-    if (parked) {
+    if (look) {
+      stepLookout(dt);
+      tellEnv(false);
+      result.place = null;
+      result.moving = false;
+    } else if (parked) {
       if (parked.held > 0) parked.held -= dt;
       else if (!rm()) {
         // turning slowly this way and that to show the outfit off
@@ -1333,8 +1591,19 @@ export function createTown({ scene, camera, walkData, audio = null, reducedMotio
     sparkle,
     simulate,
     dispose,
+    setOrbit,
+    hop,
+    talkTo,
+    pickPerson,
+    lookout,
+    lookoutDown,
+    lookoutTurn,
     get captain() {
       return { x: cap.x, y: parked ? parked.y : cap.y, z: cap.z, h: parked ? parked.h : cap.h, mesh: cap.mesh };
+    },
+    // (the Sunset Isles) the crow's nest: null, or { phase: 'up' | 'on' | 'down', yaw, t }
+    get nest() {
+      return look ? { phase: look.phase, yaw: look.yaw, t: look.t } : null;
     },
     get walk() {
       return walk;

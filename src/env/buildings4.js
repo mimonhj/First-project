@@ -1700,7 +1700,7 @@ function thatchHut(g, x, y, z, ry, w, d, h, wall, R, o = {}) {
   return hut;
 }
 function homeEArt(g, tier, R) {
-  giantPalm(g, R);
+  giantPalm(g, baseStream('homeE', 0, R));
   if (tier === 0) return;
   // the deck round the trunk at 4 u, on braces; a rail and lanterns
   const dy = tier >= 2 ? 4.4 : 4.0;
@@ -2099,16 +2099,18 @@ function grottoArt(g, tier, R) {
   const pz = 0.15;
   add(g, cyl(1, 1, 0.06, 24), flat(0x4fbfe0), 0, -0.12, pz, 0, 0, 0, [pa, 1, pb]);
   const n = 14;
+  const RP = baseStream('grotto', 1, R); // (the same rocks in every tier)
   for (let i = 0; i < n; i++) {
     const t = (i / n) * TAU;
     const front = Math.sin(t) > 0.55;
-    const s = front ? 0.24 : 0.32 + R() * 0.12;
-    rock(g, Math.cos(t) * (pa + 0.12), front ? -0.35 : 0.0 + R() * 0.08, pz + Math.sin(t) * (pb + 0.1), s * 1.2, front ? s * 0.8 : s, s, i % 3 ? 0x8e9aa6 : 0x7a8794, R);
+    const s = front ? 0.24 : 0.32 + RP() * 0.12;
+    rock(g, Math.cos(t) * (pa + 0.12), front ? -0.35 : 0.0 + RP() * 0.08, pz + Math.sin(t) * (pb + 0.1), s * 1.2, front ? s * 0.8 : s, s, i % 3 ? 0x8e9aa6 : 0x7a8794, RP);
   }
   // rocks going down into the sea at the front
-  for (let i = 0; i < 4; i++) rock(g, -1.2 + i * 0.8, -0.9, 1.25, 0.4, 0.55, 0.32, 0x7a8794, R);
+  for (let i = 0; i < 4; i++) rock(g, -1.2 + i * 0.8, -0.9, 1.25, 0.4, 0.55, 0.32, 0x7a8794, RP);
   // the merfolk's sitting rock at the back left, starfish, shells, seaweed
-  rock(g, -1.05, 0.05, -0.75, 0.5, 0.42, 0.42, 0x9aa6b2, R);
+  rock(g, -1.05, 0.05, -0.75, 0.5, 0.42, 0.42, 0x9aa6b2, RP);
+  const poolDraws = RP.count();
   add(g, cyl(0.38, 0.4, 0.08, 12), ink(0xa8b4c0), -1.05, 0.42, -0.75);
   starfish(g, 0.85, 0.32, -0.55, C.orange, 1.0, -PI / 2 + 0.4, 0.2);
   starfish(g, -0.35, 0.18, 0.95, C.pink, 0.8, -PI / 2 - 0.5, 1.0);
@@ -2127,8 +2129,9 @@ function grottoArt(g, tier, R) {
   for (const [x, y, z, sx, sy, sz] of [[-1.15, 0.5, -1.15, 0.6, 0.9, 0.42], [1.15, 0.5, -1.15, 0.6, 0.95, 0.42], [-0.55, 1.3, -1.25, 0.6, 0.55, 0.3], [0.55, 1.35, -1.25, 0.6, 0.5, 0.3], [0, 1.65, -1.2, 0.6, 0.4, 0.35], [-1.35, 1.25, -1.0, 0.42, 0.5, 0.42], [1.35, 1.3, -1.0, 0.42, 0.5, 0.42]]) rock(g, x, y, z, sx, sy, sz, 0x8e9aa6, null, 10);
   add(g, sph(12), flat(0x1f3a5a), 0, 0.55, -1.12, 0, 0, 0, [0.55, 0.65, 0.2]);
   for (const [x, y] of [[-0.18, 0.3], [0.2, 0.45], [0.0, 0.75], [-0.25, 0.7]]) add(g, cone(0.06, 0.2, 5), blueGlow(), x, y, -1.0, 0, 0, x * 1.5);
+  const RA = baseStream('grotto', 2, R, poolDraws); // (the same pillars in tiers 2 and 3)
   for (const s of [-1, 1]) {
-    rock(g, s * 1.35, 0.35, 0.2, 0.32, 0.6, 0.3, 0x9aa6b2, R);
+    rock(g, s * 1.35, 0.35, 0.2, 0.32, 0.6, 0.3, 0x9aa6b2, RA);
     add(g, cyl(0.2, 0.24, 1.8, 10), ink(0xb8c4d0), s * 1.35, 1.0, 0.2);
     for (let k = 0; k < 4; k++) add(g, torus(0.21, 0.03, 12, 3), thin(0x8e9aa6), s * 1.35, 0.4 + k * 0.4, 0.2, PI / 2);
     add(g, sph(12), pearlGlow(), s * 1.35, 2.05, 0.2, 0, 0, 0, 0.17);
@@ -2156,6 +2159,25 @@ function seedOf(id, tier) {
   let h = 0xb417;
   for (let i = 0; i < id.length; i++) h = (Math.imul(h, 31) + id.charCodeAt(i)) >>> 0;
   return (h * 7 + tier * 7919 + 0x5ea4) >>> 0;
+}
+/**
+ * An islet's base scenery stream: seeded by the plot only (with the tier it first stands at, `from`, so that tier draws
+ * what it always drew), the same in every tier; each draw also takes one from the tier's own stream R, so R's later
+ * draws (the tier's own art) are unchanged. Built from it, the base (the Treehouse's palm, the Grotto's rock pool and
+ * arch pillars) stands identical in every tier: the construction scene keeps it standing. `skip`:
+ * the base draws made before it in that tier.
+ */
+function baseStream(id, from, R, skip = 0) {
+  const B = K && typeof K.stream === 'function' ? K.stream(seedOf(id, from)) : () => 0.5;
+  for (let i = 0; i < skip; i++) B();
+  let n = 0;
+  const f = () => {
+    n++;
+    if (R) R();
+    return B();
+  };
+  f.count = () => n;
+  return f;
 }
 
 /** The art of plot `id` at `tier` (0..3), built in the plot's frame with sparrow's kit (see the header). */
@@ -2212,7 +2234,7 @@ const INFO = {
   museum: { porch: { x: 0.6, z: 1.9, ry: 0 }, doors: [null, { x: 0.15, y: 0, z: -0.37, ry: 0, w: 0.62, h: 1.3 }, { x: 0.6, y: 0.3, z: -0.23, ry: 0, w: 0.72, h: 1.4 }, { x: 0.6, y: 0.3, z: -0.23, ry: 0, w: 0.72, h: 1.4 }], tiers: [null, { f: [-1.14, 2.3, -2.13, 0.82], eave: 1.9, top: 3.15 }, { f: [-1.17, 2.3, -2.13, 0.85], eave: 2.75, top: 3.75 }, { f: [-1.17, 2.3, -2.13, 0.85], eave: 2.75, top: 6.04 }] },
   aquarium: { porch: { x: 0, z: 1.9, ry: 0 }, doors: [null, { x: -1.75, y: 0, z: 0.7, ry: 0, w: 1.4, h: 1 }, { x: 2.38, y: 0, z: 0.7, ry: 0, w: 0.56, h: 1.3 }, { x: 2.38, y: 0, z: 0.7, ry: 0, w: 0.56, h: 1.3 }], tiers: [null, { f: [-2.71, 2.46, -0.88, 0.85], eave: 0.5, top: 1.53 }, { f: [-2.75, 2.9, -0.86, 0.92], eave: 2.4, top: 2.65 }, { f: [-2.75, 2.9, -0.87, 0.92], eave: 2.4, top: 4.53 }] },
   homeF: { porch: { x: 0.6, z: 1.85, ry: 0 }, doors: [null, { x: 0.12, y: 0, z: -0.35, ry: 0, w: 0.56, h: 0.95 }, { x: 0.12, y: 0, z: -0.35, ry: 0, w: 0.56, h: 0.95 }, { x: 0.12, y: 0, z: -0.35, ry: 0, w: 0.56, h: 0.95 }], tiers: [null, { f: [-1.07, 2.29, -1.87, 0.68], eave: 1.34, top: 2.82 }, { f: [-1.07, 2.4, -1.93, 0.68], eave: 1.34, top: 2.82 }, { f: [-1.07, 2.4, -1.93, 0.68], eave: 1.34, top: 2.82 }] },
-  homeE: { porch: { x: 0, z: 2.9, ry: 0 }, doors: [null, { x: -0.09, y: 0, z: 0.75, ry: 0, w: 0.5, h: 1 }, { x: 1.43, y: 0, z: -0.6, ry: 0, w: 0.5, h: 1 }, { x: 1.43, y: 0, z: -0.6, ry: 0, w: 0.5, h: 1 }], tiers: [{ f: [-1.99, 1.99, -1.56, 2], eave: 0, top: 10.01 }, { f: [-1.91, 1.66, -1.74, 1.66], eave: 5.2, top: 10.01 }, { f: [-2.08, 1.62, -1.69, 1.81], eave: 5.9, top: 10.83 }, { f: [-2.08, 1.99, -1.71, 1.93], eave: 5.9, top: 10.83 }] },
+  homeE: { porch: { x: 0, z: 2.9, ry: 0 }, doors: [null, { x: -0.09, y: 0, z: 0.75, ry: 0, w: 0.5, h: 1 }, { x: 1.43, y: 0, z: -0.6, ry: 0, w: 0.5, h: 1 }, { x: 1.43, y: 0, z: -0.6, ry: 0, w: 0.5, h: 1 }], tiers: [{ f: [-1.99, 1.99, -1.56, 2], eave: 0, top: 10.01 }, { f: [-1.91, 1.72, -1.56, 1.66], eave: 5.2, top: 10.01 }, { f: [-2.08, 1.72, -1.56, 1.81], eave: 5.9, top: 10.83 }, { f: [-2.08, 1.99, -1.56, 1.93], eave: 5.9, top: 10.83 }] },
   homeG: { porch: { x: 0, z: 2.7, ry: 0 }, doors: [null, { x: -0.9, y: 0.05, z: 0.55, ry: 0, w: 0.7, h: 1.45 }, { x: -0.9, y: 0.05, z: 0.55, ry: 0, w: 0.7, h: 1.45 }, { x: -0.9, y: 0.05, z: 0.55, ry: 0, w: 0.7, h: 1.45 }], tiers: [{ f: [-1.91, 1.62, -1.5, 1.72], eave: 0.1, top: 1.37 }, { f: [-2.04, 1.84, -1.74, 1.74], eave: 2.3, top: 3.88 }, { f: [-2.04, 1.84, -1.74, 1.74], eave: 4.1, top: 5.7 }, { f: [-2.02, 2.08, -1.74, 1.86], eave: 4.1, top: 5.7 }] },
   observatory: { porch: { x: 0, z: 2.9, ry: 0 }, doors: [null, { x: 0, y: 0.43, z: 1.5, ry: 0, w: 1, h: 1 }, { x: 0, y: 0.12, z: 1.16, ry: 0, w: 0.62, h: 1.35 }, { x: 0, y: 0.12, z: 1.16, ry: 0, w: 0.62, h: 1.35 }], tiers: [{ f: [-1.29, 1.29, -1.3, 1.84], eave: 0.1, top: 1.32 }, { f: [-1.56, 1.56, -1.55, 1.55], eave: 1, top: 1.93 }, { f: [-1.74, 1.69, -1.63, 1.71], eave: 4.8, top: 8.74 }, { f: [-1.74, 1.69, -1.63, 1.71], eave: 5.5, top: 7.58 }] },
   grotto: { porch: { x: 0, z: 2.4, ry: 0 }, doors: [null, { x: 0, y: 0, z: 1, ry: 0, w: 1.4, h: 1 }, { x: 0, y: 0, z: -0.9, ry: 0, w: 1, h: 1.2 }, { x: 0, y: 0, z: -0.9, ry: 0, w: 1, h: 1.2 }], tiers: [{ f: [-1.59, 1.59, -1.4, 1.33], eave: 0.1, top: 1.32 }, { f: [-1.46, 1.69, -1.16, 0.81], eave: 0.4, top: 1.36 }, { f: [-1.76, 1.76, -1.54, 0.81], eave: 1.9, top: 3.31 }, { f: [-1.76, 1.76, -1.54, 0.81], eave: 1.9, top: 5.65 }] },

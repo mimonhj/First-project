@@ -83,7 +83,8 @@ export function buildDistricts(kit, plan) {
     parent.add(g);
     return g;
   };
-  const post = (parent, x, y0, y1, z, r = 0.1, col = COL.woodDark) => add(parent, cyl(r * 0.9, r, y1 - y0, 7), ink(col), x, (y0 + y1) / 2, z);
+  // (a stilt, its top under the planks and its foot in the sea, is open-ended: 14 triangles, not 28)
+  const post = (parent, x, y0, y1, z, r = 0.1, col = COL.woodDark, open = true) => add(parent, cyl(r * 0.9, r, y1 - y0, 7, open), ink(col), x, (y0 + y1) / 2, z);
   const SEA = -0.7;
   // a plank: one shared unit box (12 triangles; no uv, as the town's parts), scaled
   const BOX = new T.BoxGeometry(1, 1, 1);
@@ -150,8 +151,9 @@ export function buildDistricts(kit, plan) {
       if (q.x1 > plat.x1 + 1e-6) outer.push(['x', q.x1]);
       if (q.x0 < plat.x0 - 1e-6) outer.push(['x', q.x0]);
       for (const [axis, v] of outer) {
-        if (axis === 'z') add(g, rbox(sw + 0.06, 0.24, 0.18, 0.05), ink(COL.woodDark), cx, y - low - 0.27, v - Math.sign(v) * 0.08);
-        else add(g, rbox(0.18, 0.24, sd + 0.06, 0.05), ink(COL.woodDark), v - Math.sign(v) * 0.08, y - low - 0.27, cz);
+        // (a plain beam: the town's rounded box costs 108 triangles, its rounding unseen under the planks' edge)
+        if (axis === 'z') add(g, BOX, ink(COL.woodDark), cx, y - low - 0.27, v - Math.sign(v) * 0.08, 0, 0, 0, [sw + 0.06, 0.24, 0.18]);
+        else add(g, BOX, ink(COL.woodDark), v - Math.sign(v) * 0.08, y - low - 0.27, cz, 0, 0, 0, [0.18, 0.24, sd + 0.06]);
         const L = axis === 'z' ? sw : sd;
         const n = Math.max(1, Math.round(L / 1.6));
         for (let i = 0; i <= n; i++) {
@@ -244,7 +246,7 @@ export function buildDistricts(kit, plan) {
       // the stringers under the planks
       for (const s of [-0.75, 0.75]) {
         const o = side.clone().multiplyScalar(s);
-        const m = add(statics, rbox(0.16, 0.2, Math.hypot(len, b.y - a.y) + 0.2, 0.04), ink(COL.woodDark), (a.x + b.x) / 2 + o.x, (a.y + b.y) / 2 - 0.22, (a.z + b.z) / 2 + o.z);
+        const m = add(statics, BOX, ink(COL.woodDark), (a.x + b.x) / 2 + o.x, (a.y + b.y) / 2 - 0.22, (a.z + b.z) / 2 + o.z, 0, 0, 0, [0.16, 0.2, Math.hypot(len, b.y - a.y) + 0.2]);
         m.rotation.set(pitch, yaw, 0, 'YXZ');
       }
     }
@@ -372,9 +374,9 @@ export function buildDistricts(kit, plan) {
     const L = F.x1 - F.x0;
     const g = group((F.x0 + F.x1) / 2, 0, F.z);
     planks(g, L, F.w, F.y);
-    for (const s of [-1, 1]) add(g, rbox(L + 0.06, 0.24, 0.18, 0.05), ink(COL.woodDark), 0, F.y - 0.27, s * (F.w / 2 - 0.08));
+    for (const s of [-1, 1]) add(g, BOX, ink(COL.woodDark), 0, F.y - 0.27, s * (F.w / 2 - 0.08), 0, 0, 0, [L + 0.06, 0.24, 0.18]);
     const n = Math.round(L / 1.7);
-    for (let i = 0; i <= n; i++) for (const s of [-1, 1]) post(g, -L / 2 + 0.15 + ((L - 0.3) * i) / n, SEA, F.y + (i === n ? 0.5 : -0.2), s * (F.w / 2 - 0.12), 0.13);
+    for (let i = 0; i <= n; i++) for (const s of [-1, 1]) post(g, -L / 2 + 0.15 + ((L - 0.3) * i) / n, SEA, F.y + (i === n ? 0.5 : -0.2), s * (F.w / 2 - 0.12), 0.13, COL.woodDark, i !== n);
     add(g, cyl(0.16, 0.2, 0.42, 9), ink(COL.iron), L / 2 - 0.45, F.y + 0.21, 0.75);
     add(g, cyl(0.07, 0.09, 2.5, 7), ink(COL.woodDark), L / 2 - 0.25, F.y + 1.25, -0.95);
     if (kit.lantern && kit.glow) kit.lantern(g, L / 2 - 0.25, F.y + 2.55, -0.95, kit.glow, 0.8);

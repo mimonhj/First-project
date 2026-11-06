@@ -2343,3 +2343,126 @@ body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(24
 .lvl-10 .lvl-diff { background: #e3f0c8; }
 .lvl-11 .lvl-diff { background: #d2f6fb; }
 .lvl-12 .lvl-diff { background: #ffd9cc; }
+
+/* ---------- The Sunset Isles (SPEC4 §3.4, §8.2): the battle ----------
+   Meeting a new kind: the meet card takes the banner slot for 3.5 s (a banner waits for it): the kind's picture on
+   its own colour, a gold NEW FOE! ribbon, its name and its one counter line (aria-hidden: #game-live reads it). It
+   never covers the fire or steering pads; at 320 px the line wraps to two lines. */
+.meet-card {
+  position: fixed;
+  top: max(24%, 132px);
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 5;
+  box-sizing: border-box;
+  width: max-content;
+  max-width: min(92vw, 620px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  column-gap: 12px;
+  row-gap: 2px;
+  align-items: center;
+  padding: 12px 18px 12px 12px;
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 18px;
+  box-shadow: 0 5px 0 var(--ink);
+  pointer-events: none;
+  text-align: left;
+}
+.meet-card::before {
+  content: 'NEW FOE!';
+  position: absolute;
+  top: -15px;
+  left: 14px;
+  padding: 2px 10px 1px;
+  font-family: var(--head);
+  font-size: 15px;
+  letter-spacing: 0.05em;
+  color: var(--ink);
+  background: var(--gold);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 2px 0 var(--ink);
+}
+.meet-icon {
+  grid-row: 1 / span 2;
+  display: block;
+  width: 66px;
+  height: 66px;
+  border: 2px solid var(--ink);
+  border-radius: 14px;
+  background: #ffe7b0;
+}
+.meet-icon svg { display: block; width: 100%; height: 100%; }
+.meet-name {
+  font-family: var(--head);
+  font-weight: 400;
+  font-size: 30px;
+  line-height: 1.05;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+}
+.meet-line {
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 18px;
+  line-height: 1.25;
+  color: #3a2a4a;
+  text-wrap: balance;
+}
+/* each kind's own colour behind its picture (shape + word too: never colour alone) */
+.meet-card[data-kind="jolly"] .meet-icon { background: #fff1a8; }
+.meet-card[data-kind="stinger"] .meet-icon { background: #fff4c2; }
+.meet-card[data-kind="netsloop"] .meet-icon { background: #cdeed9; }
+.meet-card[data-kind="puffer"] .meet-icon { background: #ffe0bf; }
+.meet-card[data-kind="witch"] .meet-icon { background: #ffd6dc; }
+.meet-card[data-kind="coilback"] .meet-icon { background: #c9efe6; }
+.meet-card[data-kind="fort"] .meet-icon { background: #f3e2c6; }
+.meet-card[data-kind="shellback"] .meet-icon { background: #ffd2cc; }
+.meet-card.popped { animation: meet-pop 0.45s cubic-bezier(0.2, 1.6, 0.4, 1); }
+@keyframes meet-pop {
+  from { transform: translateX(-50%) scale(0.5); opacity: 0; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .meet-card.popped { animation: none; }
+}
+@media (max-width: 640px) and (hover: none) and (pointer: coarse) {
+  /* (portrait phones: below the top-right minimap, as the banner) */
+  .meet-card { top: max(24%, calc(var(--edge) + var(--top-h) + var(--mm) + 28px)); }
+}
+@media (max-width: 480px) {
+  .meet-card { max-width: calc(100vw - 2 * var(--edge)); padding: 10px 12px 10px 10px; column-gap: 10px; }
+  .meet-icon { width: 50px; height: 50px; }
+  .meet-name { font-size: 22px; }
+  .meet-line { font-size: 15px; }
+}
+@media (max-height: 500px) {
+  .meet-card { top: max(27%, 104px); padding: 8px 14px 8px 8px; border-radius: 14px; box-shadow: 0 4px 0 var(--ink); }
+  .meet-icon { width: 44px; height: 44px; border-radius: 11px; }
+  .meet-name { font-size: 20px; }
+  .meet-line { font-size: 14px; }
+  .meet-card::before { font-size: 13px; top: -13px; }
+}
+/* The net strip (the grab strip reused, SPEC4 §8.2): "NETTED! Hold G to cut it", "TANGLED: half speed, slow turns",
+   the 4 s it can hold you running down (a white net bar) and your cut (3 taps, or the hold). */
+.gs-title .gs-sub {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 15px;
+  letter-spacing: 0;
+  -webkit-text-stroke: 0;
+  text-shadow: 2px 2px 0 var(--ink), -2px 2px 0 var(--ink), 2px -2px 0 var(--ink), -2px -2px 0 var(--ink);
+}
+.gs-title kbd { -webkit-text-stroke: 0; text-shadow: none; font-size: 0.8em; padding: 0 5px; }
+.grab-strip.net .gs-bar { background: #2a4a3a; }
+.grab-strip.net .gs-fill { background: repeating-linear-gradient(45deg, #ffffff 0 5px, #d8eef0 5px 10px); }
+@media (max-height: 500px) {
+  .gs-title .gs-sub { font-size: 13px; }
+}
+/* BEHIND YOU! (the Sting Sloop at your stern, off the view): the edge arrow in gold, its word on dark gold (white on
+   --gold-text, 5.5:1). */
+.edge-arrow.behind .ea-arrow svg { fill: var(--gold); }
+.edge-arrow.behind .ea-word { background: var(--gold-text); }

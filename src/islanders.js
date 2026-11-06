@@ -109,8 +109,10 @@ const P = (id, name, plot, tier, role, trade, look, react, extra = {}) => ({
 });
 const wave = { action: 'wave' };
 const cheer = { action: 'cheer' };
+// (§7.2's light build keeps each under 4,000 triangles: Finn without his seed's glasses, Paz bare-headed and Quill
+// clean-shaven, none of them in §7.1's looks; Quill's bicorne, glasses and tape still leave him at 4,210)
 export const ISLANDERS = freeze([
-  P('finn', 'Finn', 'fishing', 1, 'work', 'fisherman', { kind: 'old', girl: false, hat: 'souwester', shirt: YELLOW, stripes: false, beard: 'full', tool: 'rod' }, { action: 'wave', mode: 'face' }),
+  P('finn', 'Finn', 'fishing', 1, 'work', 'fisherman', { kind: 'old', girl: false, hat: 'souwester', shirt: YELLOW, stripes: false, beard: 'full', glasses: false, tool: 'rod' }, { action: 'wave', mode: 'face' }),
   P('marina', 'Marina', 'fishing', 2, 'work', 'fishwife', { kind: 'woman', hat: 'kerchief', shirt: BLUE, stripes: true, shirt2: 0xffffff, tool: 'basket' }, wave),
   P('jib', 'Bosun Jib', 'homeF', 1, 'home', 'sailor', { kind: 'pirate', hat: 'none', beard: 'braids', hair: GREY, stripes: true, shirt: NAVY }, { action: 'wave', mode: 'salute' }),
   P('nell', 'Nell', 'homeF', 1, 'home', 'sailor', { kind: 'woman', hat: 'kerchief', accent: TEAL }, wave),
@@ -126,10 +128,10 @@ export const ISLANDERS = freeze([
   P('ida', 'Ida', 'forge', 2, 'work', 'apprentice', { kind: 'kid', girl: true, apron: true, tool: 'bucket' }, wave),
   P('bo', 'Farmer Bo', 'farm', 1, 'work', 'farmer', { kind: 'man', hat: 'straw', vest: BROWN, tool: 'bucket' }, wave),
   P('hettie', 'Hettie', 'farm', 2, 'work', 'farmer', { kind: 'woman', hat: 'straw', tool: 'basket' }, wave),
-  P('paz', 'Piper Paz', 'music', 1, 'work', 'musician', { kind: 'pirate', hat: 'tricorn', tool: 'fiddle' }, { action: 'fiddle', mode: 'band' }),
+  P('paz', 'Piper Paz', 'music', 1, 'work', 'musician', { kind: 'pirate', hat: 'none', tool: 'fiddle' }, { action: 'fiddle', mode: 'band' }),
   P('dot', 'Drummer Dot', 'music', 2, 'work', 'musician', { kind: 'woman', tool: 'drum' }, { action: 'hammer', mode: 'band' }),
   P('sid', 'Squeezebox Sid', 'music', 3, 'work', 'musician', { kind: 'old', girl: false, tool: 'squeezebox' }, { action: 'fiddle', mode: 'band' }),
-  P('quill', 'Curator Quill', 'museum', 1, 'work', 'curator', { kind: 'old', girl: false, glasses: true, hat: 'bicorne', tool: 'tape' }, { action: 'proud', mode: 'bow' }),
+  P('quill', 'Curator Quill', 'museum', 1, 'work', 'curator', { kind: 'old', girl: false, glasses: true, hat: 'bicorne', beard: 'none', tool: 'tape' }, { action: 'proud', mode: 'bow' }),
   P('fern', 'Fern', 'museum', 3, 'work', 'tourist', { kind: 'woman', hat: 'straw' }, wave),
   P('ollie', 'Ollie', 'museum', 3, 'work', 'tourist', { kind: 'kid', girl: false }, wave),
   P('stella', 'Stella', 'observatory', 1, 'work', 'stargazer', { kind: 'old', girl: true, hat: 'startop', tool: 'spyglass' }, wave),
