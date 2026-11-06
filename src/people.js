@@ -38,6 +38,19 @@ import { toon, gradientMap, setOutline, ensureIndex } from './style.js';
 // of the hat while the left arm is up or busy in front, see OCTO_UP) and the tool 'pointer' (the
 // professor's: he taps his palm with it, shoulders it to walk and points with it). glasses: true /
 // false puts the spectacles on or off.
+//
+// The Sunset Isles' islanders add more, under the same rule (an option only changes a look when it is
+// given, and only its own picks, made at the end of resolveLook, draw random numbers): the hats 'toque'
+// (the baker's), 'souwester' (an oilskin fishing hat), 'startop' (the stargazer's starry cone) and
+// 'jeweled' (the Jewelled tricorn trophy); the tools 'drum' (worn on a strap, played with 'hammer'),
+// 'spyglass' (raised to the eye with 'point', pulled out and pushed in with 'measure'), 'book' (in the
+// left arm; read with 'measure'), 'basket' (on the left forearm; held in front with 'carry') and
+// 'squeezebox' (a concertina, played with 'fiddle'); apron: true (or a hex: a work apron, its flap on
+// its own 'apron' bone over trousers); tail: true (or a hex: a mer person, the legs replaced by a lathed
+// tail on the 'tail1'..'tail3' and 'fin' bones; such a person only idles, sits, waves and cheers: any
+// other action poses as 'idle', see MER_ACTIONS); the pet 'hermit' (a baby hermit crab on the pet bones,
+// its shell bobbing, waving its big claw when cheering) and girl: true / false for 'kid' and 'old' (the
+// seed's coin toss is still drawn, the option replaces its result).
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -75,8 +88,10 @@ const RUN_F = 1.45; // 'run' cycles per second at tempo 1
 const RUN_STANCE = 0.36; // fraction of a cycle each foot is planted (the rest is a flight)
 
 const KINDS = ['pirate', 'man', 'woman', 'kid', 'old'];
-export const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard'];
-export const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors', 'pointer'];
+export const HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard', 'toque', 'souwester', 'startop', 'jeweled'];
+export const TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors', 'pointer', 'drum', 'spyglass', 'book', 'basket', 'squeezebox'];
+/** What a mer person (tail: true) can do: every other action poses as 'idle'. */
+export const MER_ACTIONS = Object.freeze(['idle', 'sit', 'wave', 'cheer']);
 export const BEARDS = ['full', 'goatee', 'stubble', 'braids', 'handlebar', 'none'];
 export const HAIR_STYLES = ['crop', 'long', 'ponytail', 'bald'];
 
@@ -132,6 +147,20 @@ const IRON = 0x3b3a44;
 const MORTAR = 0x2c2f4a; // the mortarboard's academic navy (hatColor overrides it)
 // the baby kraken: purple with pink spots and pale pink suckers (petColor body / head / wing override them)
 const OCTO_COL = Object.freeze({ body: 0x8a5bd6, wing: 0xffc2e0, head: 0xff8fc8 });
+// the baby hermit crab: a red-orange crab in a coral shell with a cream spiral (petColor body = the crab,
+// head = the shell, wing = the shell's stripe)
+const HERMIT_COL = Object.freeze({ body: 0xf2552c, wing: 0xfff3b0, head: 0xff7f86 });
+// the Sunset Isles' hats (hatColor overrides them; the stargazer's stars and the jewels' settings are gold)
+const TOQUE = 0xfffaf0;
+const SOUWESTER = 0xffc93c;
+const STARTOP = 0x2c3e7a;
+const JEWEL = 0x6b2f8f;
+const GEMS = [0xe2383d, 0x2f86ea, 0x2fa84f];
+const APRON = 0xf2e6c8; // apron: true on a look that has no apron of its own
+// merfolk: tail colours with their fins, the shell tops, the kelp belt
+const TAILS = [[0x16a5a2, 0x8fe3d8], [0x2fa84f, 0xb6ec7a], [0x8a5bd6, 0xf5a3d8], [0x2f86ea, 0x9fdcf5], [0xf06aa0, 0xffc93c]];
+const SHELLS = [0xffb3a7, 0xffd9a0, 0xd7c2ff, 0xfff1d6];
+const KELP = 0x3e8a3a;
 
 function mix(a, b, t) {
   const ch = (c, s) => (c >> s) & 255;
@@ -165,7 +194,7 @@ function resolveLook(opts) {
 
   const L = { kind, seed, phase: rng() * 50, blink: 2.8 + rng() * 2.2 };
   const girl = chance(0.5);
-  L.girl = kind === 'woman' || ((kind === 'kid' || kind === 'old') && girl);
+  L.girl = kind === 'woman' || ((kind === 'kid' || kind === 'old') && (typeof opts.girl === 'boolean' ? opts.girl : girl));
   L.skin = hex(opts.skin, pick(SKIN));
   const hairCol = pick(HAIR);
   L.hair = kind === 'old' ? pick(GREY) : hairCol;
@@ -339,6 +368,10 @@ function resolveLook(opts) {
   else if (L.hat === 'crown') L.hatColor = GOLD;
   else if (L.hat === 'horned') L.hatColor = 0x9aa3b5;
   else if (L.hat === 'mortarboard') L.hatColor = MORTAR;
+  else if (L.hat === 'toque') L.hatColor = TOQUE;
+  else if (L.hat === 'souwester') L.hatColor = SOUWESTER;
+  else if (L.hat === 'startop') L.hatColor = STARTOP;
+  else if (L.hat === 'jeweled') L.hatColor = JEWEL;
   if (opts.hatBadge === 'skull') L.hatBadge = 'skull';
   if (typeof opts.beard === 'string' && BEARDS.includes(opts.beard)) {
     const b = opts.beard;
@@ -365,6 +398,11 @@ function resolveLook(opts) {
     const pc = opts.petColor && typeof opts.petColor === 'object' ? opts.petColor : {};
     L.pet = 'octopus';
     L.petColor = { body: hex(pc.body, OCTO_COL.body), wing: hex(pc.wing, OCTO_COL.wing), head: hex(pc.head, OCTO_COL.head) };
+  } else if (opts.pet === 'hermit') {
+    // the baby hermit crab: body = the crab, head = its shell, wing = the shell's spiral stripe
+    const pc = opts.petColor && typeof opts.petColor === 'object' ? opts.petColor : {};
+    L.pet = 'hermit';
+    L.petColor = { body: hex(pc.body, HERMIT_COL.body), wing: hex(pc.wing, HERMIT_COL.wing), head: hex(pc.head, HERMIT_COL.head) };
   }
   if (typeof opts.eyepatch === 'boolean') L.eyepatch = opts.eyepatch;
   if (typeof opts.pegLeg === 'boolean') L.pegLeg = opts.pegLeg;
@@ -372,6 +410,33 @@ function resolveLook(opts) {
   if (L.kind === 'kid') L.beard = null;
   if (L.kind === 'kid' || L.skirt) L.pegLeg = false; // the peg needs a trouser leg
   L.tool = TOOLS.includes(opts.tool) ? opts.tool : 'none';
+  // ---- The Sunset Isles' options (SPEC4 §11.1): only given ones change the look, and only their own
+  // picks (made here, after every other draw) use the random numbers.
+  if (opts.apron === true || Number.isFinite(opts.apron)) {
+    // a work apron: the bib and the front painted, and over trousers a flap down to the knees
+    L.apron = Number.isFinite(opts.apron) ? opts.apron : L.apron || APRON;
+    if (!L.skirt) L.apronFlap = true;
+  } else if (opts.apron === false) L.apron = null;
+  if (opts.tail === true || Number.isFinite(opts.tail)) {
+    // a mer person: a scaly tail for legs, bare arms, a shell top (girls) or a bare chest, and a frill of
+    // fins (girls) or a belt of kelp at the waist
+    const [tc, fc] = pick(TAILS);
+    L.tail = Number.isFinite(opts.tail) ? opts.tail : tc;
+    L.fin = Number.isFinite(opts.tail) ? mix(opts.tail, WHITE, 0.5) : fc;
+    L.shirt = L.girl ? hex(opts.shirt, pick(SHELLS)) : L.skin;
+    L.shirt2 = L.shirt;
+    L.pants = L.tail;
+    L.sleeves = 'bare';
+    for (const k of ['vest', 'apron', 'bodice', 'skirt', 'sash', 'belt', 'stockings']) L[k] = null;
+    delete L.skirtTrim;
+    delete L.apronFlap;
+    delete L.outfit;
+    delete L.coat;
+    delete L.coatTrim;
+    L.stripes = false;
+    L.shorts = false;
+    L.pegLeg = false;
+  }
   const defScale = kind === 'kid' ? 0.78 : kind === 'old' ? 0.96 : 1;
   L.scale = Number.isFinite(opts.scale) && opts.scale > 0 ? opts.scale : defScale;
   return L;
@@ -495,6 +560,8 @@ const torus = (R, r, ts = 18, rs = 6, arc = TAU) =>
 const rbox = (w, h, d, r = 0.02) =>
   cached(`b${w},${h},${d},${r}`, () => new RoundedBoxGeometry(w, h, d, 1, Math.min(r, w / 2, h / 2, d / 2) * 0.999));
 const cone = (r, h, seg = 10) => cached(`o${r},${h},${seg}`, () => new THREE.ConeGeometry(r, h, seg, 1));
+/** A plain box (12 triangles), for small flat details with no ink outline. */
+const box = (w, h, d) => cached(`x${w},${h},${d}`, () => new THREE.BoxGeometry(w, h, d));
 
 /**
  * Lathe with per-quad colours and analytic smooth normals (so the ink outline stays
@@ -643,6 +710,12 @@ class Kit {
     if (roll) q.multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), roll));
     const m = new THREE.Matrix4().compose(a.clone().addScaledVector(d, 0.5), q, V3(w, h, len / 2));
     this.putM(bone, SPH(), color, slot, m);
+  }
+  /** A flat band segment from a to b (straps, sashes): like blob, on a lighter sphere. */
+  band(bone, color, slot, a, b, w, h) {
+    const d = V3().subVectors(b, a);
+    const q = new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), d.clone().normalize());
+    this.putM(bone, SPH_MID(), color, slot, new THREE.Matrix4().compose(a.clone().addScaledVector(d, 0.5), q, V3(w, h, d.length() / 2 + h)));
   }
   /** Capsule between two points. */
   rod(bone, color, slot, a, b, r, seg = 8) {
@@ -828,7 +901,8 @@ function buildHair(K, head, L, P) {
   const C = P.C;
   const hair = L.hair;
   const hat = L.hat;
-  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap' || hat === 'plumed' || hat === 'bicorne' || hat === 'horned' || hat === 'mortarboard';
+  const covered = hat === 'bandana' || hat === 'kerchief' || hat === 'tricorn' || hat === 'cap' || hat === 'plumed' || hat === 'bicorne' || hat === 'horned' || hat === 'mortarboard' ||
+    hat === 'toque' || hat === 'souwester' || hat === 'startop' || hat === 'jeweled';
   if (L.bald) {
     // fringe around the back and sides only
     K.put(head, SPH(), hair, INK, [0, C - R * 0.1, -R * 0.42], null, [R * 0.92, R * 0.55, R * 0.62]);
@@ -855,7 +929,10 @@ function buildHair(K, head, L, P) {
     K.put(head, SPH(), hair, INK, [0, C - R * 0.12, -R * 0.42], null, [R * 0.88, R * 0.58, R * 0.6]);
   }
   if (L.girl || L.kind === 'woman' || L.hairStyle === 'long' || L.hairStyle === 'ponytail') {
-    if (L.hairStyle === 'bun' && hat !== 'straw') {
+    if (L.hairStyle === 'bun' && NEW_HATS.has(hat)) {
+      // under the Sunset Isles' hats the bun sits low at the nape
+      K.put(head, SPH(), hair, INK, [0, C - R * 0.05, -R * 0.92], null, R * 0.36);
+    } else if (L.hairStyle === 'bun' && hat !== 'straw') {
       K.put(head, SPH(), hair, INK, [0, C + R * 0.62, -R * 0.78], null, R * 0.42);
     } else if (L.hairStyle === 'long') {
       K.put(head, SPH(), hair, INK, [0, C - R * 0.55, -R * 0.6], [0.2, 0, 0], [R * 0.98, R * 1.05, R * 0.48]);
@@ -999,7 +1076,7 @@ function buildHat(K, head, L, P) {
         if (v.y > 0.02) K.putM(head, SPH_LO(), WHITE, FLAT, new THREE.Matrix4().compose(p, q, V3(R * 0.085, R * 0.085, R * 0.025)));
       }
     }
-  } else if (hat === 'tricorn' || hat === 'plumed') {
+  } else if (hat === 'tricorn' || hat === 'plumed' || hat === 'jeweled') {
     const y0 = C + R * 0.62;
     // crown
     K.put(head, SPH(), col, INK, [0, y0 + R * 0.12, -R * 0.02], null, [R * 0.86, R * 0.62, R * 0.86]);
@@ -1021,8 +1098,12 @@ function buildHat(K, head, L, P) {
       const mt = new THREE.Matrix4().compose(V3(-Math.sin(face) * e, y0 + R * 0.37, -Math.cos(face) * e), q, V3(1, 1, 1));
       K.putM(head, torus(rho + R * 0.01, R * 0.035, 14, 4, half * 2), L.hatTrim, FLAT, mt);
     }
-    // a little skull badge at the front point
-    K.put(head, SPH_LO(), WHITE, FLAT, [0, y0 + R * 0.26, R * 1.3], null, [R * 0.12, R * 0.11, R * 0.05]);
+    if (hat === 'jeweled') {
+      jewels(K, head, L, P, y0);
+    } else {
+      // a little skull badge at the front point
+      K.put(head, SPH_LO(), WHITE, FLAT, [0, y0 + R * 0.26, R * 1.3], null, [R * 0.12, R * 0.11, R * 0.05]);
+    }
     if (hat === 'plumed') {
       // the cavalier's feather: three blobs rising off the left wall, arching back over the crown and
       // drooping off the back (broad side facing out)
@@ -1116,7 +1197,153 @@ function buildHat(K, head, L, P) {
     const m = new THREE.Matrix4().compose(V3(0, C + R * 0.74, -R * 0.02),
       new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.14, 0, 0.06)), V3(1, 1, 1));
     K.putM(head, g, null, INK, m);
+  } else if (hat === 'toque') {
+    // the baker's toque: a snug band round the head, tipped up at the front clear of the brows, and a
+    // tall pleated puff of white cotton on top
+    const pleat = mix(col, 0xcdbfa6, 0.32);
+    const prof = [[0, R * 0.12], [R * 0.96, 0], [R * 0.99, R * 0.36], [R * 0.93, R * 0.42], [R * 1.08, R * 0.62], [R * 1.24, R * 0.95],
+      [R * 1.22, R * 1.22], [R * 0.98, R * 1.42], [R * 0.5, R * 1.53], [0, R * 1.54]];
+    const g = paintLathe(prof, 18, 28, (row, y, ang) => {
+      if (y < R * 0.38) return col;
+      return Math.floor(((ang + PI) / TAU) * 14) % 2 ? pleat : col;
+    });
+    K.putM(head, g, null, INK, new THREE.Matrix4().compose(V3(0, C + R * 0.47, -R * 0.07),
+      new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.33, 0, 0.05)), V3(1, 1, 0.98)));
+  } else if (hat === 'souwester') {
+    // the fisherman's sou'wester: a round oilskin crown and a brim that slopes down all round, long at
+    // the back to keep the rain off the neck, with a stitched line round it
+    const qc = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.3, 0, 0));
+    K.putM(head, CAP_SEG(PI * 0.5), col, INK, new THREE.Matrix4().compose(V3(0, C + R * 0.2, -R * 0.03), qc, V3(R * 1.1, R * 0.86, R * 1.1)));
+    K.putM(head, torus(R * 1.04, R * 0.05, 24, 4), mix(col, 0x8a5a10, 0.3), THIN, new THREE.Matrix4().compose(V3(0, C + R * 0.3, -R * 0.03), qc.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(1, 0, 0), PI / 2)), V3(1, 1, 1)));
+    K.putM(head, souwesterBrim(col, R), null, INK, new THREE.Matrix4().compose(V3(0, C + R * 0.26, -R * 0.03), qc, V3(1, 1, 1)));
+    // the ties, from under the brim by the ears to a knot under the chin
+    const tie = mix(col, 0x8a5a10, 0.3);
+    for (const sd of SIDES) K.band(head, tie, THIN, V3(sd * R * 0.98, C - R * 0.1, R * 0.05), V3(sd * R * 0.28, C - R * 1.0, R * 0.42), R * 0.06, R * 0.03);
+    K.put(head, SPH(), tie, THIN, [0, C - R * 1.04, R * 0.46], null, [R * 0.12, R * 0.09, R * 0.09]);
+  } else if (hat === 'startop') {
+    // the stargazer's hat: a tall cone, its tip flopping back, a wide brim, a gold band, gold stars and a
+    // crescent moon
+    const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.2, 0, 0.04));
+    const base = V3(0, C + R * 0.5, -R * 0.05);
+    K.putM(head, starCone(col, R), null, INK, new THREE.Matrix4().compose(base, q, V3(1, 1, 1)));
+    const at = (x, y, z) => V3(x, y, z).applyQuaternion(q).add(base);
+    const star = starGeo();
+    for (const [h, a, s] of [[0.42, 0.25, 0.2], [0.85, -0.75, 0.15], [1.25, 0.6, 0.13], [0.5, 2.3, 0.17], [0.95, -2.5, 0.14], [0.35, -1.6, 0.15]]) {
+      const r = coneR(R, h * R) + R * 0.012;
+      const n = V3(Math.sin(a), 0.32, Math.cos(a)).normalize().applyQuaternion(q);
+      K.putM(head, star, GOLD, FLAT, new THREE.Matrix4().compose(at(Math.sin(a) * r, h * R, Math.cos(a) * r - coneBack(R, h * R)),
+        new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), n), V3(R * s, R * s, R * 0.04)));
+    }
+    // the crescent moon on the front, low
+    const mq = new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), V3(-0.5, 0.25, 1).normalize().applyQuaternion(q))
+      .multiply(new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), 0.9));
+    const mr = coneR(R, R * 0.9) + R * 0.03;
+    K.putM(head, torus(R * 0.15, R * 0.045, 12, 4, PI * 1.25), GOLD, FLAT, new THREE.Matrix4().compose(at(-mr * 0.45, R * 0.9, mr * 0.89 - coneBack(R, R * 0.9)), mq, V3(1, 1, 0.5)));
   }
+}
+
+const NEW_HATS = new Set(['toque', 'souwester', 'startop', 'jeweled']);
+
+/** The jewelled tricorn's jewels: a ruby in a gold setting on the front point, a sapphire and an emerald on
+ *  the back points, gold studs along the walls (y0: the brim's height in head space). */
+function jewels(K, head, L, P, y0) {
+  const R = P.R;
+  const gem = gemGeo();
+  for (let k = 0; k < 3; k++) {
+    // the walls meet in points at the front (0) and the back left / right (+-2 PI / 3)
+    const a = (k * TAU) / 3;
+    const big = k === 0 ? 1.45 : 0.85;
+    const p = V3(Math.sin(a) * R * 1.36, y0 + R * (k === 0 ? 0.36 : 0.3), Math.cos(a) * R * 1.36);
+    const n = V3(Math.sin(a), 0.15, Math.cos(a)).normalize();
+    const q = new THREE.Quaternion().setFromUnitVectors(V3(0, 0, 1), n);
+    K.putM(head, torus(R * 0.13 * big, R * 0.04 * big, 12, 4), L.hatTrim, THIN, new THREE.Matrix4().compose(p, q, V3(1, 1, 1)));
+    K.putM(head, gem, GEMS[k], FLAT, new THREE.Matrix4().compose(p.clone().addScaledVector(n, R * 0.025), q, V3(R * 0.12 * big, R * 0.14 * big, R * 0.07 * big)));
+    K.putM(head, SPH_LO(), WHITE, FLAT, new THREE.Matrix4().compose(p.clone().addScaledVector(n, R * 0.075).add(V3(-R * 0.03 * big, R * 0.04 * big, 0)), q, V3(R * 0.025, R * 0.025, R * 0.012)));
+  }
+  // gold studs along each wall, between the points
+  for (let k = 0; k < 3; k++) {
+    for (const f of [-0.42, 0.42]) {
+      const a = (k * TAU) / 3 + PI / 3 + f;
+      K.put(head, SPH_LO(), L.hatTrim, FLAT, [Math.sin(a) * R * 1.12, y0 + R * 0.34, Math.cos(a) * R * 1.12], null, R * 0.045);
+    }
+  }
+}
+
+/** A cut gem (unit size): an octahedron stretched a little, faceted. */
+function gemGeo() {
+  return cached('gem', () => new THREE.OctahedronGeometry(1, 0));
+}
+
+/** A five-pointed star (unit radius in xy, z from -0.5 to 0.5), its points up. */
+function starGeo() {
+  return cached('star', () => {
+    const s = new THREE.Shape();
+    for (let i = 0; i < 10; i++) {
+      const a = (i / 10) * TAU;
+      const r = i % 2 ? 0.45 : 1;
+      if (i === 0) s.moveTo(Math.sin(a) * r, Math.cos(a) * r);
+      else s.lineTo(Math.sin(a) * r, Math.cos(a) * r);
+    }
+    s.closePath();
+    const g = new THREE.ExtrudeGeometry(s, { depth: 1, bevelEnabled: false, curveSegments: 1 });
+    g.translate(0, 0, -0.5);
+    g.deleteAttribute('uv');
+    return g;
+  });
+}
+
+/** The stargazer's cone (head space of its base, before the hat's tilt): its radius at height y and how far
+ *  its floppy tip has bent back there. */
+const coneR = (R, y) => R * 0.93 * Math.max(0, 1 - y / (R * 2.35)) ** 0.85;
+const coneBack = (R, y) => (y > R * 0.9 ? R * 0.42 * ((y - R * 0.9) / (R * 1.45)) ** 2 : 0);
+function starCone(col, R) {
+  return cached(`starcone${col},${R.toFixed(4)},${tier()}`, () => {
+    const band = GOLD;
+    const brimDark = mix(col, DARK, 0.25);
+    const prof = [[0, -R * 0.08], [R * 1.42, -R * 0.07], [R * 1.6, -R * 0.03], [R * 1.56, R * 0.01], [R * 0.98, R * 0.03]];
+    for (let i = 1; i <= 8; i++) {
+      const y = (i / 8) * R * 2.35;
+      prof.push([i === 8 ? 0 : coneR(R, y) + (i === 1 ? R * 0.04 : 0), y]);
+    }
+    const g = paintLathe(prof, 22, 24, (row, y, ang, down) => {
+      if (y < R * 0.02) return down ? brimDark : col;
+      if (y > R * 0.08 && y < R * 0.26) return band;
+      return col;
+    });
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) p.setZ(i, p.getZ(i) - coneBack(R, p.getY(i)));
+    return g;
+  });
+}
+
+/** The sou'wester's brim (head space of the crown's base): a sloping ring, longer and lower at the back,
+ *  a stitched line round it and a darker underside. */
+function souwesterBrim(col, R) {
+  return cached(`souwester${col},${R.toFixed(4)},${tier()}`, () => {
+    const stitch = mix(col, 0x8a5a10, 0.3);
+    const under = mix(col, 0x8a5a10, 0.12);
+    // underside outwards first, then back over the top (the lathe's outside is on the profile's right)
+    const prof = [[R * 0.99, -R * 0.08], [R * 1.28, -R * 0.24], [R * 1.56, -R * 0.4], [R * 1.66, -R * 0.42], [R * 1.62, -R * 0.36],
+      [R * 1.4, -R * 0.24], [R * 1.2, -R * 0.12], [R * 0.97, R * 0.02]];
+    const g = paintLathe(prof, 14, 26, (row, y, ang, down) => {
+      if (down) return under;
+      return row === 9 || row === 10 ? stitch : col;
+    });
+    // longer and lower at the back, shorter and turned up a little at the front
+    const p = g.attributes.position;
+    for (let i = 0; i < p.count; i++) {
+      const x = p.getX(i);
+      const z = p.getZ(i);
+      const r = Math.hypot(x, z);
+      if (r < 1e-6) continue;
+      const back = Math.max(0, -z / r);
+      const front = Math.max(0, z / r);
+      const out = Math.max(0, r - R * 0.98) / (R * 0.64);
+      const k = 1 + (0.42 * back * back - 0.18 * front * front) * out;
+      p.setXYZ(i, x * k, p.getY(i) - R * 0.3 * back * back * out + R * 0.1 * front * out, z * k);
+    }
+    return g;
+  });
 }
 
 /** The mortarboard's board (head space): its centre, turn (a corner forward, the front tipped up a
@@ -1161,6 +1388,12 @@ function buildBody(K, hips, torso, skirtBone, L, P) {
   const g = paintLathe(ctrl, 18, coat !== undefined ? 30 : 18, (row, y, ang) => {
     const a = Math.abs(ang);
     const t = y / h;
+    if (L.tail !== undefined) {
+      // merfolk: bare skin, and on a girl a shell top with scalloped edges over the chest
+      if (!L.girl) return L.skin;
+      const sc = 0.035 * Math.abs(Math.cos(ang * 4));
+      return t > 0.5 - sc && t < 0.86 + sc * 0.5 ? L.shirt : L.skin;
+    }
     if (coat !== undefined && t > 0) {
       // long coat: open down the front, lapels / facings in the trim colour
       const o = coatOpen(t);
@@ -1204,9 +1437,10 @@ function buildBody(K, hips, torso, skirtBone, L, P) {
     for (const sd of [-1, 1]) {
       K.blob(torso, kc, THIN, V3(sd * 0.008, h * 0.92, P.rs * 0.56), V3(sd * 0.04, h * 0.8, P.rs * 0.74), 0.02, 0.009, sd * 0.3);
     }
-  } else if (L.kind === 'woman' || L.girl) {
+  } else if ((L.kind === 'woman' || L.girl) && L.tail === undefined) {
     K.put(torso, torus(P.rs * 0.5, 0.016, 16, 5), WHITE, THIN, [0, h * 0.92, 0], [PI / 2, 0, 0], [1, P.zs * 1.05, 1]);
   }
+  if (L.tail !== undefined) merTop(K, hips, torso, L, P);
 
   // pelvis / shorts / trousers top
   const pr = P.pelvisR;
@@ -1379,6 +1613,16 @@ function coatTailsGeo(P, coat, trim) {
 }
 
 function buildArm(K, arm, fore, sd, L, P) {
+  if (L.tail !== undefined) {
+    // merfolk: bare arms, no cuffs
+    K.put(arm, SPH(), L.skin, INK, [0, -0.01, 0], null, P.armR * 1.28);
+    K.putM(arm, paintLathe(capsuleProfile(P.armR, -P.a, P.armR * 1.05, -0.01, 2), 8, 10, () => L.skin), null, INK, new THREE.Matrix4());
+    K.putM(fore, paintLathe(capsuleProfile(P.foreR, -P.b + 0.03, P.foreR * 1.08, -0.005, 2), 7, 10, () => L.skin), null, INK, new THREE.Matrix4());
+    const hr = P.handR;
+    K.put(fore, SPH(), L.skin, INK, [0, -P.b, 0.004], null, [hr * 0.86, hr, hr * 0.9]);
+    K.put(fore, SPH(), L.skin, THIN, [-sd * hr * 0.62, -P.b + hr * 0.38, hr * 0.42], [0, 0, -sd * 0.5], [hr * 0.36, hr * 0.5, hr * 0.38]);
+    return;
+  }
   const coat = L.coat;
   const sleeve = coat !== undefined ? coat : L.shirt;
   const stripes = L.stripes && coat === undefined;
@@ -1413,6 +1657,125 @@ function buildArm(K, arm, fore, sd, L, P) {
   const hr = P.handR;
   K.put(fore, SPH(), L.skin, INK, [0, -P.b, 0.004], null, [hr * 0.86, hr, hr * 0.9]);
   K.put(fore, SPH(), L.skin, THIN, [-sd * hr * 0.62, -P.b + hr * 0.38, hr * 0.42], [0, 0, -sd * 0.5], [hr * 0.36, hr * 0.5, hr * 0.38]);
+}
+
+/** Merfolk: the shell top's two shells (girls), and round the waist where the tail begins a frill of fins
+ *  (girls) or a belt of kelp leaves (boys). */
+function merTop(K, hips, torso, L, P) {
+  const h = P.torsoH;
+  if (L.girl) {
+    const shell = mix(L.shirt, WHITE, 0.35);
+    for (const sd of SIDES) {
+      const y = h * 0.66;
+      const x = sd * P.rc * 0.42;
+      const r = profileR(TORSO_CTRL(P), y);
+      const z = Math.sqrt(Math.max(0, r * r - x * x)) * P.zs + 0.006;
+      const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-0.15, sd * 0.45, 0));
+      K.putM(torso, SPH(), shell, THIN, new THREE.Matrix4().compose(V3(x, y, z), q, V3(0.052, 0.046, 0.016)));
+      for (const f of [-0.5, 0, 0.5]) {
+        const m = new THREE.Matrix4().compose(V3(x + Math.sin(f) * 0.024, y + Math.cos(f) * 0.012 - 0.006, z + 0.012), q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(ZV, -f)), V3(0.0045, 0.03, 0.004));
+        K.putM(torso, SPH_LO(), mix(L.shirt, DARK, 0.25), FLAT, m);
+      }
+    }
+  }
+  // the waist: a frill of fin petals (girls) or a skirt of kelp leaves (boys), all the way round,
+  // leaning out over the top of the tail
+  const wy = P.torsoY;
+  const n = 10;
+  const k = P.torsoH / 0.34;
+  for (let i = 0; i < n; i++) {
+    const a = ((i + 0.5) / n) * TAU;
+    const r = (P.rw + 0.02) * (1 + 0.03 * Math.cos(a));
+    const len = (L.girl ? 0.045 : 0.06 + 0.012 * (i % 2)) * k;
+    const col = L.girl ? (i % 2 ? L.fin : mix(L.fin, WHITE, 0.3)) : i % 2 ? KELP : mix(KELP, 0x9ad14a, 0.35);
+    K.put(hips, SPH(), col, THIN, [Math.sin(a) * r, wy - len * 0.85, Math.cos(a) * r * (P.zs + 0.04)], [0.3, a, 0, 'YXZ'], [(L.girl ? 0.036 : 0.022) * k, len, 0.011]);
+  }
+  if (!L.girl) {
+    // the kelp sash across the chest, a leaf sprouting here and there
+    const segs = sashPath(P);
+    segs.forEach(([a, b], i) => {
+      K.band(torso, i % 2 ? KELP : mix(KELP, 0x9ad14a, 0.25), THIN, a, b, 0.034 * k, 0.009);
+      if (i === 0 || i === 2) {
+        const m = a.clone().lerp(b, 0.5);
+        K.blob(torso, mix(KELP, 0x9ad14a, 0.4), THIN, m, m.clone().add(V3(0.035 * k, -0.02 * k, 0.012)), 0.012 * k, 0.005);
+      }
+    });
+  }
+}
+
+/** The mer tail (built on the tail1..tail3 and fin bones, each hanging along -y from its pivot): three
+ *  overlapping scaly segments, thinner each time, and a two-lobed fin. */
+function buildTail(K, bones, L, P) {
+  const [t1, t2, t3, fin] = bones;
+  const T = merSegs(P);
+  const scale = mix(L.tail, WHITE, 0.16);
+  const belly = mix(L.tail, WHITE, 0.34);
+  const paint = (row, y, ang) => {
+    if (Math.abs(ang) < 0.5) return belly;
+    return (row + Math.floor(((ang + PI) / TAU) * 12)) % 2 ? scale : L.tail;
+  };
+  const segs = [[t1, T.r0, T.r1, T.l1], [t2, T.r1, T.r2, T.l2], [t3, T.r2, T.r3, T.l3]];
+  for (const [bone, ra, rb, len] of segs) {
+    K.putM(bone, paintLathe(capsuleProfile(rb, -len, ra, 0, 2), 10, 14, paint), null, INK, new THREE.Matrix4());
+  }
+  // a frilly band of fin colour where the fin begins
+  K.put(t3, torus(T.r3 * 1.15, 0.012, 12, 4), L.fin, THIN, [0, -T.l3 + 0.01, 0], [PI / 2, 0, 0]);
+  // the fin: two broad lobes swept out to the sides, flat front to back, ribbed in a lighter shade
+  const rib = mix(L.fin, WHITE, 0.4);
+  for (const sd of SIDES) {
+    const len = Math.hypot(T.finW, T.finL);
+    const ang = Math.atan2(-T.finL, sd * T.finW);
+    K.put(fin, SPH(), L.fin, INK, [(sd * T.finW) / 2, -T.finL / 2 - 0.012 * T.k, 0], [0, 0, ang], [len * 0.56, 0.042 * T.k, 0.013 * T.k]);
+    for (const f of [-0.28, 0.28]) {
+      const a2 = ang + sd * f * 0.5;
+      const r2 = len * 0.42;
+      K.put(fin, SPH_LO(), rib, FLAT, [Math.cos(a2) * r2 * 0.9, Math.sin(a2) * r2 * 0.9 - 0.012 * T.k, 0.011 * T.k], [0, 0, a2], [r2 * 0.75, 0.005 * T.k, 0.004 * T.k]);
+    }
+  }
+  K.put(fin, SPH(), L.fin, THIN, [0, -0.016 * T.k, 0], null, [0.032 * T.k, 0.03 * T.k, 0.018 * T.k]);
+}
+
+/** The mer tail's sizes for this body: segment lengths and radii, the fin's reach. */
+function merSegs(P) {
+  const k = (P.hipY + 0.05) / 0.46;
+  return {
+    k,
+    r0: P.pelvisR * 0.9, r1: P.pelvisR * 0.66, r2: P.pelvisR * 0.44, r3: P.pelvisR * 0.27,
+    l1: 0.15 * k, l2: 0.13 * k, l3: 0.1 * k,
+    finW: 0.15 * k, finL: 0.06 * k,
+  };
+}
+
+/** The work apron's flap on two bones at the front of the waist, each hanging along -y: the upper panel
+ *  ('apron', down to the knees, with a pocket) and the hem ('apron2', which keeps hanging when the knee
+ *  comes up), curved round the thighs. */
+const apronSize = (P) => ({ w: P.pelvisR * 1.75, l1: P.thigh + 0.035, l2: P.thigh * 0.45 });
+function apronPanel(w0, w1, len) {
+  return cached(`apron${w0.toFixed(4)},${w1.toFixed(4)},${len.toFixed(4)}`, () => {
+    const b = new RoundedBoxGeometry(w0, len, 0.014, 1, 0.006);
+    b.translate(0, -len / 2, 0);
+    const p = b.attributes.position;
+    const nn = b.attributes.normal;
+    const k = 2.4;
+    for (let i = 0; i < p.count; i++) {
+      // flare towards the hem and wrap round the thighs (z falls off to the sides)
+      const x = p.getX(i) * lerp(1, w1 / w0, -p.getY(i) / len);
+      p.setX(i, x);
+      p.setZ(i, p.getZ(i) - k * x * x);
+      const nx = nn.getX(i) + 2 * k * x * nn.getZ(i);
+      const l = Math.hypot(nx, nn.getY(i), nn.getZ(i)) || 1;
+      nn.setXYZ(i, nx / l, nn.getY(i) / l, nn.getZ(i) / l);
+    }
+    return b;
+  });
+}
+function buildApron(K, bone, bone2, L, P) {
+  const { w, l1, l2 } = apronSize(P);
+  const w1 = w * 1.08;
+  K.putM(bone, apronPanel(w, w1, l1 + 0.012), L.apron, INK, new THREE.Matrix4());
+  K.putM(bone2, apronPanel(w1, w1 * 1.04, l2), L.apron, INK, new THREE.Matrix4());
+  const pocket = mix(L.apron, DARK, 0.14);
+  K.put(bone, box(w * 0.42, l1 * 0.3, 0.006), pocket, FLAT, [w * 0.12, -l1 * 0.55, 0.009]);
 }
 
 function buildLeg(K, leg, shin, sd, L, P) {
@@ -1455,7 +1818,7 @@ function buildLeg(K, leg, shin, sd, L, P) {
 // ---------------------------------------------------------------------------
 // Tools (on the tool bone; toolB carries a second piece: the fiddle bow, the fishing line)
 // ---------------------------------------------------------------------------
-function buildTool(K, tool, toolB, L, P) {
+function buildTool(K, tool, toolB, L, P, toolC, torso) {
   const kind = L.tool;
   if (kind === 'mop') {
     // origin on the deck under the mop head; handle along +y
@@ -1580,6 +1943,138 @@ function buildTool(K, tool, toolB, L, P) {
     K.put(tool, cyl(0.0135, 0.017, 0.03, 10), BRASS, THIN, [0, 0.075, 0]);
     K.put(tool, cyl(0.0055, 0.0115, POINTER_LEN - 0.1, 8), 0xc8894f, INK, [0, 0.09 + (POINTER_LEN - 0.1) / 2, 0]);
     K.put(tool, SPH(), 0xe2383d, THIN, [0, POINTER_LEN - 0.005, 0], null, [0.0105, 0.015, 0.0105]);
+  } else if (kind === 'drum') buildDrum(K, tool, toolB, toolC, L, P, torso);
+  else if (kind === 'spyglass') {
+    // origin at the eyepiece end of the barrel, the barrel along +y to the objective: leather with brass
+    // rings and a blue lens; the drawtube (toolB) slides out of the narrow end along -y
+    const leather = 0x6b4528;
+    const g = paintLathe([[0, 0.002], [0.022, 0], [0.024, 0.014], [0.028, 0.07], [0.034, 0.215], [0.04, 0.224], [0.041, SPY.len], [0.034, SPY.len + 0.002], [0, SPY.len - 0.004]], 12, 14,
+      (row, y) => (y < 0.016 || y > 0.212 || (y > 0.105 && y < 0.128) ? BRASS : leather));
+    K.putM(tool, g, null, INK, new THREE.Matrix4());
+    K.put(tool, cyl(0.031, 0.031, 0.004, 12), 0x3a6fd8, FLAT, [0, SPY.len + 0.0005, 0]);
+    K.put(tool, SPH_LO(), WHITE, FLAT, [0.011, SPY.len + 0.003, 0.009], null, [0.008, 0.002, 0.006]);
+    const d = paintLathe([[0, -SPY.draw - 0.006], [0.022, -SPY.draw - 0.004], [0.023, -SPY.draw + 0.014], [0.018, -SPY.draw + 0.018], [0.018, 0.01], [0, 0.012]], 8, 12,
+      (row, y) => (y < -SPY.draw + 0.016 ? 0x3a2418 : BRASS));
+    K.putM(toolB, d, null, INK, new THREE.Matrix4());
+  } else if (kind === 'book') {
+    // two halves hinged at the spine (local y, origin at its middle), each a cover and half the pages,
+    // the halves stacked along z (tool -z, toolB +z) and reaching out along +x; a gold title on tool's cover
+    const cover = 0x2f5fa8;
+    const page = 0xfaf3e3;
+    const { w, h } = BOOK;
+    for (const [bone, sd] of [[tool, -1], [toolB, 1]]) {
+      K.put(bone, rbox(w, h, 0.008, 0.003), cover, INK, [w / 2, 0, sd * 0.0125]);
+      K.put(bone, rbox(w - 0.009, h - 0.012, 0.01, 0.002), page, THIN, [w / 2 - 0.003, 0, sd * 0.004]);
+    }
+    K.put(tool, box(w * 0.6, 0.016, 0.003), GOLD, FLAT, [w * 0.52, h * 0.22, -0.0172]);
+    K.put(tool, box(w * 0.4, 0.009, 0.003), GOLD, FLAT, [w * 0.52, h * 0.1, -0.0172]);
+  } else if (kind === 'basket') {
+    // origin at the top of the handle; a wicker basket hangs below with a gingham cloth and two fish
+    const wick = 0xc8955a;
+    const wick2 = 0xa8763f;
+    const { rim, r, bottom } = BASKET;
+    const g = paintLathe([[0, bottom], [r * 0.68, bottom], [r * 0.85, bottom + 0.02], [r * 0.96, rim - 0.07], [r, rim], [r * 0.9, rim + 0.002], [0, rim + 0.004]], 12, 18,
+      (row, y, ang) => (y > rim - 0.008 ? wick2 : (row + Math.floor(((ang + PI) / TAU) * 12)) % 2 ? wick : wick2));
+    K.putM(tool, g, null, INK, new THREE.Matrix4());
+    K.put(tool, torus(r * 1.0, 0.011, 18, 5), wick2, THIN, [0, rim, 0], [PI / 2, 0, 0]);
+    // the handle: an arch over the top
+    K.put(tool, torus(r * 0.92, 0.009, 14, 5, PI), wick2, INK, [0, rim, 0], [0, 0, 0], [1, (-rim) / (r * 0.92), 1]);
+    // the cloth: a red-and-white check, one corner over the rim
+    const cloth = paintLathe([[r * 0.95, 0], [r * 0.75, 0.016], [r * 0.4, 0.026], [0, 0.028]], 4, 16,
+      (row, y, ang) => ((row + Math.floor(((ang + PI) / TAU) * 10)) % 2 ? 0xe2383d : WHITE));
+    K.putM(tool, cloth, null, THIN, new THREE.Matrix4().makeTranslation(0, rim - 0.004, 0));
+    K.blob(tool, 0xe2383d, THIN, V3(r * 0.55, rim + 0.01, r * 0.62), V3(r * 0.95, rim - 0.05, r * 1.02), 0.04, 0.008, 0.6);
+    // two fish tails up out of the cloth
+    for (const [x, z, a] of [[0.035, -0.01, 0.35], [-0.04, 0.025, -0.45]]) {
+      const base = V3(x, rim + 0.01, z);
+      const tip = V3(x + Math.sin(a) * 0.05, rim + 0.075, z - 0.012);
+      K.blob(tool, 0x8fb3d0, INK, base, tip, 0.019, 0.013);
+      K.put(tool, SPH(), 0x6f93b4, THIN, [tip.x + Math.sin(a) * 0.006, tip.y + 0.014, tip.z], [0, 0, -a], [0.028, 0.014, 0.005]);
+    }
+  } else if (kind === 'squeezebox') {
+    // a concertina along local x: the left end (tool) and the right end (toolC) are red lacquered boxes with
+    // gold rims and an ivory button plate on the outer face, the bellows (toolB) run from 0 to 1 along +x
+    // (scaled to the gap) in black pleats with cream folds
+    const red = 0xc0392b;
+    const { r, len } = SQUEEZE;
+    for (const [bone, sd] of [[tool, -1], [toolC, 1]]) {
+      K.put(bone, cyl(r, r, len, 8), red, INK, [0, 0, 0], [0, 0, PI / 2]);
+      for (const x of [-len / 2, len / 2]) K.put(bone, torus(r * 0.98, 0.006, 8, 4), GOLD, THIN, [x, 0, 0], [0, PI / 2, PI / 8]);
+      K.put(bone, cyl(r * 0.62, r * 0.62, 0.006, 8), 0xfff6dc, THIN, [sd * (len / 2 + 0.002), 0, 0], [0, 0, PI / 2]);
+    }
+    const pleats = 10;
+    const prof = [];
+    for (let i = 0; i <= pleats * 2; i++) prof.push([i % 2 ? r * 0.82 : r * 0.94, i / (pleats * 2)]);
+    const b = paintLathe(prof, pleats * 2, 8, (row) => (row % 2 ? 0x2a2a33 : 0xf2e6c8));
+    K.putM(toolB, b, null, INK, new THREE.Matrix4().makeRotationZ(-PI / 2));
+  }
+}
+
+/** The spyglass: the barrel's length, how far the drawtube pulls out. */
+const SPY = Object.freeze({ len: 0.24, draw: 0.13 });
+/** The book's cover size (x out from the spine, y along it). */
+const BOOK = Object.freeze({ w: 0.12, h: 0.165, open: 2.7 });
+/** The basket (tool space, from the top of its handle): the rim's height, its radius, the bottom. */
+const BASKET = Object.freeze({ rim: -0.12, r: 0.12, bottom: -0.27 });
+/** The squeezebox's end boxes: radius and thickness. */
+const SQUEEZE = Object.freeze({ r: 0.07, len: 0.055 });
+
+/** The drum (torso space; the tool bone sits at the torso's origin turned with it): where it hangs in
+ *  front of the waist, tipped towards the front, its size, and the top of its skin. */
+function drumFrame(P) {
+  const k = P.torsoH / 0.34;
+  const r = 0.085 * k;
+  const hh = 0.075 * k;
+  const tilt = 0.42;
+  const axis = V3(0, Math.cos(tilt), Math.sin(tilt));
+  const centre = V3(0.035 * k, -0.025 * k, P.rw * P.zs + r * 0.95 + 0.02);
+  const q = new THREE.Quaternion().setFromUnitVectors(V3(0, 1, 0), axis);
+  return { k, r, hh, axis, centre, q, top: centre.clone().addScaledVector(axis, hh / 2) };
+}
+
+/** The drum on its strap (tool, in torso space): a red shell with a white zigzag cord, gold hoops, a
+ *  cream skin; a leather strap over the right shoulder; the two sticks on toolB (right) and toolC (left). */
+/** A band worn across the body (torso space), segment by segment: from the left hip up across the chest
+ *  to the right shoulder, over it and down the back to the left hip, hugging the torso. */
+function sashPath(P) {
+  const ctrl = TORSO_CTRL(P);
+  const h = P.torsoH;
+  const surf = (y, a) => {
+    const rr = profileR(ctrl, y) + 0.009;
+    return V3(rr * Math.sin(a), y, rr * Math.cos(a) * P.zs);
+  };
+  const path = [];
+  for (let i = 0; i <= 3; i++) path.push(surf(lerp(h * 0.04, h * 0.84, i / 3), lerp(0.42, -0.95, i / 3)));
+  path.push(V3(-P.rs * 0.62, h * 0.98, -0.005));
+  for (let i = 0; i <= 3; i++) path.push(surf(lerp(h * 0.84, h * 0.04, i / 3), lerp(-2.15, -3.75, i / 3)));
+  const segs = [];
+  for (let i = 0; i < path.length - 1; i++) segs.push([path[i], path[i + 1]]);
+  return segs;
+}
+
+function buildDrum(K, tool, toolB, toolC, L, P, torso) {
+  const D = drumFrame(P);
+  const { r, hh } = D;
+  const red = 0xd23a35;
+  const skin = 0xf6efdc;
+  const g = paintLathe([[0, -hh / 2], [r * 0.96, -hh / 2], [r, -hh / 2 + 0.006], [r, hh / 2 - 0.006], [r * 0.96, hh / 2], [0, hh / 2]], 12, 22, (row, y, ang) => {
+    if (y > hh / 2 - 0.002) return skin;
+    if (y < -hh / 2 + 0.002) return mix(skin, 0x8a6a4a, 0.3);
+    const u = Math.abs(2 * frac(((ang + PI) / TAU) * 7) - 1);
+    const v = (y + hh / 2) / hh;
+    return Math.abs(v - (0.12 + 0.76 * u)) < 0.16 ? WHITE : red;
+  });
+  K.putM(tool, g, null, INK, new THREE.Matrix4().compose(D.centre, D.q, V3(1, 1, 1)));
+  for (const sd of SIDES) {
+    const m = new THREE.Matrix4().compose(D.centre.clone().addScaledVector(D.axis, (sd * hh) / 2), D.q.clone().multiply(new THREE.Quaternion().setFromAxisAngle(V3(1, 0, 0), PI / 2)), V3(1, 1, 1));
+    K.putM(tool, torus(r * 1.02, 0.01 * D.k, 20, 5), GOLD, THIN, m);
+  }
+  // the strap: from the drum's back up across the chest to the right shoulder and down the back
+  for (const [a, b] of sashPath(P)) K.band(torso, 0x5a3a26, THIN, a, b, 0.024 * D.k, 0.007);
+  // the sticks: grip at the origin, along +y to a round tip
+  for (const bone of [toolB, toolC]) {
+    K.rod(bone, 0xe8c48a, INK, V3(0, -0.035, 0), V3(0, 0.2, 0), 0.008, 6);
+    K.put(bone, SPH(), 0xf6efdc, THIN, [0, 0.205, 0], null, 0.014);
   }
 }
 
@@ -1831,13 +2326,68 @@ function buildOctopus(K, pet, head, armL, armR, L) {
   K.putM(head, torus(0.0062 * Z, 0.0015 * Z, 10, 4, arc), DARK, FLAT, new THREE.Matrix4().compose(m.p.clone().add(V3(0, 0.0038 * Z, 0)), q, V3(1, 1, 1)));
 }
 
+// ---------------------------------------------------------------------------
+// The baby hermit crab (pet 'hermit'), on the four pet bones: the crab on 'pet' (perched on the left
+// shoulder, its eyes on stalks and three legs a side), its spiral shell on 'petHead' (it bobs) and its two
+// claws on 'petWingL' (the big one, it waves) and 'petWingR'
+// ---------------------------------------------------------------------------
+const HERMIT_Z = 1.45; // its size (1 = the size its numbers below are written for)
+const HERMIT = Object.freeze({
+  shell: [0, 0.028 * HERMIT_Z, -0.012 * HERMIT_Z], // the shell's pivot (pet space)
+  clawL: [0.016 * HERMIT_Z, 0.018 * HERMIT_Z, 0.03 * HERMIT_Z], // the claws' roots
+  clawR: [-0.016 * HERMIT_Z, 0.016 * HERMIT_Z, 0.03 * HERMIT_Z],
+});
+
+function buildHermit(K, pet, shell, clawL, clawR, L) {
+  const c = L.petColor;
+  const Z = HERMIT_Z;
+  const crab = c.body;
+  const light = mix(crab, WHITE, 0.35);
+  // the crab peeking out of the shell's mouth: a round body, legs gripping the shoulder
+  K.put(pet, SPH(), crab, INK, [0, 0.02 * Z, 0.018 * Z], null, [0.021 * Z, 0.016 * Z, 0.018 * Z]);
+  for (const sd of SIDES) {
+    for (let k = 0; k < 3; k++) {
+      const z = (0.012 - 0.012 * k) * Z;
+      const a = V3(sd * 0.016 * Z, 0.014 * Z, z + 0.012 * Z);
+      const knee = V3(sd * 0.032 * Z, 0.016 * Z, z + 0.008 * Z);
+      const foot = V3(sd * 0.04 * Z, 0.002 * Z, z + 0.004 * Z);
+      K.rod(pet, crab, THIN, a, knee, 0.004 * Z, 5);
+      K.rod(pet, crab, THIN, knee, foot, 0.0035 * Z, 5);
+    }
+    // eyes on stalks
+    const s0 = V3(sd * 0.007 * Z, 0.03 * Z, 0.03 * Z);
+    const s1 = V3(sd * 0.012 * Z, 0.05 * Z, 0.034 * Z);
+    K.rod(pet, light, THIN, s0, s1, 0.0032 * Z, 5);
+    K.put(pet, SPH(), WHITE, THIN, [s1.x, s1.y + 0.003 * Z, s1.z], null, 0.0075 * Z);
+    K.put(pet, SPH_LO(), DARK, FLAT, [s1.x + sd * 0.0012 * Z, s1.y + 0.003 * Z, s1.z + 0.0058 * Z], null, [0.0045 * Z, 0.005 * Z, 0.003 * Z]);
+  }
+  // a tiny smile
+  const arc = PI * 0.62;
+  const q = new THREE.Quaternion().setFromAxisAngle(V3(0, 0, 1), -PI / 2 - arc / 2);
+  K.putM(pet, torus(0.006 * Z, 0.0014 * Z, 10, 4, arc), DARK, FLAT, new THREE.Matrix4().compose(V3(0, 0.022 * Z, 0.035 * Z), q, V3(1, 1, 1)));
+  // the shell: a turban whorl, its mouth facing forward and down over the crab, a cream spiral stripe
+  const prof = [[0, -0.004], [0.026, 0], [0.033, 0.012], [0.03, 0.024], [0.024, 0.028], [0.025, 0.036], [0.019, 0.045], [0.014, 0.047],
+    [0.014, 0.053], [0.008, 0.06], [0, 0.064]].map(([r, y]) => [r * Z, y * Z]);
+  const stripe = c.wing;
+  const g = paintLathe(prof, 14, 16, (row, y, ang) => (Math.abs(frac((ang + PI) / TAU + y / (0.022 * Z)) - 0.5) < 0.17 ? stripe : c.head));
+  K.putM(shell, g, null, INK, new THREE.Matrix4().makeRotationX(-0.95));
+  // the claws: the big one on the left, reaching forward
+  for (const [bone, big] of [[clawL, 1.35], [clawR, 0.9]]) {
+    const s = big * Z;
+    K.rod(bone, crab, THIN, V3(0, 0, 0), V3(0, 0.004 * s, 0.016 * s), 0.0045 * s, 5);
+    K.put(bone, SPH(), crab, INK, [0, 0.006 * s, 0.026 * s], null, [0.011 * s, 0.009 * s, 0.012 * s]);
+    K.put(bone, SPH(), light, THIN, [0, 0.012 * s, 0.035 * s], [-0.5, 0, 0], [0.0055 * s, 0.004 * s, 0.009 * s]);
+    K.put(bone, SPH(), crab, THIN, [0, 0.002 * s, 0.036 * s], [0.4, 0, 0], [0.006 * s, 0.0045 * s, 0.01 * s]);
+  }
+}
+
 /** Height (head space, over the middle) of the top of a hat or the hair: where the baby kraken sits
  *  while the left arm is up. */
 function headTop(L, P) {
   const R = P.R;
   const top = {
     bandana: 1.1, kerchief: 1.08, cap: 1.04, straw: 1.22, tricorn: 1.34, plumed: 1.34, bicorne: 1.6, crown: 1.46,
-    horned: 1.14,
+    horned: 1.14, toque: 2.0, souwester: 1.12, startop: 2.2, jeweled: 1.34,
   };
   if (L.hat === 'mortarboard') {
     const mb = mortarFrame(P);
@@ -1954,13 +2504,28 @@ function build(opts) {
   // the same four bones: its tentacles, its mantle and its two waving tentacles
   const octo = L.pet === 'octopus';
   const pet = L.pet ? K.bone('pet', torso, P.shX + 0.03, P.shY + P.armR * 1.2, -0.02) : null;
-  const petHead = !pet ? null : octo ? K.bone('petHead', pet, ...OCTO.head) : K.bone('petHead', pet, 0, 0.148, 0.008);
-  const wing = (sd) => (octo ? [sd * Math.sin(OCTO.front) * OCTO.ring, OCTO.ringY, Math.cos(OCTO.front) * OCTO.ring] : [sd * 0.042, 0.122, -0.006]);
+  const crab = L.pet === 'hermit';
+  const petHead = !pet ? null : octo ? K.bone('petHead', pet, ...OCTO.head) : crab ? K.bone('petHead', pet, ...HERMIT.shell) : K.bone('petHead', pet, 0, 0.148, 0.008);
+  const wing = (sd) => (octo ? [sd * Math.sin(OCTO.front) * OCTO.ring, OCTO.ringY, Math.cos(OCTO.front) * OCTO.ring] : crab ? (sd > 0 ? HERMIT.clawL : HERMIT.clawR) : [sd * 0.042, 0.122, -0.006]);
   const petWingL = pet ? K.bone('petWingL', pet, ...wing(1)) : null;
   const petWingR = pet ? K.bone('petWingR', pet, ...wing(-1)) : null;
   // the mortarboard's tassel hangs from the board's left corner
   const tassel = L.hat === 'mortarboard' ? K.bone('tassel', head, ...mortarFrame(P).corner.toArray()) : null;
+  // the Sunset Isles' bones (each only when its option is given): a third tool piece (the drum's left
+  // stick, the squeezebox's right end), the apron's flap, the mer tail
+  const toolC = L.tool === 'drum' || L.tool === 'squeezebox' ? K.bone('toolC', null, 0, 0, 0) : null;
+  const apronB = L.apronFlap ? K.bone('apron', hips, 0, P.torsoY - 0.02, P.pelvisR * (P.zs + 0.04) * 0.96) : null;
+  const apronB2 = apronB ? K.bone('apron2', apronB, 0, -apronSize(P).l1, 0) : null;
+  let tailBones = null;
+  if (L.tail !== undefined) {
+    const T = merSegs(P);
+    const t1 = K.bone('tail1', hips, 0, -0.03, 0);
+    const t2 = K.bone('tail2', t1, 0, -T.l1, 0);
+    const t3 = K.bone('tail3', t2, 0, -T.l2, 0);
+    tailBones = [t1, t2, t3, K.bone('fin', t3, 0, -T.l3, 0)];
+  }
   group.add(hips, tool, toolB);
+  if (toolC) group.add(toolC);
   group.updateMatrixWorld(true);
 
   let geometry;
@@ -1974,12 +2539,17 @@ function build(opts) {
     buildBody(K, hips, torso, L.skirt || L.coat !== undefined ? skirt : null, L, P);
     buildArm(K, armL, foreL, 1, L, P);
     buildArm(K, armR, foreR, -1, L, P);
-    buildLeg(K, legL, shinL, 1, L, P);
-    buildLeg(K, legR, shinR, -1, L, P);
-    buildTool(K, tool, toolB, L, P);
+    if (tailBones) buildTail(K, tailBones, L, P);
+    else {
+      buildLeg(K, legL, shinL, 1, L, P);
+      buildLeg(K, legR, shinR, -1, L, P);
+    }
+    buildTool(K, tool, toolB, L, P, toolC, torso);
     if (pet && octo) buildOctopus(K, pet, petHead, petWingL, petWingR, L);
+    else if (pet && crab) buildHermit(K, pet, petHead, petWingL, petWingR, L);
     else if (pet) buildPet(K, pet, petHead, petWingL, petWingR, L);
     if (tassel) buildTassel(K, tassel, L, P);
+    if (apronB) buildApron(K, apronB, apronB2, L, P);
     ({ geometry, mats } = bake(K));
   }
   const entry = shared || (key !== null ? { key, geometry, mats, refs: 1, orphan: false } : null);
@@ -2001,6 +2571,9 @@ function build(opts) {
   const parts = { hips, torso, head, armL, armR, legL, legR, tool, foreL, foreR, shinL, shinR, eyes, mouth, skirt, toolB };
   if (pet) Object.assign(parts, { pet, petHead, petWingL, petWingR });
   if (tassel) parts.tassel = tassel;
+  if (toolC) parts.toolC = toolC;
+  if (apronB) Object.assign(parts, { apron: apronB, apron2: apronB2 });
+  if (tailBones) Object.assign(parts, { tail1: tailBones[0], tail2: tailBones[1], tail3: tailBones[2], fin: tailBones[3] });
   group.userData = {
     kind: L.kind,
     look: L,
@@ -2126,7 +2699,7 @@ function makeRig(parts, L, P) {
     s: Array.from({ length: 8 }, () => new THREE.Vector3()), // pose scratch (helpers never touch these)
     armsL: [parts.armL, parts.foreL],
     armsR: [parts.armR, parts.foreR],
-    top: L.pet === 'octopus' ? headTop(L, P) : 0, // where the baby kraken hops to (head space)
+    top: L.pet === 'octopus' || L.pet === 'hermit' ? headTop(L, P) : 0, // where the baby kraken (or the hermit crab) hops to (head space)
     action: 'idle', // the action being posed (animatePerson sets it)
   };
 }
@@ -2464,7 +3037,102 @@ function toolRest(R, t, walking = 0, swing = 0) {
     toolAlong(R, A, B);
     return true;
   }
+  // the Sunset Isles' tools ('left': only the left arm is busy)
+  if (k === 'drum') return false; // worn on its strap; wearDrum puts the sticks in the hands
+  if (k === 'spyglass') {
+    // closed, carried in the right hand like a baton
+    armE(R, -1, -0.16 + 0.38 * walking * Math.sin(swing), 0.13, 0.5);
+    toolInHand(R, -1, PI / 2 + 0.35, 0, 0);
+    return true;
+  }
+  if (k === 'book') {
+    holdBook(R, walking ? 0.02 * Math.sin(2 * swing) : 0.006 * Math.sin(t * 1.7));
+    return 'left';
+  }
+  if (k === 'basket') {
+    basketOnArm(R, walking ? 0.12 * Math.sin(swing + 0.6) : 0.03 * Math.sin(t * 1.1));
+    return 'left';
+  }
+  if (k === 'squeezebox') {
+    armE(R, -1, -0.12 - 0.18 * walking * Math.sin(swing), 0.24, 0.2);
+    squeezeHang(R, 0.15 * walking * Math.sin(swing + 0.6));
+    return true;
+  }
   return false;
+}
+
+/** A point u of the way along a forearm (0 the elbow, 1 the hand's centre), in person space. */
+function forePoint(R, s, u, out) {
+  const [arm, fore] = armBones(R, s);
+  out.set(0, -R.P.a, 0).applyQuaternion(arm.quaternion).add(arm.position);
+  _q1.copy(arm.quaternion).multiply(fore.quaternion);
+  out.add(_v3.set(0, -R.P.b * u, 0).applyQuaternion(_q1));
+  return out.applyMatrix4(R.mht);
+}
+
+/** The book hugged upright against the left of the chest, the left hand under it. */
+function holdBook(R, bob) {
+  const P = R.P;
+  const h = P.torsoH;
+  const k = h / 0.34;
+  const z = P.rb * P.zs;
+  reachT(R, 1, P.rs * 0.22, h * 0.2 + bob, z + 0.05 * k, 1.1, -0.5, -0.2);
+  // the spine's middle (torso space): upright on the outer side, the book reaching in across the chest
+  const sp = R.s[3].set(P.rs * 0.72, h * 0.2 + BOOK.h * 0.5 + 0.012 + bob, z + 0.03 * k);
+  R.tool.position.copy(sp).applyMatrix4(R.mht);
+  R.tool.quaternion.copy(R.qht).multiply(_q2.setFromEuler(_e.set(0.14, PI - 0.18, 0)));
+  R.tool.scale.setScalar(1);
+}
+
+/** The basket hung on the left forearm, the elbow bent. */
+function basketOnArm(R, swing) {
+  armE(R, 1, -0.5, 0.3, 1.2);
+  forePoint(R, 1, 0.52, R.tool.position);
+  R.tool.position.y += R.P.foreR * 0.7;
+  R.tool.quaternion.setFromEuler(_e.set(swing, torsoYaw(R), 0));
+  R.tool.scale.setScalar(1);
+}
+
+/** Both hands on the basket's rim, its middle at torso-space height y and depth z. */
+function holdBasket(R, y, z) {
+  const [A, B] = R.s;
+  const r = BASKET.r;
+  reachT(R, 1, r + 0.012, y, z, 1, -0.7, -0.3);
+  reachT(R, -1, -r - 0.012, y, z, -1, -0.7, -0.3);
+  handP(R, 1, A);
+  handP(R, -1, B);
+  R.tool.position.addVectors(A, B).multiplyScalar(0.5);
+  R.tool.position.y -= BASKET.rim + 0.01;
+  R.tool.quaternion.setFromEuler(_e.set(0, torsoYaw(R), 0));
+  R.tool.scale.setScalar(1);
+}
+
+/** The squeezebox from its left end's centre Lc to its right end's centre Rc (person space): the ends turned
+ *  along the line between them, the bellows stretched across the gap. */
+function concertina(R, Lc, Rc) {
+  const d = R.s[6].subVectors(Rc, Lc);
+  const n = d.length();
+  d.divideScalar(n || 1);
+  const q = R.tool.quaternion.setFromUnitVectors(XV, d);
+  R.tool.position.copy(Lc);
+  R.tool.scale.setScalar(1);
+  R.toolC.position.copy(Rc);
+  R.toolC.quaternion.copy(q);
+  R.toolC.scale.setScalar(1);
+  R.toolB.position.copy(Lc).addScaledVector(d, SQUEEZE.len / 2);
+  R.toolB.quaternion.copy(q);
+  R.toolB.scale.set(Math.max(1e-3, n - SQUEEZE.len), 1, 1);
+  R.sqz = true;
+}
+const SQUEEZE_SHUT = 0.06; // the bellows' length when it is closed
+
+/** Closed, hanging by its right end's strap from the right hand. */
+function squeezeHang(R, swing) {
+  const H = handFrame(R, -1);
+  const d = R.s[4].set(0, Math.cos(swing), Math.sin(swing));
+  const Rc = R.s[3].copy(H.pos).addScaledVector(d, -(SQUEEZE.len / 2 + 0.014));
+  const Lc = R.s[5].copy(Rc).addScaledVector(d, -(SQUEEZE.len + SQUEEZE_SHUT));
+  concertina(R, Lc, Rc);
 }
 
 // --- worn things, placed after every action ---------------------------------
@@ -2537,7 +3205,8 @@ function petPose(R, t, action) {
   if (fly > 0) {
     const rest = R.pet.userData.rest;
     const hat = R.L.hat === 'none' || R.L.hat === 'bandana' || R.L.hat === 'kerchief' ? 0.05 : 0.15;
-    const hover = P.headY + P.R * 2 + hat + 0.025 * Math.sin(t * TAU * 1.6);
+    let hover = P.headY + P.R * 2 + hat + 0.025 * Math.sin(t * TAU * 1.6);
+    if (NEW_HATS.has(R.L.hat)) hover = Math.max(hover, P.headY + headTop(R.L, P) + 0.06 + 0.025 * Math.sin(t * TAU * 1.6));
     R.pet.position.set(lerp(rest.x, 0.1, fly), lerp(rest.y, hover, fly), lerp(rest.z, -0.13, fly));
   }
   if (flap) {
@@ -2627,7 +3296,7 @@ function hangTassel(R, t, action) {
 /** Put a crate, bucket or lantern down on the floor beside the right foot; hide anything else. */
 function setDown(R) {
   const k = R.tk;
-  const y = k === 'crate' ? 0.13 : k === 'bucket' ? 0.34 : k === 'lantern' ? 0.255 : -1;
+  const y = k === 'crate' ? 0.13 : k === 'bucket' ? 0.34 : k === 'lantern' ? 0.255 : k === 'basket' ? -BASKET.bottom : k === 'squeezebox' ? SQUEEZE.r : -1;
   if (y < 0) {
     hideTool(R);
   } else {
@@ -2655,7 +3324,7 @@ function holdCrate(R, y, z) {
 // ---------------------------------------------------------------------------
 /** The hand that waves: the right (-1), or the left (+1) when the right holds something. */
 function waveSide(R) {
-  return R.tk === 'none' || R.tk === 'crate' || R.tk === 'tape' ? -1 : 1;
+  return R.tk === 'none' || R.tk === 'crate' || R.tk === 'tape' || R.tk === 'book' || R.tk === 'basket' ? -1 : 1;
 }
 
 const POSES = {
@@ -2671,7 +3340,8 @@ const POSES = {
     lookAround(R, t);
     bodyDone(R);
     const busy = toolRest(R, t);
-    if (busy !== 'both') {
+    if (busy === 'left') restArm(R, -1, t);
+    else if (busy !== 'both') {
       restArm(R, 1, t);
       if (!busy) restArm(R, -1, t);
     }
@@ -2684,7 +3354,8 @@ const POSES = {
     R.tailSwing = 0.05 + 0.04 * Math.sin(2 * ph); // coat tails only
     bodyDone(R);
     const busy = toolRest(R, t, 1, ph);
-    if (busy !== 'both') {
+    if (busy === 'left') armE(R, -1, -0.55 * Math.sin(ph), 0.12, 0.35 + 0.25 * Math.max(0, Math.sin(ph)));
+    else if (busy !== 'both') {
       armE(R, 1, 0.55 * Math.sin(ph), 0.12, 0.35 + 0.25 * Math.max(0, -Math.sin(ph)));
       if (!busy) armE(R, -1, -0.55 * Math.sin(ph), 0.12, 0.35 + 0.25 * Math.max(0, Math.sin(ph)));
     }
@@ -2802,7 +3473,9 @@ const POSES = {
     R.head.rotation.set(-0.1, sd * 0.12, sd * 0.14 + 0.05 * s);
     bodyDone(R);
     reachT(R, sd, sd * (R.P.shX + 0.18 + 0.1 * s), R.P.shY + R.P.reach * 0.74, 0.08, sd * 1, -0.5, -0.3);
-    if (sd < 0) {
+    if (sd < 0 && (R.tk === 'book' || R.tk === 'basket')) {
+      toolRest(R, t);
+    } else if (sd < 0) {
       handOnHip(R, 1);
       setDown(R);
     } else {
@@ -2822,9 +3495,13 @@ const POSES = {
     if (R.tk === 'crate') {
       // crate held up in front of the chest, bobbing with the steps
       holdCrate(R, P.shY - 0.06 + 0.015 * Math.cos(2 * ph), 0.25);
+    } else if (R.tk === 'basket') {
+      // the basket carried in front in both hands, bobbing with the steps
+      holdBasket(R, P.torsoH * 0.32 + 0.012 * Math.cos(2 * ph), P.rb * P.zs + BASKET.r * 0.75 + 0.02);
     } else {
       const busy = toolRest(R, t, 1, ph);
-      if (busy !== 'both') {
+      if (busy === 'left') armE(R, -1, -0.45 * Math.sin(ph), 0.12, 0.35);
+      else if (busy !== 'both') {
         armE(R, 1, 0.45 * Math.sin(ph), 0.12, 0.35);
         if (!busy) armE(R, -1, -0.45 * Math.sin(ph), 0.12, 0.35);
       }
@@ -2903,9 +3580,13 @@ const POSES = {
       toolAlong(R, B, A);
     } else if (k === 'lantern') {
       toolHang(R, -1, 0.25 * Math.sin(w), torsoYaw(R));
-    } else if (k === 'crate' || k === 'bucket') {
+    } else if (k === 'crate' || k === 'bucket' || k === 'basket' || k === 'squeezebox') {
       setDown(R);
-    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle' || k === 'cutlass' || k === 'scissors' || k === 'pointer') {
+    } else if (k === 'book') {
+      // held up in the left hand, the spine upright
+      handP(R, 1, A);
+      toolAlong(R, A, B.copy(A).add(_v1.set(0.1, 1, 0.1)), torsoYaw(R) + PI);
+    } else if (k === 'rod' || k === 'hammer' || k === 'brush' || k === 'fiddle' || k === 'cutlass' || k === 'scissors' || k === 'pointer' || k === 'spyglass') {
       handP(R, -1, A);
       B.copy(A).add(_v1.set(-0.1, 1, 0.1));
       toolAlong(R, k === 'brush' || k === 'fiddle' ? B : A, k === 'brush' || k === 'fiddle' ? A : B);
@@ -2915,6 +3596,10 @@ const POSES = {
   },
 
   hammer(R, t) {
+    if (R.tk === 'drum') {
+      drumming(R, t);
+      return;
+    }
     const P = R.P;
     // down on one knee, hammering a nail into the deck in front
     R.hips.position.y = P.shinR * 1.05 + P.thigh * 0.95 - P.legY - 0.01;
@@ -2942,6 +3627,10 @@ const POSES = {
   },
 
   fiddle(R, t) {
+    if (R.tk === 'squeezebox') {
+      squeezePlay(R, t);
+      return;
+    }
     const P = R.P;
     const [O, N, F, X, A, C] = R.s;
     const beat = t * TAU * 1.3;
@@ -3010,7 +3699,8 @@ const POSES = {
     bodyDone(R);
     // arms pumping, elbows bent, opposite to the legs
     const busy = toolRest(R, t, 1, ph);
-    if (busy !== 'both') {
+    if (busy === 'left') armE(R, -1, -0.85 * Math.sin(ph) - 0.15, 0.16, 1.45 + 0.35 * Math.sin(ph));
+    else if (busy !== 'both') {
       armE(R, 1, 0.85 * Math.sin(ph) - 0.15, 0.16, 1.45 - 0.35 * Math.sin(ph));
       if (!busy) armE(R, -1, -0.85 * Math.sin(ph) - 0.15, 0.16, 1.45 + 0.35 * Math.sin(ph));
     }
@@ -3052,6 +3742,10 @@ const POSES = {
   },
 
   point(R, t) {
+    if (R.tk === 'spyglass') {
+      lookOut(R, t);
+      return;
+    }
     const P = R.P;
     const [A, B] = R.s;
     // "Fire!": right foot forward, the right arm thrust out ahead, left fist on the hip
@@ -3064,7 +3758,8 @@ const POSES = {
     R.head.rotation.set(-0.12, -0.3, 0.05);
     bodyDone(R);
     reachP(R, -1, -0.1, P.hipY + P.torsoY + P.shY + 0.16 + 0.02 * jab, 0.55, -0.6, -0.6, -0.3);
-    handOnHip(R, 1);
+    if (R.tk === 'book') holdBook(R, 0);
+    else handOnHip(R, 1);
     if (R.tk === 'cutlass' || R.tk === 'pointer') {
       // pointing with the blade (or the pointer), along the arm and a little up
       handP(R, -1, A);
@@ -3072,7 +3767,7 @@ const POSES = {
       B.subVectors(A, B).normalize();
       B.y += R.tk === 'pointer' ? 0.15 : 0.25;
       toolAlong(R, A, B.normalize().add(A), PI / 2);
-    } else setDown(R);
+    } else if (R.tk !== 'book') setDown(R);
     R.mouth.scale.set(1, 1, 1);
   },
 
@@ -3204,6 +3899,14 @@ const POSES = {
   },
 
   measure(R, t) {
+    if (R.tk === 'spyglass') {
+      adjustScope(R, t);
+      return;
+    }
+    if (R.tk === 'book') {
+      readBook(R, t);
+      return;
+    }
     const P = R.P;
     const [A, B] = R.s;
     // the tailor at work: tape stretched between the hands at chest height, sliding it along, then
@@ -3273,6 +3976,277 @@ const FIGHT_KEYS = [
   { ...FIGHT_GUARD, q: 1 },
 ];
 
+// ---------------------------------------------------------------------------
+// The Sunset Isles' tool actions
+// ---------------------------------------------------------------------------
+const _hm = new THREE.Matrix4();
+/** The head's frame in person space (into out). */
+function headMatrix(R, out) {
+  return out.copy(R.mht).multiply(local(R.head, _m1));
+}
+
+/** 'hammer' with the drum: standing, the drum on its strap, the two sticks beating its skin in turn. */
+function drumming(R, t) {
+  const P = R.P;
+  const [A, B, C] = R.s;
+  const beat = t * TAU * 1.5;
+  const b = Math.abs(Math.sin(beat));
+  legsStand(R, 0.07);
+  R.hips.position.y -= 0.012 * b;
+  R.hips.rotation.z = 0.025 * Math.sin(beat * 0.5);
+  R.legL.rotation.z -= R.hips.rotation.z;
+  R.legR.rotation.z -= R.hips.rotation.z;
+  R.torso.rotation.set(0.07 + P.hunch * 0.5, 0.07 * Math.sin(beat * 0.5), 0.03 * Math.sin(beat * 0.5));
+  R.head.rotation.set(0.3 + 0.07 * b, 0.12 * Math.sin(beat * 0.5), 0.05 * Math.sin(beat * 0.5));
+  bodyDone(R);
+  const D = drumFrame(P);
+  for (const [s, bone, ph] of [[-1, R.toolB, 0], [1, R.toolC, PI]]) {
+    const u = 0.5 + 0.5 * Math.sin(beat * 0.5 + ph); // 0: on the skin, 1: up
+    const lift = u * u;
+    // torso space: the stick's tip on the skin near the middle, the fist up and out from it
+    A.copy(D.top).add(_v1.set(s * 0.022 * D.k, 0.006, 0));
+    B.copy(A).add(_v1.set(s * 0.1 * D.k, 0.09 + 0.08 * lift, -0.12 - 0.02 * lift));
+    reachT(R, s, B.x, B.y, B.z, s * 1, -0.5, -0.4);
+    handP(R, s, C);
+    A.y += 0.12 * lift;
+    A.applyMatrix4(R.mht);
+    toolAlong(R, C, A, 0, bone);
+    bone.scale.setScalar(1);
+  }
+  R.drumming = true;
+  R.mouth.scale.set(0.6, 0.25 + 0.3 * b, 1);
+}
+
+/** The drum always rides on its strap (on the lap when seated), and the sticks, unless the action beats it,
+ *  are in the fists. */
+function wearDrum(R, action) {
+  R.tool.position.set(0, 0, 0).applyMatrix4(R.mht);
+  R.tool.quaternion.copy(R.qht);
+  if (action === 'sit' || action === 'fish') R.tool.quaternion.multiply(_q2.setFromAxisAngle(XV, -0.42));
+  R.tool.scale.setScalar(1);
+  if (R.drumming) return;
+  toolInHand(R, -1, PI / 2 + 0.3, 0, 0, R.toolB);
+  toolInHand(R, 1, PI / 2 + 0.3, 0, 0, R.toolC);
+  R.toolB.scale.setScalar(1);
+  R.toolC.scale.setScalar(1);
+}
+
+/** 'fiddle' with the squeezebox: squeezing it in and out in front of the chest, swaying, a foot tapping. */
+function squeezePlay(R, t) {
+  const P = R.P;
+  const [A, B, C, D] = R.s;
+  const beat = t * TAU * 1.3;
+  const breath = Math.sin(t * TAU * 0.45);
+  const tap = Math.max(0, Math.sin(beat));
+  legsStand(R, 0.07);
+  R.legR.rotation.x = -0.14 * tap;
+  R.shinR.rotation.x = 0.26 * tap;
+  R.hips.position.y += 0.012 * Math.abs(Math.cos(beat));
+  R.torso.rotation.set(0.06 + P.hunch * 0.6, 0.1 * Math.sin(beat * 0.5), 0.07 * breath);
+  R.head.rotation.set(0.1, 0.22 * Math.sin(beat * 0.5), -0.1 * breath);
+  bodyDone(R);
+  const k = P.torsoH / 0.34;
+  const spread = (0.13 + 0.06 * breath) * k;
+  const y = P.torsoH * 0.52;
+  const z = P.rb * P.zs + 0.15 * k;
+  reachT(R, 1, spread + 0.02, y + 0.02 * breath, z, 1, -0.6, -0.3);
+  reachT(R, -1, -spread - 0.02, y - 0.02 * breath, z, -1, -0.6, -0.3);
+  handP(R, 1, A);
+  handP(R, -1, B);
+  // the hands are through the straps on the outer faces: each end's centre just inside its hand
+  D.subVectors(B, A).normalize();
+  const inset = SQUEEZE.len / 2 + 0.012;
+  C.copy(A).addScaledVector(D, inset);
+  D.multiplyScalar(-inset).add(B);
+  concertina(R, C, D);
+  R.mouth.scale.set(0.5, 0.35, 1);
+}
+
+/** Without a pose of its own the squeezebox stays closed along its left end's axis (or goes with it). */
+function bellows(R) {
+  if (R.tool.scale.x < 0.01) {
+    hideTool(R, R.toolB);
+    hideTool(R, R.toolC);
+    return;
+  }
+  if (R.sqz) return;
+  const d = R.s[4].copy(XV).applyQuaternion(R.tool.quaternion);
+  concertina(R, R.s[5].copy(R.tool.position), R.s[3].copy(R.tool.position).addScaledVector(d, SQUEEZE.len + SQUEEZE_SHUT));
+}
+
+/** 'point' with the spyglass: drawn out, at the right eye, sweeping the sky. */
+function lookOut(R, t) {
+  const P = R.P;
+  const sweep = Math.sin(t * 0.45);
+  legsStand(R, 0.08);
+  R.hips.rotation.y = 0.1 * sweep;
+  R.torso.rotation.set(-0.1 + P.hunch * 0.3, 0.16 * sweep, 0.02);
+  R.head.rotation.set(-0.42 + 0.05 * Math.sin(t * 0.7), 0.12 * sweep, -0.05);
+  bodyDone(R);
+  headMatrix(R, _hm);
+  const eye = R.s[3].set(-P.R * 0.37, P.C + P.R * 0.1, P.R * 0.97).applyMatrix4(_hm);
+  // the line of sight, tipped up a little more than the head towards the sky
+  const dir = R.s[4].set(0, 0.36, 0.93).transformDirection(_hm);
+  const o = R.s[5].copy(eye).addScaledVector(dir, SPY.draw * 0.92 + 0.006);
+  R.tool.position.copy(o);
+  R.tool.quaternion.setFromUnitVectors(UPV, dir);
+  R.tool.scale.setScalar(1);
+  R.ext = 1;
+  const g = R.s[6].copy(o).addScaledVector(dir, 0.035);
+  reachP(R, -1, g.x, g.y, g.z, -0.6, -0.8, -0.2);
+  g.copy(o).addScaledVector(dir, 0.15);
+  reachP(R, 1, g.x, g.y, g.z, 0.9, -0.7, 0.1);
+  R.mouth.scale.set(0.4, 0.15, 1);
+}
+
+/** 'measure' with the spyglass: held across in front, the drawtube pulled out and pushed in. */
+function adjustScope(R, t) {
+  const P = R.P;
+  const ext = 0.5 - 0.5 * Math.cos((t * TAU) / 3.4);
+  legsStand(R, 0.07);
+  R.torso.rotation.set(0.12 + P.hunch * 0.5, 0.05 * Math.sin(t * 0.8), 0);
+  R.head.rotation.set(0.32, -0.1, 0.05);
+  bodyDone(R);
+  const k = P.torsoH / 0.34;
+  const dir = R.s[4].set(0.85, 0.12, 0.42).normalize().applyQuaternion(R.qht);
+  const o = R.s[5].set(-0.06 * k, P.torsoH * 0.42, P.rb * P.zs + 0.2 * k).applyMatrix4(R.mht);
+  R.tool.position.copy(o);
+  R.tool.quaternion.setFromUnitVectors(UPV, dir);
+  R.tool.scale.setScalar(1);
+  R.ext = ext;
+  const g = R.s[6].copy(o).addScaledVector(dir, -(0.9 * SPY.draw * ext + 0.015));
+  reachP(R, -1, g.x, g.y, g.z, -0.8, -0.6, -0.3);
+  g.copy(o).addScaledVector(dir, 0.13);
+  reachP(R, 1, g.x, g.y, g.z, 0.8, -0.6, -0.3);
+  R.mouth.scale.set(0.3, 0.12, 1);
+}
+
+/** The spyglass's drawtube slides along the barrel (R.ext: 0 pushed in, 1 drawn out). */
+function drawTube(R) {
+  if (R.tool.scale.x < 0.01) {
+    hideTool(R, R.toolB);
+    return;
+  }
+  const d = R.s[4].copy(UPV).applyQuaternion(R.tool.quaternion);
+  R.toolB.position.copy(R.tool.position).addScaledVector(d, (1 - R.ext) * SPY.draw * 0.92);
+  R.toolB.quaternion.copy(R.tool.quaternion);
+  R.toolB.scale.setScalar(1);
+}
+
+/** 'measure' with the book: reading it, open in both hands in front of the chest, head bowed. */
+function readBook(R, t) {
+  const P = R.P;
+  const [A, B] = R.s;
+  legsStand(R, 0.07);
+  R.hips.rotation.y = 0.04 * Math.sin(t * 0.5);
+  R.torso.rotation.set(0.1 + P.hunch * 0.5, 0, 0.02 * Math.sin(t * 0.6));
+  R.head.rotation.set(0.42, 0.06 * Math.sin(t * 0.9), 0.04);
+  bodyDone(R);
+  const k = P.torsoH / 0.34;
+  // the spine runs away from the reader, the pages spread left and right, the spread facing the eyes
+  _basis.makeBasis(R.s[3].set(0, 0.82, -0.57), R.s[4].set(0, 0.57, 0.82), R.s[5].set(1, 0, 0));
+  const half = BOOK.open / 2;
+  R.tool.position.set(0, P.torsoH * 0.56, P.rb * P.zs + 0.15 * k).applyMatrix4(R.mht);
+  R.tool.quaternion.setFromRotationMatrix(_basis).premultiply(R.qht).multiply(_q2.setFromAxisAngle(UPV, half));
+  R.tool.scale.setScalar(1);
+  R.open = BOOK.open;
+  // a hand under each half's outer edge (the half further to the person's left in the left hand)
+  A.set(BOOK.w * 0.9, -BOOK.h * 0.15, 0).applyQuaternion(R.tool.quaternion).add(R.tool.position);
+  _q1.copy(R.tool.quaternion).multiply(_q2.setFromAxisAngle(UPV, -BOOK.open));
+  B.set(BOOK.w * 0.9, -BOOK.h * 0.15, 0).applyQuaternion(_q1).add(R.tool.position);
+  const left = A.x > B.x ? A : B;
+  const right = A.x > B.x ? B : A;
+  reachP(R, 1, left.x, left.y - 0.03, left.z, 0.9, -0.6, -0.3);
+  reachP(R, -1, right.x, right.y - 0.03, right.z, -0.9, -0.6, -0.3);
+  R.mouth.scale.set(0.3, 0.1, 1);
+}
+
+/** The book's front half follows the back one, opened by R.open about the spine. */
+function bookCover(R) {
+  if (R.tool.scale.x < 0.01) {
+    hideTool(R, R.toolB);
+    return;
+  }
+  R.toolB.position.copy(R.tool.position);
+  R.toolB.quaternion.copy(R.tool.quaternion).multiply(_q2.setFromAxisAngle(UPV, -R.open));
+  R.toolB.scale.setScalar(1);
+}
+
+/** The apron's flap follows the leading thigh, its hem hanging back down past the knee; when a thigh comes
+ *  right up (sitting, kneeling, running) the flap moves down onto the thighs and lies over the lap. */
+function fitApron(R) {
+  const P = R.P;
+  let lead = 0;
+  for (const leg of [R.legL, R.legR]) {
+    const v = _v1.set(0, -1, 0).applyQuaternion(leg.quaternion);
+    lead = Math.max(lead, Math.atan2(v.z, -v.y));
+  }
+  lead = Math.min(lead, 1.6);
+  const k = smooth((lead - 0.45) / 0.8);
+  const rest = R.apron.userData.rest;
+  R.apron.position.set(rest.x, lerp(rest.y, P.legY + P.thighR + 0.014, k), lerp(rest.z, 0.02, k));
+  R.apron.rotation.set(-lead, 0, 0);
+  R.apron2.rotation.set(lead * 0.92, 0, 0);
+}
+
+/** The mer tail: perched (sit) it curls forward and round with the fin flicking; otherwise it hangs in a
+ *  gentle S, swaying, the fin paddling (livelier when cheering). */
+function merPose(R, t, action) {
+  const s = Math.sin(t * 1.6);
+  if (action === 'sit') {
+    // forward off the seat, down over its edge, the end curling up in front with the fin raised
+    R.tail1.rotation.set(-1.2, 0, 0.3);
+    R.tail2.rotation.set(1.35, 0, 0.2);
+    R.tail3.rotation.set(-0.85 + 0.06 * s, 0, 0);
+    R.fin.rotation.set(-0.75 - 0.3 * Math.max(0, Math.sin(t * 2.1)), 0, 0);
+    return;
+  }
+  // a J: down, then curling back and up behind, the fin up in the air
+  const k = action === 'cheer' ? 1.8 : 1;
+  R.tail1.rotation.set(-0.05 + 0.04 * s, 0, 0.05 * k * Math.sin(t * 1.3));
+  R.tail2.rotation.set(0.35 + 0.05 * Math.sin(t * 1.6 - 0.8), 0, -0.06 * k * Math.sin(t * 1.3 - 0.9));
+  R.tail3.rotation.set(1.25 + 0.08 * Math.sin(t * 1.6 - 1.6), 0, 0.08 * k * Math.sin(t * 1.3 - 1.8));
+  R.fin.rotation.set(0.7 + 0.2 * k * Math.sin(t * 2.2 - 2.4), 0, 0.1 * k * Math.sin(t * 1.3 - 2.6));
+}
+
+/**
+ * The baby hermit crab: on the shoulder it looks about and its shell bobs, its claws pinching now and then;
+ * running, they wave. It rides on top of the hat when the baby kraken would (OCTO_UP), and cheering it
+ * bounces there waving its big claw in the air.
+ */
+function hermitPose(R, t, action) {
+  const up = octoUp(R, action);
+  const cheer = action === 'cheer';
+  const b = Math.sin((t * TAU) / 1.9);
+  const sh = R.petHead;
+  sh.rotation.set(0.09 * b, 0, 0.05 * Math.sin(t * 0.9));
+  sh.position.y += 0.0025 * HERMIT_Z * (0.5 + 0.5 * b);
+  R.pet.rotation.set(0, (0.25 + 0.35 * Math.sin(t * 0.43) + 0.1 * Math.sin(t * 1.3)) * (1 - up), 0);
+  let aL = 0.12 + 0.14 * Math.max(0, Math.sin(t * 2.3)) ** 2;
+  let aR = 0.1 + 0.12 * Math.max(0, Math.sin(t * 2.3 + 2)) ** 2;
+  let yL = 0;
+  if (action === 'run') {
+    aL = 0.55 + 0.3 * Math.sin(t * TAU * 3);
+    aR = 0.55 + 0.3 * Math.sin(t * TAU * 3 + 2);
+  }
+  if (up > 0) {
+    const rest = R.pet.userData.rest;
+    _v2.set(0, R.top, 0).applyQuaternion(R.head.quaternion).add(R.head.position);
+    const arc = Math.sin(PI * up);
+    R.pet.position.set(lerp(rest.x, _v2.x, up) + 0.13 * arc, lerp(rest.y, _v2.y, up) + 0.09 * arc, lerp(rest.z, _v2.z, up));
+    R.pet.quaternion.slerp(R.head.quaternion, up);
+    if (cheer) {
+      const w = t * TAU * 1.25;
+      R.pet.position.y += 0.03 * up * Math.abs(Math.sin(w + 0.9));
+      aL = lerp(aL, 1.45, up);
+      yL = 0.5 * up * Math.sin(t * TAU * 1.5);
+      aR = lerp(aR, 0.6 + 0.2 * Math.sin(t * TAU * 1.5 + 1), up);
+    }
+  }
+  R.petWingL.rotation.set(-aL, yL, 0);
+  R.petWingR.rotation.set(-aR, 0, 0);
+}
+
 /**
  * Run cycle in place: each foot is planted for RUN_STANCE of the cycle, moving back at a constant
  * speed (walkSpeed('run')), then kicks up behind and swings through with the knee high; between the
@@ -3307,6 +4281,8 @@ function runLegs(R, ph) {
 }
 
 const NO_OPTS = Object.freeze({});
+// the new tools whose second piece (toolB) their worn-things pass places
+const TWO_PIECE = new Set(['drum', 'spyglass', 'book', 'squeezebox']);
 /**
  * Pose a person for time t (seconds). Deterministic in t; transforms only.
  * opts: { phase? (seconds, defaults to a per-person offset), speed? (tempo, default 1),
@@ -3327,11 +4303,17 @@ export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   R.mouth.scale.set(1, 0.001, 1);
   R.tailSwing = 0;
   R.snip = 0.1;
-  R.elapsed = action === 'fall' && Number.isFinite(o.since) && Number.isFinite(t) ? Math.max(0, t - o.since) * speed : null;
-  // (own keys only: an action named like an Object.prototype member falls back to idle too)
+  R.drumming = false;
+  R.sqz = false;
+  R.ext = 0;
+  R.open = 0;
+  // (own keys only: an action named like an Object.prototype member falls back to idle too; a mer person
+  // only idles, sits, waves and cheers)
   const own = Object.prototype.hasOwnProperty.call(POSES, action);
-  R.action = own ? action : 'idle';
-  const pose = own ? POSES[action] : POSES.idle;
+  const act = !own || (R.tail1 && !MER_ACTIONS.includes(action)) ? 'idle' : action;
+  R.elapsed = act === 'fall' && Number.isFinite(o.since) && Number.isFinite(t) ? Math.max(0, t - o.since) * speed : null;
+  R.action = act;
+  const pose = POSES[act];
   pose(R, tt, o);
   // worn things: a spare cutlass in the sash, the tape round the neck, the shears' second half,
   // coat tails and the parrot
@@ -3339,17 +4321,24 @@ export function animatePerson(person, t, action = 'idle', opts = NO_OPTS) {
   if (k === 'cutlass' && R.tool.scale.x < 0.01) sheathe(R);
   else if (k === 'tape') {
     drapeTape(R);
-    if (action !== 'measure' || !own) hideTool(R, R.toolB);
+    if (act !== 'measure') hideTool(R, R.toolB);
   } else if (k === 'scissors') shears(R);
-  if (R.L.coat !== undefined && !R.L.skirt) fitTails(R, own ? action : 'idle');
-  if (R.pet && R.L.pet === 'octopus') octoPose(R, tt, own ? action : 'idle');
-  else if (R.pet) petPose(R, tt, own ? action : 'idle');
-  if (R.tassel) hangTassel(R, tt, own ? action : 'idle');
+  else if (k === 'drum') wearDrum(R, act);
+  else if (k === 'spyglass') drawTube(R);
+  else if (k === 'book') bookCover(R);
+  else if (k === 'squeezebox') bellows(R);
+  if (R.L.coat !== undefined && !R.L.skirt) fitTails(R, act);
+  if (R.pet && R.L.pet === 'octopus') octoPose(R, tt, act);
+  else if (R.pet && R.L.pet === 'hermit') hermitPose(R, tt, act);
+  else if (R.pet) petPose(R, tt, act);
+  if (R.tassel) hangTassel(R, tt, act);
+  if (R.apron) fitApron(R);
+  if (R.tail1) merPose(R, tt, act);
   // tools that the action didn't place stay hidden
   if (R.tk === 'none') {
     hideTool(R);
     hideTool(R, R.toolB);
-  } else if (R.tk !== 'rod' && R.tk !== 'fiddle' && R.tk !== 'tape' && R.tk !== 'scissors') {
+  } else if (R.tk !== 'rod' && R.tk !== 'fiddle' && R.tk !== 'tape' && R.tk !== 'scissors' && !TWO_PIECE.has(R.tk)) {
     hideTool(R, R.toolB);
   }
   // blink every few seconds

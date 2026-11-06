@@ -952,3 +952,528 @@
   .quiz-ans.right::after { display: none; }
   .qr-stars .qs.on { animation-name: quiz-fade; animation-timing-function: ease; animation-delay: 0s; }
 }
+
+/* ---------- The Sunset Isles (SPEC4 §5.2, §8.5, §8.6; buildPanel.js and islandMap.js add these classes only with
+   the Sunset Isles, so without them every rule below is idle) ---------- */
+
+/* Bess's four district tabs: the chosen one shows its picture and name, the others their pictures (their names stay
+   their accessible names), so four fit one row no taller than today's two at every size */
+.dock-tabs.four { grid-template-columns: minmax(0, 2.6fr) repeat(3, minmax(46px, 1fr)); gap: 3px; }
+.dock-tabs.four:has([role="tab"]:nth-child(4)[aria-selected="true"]) { grid-template-columns: minmax(46px, 1fr) minmax(0, 2.6fr) repeat(2, minmax(46px, 1fr)); }
+.dock-tabs.four:has([role="tab"]:nth-child(5)[aria-selected="true"]) { grid-template-columns: repeat(2, minmax(46px, 1fr)) minmax(0, 2.6fr) minmax(46px, 1fr); }
+.dock-tabs.four:has([role="tab"]:nth-child(6)[aria-selected="true"]) { grid-template-columns: repeat(3, minmax(46px, 1fr)) minmax(0, 2.6fr); }
+.dock-tabs.four [role="tab"] { display: flex; align-items: center; justify-content: center; gap: 6px; min-width: 0; padding: 4px 8px 2px; font-size: 16px; line-height: 1.02; letter-spacing: 0.02em; }
+.dock-tabs.four [role="tab"]:not([aria-selected="true"]) .bt4-name { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.bt4-ico { flex: none; display: grid; place-items: center; width: 32px; height: 32px; margin-top: -2px; border: 2px solid var(--ink); border-radius: 50%; background: var(--dc, #fff); }
+.bt4-ico svg { display: block; width: 25px; height: 25px; }
+.bt4-name { min-width: 0; text-align: left; }
+.dock-tabs.four [role="tab"]:nth-child(3) { --dc: #bdf0dc; }
+.dock-tabs.four [role="tab"]:nth-child(4) { --dc: #ffd9b0; }
+.dock-tabs.four [role="tab"]:nth-child(5) { --dc: #b6ecec; }
+.dock-tabs.four [role="tab"]:nth-child(6) { --dc: #ffd2c8; }
+@container dockpanel (max-width: 420px) {
+  .dock-tabs.four [role="tab"] { font-size: 15px; padding-left: 6px; padding-right: 6px; gap: 5px; }
+}
+@container dockpanel (max-width: 360px) {
+  .dock-tabs.four { gap: 2px; }
+  .dock-tabs.four [role="tab"] { font-size: 13px; padding: 3px 5px 1px; gap: 4px; letter-spacing: 0.01em; }
+  .bt4-ico { width: 27px; height: 27px; }
+  .bt4-ico svg { width: 21px; height: 21px; }
+}
+@container dockpanel (max-width: 300px) {
+  .dock-tabs.four { grid-template-columns: minmax(0, 2.6fr) repeat(3, minmax(44px, 1fr)); }
+  .dock-tabs.four:has([role="tab"]:nth-child(4)[aria-selected="true"]) { grid-template-columns: minmax(44px, 1fr) minmax(0, 2.6fr) repeat(2, minmax(44px, 1fr)); }
+  .dock-tabs.four:has([role="tab"]:nth-child(5)[aria-selected="true"]) { grid-template-columns: repeat(2, minmax(44px, 1fr)) minmax(0, 2.6fr) minmax(44px, 1fr); }
+  .dock-tabs.four:has([role="tab"]:nth-child(6)[aria-selected="true"]) { grid-template-columns: repeat(3, minmax(44px, 1fr)) minmax(0, 2.6fr); }
+  .dock-tabs.four [role="tab"] { padding-left: 4px; padding-right: 4px; gap: 3px; }
+  .bt4-ico { width: 25px; height: 25px; }
+  .bt4-ico svg { width: 19px; height: 19px; }
+}
+
+/* A row: its button bar holds the main button and, once built, Watch again (44 px wide, as tall as the button). A built
+   row's button says "Upgrade — 350 gold" (the Next line names the tier; the button's name keeps every word), so the
+   row is never taller than today's. (Today's button has a -2 px top margin on short screens, which collapses into
+   the bar's margin; in a flex bar it can't, so the bar takes the 2 px itself.) */
+.build-row .b-buy:has(.b-watch) { display: flex; align-items: stretch; gap: 6px; }
+.build-row .b-buy:has(.b-watch) .b-btn { flex: 1 1 auto; min-width: 0; width: auto; }
+.build-row.built .b-tn { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+.b-watch {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 48px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 0;
+  color: var(--ink);
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 4px 0 var(--ink);
+  cursor: pointer;
+}
+.b-watch .b-watch-ico { display: block; width: 28px; height: 28px; }
+.b-watch:not([aria-disabled="true"]):hover { background: #fff3c4; }
+.b-watch:not([aria-disabled="true"]):active { transform: translateY(3px); box-shadow: 0 1px 0 var(--ink); }
+.b-watch[aria-disabled="true"] { background: #ece0c4; box-shadow: 0 2px 0 var(--ink); cursor: not-allowed; }
+.b-watch[aria-disabled="true"] .b-watch-ico { opacity: 0.55; }
+@container (max-width: 330px) {
+  .b-watch { width: 44px; border-radius: 12px; }
+  .b-watch .b-watch-ico { width: 26px; height: 26px; }
+}
+@media (orientation: portrait) and (max-height: 700px), (orientation: landscape) and (max-height: 500px) {
+  .build-row .b-buy:has(.b-watch) { margin-top: 7px; }
+  .build-row .b-buy:has(.b-watch) .b-btn { margin-top: 0; }
+}
+@media (orientation: portrait) and (max-height: 520px), (orientation: landscape) and (max-height: 400px) {
+  .build-row .b-buy:has(.b-watch) { margin-top: 4px; }
+}
+/* not on sale yet: a lock and its reason; while a scene runs: "Building…" with a hammer (never colour alone) */
+.build-row .b-btn[data-state="closed"] { color: #5c4632; background: #efe6d2; box-shadow: 0 2px 0 var(--ink); cursor: not-allowed; font-family: var(--body); font-weight: 700; font-size: 15px; letter-spacing: 0; }
+.build-row .b-btn[data-state="busy"] { color: #5c4632; background: #ece0c4; box-shadow: 0 2px 0 var(--ink); cursor: progress; }
+.b-btn .b-lock { flex: none; width: 14px; height: 17px; margin: -2px 0 0; }
+.b-btn .b-hammer { flex: none; width: 20px; height: 20px; margin: -3px 0 0; }
+.build-row.closed { background: #f7f0e1; }
+.build-row.closed .up-ico svg { filter: grayscale(0.7); opacity: 0.75; }
+.build-row.closed .b-next .b-text { color: #5c4632; }
+@container (max-width: 400px) {
+  .build-row .b-btn[data-state="closed"] { font-size: 14px; }
+}
+
+/* ---------- The construction scene's strip (SPEC4 §5.2): the stage pill "Walls ●●●○○○" and Skip ----------
+   On a wide screen it sits at the top of the view beside Bess's panel (the rows read "Building…"); on a phone
+   (portrait, or up to 760 px wide) the sheet folds to a 56 px bar and the strip sits on it, so the camera frames
+   the plot in all the room above. buildPanel.js shows it (class scene-on on #build-screen). */
+.build-scene {
+  position: absolute;
+  z-index: 2;
+  top: max(12px, env(safe-area-inset-top));
+  left: 14px;
+  right: calc(clamp(300px, 36vw, 440px) + 28px);
+  width: fit-content;
+  max-width: calc(100% - 28px);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 56px;
+  box-sizing: border-box;
+  padding: 5px 6px 5px 14px;
+  pointer-events: auto;
+  color: var(--ink);
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 4px 0 var(--ink);
+  animation: town-prompt-in 0.3s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+.scene-stage { min-width: 0; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 19px; line-height: 1.02; letter-spacing: 0.03em; white-space: nowrap; padding-top: 3px; }
+.scene-pips { flex: none; display: inline-flex; gap: 4px; }
+.scene-pips i { width: 13px; height: 13px; border: 2px solid var(--ink); border-radius: 50%; background: #fff; }
+.scene-pips i.on { background: var(--gold); box-shadow: inset 0 -2px 0 rgba(0, 0, 0, 0.18); }
+.build-scene .scene-skip {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-width: 44px;
+  min-height: 44px;
+  margin: 0;
+  padding: 6px 14px 4px;
+  font-size: 18px;
+  line-height: 1;
+  border-width: 3px;
+  box-shadow: 0 3px 0 var(--ink);
+}
+.build-scene .scene-skip:active { box-shadow: 0 1px 0 var(--ink); }
+.build-scene .scene-skip:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+.scene-skip .ss-ico { width: 18px; height: 18px; margin-top: -2px; }
+/* (a short landscape screen's side panel is narrower: the strip centres in the view beside it) */
+@media (orientation: landscape) and (max-height: 500px) {
+  .build-scene { top: max(8px, env(safe-area-inset-top)); left: 8px; right: calc(clamp(290px, 44vw, 380px) + 16px); }
+}
+/* the folded sheet: a 56 px bar at the bottom (the panel keeps its place, so the camera frames above it) */
+@media (orientation: portrait), (max-width: 760px) {
+  .overlay.town.build.scene-on { align-items: flex-end; }
+  .build.scene-on .build-panel.dock-panel { height: 56px; min-height: 56px; max-height: 56px; animation: none; }
+  .build.scene-on .build-panel.dock-panel > * { display: none; }
+  .build.scene-on .build-scene {
+    top: auto;
+    bottom: 8px;
+    left: 8px;
+    right: 8px;
+    width: auto;
+    max-width: 620px;
+    height: 56px;
+    min-height: 56px;
+    padding: 4px 5px 4px 14px;
+    border-radius: 24px 24px 20px 20px;
+    box-shadow: none;
+    animation: none;
+  }
+  .build.scene-on .scene-stage { flex: 1 1 auto; white-space: normal; font-size: 17px; }
+}
+@media (orientation: landscape) and (max-width: 760px) {
+  .build.scene-on .build-scene { left: auto; right: 8px; width: clamp(290px, 44vw, 380px); border-radius: 20px; }
+}
+@media (max-width: 359px), (orientation: landscape) and (max-height: 400px) {
+  .build-scene { gap: 7px; padding-left: 11px; }
+  .build.scene-on .scene-stage { font-size: 15.5px; }
+  .scene-pips { gap: 3px; }
+  .scene-pips i { width: 11px; height: 11px; }
+  .build-scene .scene-skip { padding: 6px 10px 4px; font-size: 16px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .build-scene { animation: none; }
+}
+
+/* ---------- An islander's chat (SPEC4 §7.4): #talk-bubble with its name, the line and Next ----------
+   Where a prompt would be (above the places bar; at the top on a portrait phone), so it never covers the captain. */
+.talk-bubble {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 76px);
+  width: fit-content;
+  max-width: min(440px, calc(100% - 24px));
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas: "name next" "text next";
+  align-items: center;
+  column-gap: 12px;
+  row-gap: 1px;
+  padding: 8px 8px 9px 16px;
+  pointer-events: auto;
+  color: var(--ink);
+  background: #fff;
+  border: 3px solid var(--ink);
+  border-radius: 20px;
+  box-shadow: 0 4px 0 var(--ink);
+  animation: town-prompt-in 0.3s cubic-bezier(0.2, 1.5, 0.4, 1);
+}
+.talk-bubble::after {
+  content: "";
+  position: absolute;
+  left: 34px;
+  bottom: -11px;
+  width: 14px;
+  height: 14px;
+  background: #fff;
+  border: solid var(--ink);
+  border-width: 0 3px 3px 0;
+  transform: rotate(45deg) skew(8deg, 8deg);
+}
+.talk-name { grid-area: name; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 15px; line-height: 1.2; letter-spacing: 0.04em; color: var(--teal-text); }
+.talk-text { grid-area: text; margin: 0; font-size: 17px; font-weight: 600; line-height: 1.3; color: var(--ink); text-wrap: pretty; }
+.talk-bubble .talk-next { grid-area: next; align-self: center; min-width: 44px; min-height: 44px; margin: 0; padding: 7px 14px 5px; font-size: 17px; line-height: 1.1; border-width: 3px; box-shadow: 0 3px 0 var(--ink); }
+.talk-bubble .talk-next:active { box-shadow: 0 1px 0 var(--ink); }
+.talk-bubble .talk-next:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+@media (hover: none) and (pointer: coarse) {
+  .talk-bubble { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 226px); }
+}
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) and (max-height: 780px) {
+  .talk-bubble { top: calc(max(12px, env(safe-area-inset-top)) + 60px); bottom: auto; }
+  .talk-bubble::after { top: -11px; bottom: auto; transform: rotate(-135deg) skew(8deg, 8deg); }
+}
+@media (orientation: landscape) and (max-height: 560px) {
+  .talk-bubble { top: max(12px, env(safe-area-inset-top)); bottom: auto; left: 158px; right: 132px; max-width: calc(100% - 290px); padding: 5px 6px 6px 12px; }
+  .talk-bubble::after { display: none; }
+  .talk-text { font-size: 15px; }
+  .talk-name { font-size: 13px; }
+  #town-screen:has(.talk-bubble:not(.hidden)) .town-keys { visibility: hidden; }
+}
+@media (max-width: 359px) {
+  .talk-text { font-size: 15.5px; }
+}
+/* (a chat replaces the prompt) */
+#town-screen:has(.talk-bubble:not(.hidden)) .town-prompt { display: none; }
+
+/* ---------- A district's toast under its arch (SPEC4 §8.5): its name for 2 s (aria-hidden; #town-live says it) ---------- */
+.town-toast {
+  position: absolute;
+  left: 50%;
+  top: calc(max(12px, env(safe-area-inset-top)) + 64px);
+  transform: translateX(-50%);
+  max-width: calc(100% - 24px);
+  margin: 0;
+  padding: 8px 22px 5px;
+  pointer-events: none;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 26px;
+  line-height: 1.1;
+  letter-spacing: 0.05em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--ink);
+  background: var(--paper);
+  border: 3px solid var(--ink);
+  border-bottom: 7px solid var(--dc, var(--gold));
+  border-radius: 18px;
+  box-shadow: 0 4px 0 var(--ink);
+  animation: town-toast-in 0.45s cubic-bezier(0.2, 1.4, 0.4, 1);
+}
+.town-toast[data-district="harbour"] { --dc: #2f6fd8; }
+.town-toast[data-district="windmill"] { --dc: #5fcfa8; }
+.town-toast[data-district="lantern"] { --dc: #f28c28; }
+.town-toast[data-district="lighthouse"] { --dc: #1fa3a3; }
+.town-toast[data-district="beach"] { --dc: #ff7f6a; }
+.town-toast[data-district="hill"] { --dc: #6cbf4a; }
+@keyframes town-toast-in {
+  from { opacity: 0; transform: translate(-50%, -12px) scale(0.92); }
+  to { opacity: 1; transform: translateX(-50%); }
+}
+@media (max-width: 479px), (orientation: landscape) and (max-height: 500px) {
+  .town-toast { font-size: 21px; padding: 7px 16px 4px; }
+}
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) and (max-height: 780px) {
+  /* (under the prompt's place at the top) */
+  .town-toast { top: calc(max(12px, env(safe-area-inset-top)) + 124px); }
+}
+
+/* ---------- The lookout (SPEC4 §6.7): Climb down, where the prompt goes (it replaces the prompt) ---------- */
+.lookout-down {
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  bottom: calc(max(10px, env(safe-area-inset-bottom)) + 76px);
+  width: fit-content;
+  min-width: 44px;
+  min-height: 48px;
+  margin: 0 auto;
+  padding: 9px 26px 6px;
+  font-size: 20px;
+  line-height: 1.1;
+  white-space: nowrap;
+  border-width: 3px;
+  box-shadow: 0 5px 0 var(--ink);
+  pointer-events: auto;
+}
+.lookout-down:active { transform: translateY(3px); box-shadow: 0 2px 0 var(--ink); }
+.lookout-down:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 3px; }
+#town-screen:has(.lookout-down:not(.hidden)) .town-prompt { display: none; }
+@media (hover: none) and (pointer: coarse) {
+  .lookout-down { bottom: calc(max(10px, env(safe-area-inset-bottom)) + 226px); }
+}
+@media (hover: none) and (pointer: coarse) and (orientation: portrait) and (max-height: 780px) {
+  .lookout-down { top: calc(max(12px, env(safe-area-inset-top)) + 60px); bottom: auto; }
+}
+@media (orientation: landscape) and (max-height: 560px) {
+  .lookout-down { top: max(12px, env(safe-area-inset-top)); bottom: auto; font-size: 17px; padding: 8px 18px 5px; min-height: 46px; }
+}
+
+/* ---------- The Harbour menu's Island map and its one-time "New!" badge ---------- */
+#harbour-map-btn { position: relative; }
+#harbour-map-btn .new-badge {
+  position: absolute;
+  top: -10px;
+  right: -8px;
+  padding: 2px 7px 0;
+  font-family: var(--head);
+  font-weight: 900;
+  font-synthesis: none;
+  font-size: 12px;
+  line-height: 1.4;
+  letter-spacing: 0.05em;
+  color: #fff;
+  background: var(--red-text);
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  transform: rotate(6deg);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .talk-bubble, .town-toast { animation: none; }
+}
+
+/* ---------- The Island map (SPEC4 §8.5; islandMap.js): a parchment map beside (below, in portrait) a list of every
+   district, plot and islander; Walk there, Hop there, Close. Non-modal: the town shows round it. ---------- */
+.overlay.town.island-map { justify-content: center; align-items: center; padding: 14px; }
+.island-map .map-panel.dock-panel {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(250px, 31%, 340px);
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  grid-template-areas: "title title" "map list" "exits exits";
+  width: min(1060px, 100%);
+  height: 100%;
+  max-height: 780px;
+}
+.map-panel > h2 {
+  grid-area: title;
+  margin: 0;
+  padding: 10px 18px 8px;
+  font-size: clamp(22px, 2.05vw, 28px);
+  line-height: 1.05;
+  text-align: left;
+  text-shadow: 0 3px 0 var(--ink);
+  background:
+    repeating-linear-gradient(180deg, rgba(139, 90, 43, 0) 0 22px, rgba(139, 90, 43, 0.07) 22px 24px),
+    var(--paper-2);
+  border-bottom: 3px solid var(--ink);
+}
+.map-where {
+  grid-area: title;
+  justify-self: end;
+  align-self: center;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 14px 0 8px;
+  padding: 3px 12px 2px 6px;
+  font-size: 14px;
+  line-height: 1.3;
+  white-space: nowrap;
+  color: var(--ink);
+  background: #fff;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+}
+.map-where b { font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.03em; color: var(--teal-text); }
+.mw-pin { flex: none; width: 13px; height: 17px; background: #e2383d; border: 2px solid var(--ink); border-radius: 50% 50% 50% 0; transform: rotate(-45deg) scale(0.85); }
+.map-svg {
+  grid-area: map;
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  background: #f3e1b4;
+  border-right: 3px solid var(--ink);
+  touch-action: manipulation;
+}
+.map-list {
+  grid-area: list;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  touch-action: pan-y;
+  padding: 2px 12px 10px;
+  background: var(--paper);
+  scrollbar-width: thin;
+  scrollbar-color: rgba(29, 19, 48, 0.45) transparent;
+  scroll-padding-block: 10px;
+}
+.map-panel .dock-exits { grid-area: exits; flex-wrap: wrap; align-items: center; }
+.map-panel .dock-exits .btn { flex: 1 1 0; }
+.map-panel .dock-exits #map-close-btn { flex: 0 1 auto; }
+.map-panel .dock-exits .btn[aria-disabled="true"] { color: #5c4632; background: #ece0c4; box-shadow: 0 2px 0 var(--ink); cursor: not-allowed; }
+.map-panel .mc-x { display: none; width: 18px; height: 18px; }
+.map-picked { flex: 1 1 100%; margin: 0 0 2px; font-size: 14px; line-height: 1.3; text-align: center; color: #4a3826; }
+.map-picked b { color: var(--teal-text); }
+.mpk-label { font-weight: 700; color: #5c4632; }
+/* the map's drawing */
+.mp-paper { fill: #f3e1b4; }
+.mp-sea { fill: #cfe6e4; }
+.mp-dist { stroke-width: 0.5; stroke-dasharray: 1.6 1; fill-opacity: 0.85; cursor: pointer; }
+.mp-rope { fill: none; stroke: #8b5a2b; stroke-width: 0.45; stroke-dasharray: 0.9 0.5; stroke-linecap: round; }
+.mp-board-edge { fill: none; stroke: #1d1330; stroke-linecap: butt; stroke-linejoin: round; }
+.mp-board { fill: none; stroke: #c99a62; stroke-linecap: butt; stroke-linejoin: round; }
+.mp-deck { fill: #d9a86a; stroke: #1d1330; stroke-width: 0.32; }
+.mp-porch { fill: #c99a62; stroke: #1d1330; stroke-width: 0.26; }
+.mp-sand { fill: #f6d68b; stroke: #1d1330; stroke-width: 0.32; }
+.mp-hill { fill: #9fd27a; stroke: #1d1330; stroke-width: 0.32; }
+.mp-hilltop { fill: #b9e09a; stroke: #4d8a35; stroke-width: 0.22; stroke-dasharray: 0.8 0.6; }
+.mp-pad { stroke: #1d1330; stroke-width: 0.32; }
+.mp-plot:not(.built) .mp-pad { stroke-dasharray: 0.8 0.5; }
+.mp-plot { cursor: pointer; }
+.mp-folk { fill: #fff; stroke: #1d1330; }
+.mp-name { font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.03em; fill: currentColor; color: var(--ink); stroke: #fffaf0; stroke-linejoin: round; paint-order: stroke; pointer-events: none; }
+.mp-here { font-family: var(--head); font-weight: 900; font-synthesis: none; letter-spacing: 0.03em; fill: currentColor; color: var(--ink); }
+.mp-n { font-family: var(--head); font-weight: 900; font-size: 2.6px; fill: currentColor; color: var(--ink); }
+.mp-ring { fill: none; stroke: var(--gold); }
+.mp-ring-ink { fill: none; stroke: var(--ink); }
+.mp-pick, .mp-pin, .mp-people, .mp-names, .mp-marks { pointer-events: none; }
+/* the list: a district's button, then its plots and islanders */
+.map-group { margin: 10px 0 4px; }
+.map-dname { margin: 0; }
+.map-items { list-style: none; margin: 6px 0 0 14px; padding: 0 0 0 10px; border-left: 3px dotted rgba(29, 19, 48, 0.35); display: grid; grid-template-columns: minmax(0, 1fr); gap: 6px; }
+.map-pick {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 44px;
+  margin: 0;
+  padding: 5px 10px 4px 7px;
+  font-family: var(--body);
+  font-weight: 700;
+  font-size: 15px;
+  line-height: 1.15;
+  text-align: left;
+  color: var(--ink);
+  background: #fffaf0;
+  border: 3px solid var(--ink);
+  border-radius: 14px;
+  box-shadow: 0 3px 0 var(--ink);
+  cursor: pointer;
+}
+.map-pick:hover { background: #fff3c4; }
+.map-pick:active { transform: translateY(2px); box-shadow: 0 1px 0 var(--ink); }
+.map-pick[aria-pressed="true"] { background: #fff1bf; box-shadow: 0 0 0 3px var(--gold), 0 3px 0 3px var(--ink); }
+.map-pick:focus-visible { outline: 4px solid var(--teal-text); outline-offset: 2px; }
+.map-district { min-height: 48px; font-family: var(--head); font-weight: 900; font-synthesis: none; font-size: 18px; letter-spacing: 0.03em; background: var(--dt, #fffaf0); }
+.mp-chip { flex: none; width: 22px; height: 22px; border: 3px solid var(--ink); border-radius: 50%; background: var(--dc, #fff); }
+.map-pick .mp-name { flex: 1 1 auto; min-width: 0; overflow-wrap: break-word; padding-top: 2px; }
+.map-district { flex-wrap: wrap; row-gap: 2px; }
+.map-district .mp-name { flex: 1 0 auto; max-width: calc(100% - 30px); }
+.mp-here-tag { flex: none; padding: 2px 8px 0; font-family: var(--body); font-weight: 700; font-size: 12px; letter-spacing: 0.02em; line-height: 1.4; color: #fff; background: var(--red-text); border: 2px solid var(--ink); border-radius: 999px; }
+.mp-ico { flex: none; display: grid; place-items: center; width: 32px; height: 32px; background: var(--paper-2); border: 2px solid var(--ink); border-radius: 9px; }
+.mp-ico svg { display: block; width: 26px; height: 26px; }
+.map-plot:not(.built) .mp-ico svg { filter: grayscale(0.6); opacity: 0.7; }
+.mp-tier { flex: none; font-size: 13px; font-weight: 700; color: #5c4632; white-space: nowrap; }
+.map-plot.built .mp-tier { color: var(--teal-text); }
+.map-talk .mp-ico { background: #fff; border-radius: 50%; }
+/* Portrait: the map on top, the list under it (it scrolls), the buttons at the bottom */
+@media (orientation: portrait) {
+  .overlay.town.island-map { align-items: flex-end; padding: 0 8px 8px; }
+  .island-map .map-panel.dock-panel {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr) auto;
+    grid-template-areas: "title" "map" "list" "exits";
+    width: 100%;
+    max-width: 620px;
+    height: calc(100% - 8px);
+    border-radius: 24px 24px 20px 20px;
+    animation-name: dock-up;
+  }
+  .map-svg { height: auto; aspect-ratio: var(--map-aspect, 5 / 4); max-height: 40vh; border-right: 0; border-bottom: 3px solid var(--ink); }
+  .map-panel > h2 { padding: 8px 14px 6px; font-size: 22px; }
+}
+@media (orientation: portrait) {
+  .map-panel .dock-exits .btn { font-size: 16px; padding: 8px 10px 5px; white-space: nowrap; }
+}
+@media (orientation: portrait) and (max-width: 359px), (orientation: portrait) and (max-height: 700px) {
+  .map-where { font-size: 12.5px; padding: 2px 9px 1px 5px; margin-right: 10px; }
+  .map-where .mw-pin { display: none; }
+}
+@media (orientation: portrait) and (max-width: 359px) {
+  .map-panel .dock-exits #map-close-btn { flex: none; display: grid; place-items: center; width: 48px; min-width: 48px; padding: 0; }
+  .map-panel .mc-x { display: block; }
+  .map-panel .mc-word { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
+@media (orientation: portrait) and (max-height: 700px) {
+  .map-svg { max-height: 36vh; }
+  .map-panel > h2 { font-size: 19px; padding: 6px 12px 5px; text-shadow: 0 2px 0 var(--ink); }
+  .map-panel .dock-exits { padding: 6px 10px 7px; gap: 4px 6px; }
+  .map-picked { font-size: 13px; }
+  .map-panel .dock-exits .btn { font-size: 15px; min-height: 44px; padding: 6px 10px 3px; }
+  .map-group { margin-top: 8px; }
+}
+/* Short landscape: everything a size smaller; the map's title shares its row with the footer's words */
+@media (orientation: landscape) and (max-height: 500px) {
+  .overlay.town.island-map { padding: 8px; }
+  .island-map .map-panel.dock-panel { grid-template-columns: minmax(0, 1fr) clamp(220px, 40%, 320px); border-radius: 20px; }
+  .map-panel > h2 { font-size: 18px; padding: 5px 12px 4px; text-shadow: 0 2px 0 var(--ink); }
+  .map-panel .dock-exits { padding: 5px 10px 6px; gap: 3px 6px; }
+  .map-picked { font-size: 13px; }
+  .map-panel .dock-exits .btn { font-size: 15px; min-height: 44px; padding: 6px 10px 3px; box-shadow: 0 4px 0 var(--ink); }
+  .map-district { font-size: 16px; min-height: 44px; }
+  .map-pick { font-size: 14px; }
+  .map-group { margin-top: 6px; }
+}

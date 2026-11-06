@@ -1888,9 +1888,23 @@ function pickSpawns(count, index) {
 
 // The waves a level plays (SPEC4 §3.5, §11.2): its def's, or on a pool level (Voyage IV) the waves drawn from its
 // pool at its start (state.waves). Every read of a level's waves goes through here. Stage 0: def.waves everywhere.
+const shipOnlyWaves = new WeakMap();
 function levelWaves(def = LEVELS[state.level - 1]) {
   if (!def) return [];
-  return def.pool && Array.isArray(state.waves) ? state.waves : def.waves;
+  const waves = def.pool && Array.isArray(state.waves) ? state.waves : def.waves;
+  if (def.act !== 4 || !Array.isArray(waves)) return waves;
+  // Stage 1 stop-gap, removed in Stage 2 R1 when 2A routes pseudo foes to foes4 (SPEC4 §3.7): a Voyage IV wave
+  // keeps only its ship types (a wave left empty sails one cutter), so the ?v4=1 preview still starts levels
+  // 10-12. Levels 1-9 never get here. One filtered copy per waves array.
+  let out = shipOnlyWaves.get(waves);
+  if (!out) {
+    out = waves.map((w) => {
+      const ships = (Array.isArray(w) ? w : []).filter((t) => SHIP_TYPES[t] && t !== 'player');
+      return ships.length ? ships : ['cutter'];
+    });
+    shipOnlyWaves.set(waves, out);
+  }
+  return out;
 }
 // The combatRng seed of a level's start (SPEC4 §3.5): n x 7919 + 13 on levels 1-9 (and in Stage 0 on every level);
 // from Stage 2 on, poolSeed(n, plays) on levels 10-12 (or __game.v4.seed's).
@@ -7490,6 +7504,7 @@ const townMode = createTownMode({
   prizes: prizeShips,
   // The Kraken Seas ashore (SPEC3 §11.2 "dock / town"; read once: without them the town is exactly today's)
   withKraken: WITH_KRAKEN,
+  withV4: WITH_V4,
   unlocked: () => state.unlocked,
   powder: { state: () => state.powder, buy: buyPowderRecipe },
   island: { state: () => islandCfg, build: buildPlot },

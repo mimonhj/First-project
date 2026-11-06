@@ -14,6 +14,11 @@
 //   Bess and the professor clear of every walker's path and villager's loop (1 u), of the bridge mouths and the
 //   doorways (2 u) and of the other places, leaving no passage narrower than 1.6 u of deck; the villagers' loops
 //   on the walk, clear of everything, at most two on any bridge
+// - the Sunset Isles (SPEC4 §6, §13.1; tests/fixtures/sparrow-walk-v4.json, dumped with the ctx's kraken and v4 on,
+//   and src/islandPlan.js): today's walk kept as it was and the plan's added; every rendered bridge walkable; the
+//   places, plots, lookout and hops reached from the ship and back; every area and link reached; the 21 pads blocked
+//   and camera boxes; 1.6 u porches; no lips, jogs across every new link; 10,000 random steps; the keep-offs; the
+//   islanders' loops and where they pause; signposts, arches, districts; the camera target clear
 // - small made-up towns: an L of two rects, a turned rect, a round mound, a sagging bridge (its
 //   height followed along the planks), two islands (no path between them)
 // - junk data and junk arguments never throw
@@ -596,6 +601,372 @@ function pathProblems(W, p, from, to) {
       }
     }
     check(loops.length === 8 && bad.length === 0 && Object.values(perBridge).every((v) => v <= 2), `the villagers' 8 loops are closed, on the walk, clear of obstacles (0.3), of the other paths and loops (0.7) and of the places' circles; loops per bridge ${JSON.stringify(perBridge)}${bad.length ? ': ' + [...new Set(bad)].slice(0, 5).join('; ') : ''}`);
+  }
+
+  // ---- the Sunset Isles (SPEC4 §6, §13.1): the v4 walk (tests/fixtures/sparrow-walk-v4.json, dumped from the live
+  // env.walk built with the ctx's kraken and v4 on) and islandPlan.js's plan ----
+  {
+    const FIX4 = path.join(__dirname, 'fixtures', 'sparrow-walk-v4.json');
+    let PLAN = null;
+    try {
+      PLAN = await load('src/islandPlan.js');
+    } catch (e) {
+      PLAN = null;
+    }
+    if (!fs.existsSync(FIX4) || !PLAN || !Array.isArray(PLAN.LINKS)) {
+      console.log('SKIP  the v4 walk checks: tests/fixtures/sparrow-walk-v4.json or islandPlan.js is not there yet');
+    } else {
+      const d4 = JSON.parse(fs.readFileSync(FIX4, 'utf8'));
+      const W4 = createWalk(d4);
+      const ids = (list) => (list || []).map((q) => q && q.id);
+      const same = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+      const segD = (x, z, pts) => {
+        let best = Infinity;
+        for (let i = 1; i < pts.length; i++) {
+          const [ax, , az] = pts[i - 1];
+          const [bx, , bz] = pts[i];
+          const dx = bx - ax;
+          const dz = bz - az;
+          const t = Math.max(0, Math.min(1, ((x - ax) * dx + (z - az) * dz) / (dx * dx + dz * dz || 1)));
+          best = Math.min(best, Math.hypot(x - ax - dx * t, z - az - dz * t));
+        }
+        return best;
+      };
+      const info = Object.fromEntries(PLAN.LINKS.map((l) => [l.id, l]));
+      // (walk.js's string-pulled paths may cut the inside corner where two of a porch's walk rects meet by a few cm:
+      // on the v4 town a path point counts as on the walk when it, or a point 6 cm from it, is)
+      const pathProblems4 = (Wk, p, from, to) => {
+        const out = [];
+        if (!Array.isArray(p) || p.length < 2) return ['no path'];
+        if (Math.hypot(p[0].x - from.x, p[0].z - from.z) > 1.0) out.push('starts away from the start');
+        const end = p[p.length - 1];
+        if (Math.hypot(end.x - to.x, end.z - to.z) > 3.0) out.push('ends away from the goal');
+        const ok = (x, z) => Wk.inside(x, z) && !Wk.blocked(x, z, R - 0.01);
+        for (let i = 0; i + 1 < p.length; i++) {
+          const L = Math.hypot(p[i + 1].x - p[i].x, p[i + 1].z - p[i].z);
+          const n = Math.max(1, Math.ceil(L / 0.25));
+          for (let k = 0; k <= n; k++) {
+            const x = p[i].x + ((p[i + 1].x - p[i].x) * k) / n;
+            const z = p[i].z + ((p[i + 1].z - p[i].z) * k) / n;
+            if (!ok(x, z) && ![0, 1, 2, 3, 4, 5, 6, 7].some((r) => ok(x + Math.cos((r * Math.PI) / 4) * 0.06, z + Math.sin((r * Math.PI) / 4) * 0.06))) out.push(`off the walk at ${f2(x)},${f2(z)}`);
+          }
+        }
+        return out;
+      };
+      // over the water (off every deck, porch, islet and pier): where a link's ropes are its only edges
+      const overWater = (x, z) => !PLAN.DECKS.some((D) => (D.r !== undefined ? Math.hypot(x - D.x, z - D.z) <= D.r + 0.1 : [D, ...(D.porches || [])].some((q) => {
+        const c = Math.cos(q.ry || 0);
+        const sn = Math.sin(q.ry || 0);
+        return Math.abs((x - q.x) * c - (z - q.z) * sn) <= q.w / 2 + 0.1 && Math.abs((x - q.x) * sn + (z - q.z) * c) <= q.d / 2 + 0.1;
+      })));
+      // -- what env.walk gains, and what stays exactly today's (§6.3)
+      {
+        const keys = ['radius', 'areas', 'links', 'blockers', 'camBlockers', 'places', 'spawn', 'npcs', 'doors', 'paths', 'bridges', 'hops', 'districts'];
+        const keep = ['radius', 'spawn', 'npcs', 'doors'].every((k) => same(d4[k], data[k]));
+        const prefix = ['areas', 'links', 'places', 'paths'].every((k) => same(d4[k].slice(0, data[k].length), data[k]));
+        check(same(Object.keys(d4), keys) && keep && prefix, `the v4 walk keeps today's radius, spawn, npcs and doors exactly, and today's areas, links (the four rope bridges byte for byte), places and paths come first, in order; it adds bridges, hops and districts`);
+        const newLinks = d4.links.slice(data.links.length);
+        const want = PLAN.LINKS.filter((l) => !l.today).map((l) => l.id);
+        const kindOk = d4.links.every((l) => info[l.id] && (info[l.id].kind === 'rope' ? l.hw === PLAN.WALKWAY.ropeHw : l.hw === PLAN.WALKWAY.boardHw));
+        check(same(ids(newLinks), want) && kindOk && d4.links.length === PLAN.LINKS.length, `links: today's 4 + the 7 scenery rope bridges + the plan's new rope bridges, boardwalks and steps (${d4.links.length}, each in islandPlan.LINKS, its band its kind's: rope ${PLAN.WALKWAY.ropeHw}, board / steps ${PLAN.WALKWAY.boardHw})`);
+        const longRope = PLAN.LINKS.filter((l) => l.kind === 'rope' && !l.today && !l.scenery && !(l.span <= PLAN.WALKWAY.ropeMax + 1e-9));
+        check(longRope.length === 0, `every new rope bridge spans ≤ ${PLAN.WALKWAY.ropeMax} u of water (longer ones are boardwalks)${longRope.length ? ' -> ' + longRope.map((l) => `${l.id} ${l.span}`).join(', ') : ''}`);
+        const src = fs.readFileSync(path.join(ROOT, 'src/env/sparrow.js'), 'utf8');
+        const drawn = [...src.matchAll(/^\s*(\w+): bridge\(/gm)].map((m) => m[1]);
+        const art = new Set((d4.bridges || []).map((b) => b.art));
+        const linkIds = new Set(d4.links.map((l) => l.id));
+        const unwalked = (d4.bridges || []).filter((b) => !linkIds.has(b.link) || (info[b.link] || {}).kind !== b.kind);
+        check(drawn.length === 11 && drawn.every((id) => art.has(id)) && PLAN.LINKS.every((l) => art.has(l.id)) && unwalked.length === 0, `every rendered bridge has a walk link: sparrow's ${drawn.length} bridge() drawings and the districts' boardwalks, rope bridges and steps are all in walk.bridges, each with its link and kind${unwalked.length ? ' -> ' + unwalked.map((b) => b.art).join(', ') : ''}`);
+      }
+      // -- the spawn and every place on the walk and clear; every plot's place, the lookout and every hop reachable
+      // from the ship and back
+      {
+        const bad = [];
+        for (const p of [d4.spawn, ...d4.places]) if (!W4.inside(p.x, p.z) || W4.blocked(p.x, p.z, R)) bad.push(p.id || 'spawn');
+        const ship = d4.places.find((p) => p.id === 'ship');
+        const far = [];
+        for (const p of [...d4.places.slice(data.places.length), ...(d4.hops || [])]) {
+          const there = pathProblems4(W4, W4.path(d4.spawn, p), d4.spawn, p);
+          const back = pathProblems4(W4, W4.path(p, ship), p, ship);
+          if (there.length || back.length) far.push(`${p.id}: ${[...there, ...back][0]}`);
+        }
+        const plots = d4.places.filter((p) => /^plot:/.test(p.id)).length;
+        check(bad.length === 0 && far.length === 0 && plots === 21 && d4.places.some((p) => p.id === 'lookout') && (d4.hops || []).length === 6, `the spawn and all ${d4.places.length} places stand on the walk, clear; the 21 plot places, the lookout and the 6 district hops are reached from the ship and back along paths on the walk${bad.length + far.length ? ' -> ' + [...bad, ...far].slice(0, 5).join('; ') : ''}`);
+      }
+      // -- every deck, porch, islet and link reached
+      {
+        const lost = [];
+        for (const a of d4.areas.filter((q) => !String(q.id).includes('-'))) {
+          const g = W4.snap(a.x, a.z, 4);
+          if (!g || pathProblems4(W4, W4.path(d4.spawn, g), d4.spawn, g).length) lost.push(a.id);
+        }
+        for (const l of d4.links) {
+          const m = l.pts[Math.floor(l.pts.length / 2)];
+          const g = { x: m[0], z: m[2] };
+          if (pathProblems4(W4, W4.path(d4.spawn, g), d4.spawn, g).length) lost.push(l.id);
+        }
+        check(lost.length === 0, `every one of the ${d4.areas.length} walk areas (decks, porches, islets, Fisher's Pier) and the middle of every one of the ${d4.links.length} links is reached from the ship${lost.length ? ' -> ' + lost.join(', ') : ''}`);
+      }
+      // -- the pads: blocked from tier 0, a camera box each (§6.3)
+      {
+        const open = [];
+        const pads = d4.blockers.filter((b) => b.pad);
+        for (const b of pads) {
+          const c = Math.cos(b.ry || 0);
+          const s = Math.sin(b.ry || 0);
+          let n = 0;
+          for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) {
+            const lx = (i / 10 - 0.5) * b.w;
+            const lz = (j / 10 - 0.5) * b.d;
+            const x = b.x + lx * c + lz * s;
+            const z = b.z - lx * s + lz * c;
+            if (W4.inside(x, z) && !W4.blocked(x, z, R)) n++;
+          }
+          if (n) open.push(`${b.pad} ${n}`);
+        }
+        const cams = d4.camBlockers.filter((k) => typeof k.plot === 'string').map((k) => k.plot).sort();
+        const padIds = pads.map((b) => b.pad).sort();
+        check(pads.length === 21 && open.length === 0 && same(cams, padIds) && same(padIds, Object.keys(PLAN.PADS).sort()), `all 21 pads are walk blockers (none of 121 points on each walkable) and camera boxes, from tier 0${open.length ? ' -> ' + open.join(', ') : ''}`);
+        const hill = d4.camBlockers.filter((k) => k.hill).length;
+        check(hill >= 6, `Lookout Hill's mass is camera-only cylinders under its slopes (${hill})`);
+      }
+      // -- porches: a 1.6 u-wide walker fits at every plot place and at every link's land end on a plot's deck (§6.3)
+      {
+        const WP = createWalk({ ...d4, blockers: d4.blockers.filter((b) => !(b.r !== undefined && b.r <= 0.1)) });
+        const ring = [0, 1, 2, 3, 4, 5, 6, 7].map((k) => [Math.cos((k * Math.PI) / 4), Math.sin((k * Math.PI) / 4)]);
+        const wide = (x, z) => WP.inside(x, z) && !WP.blocked(x, z, 0.8) && ring.every(([c, s]) => WP.inside(x + c * 0.15, z + s * 0.15));
+        const wideNear = (x, z, dd) => {
+          for (let r = 0; r <= dd + 1e-9; r += 0.05) for (let k = 0; k < 32; k++) if (wide(x + Math.cos((k * Math.PI) / 16) * r, z + Math.sin((k * Math.PI) / 16) * r)) return true;
+          return false;
+        };
+        const tight = [];
+        for (const p of d4.places.filter((q) => /^plot:/.test(q.id))) if (!wideNear(p.x, p.z, 0.5)) tight.push(p.id);
+        const plotDeck = new Set(Object.values(PLAN.PADS).map((p) => p.platform));
+        for (const l of d4.links.slice(data.links.length)) {
+          for (const k of [0, l.pts.length - 1]) {
+            const e = l.pts[k];
+            const deck = (PLAN.DECKS.find((D) => (D.r !== undefined ? Math.hypot(e[0] - D.x, e[2] - D.z) <= D.r : [D, ...(D.porches || [])].some((q) => {
+              const c = Math.cos(q.ry || 0);
+              const s = Math.sin(q.ry || 0);
+              const dx = e[0] - q.x;
+              const dz = e[2] - q.z;
+              return Math.abs(dx * c - dz * s) <= q.w / 2 + 0.05 && Math.abs(dx * s + dz * c) <= q.d / 2 + 0.05;
+            }))) || {}).id;
+            if (plotDeck.has(deck) && !wideNear(e[0], e[2], 1.0)) tight.push(`${l.id}@${deck}`);
+          }
+        }
+        check(tight.length === 0, `a porch of ${PLAN.WALKWAY.porch} u: a walker that wide fits within 0.5 u of every plot's place and within 1 u of every link's land end on a plot's deck${tight.length ? ' -> ' + tight.join(', ') : ''}`);
+      }
+      // -- the links: no lip at their posts, a jog held from each land end gets across
+      {
+        const lips = [];
+        const lipsDeck = [];
+        const runs = [];
+        for (const l of d4.links.slice(data.links.length)) {
+          for (let i = 0; i + 1 < l.pts.length; i++) {
+            const [ax, , az] = l.pts[i];
+            const [bx, , bz] = l.pts[i + 1];
+            const L = Math.hypot(bx - ax, bz - az);
+            if (L < 1e-6) continue;
+            const nx = -(bz - az) / L;
+            const nz = (bx - ax) / L;
+            for (let s = 0; s <= L; s += 0.05) for (const side of [-1, 1]) {
+              const x = ax + ((bx - ax) * s) / L + nx * side * (l.hw - 0.01);
+              const z = az + ((bz - az) * s) / L + nz * side * (l.hw - 0.01);
+              if (W4.inside(x, z) && W4.blocked(x, z, R)) (overWater(x, z) ? lips : lipsDeck).push(`${l.id}@${f2(x)},${f2(z)}`);
+            }
+          }
+          for (const dir of [1, -1]) {
+            const pts = dir === 1 ? l.pts : [...l.pts].reverse();
+            // (the jog heads along the link's span, from where it lands: its mouth, 0.9 u in from the deck's edge)
+            const a = pts[0];
+            const m0 = pts[1];
+            const m1 = pts[pts.length - 2];
+            const b = pts[pts.length - 1];
+            const Lb = Math.hypot(m1[0] - m0[0], m1[2] - m0[2]) || 1;
+            const ux = (m1[0] - m0[0]) / Lb;
+            const uz = (m1[2] - m0[2]) / Lb;
+            for (const deg of [0, 5, -5, 15, -15]) {
+              const h = Math.atan2(ux, uz) + (deg * Math.PI) / 180;
+              let p = { x: m0[0], z: m0[2], y: W4.heightAt(m0[0], m0[2], m0[1]) };
+              let t = 0;
+              for (; t < 10 && Math.hypot(p.x - b[0], p.z - b[2]) > 1.0 && Math.hypot(p.x - m1[0], p.z - m1[2]) > 0.6; t += 1 / 60) {
+                p = W4.move(p, Math.sin(h) * 3.0 / 60, Math.cos(h) * 3.0 / 60, R);
+              }
+              runs.push({ id: `${l.id}${dir > 0 ? '>' : '<'}${deg}°`, ok: t < 10, s: t, deg });
+              void a;
+            }
+          }
+        }
+        // (straight along the line every new link; 5° off it too, but over the five long scenery bridges, whose curves
+        // are today's art: there a walker drifting into the rope for 4-7 u may meet a pad by the far end)
+        const stuck = runs.filter((r) => !r.ok && (r.deg === 0 || (Math.abs(r.deg) <= 5 && !(info[r.id.replace(/[<>].*/, '')] || {}).long)));
+        const stuck15 = runs.filter((r) => !r.ok && !stuck.includes(r));
+        check(lips.length === 0, `the new links' bands are free right up to their edges wherever they run over the water, past their posts too (their ropes the only edges there)${lips.length ? ' -> ' + lips.slice(0, 4).join(' ') : ''}`);
+        console.log(`INFO  on the decks a band's edge may meet a pad or a post where a link runs in (a walker slides round it): ${lipsDeck.length} such points`);
+        check(stuck.length === 0 && runs.length === (d4.links.length - data.links.length) * 10, `a jog held across each of the ${d4.links.length - data.links.length} new links from either end, straight along its line, or 5° off it (but over the five long scenery bridges), gets across${stuck.length ? ' -> stuck: ' + stuck.map((r) => r.id).slice(0, 8).join(', ') : ''}`);
+        console.log(`INFO  held off the line into a rope (15°, or 5° over a long scenery bridge), ${runs.length - stuck.length - stuck15.length} of ${runs.length} jogs get across${stuck15.length ? '; pinned at a pad or post by the far end: ' + stuck15.map((r) => r.id).join(', ') : ''}`);
+      }
+      // -- 10,000 seeded random steps on the v4 town
+      {
+        const rnd = mulberry32(20261105);
+        let pos = { x: d4.spawn.x, z: d4.spawn.z, y: W4.heightAt(d4.spawn.x, d4.spawn.z) };
+        let off = 0;
+        let into = 0;
+        let climb = 0;
+        let badY = 0;
+        let moved = 0;
+        let maxDy = 0;
+        const starts = [...d4.places, ...(d4.hops || [])];
+        for (let i = 0; i < 10000; i++) {
+          const len = rnd() < 0.9 ? rnd() * 0.12 : rnd() * 1.2;
+          const a = rnd() * Math.PI * 2;
+          const n = W4.move(pos, Math.cos(a) * len, Math.sin(a) * len, R);
+          if (n.moved) moved++;
+          if (!W4.inside(n.x, n.z)) off++;
+          if (W4.blocked(n.x, n.z, R)) into++;
+          // (Lookout Hill slopes: a long step may climb more, but never more than 0.35 a quarter unit)
+          const dy = Math.abs(n.y - pos.y) / Math.max(1, Math.hypot(n.x - pos.x, n.z - pos.z) / 0.25);
+          maxDy = Math.max(maxDy, dy);
+          if (dy > 0.35 + 1e-9) climb++;
+          const hh = W4.heightAt(n.x, n.z, n.y);
+          if (hh === null || Math.abs(hh - n.y) > 1e-6) badY++;
+          pos = n;
+          if (i % 250 === 249) {
+            const p = starts[(i / 250) % starts.length | 0];
+            pos = { x: p.x, z: p.z, y: W4.heightAt(p.x, p.z, p.y) };
+          }
+        }
+        check(off === 0 && into === 0 && climb === 0 && badY === 0 && moved > 6000, `10,000 random steps on the v4 town (restarting at every place and hop) never leave the walk (${off}), never walk into anything (${into}), never rise or drop more than 0.35 a step (a quarter unit; largest ${maxDy.toFixed(3)}; ${badY} off the surface), and mostly move (${moved})`);
+      }
+      // -- the keep-offs: no new deck or link within 2 u of a moored boat, a prize's hull or the cutter (§6.2)
+      {
+        const dist = (k, x, z) => {
+          if (k.r !== undefined) return Math.hypot(x - k.x, z - k.z) - k.r;
+          const c = Math.cos(k.ry || 0);
+          const s = Math.sin(k.ry || 0);
+          const lx = Math.abs((x - k.x) * c - (z - k.z) * s) - k.w / 2;
+          const lz = Math.abs((x - k.x) * s + (z - k.z) * c) - k.d / 2;
+          return Math.hypot(Math.max(lx, 0), Math.max(lz, 0)) + Math.min(Math.max(lx, lz), 0);
+        };
+        const near = [];
+        // (the new decks themselves: the porch pieces, the islets' shores, Fisher's Pier)
+        const newDecks = [...PLAN.PORCHES.map((q) => ({ ...q, kind: 'rect' })), ...PLAN.DECKS.filter((D) => D.kind === 'islet' || D.kind === 'pier')];
+        for (const k of PLAN.KEEP_OFF) {
+          let worst = Infinity;
+          let what = '';
+          for (const a of newDecks) {
+            const c = Math.cos(a.ry || 0);
+            const s = Math.sin(a.ry || 0);
+            const pts = a.r !== undefined ? Array.from({ length: 48 }, (_, i) => [a.x + Math.cos((i / 48) * 2 * Math.PI) * a.r, a.z + Math.sin((i / 48) * 2 * Math.PI) * a.r]) : [];
+            if (a.r === undefined) for (let i = 0; i <= 10; i++) for (let j = 0; j <= 10; j++) {
+              const lx = (i / 10 - 0.5) * a.w;
+              const lz = (j / 10 - 0.5) * a.d;
+              pts.push([a.x + lx * c + lz * s, a.z - lx * s + lz * c]);
+            }
+            for (const [x, z] of pts) {
+              const dd = dist(k, x, z);
+              if (dd < worst) [worst, what] = [dd, a.id];
+            }
+          }
+          for (const l of d4.links.slice(data.links.length).filter((q) => !(info[q.id] || {}).scenery)) {
+            for (let i = 0; i + 1 < l.pts.length; i++) for (let t = 0; t <= 1; t += 0.1) {
+              const x = l.pts[i][0] + (l.pts[i + 1][0] - l.pts[i][0]) * t;
+              const z = l.pts[i][2] + (l.pts[i + 1][2] - l.pts[i][2]) * t;
+              const dd = dist(k, x, z) - (l.hw > 0.3 ? 1.0 : 0.55);
+              if (dd < worst) [worst, what] = [dd, l.id];
+            }
+          }
+          if (worst < 2) near.push(`${k.id}: ${what} ${f2(worst)} u`);
+        }
+        check(near.length === 0 && PLAN.KEEP_OFF.length >= 10, `no new deck (porch, islet, pier) or link (its rails) comes within 2 u of the ${PLAN.KEEP_OFF.length} keep-offs (the moored boats, the prizes' hulls, the cutter's swing)${near.length ? ' -> ' + near.join('; ') : ''}`);
+      }
+      // -- the islanders' loops: on the walk, clear, and the walking bug's rules for where they pause (§6.5, §7.1)
+      {
+        const loops = d4.paths.filter((q) => q.kind === 'islander');
+        const offLoop = [];
+        for (const q of loops) {
+          for (let i = 0; i + 1 < q.pts.length; i++) {
+            const a = q.pts[i];
+            const b = q.pts[i + 1];
+            const L = Math.hypot(b[0] - a[0], b[2] - a[2]);
+            const n = Math.max(1, Math.ceil(L / 0.25));
+            for (let k = 0; k <= n; k++) {
+              const x = a[0] + ((b[0] - a[0]) * k) / n;
+              const z = a[2] + ((b[2] - a[2]) * k) / n;
+              const ok = (qx, qz) => W4.inside(qx, qz) && !W4.blocked(qx, qz, R - 0.02);
+              if (!ok(x, z) && ![0, 1, 2, 3, 4, 5, 6, 7].some((r) => ok(x + Math.cos((r * Math.PI) / 4) * 0.06, z + Math.sin((r * Math.PI) / 4) * 0.06))) offLoop.push(`${q.id}@${f2(x)},${f2(z)}`);
+            }
+          }
+        }
+        const isl = PLAN.ISLANDER_PATHS.filter((q) => q.kind === 'islander');
+        const mer = new Set(['isl:nerissa', 'isl:kai']);
+        check(loops.length === isl.length - mer.size + mer.size && same(loops.map((q) => q.id), isl.map((q) => q.id)) && offLoop.filter((s) => !mer.has(s.split('@')[0])).length === 0, `the ${loops.length} islanders' loops are appended to walk.paths after today's, in §7.1's order, and every walker's loop stays on the walk, clear of every obstacle (the merfolk's lie in the Grotto's pool)${offLoop.length ? ' -> ' + offLoop.filter((s) => !mer.has(s.split('@')[0])).slice(0, 5).join(' ') : ''}`);
+        const mouths = [];
+        for (const l of d4.links) mouths.push([l.id, l.pts[1]], [l.id, l.pts[l.pts.length - 2]]);
+        const bad = [];
+        for (const q of PLAN.ISLANDER_PATHS) {
+          for (const st of q.stations) {
+            const p = q.pts[st.i];
+            const name = `${q.id}:${st.id}`;
+            for (const l of d4.links) if (segD(p[0], p[2], l.pts) < l.hw + 0.35) bad.push(`${name} on ${l.id}`);
+            for (const [id, m] of mouths) if (Math.hypot(p[0] - m[0], p[2] - m[2]) < 2) bad.push(`${name} by ${id}'s mouth`);
+            for (const dd of d4.doors) if (Math.hypot(p[0] - dd.x, p[2] - dd.z) < 1.5) bad.push(`${name} in ${dd.id}`);
+            for (const pl of d4.places) if (Math.hypot(p[0] - pl.x, p[2] - pl.z) < pl.r + 0.35) bad.push(`${name} in ${pl.id}`);
+            if (Math.hypot(p[0] - d4.spawn.x, p[2] - d4.spawn.z) < 1.9) bad.push(`${name} at the gangplank`);
+          }
+        }
+        const over = [];
+        for (const l of d4.links) {
+          const I = info[l.id] || {};
+          if (I.kind !== 'rope') continue;
+          const m = l.pts[Math.floor(l.pts.length / 2)];
+          const n = loops.filter((q) => segD(m[0], m[2], q.pts) < l.hw + 0.3).length;
+          const cap = I.today ? 0 : I.long ? 1 : 2;
+          if (n > cap) over.push(`${l.id} ${n}`);
+        }
+        check(bad.length === 0 && over.length === 0, `no islander pauses on a link, within 2 u of a link's mouth, in a doorway, in a place's circle or at the gangplank; ≤ 1 loop over each long scenery bridge, ≤ 2 over another rope bridge, none over today's four${bad.length + over.length ? ' -> ' + [...bad, ...over].slice(0, 6).join('; ') : ''}`);
+        // Bess and the professor stay clear of the islanders' loops (as of today's walkers' and villagers')
+        const npcNear = [];
+        for (const n of d4.npcs) for (const q of loops) if (segD(n.x, n.z, q.pts) < 1.0) npcNear.push(`${n.id}/${q.id}`);
+        check(npcNear.length === 0, `Bess and the professor stand ≥ 1 u from every islander's loop${npcNear.length ? ' -> ' + npcNear.join(', ') : ''}`);
+      }
+      // -- signposts, arches, hops, districts (§6.4, §8.5)
+      {
+        const free = (x, z) => W4.inside(x, z) && !W4.blocked(x, z, 0);
+        const stands = (x, z) => {
+          for (const r of [0, 0.2, 0.4]) for (let k = 0; k < 16; k++) if (free(x + Math.cos((k * Math.PI) / 8) * r, z + Math.sin((k * Math.PI) / 8) * r)) return false;
+          return true;
+        };
+        const inWay = [...PLAN.SIGNPOSTS.filter((s) => !stands(s.x, s.z)).map((s) => s.id), ...PLAN.ARCHES.filter((a) => !a.posts.every(([x, z]) => stands(x, z))).map((a) => a.id)];
+        check(PLAN.SIGNPOSTS.length >= 14 && PLAN.ARCHES.length >= 5 && inWay.length === 0, `${PLAN.SIGNPOSTS.length} signposts at the junctions and ${PLAN.ARCHES.length} named arches, every post off the walk (nothing walkable within 0.4 u: no blocker needed)${inWay.length ? ' -> ' + inWay.join(', ') : ''}`);
+        const archLine = PLAN.ARCHES.filter((a) => {
+          const m = [(a.line[0][0] + a.line[1][0]) / 2, (a.line[0][1] + a.line[1][1]) / 2];
+          return !W4.inside(m[0], m[1]);
+        });
+        check(archLine.length === 0, `every arch spans its way in (the middle of its line on the walk, for its toast)${archLine.length ? ' -> ' + archLine.map((a) => a.id).join(', ') : ''}`);
+        const wrongD = PLAN.DECKS.filter((D) => PLAN.districtAt(D.x, D.z) !== D.district).map((D) => D.id);
+        const all = PLAN.DISTRICTS.flatMap((D) => D.plots).sort();
+        check(wrongD.length === 0 && PLAN.districtAt(0, 60) === null && same(all, Object.keys(PLAN.PADS).sort()) && (d4.districts || []).length === 6 && d4.districts.every((D) => D.poly.length >= 3), `districtAt names every deck's district (null at sea); the six districts hold the 21 plots once each, each with its outline${wrongD.length ? ' -> ' + wrongD.join(', ') : ''}`);
+      }
+      // -- the walk camera: never inside a camera box at the captain's head on a porch or at a place
+      {
+        const inCam = (x, y, z) => d4.camBlockers.find((k) => {
+          if (y < k.y0 || y > k.y1) return false;
+          if (k.r !== undefined) return Math.hypot(x - k.x, z - k.z) < k.r;
+          const c = Math.cos(k.ry || 0);
+          const s = Math.sin(k.ry || 0);
+          return Math.abs((x - k.x) * c - (z - k.z) * s) < k.w / 2 && Math.abs((x - k.x) * s + (z - k.z) * c) < k.d / 2;
+        });
+        const hit = [];
+        for (const p of [...d4.places.slice(data.places.length), ...(d4.hops || [])]) {
+          const y = W4.heightAt(p.x, p.z, p.y) ?? 1.3;
+          const k = inCam(p.x, y + 1.7, p.z);
+          if (k) hit.push(`${p.id} in ${k.plot || 'a box'}`);
+        }
+        check(hit.length === 0, `the camera's target (the captain's head) is clear of every camera box at every new place and hop${hit.length ? ' -> ' + hit.join(', ') : ''}`);
+      }
+    }
   }
 
   // ---- junk ----

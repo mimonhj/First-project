@@ -15,6 +15,7 @@ import * as buildings4 from './buildings4.js';
 import * as construction4 from './construction.js';
 import * as folk4 from './folk4.js';
 import * as critters4 from '../critters.js';
+import { plan as crowdPlan } from '../islanders.js';
 
 // Sparrow's Floating Island: the pirate town on the water where the player's ship docks
 // for repairs, upgrades and a fresh coat of paint (the shipyard screen).
@@ -1686,6 +1687,7 @@ export function build(scene, ctx = {}) {
   // { x, z, w, d, ry, y0, y1 } (a box) or { x, z, r, y0, y1 } (an upright cylinder), world units.
   const walkData = { radius: 0.3, areas: [], links: [], blockers: [], camBlockers: [], places: [], spawn: null };
   const walkDecks = []; // the walkable decks, whole (for telling which townsfolk stand on them)
+  let lookoutNest = null; // the crow's nest (v4's lookout)
   const doors = []; // (the Kraken Seas) the doorways on the walk: { id, x, z }
   const r2 = (v) => Math.round(v * 100) / 100;
   const yawOf = (obj) => {
@@ -2589,12 +2591,14 @@ export function build(scene, ctx = {}) {
     flagOnPole(g, V3(b1 + 0.1, H - 1.6, 0), 2.2, 2.2, 0.7, COL.yellow, 0.1, 'pennant');
     // the lookout's spyglass stand: just a barrel
     barrel(nest, -0.6, 0.15, -0.5, 0.55, COL.barrel2);
+    lookoutNest = nest; // (v4: the lookout's view, SPEC4 §6.7)
     // the tower raft's corner: crates and a net drying rack
     const rg = towerRaft.g;
-    crate(rg, 2.55, DECK, -2.5, 0.85, 0.4);
-    crate(rg, 2.6, DECK + 0.68, -2.45, 0.6, -0.3, COL.wood);
-    crate(rg, -2.6, DECK, -2.55, 0.75, -0.2, COL.wood);
-    netRack(rg, -2.75, DECK, 0.7, PI / 2);
+    // (with v4 the crates go under the tower and the rack to the east edge, so the new links' ways in are clear)
+    crate(rg, V4 ? 1.0 : 2.55, DECK, V4 ? -1.1 : -2.5, 0.85, 0.4);
+    crate(rg, V4 ? 1.05 : 2.6, DECK + 0.68, V4 ? -1.05 : -2.45, 0.6, -0.3, COL.wood);
+    crate(rg, V4 ? -1.0 : -2.6, DECK, V4 ? -1.1 : -2.55, 0.75, -0.2, COL.wood);
+    netRack(rg, V4 ? 2.75 : -2.75, DECK, V4 ? -0.35 : 0.7, PI / 2);
     // the walk: round the tower's legs and braces (and the foot of its ladder), past the crates
     blockBox(g, 0, 0.14, 3.62, 3.9, 0, H + 4.5);
     block(rg, 2.55, -2.5, 0.6, 1.3);
@@ -2631,7 +2635,7 @@ export function build(scene, ctx = {}) {
     }
     for (const z of [-1.6, 0.4, 1.9]) for (const sx of [-1, 1]) rod(sl, thin(COL.woodDark), V3(sx * 1.1, 0, z), V3(sx * 0.6, 1.0, z), 0.07, 6);
     // stacked planks, a saw horse and cannons for sale
-    for (let i = 0; i < 5; i++) add(g, rbox(3.0, 0.12, 0.34, 0.03), thin(i % 2 ? COL.plank : COL.wood3), -2.4, DECK + 0.07 + i * 0.13, -3.6 + (i % 2) * 0.05, 0, 0.02 * i, 0);
+    for (let i = 0; i < 5; i++) add(g, rbox(3.0, 0.12, 0.34, 0.03), thin(i % 2 ? COL.plank : COL.wood3), V4 ? -0.8 : -2.4, DECK + 0.07 + i * 0.13, -3.6 + (i % 2) * 0.05, 0, 0.02 * i, 0); // (v4: 1.6 u east)
     for (let i = 0; i < 3; i++) {
       const cg = new THREE.Group();
       cg.position.set(2.6, DECK, -3.4 + i * 1.2);
@@ -2988,6 +2992,39 @@ export function build(scene, ctx = {}) {
       plotOf[d.platform] = plot;
     }
   }
+  // The Sunset Isles' eleven plots (SPEC4 §4.1, v4 only): the seven shack platforms' shacks go to their plots' kits as
+  // the ten's do (the same draws in the same order: only their parent changes), and the four islet plots get frames of
+  // their own (the pad's centre at its highest ground, +z toward its board). Every plot's kits stand moved by its kit
+  // offset (islandPlan's PADS, S0-D3), its tier-0 shack and clutter with them.
+  if (V4) {
+    for (const d of islandRules.PLOTS4) {
+      const pad = islandPlan.PADS[d.id];
+      if (!pad || plotList.some((p) => p.id === d.id)) continue;
+      let P = plats[d.platform];
+      const islet = !P;
+      if (islet) {
+        const g = new THREE.Group();
+        g.position.set(pad.frame.x, 0, pad.frame.z);
+        g.rotation.y = pad.frame.ry;
+        P = { g, x: pad.frame.x, z: pad.frame.z, y: pad.frame.y, w: r2(pad.x1 - pad.x0), d: r2(pad.z1 - pad.z0), ry: pad.frame.ry, islet: d.platform };
+      } else if (P.walk || plotOf[d.platform]) continue;
+      const kit0 = new THREE.Group();
+      kit0.position.copy(P.g.position);
+      kit0.rotation.copy(P.g.rotation);
+      const plot = { id: d.id, def: d, kind: d.kind === 'home' ? 'home' : d.id, P, kit0, smoke0: [], index: plotList.length, tier: 0, height: d.height, v4: true, islet };
+      plotList.push(plot);
+      if (!islet) plotOf[d.platform] = plot;
+    }
+    for (const plot of plotList) {
+      const pad = islandPlan.PADS[plot.id];
+      plot.off = pad && pad.off ? [pad.off[0], pad.off[1]] : [0, 0];
+      plot.kit0.translateX(plot.off[0]);
+      plot.kit0.translateZ(plot.off[1]);
+      // (its pad's middle, where its camera looks)
+      plot.cx = pad ? pad.world.x : plot.P.x;
+      plot.cz = pad ? pad.world.z : plot.P.z;
+    }
+  }
   let seed = 0;
   for (const [pn, lx, lz, ry, look] of SHACKS) {
     const P = plats[pn];
@@ -3009,10 +3046,18 @@ export function build(scene, ctx = {}) {
         rod(s, thin(COL.wood3), V3(look.w / 2 - 0.05, yy, zz), V3(look.w / 2 + 0.45, yy, zz), 0.03, 4);
       }
     }
-    // porch clutter
-    barrel(home, -P.w / 2 + 0.6, P.y, P.d / 2 - 0.7, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
-    if (seed % 3 === 0) crate(home, P.w / 2 - 0.7, P.y, P.d / 2 - 0.6, 0.7, rand());
-    if (seed % 3 === 1) netRack(home, P.w / 2 - 0.9, P.y, 0.9, -PI / 2);
+    // porch clutter (with v4 the porches are walked: it stands against the shack, inside the plot's pad)
+    if (V4) {
+      const fx = lx + look.w / 2;
+      const fz = lz + look.d / 2;
+      barrel(home, fx - 0.42, P.y, fz + 0.36, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
+      if (seed % 3 === 0) crate(home, fx - 1.15, P.y, fz + 0.3, 0.7, rand());
+      if (seed % 3 === 1) netRack(home, lx, P.y, lz - look.d / 2 - 0.21, 0);
+    } else {
+      barrel(home, -P.w / 2 + 0.6, P.y, P.d / 2 - 0.7, 0.75, seed % 2 ? COL.barrel : COL.barrel2);
+      if (seed % 3 === 0) crate(home, P.w / 2 - 0.7, P.y, P.d / 2 - 0.6, 0.7, rand());
+      if (seed % 3 === 1) netRack(home, P.w / 2 - 0.9, P.y, 0.9, -PI / 2);
+    }
     anim.smokeSrc = smokeSrc;
     // (the camera in the town view keeps out of the houses)
     blockBox(s, 0, 0, look.w + 0.35, look.d + 0.35, 0, look.h + 1.8 + (look.stack ? look.stack.h + 2 : 0));
@@ -3415,29 +3460,35 @@ export function build(scene, ctx = {}) {
   bunting(V3(5.8, DECK + 2.55, -5.35), V3(10.4, DECK + 2.55, -5.35), 0.22);
   tavernG.updateMatrixWorld(true);
   bunting(towerRaft.at(1.15, 1.15, TOWER_H + 1.0), tavernG.localToWorld(V3(-4.6, 3.1 + 2.8, -1.4)), 1.0, { step: 0.6 });
-  // laundry between the shacks
-  laundry(plats.s2.at(-2.4, 2.2, 2.0), plats.s2.at(2.4, 2.3, 1.9), 0.25, [['shirt', COL.white, COL.red], ['pants', COL.blue], ['sock', COL.red], ['sock', COL.yellow], ['shirt', COL.yellow]]);
-  laundry(plats.s4.at(-2.4, 2.2, 1.9), plats.s4.at(2.4, 2.2, 2.1), 0.2, [['sheet', COL.white], ['shirt', COL.pink], ['pants', COL.woodDark], ['sock', COL.teal]]);
-  laundry(plats.s7.at(-2.3, 2.3, 2.0), plats.s7.at(2.3, 2.1, 2.0), 0.2, [['shirt', COL.white, COL.blue], ['shirt', COL.green], ['sock', COL.orange], ['pants', COL.navy]]);
-  laundry(plats.s8.at(-2.2, 2.4, 1.8), plats.s8.at(2.2, 2.2, 1.9), 0.18, [['sheet', COL.cream], ['sock', COL.red], ['shirt', COL.purple]]);
-  for (const pn of ['s2', 's4', 's7', 's8']) {
-    const P = plats[pn];
-    for (const sx of [-1, 1]) {
-      const a = P.at(sx * (P.w / 2 - 0.25), P.d / 2 - 0.35);
-      add(statics, cyl(0.07, 0.09, 2.5, 8), ink(COL.woodDark), a.x, P.y + 1.15, a.z);
+  // laundry between the shacks (with v4 their fronts are porches people walk, and s5 / s12 are plots whose
+  // buildings replace the shacks: their lines and flags go, their draws kept so the rest of the town looks the same)
+  if (V4) {
+    for (let k = 0; k < 6; k++) rand();
+  } else {
+    laundry(plats.s2.at(-2.4, 2.2, 2.0), plats.s2.at(2.4, 2.3, 1.9), 0.25, [['shirt', COL.white, COL.red], ['pants', COL.blue], ['sock', COL.red], ['sock', COL.yellow], ['shirt', COL.yellow]]);
+    laundry(plats.s4.at(-2.4, 2.2, 1.9), plats.s4.at(2.4, 2.2, 2.1), 0.2, [['sheet', COL.white], ['shirt', COL.pink], ['pants', COL.woodDark], ['sock', COL.teal]]);
+    laundry(plats.s7.at(-2.3, 2.3, 2.0), plats.s7.at(2.3, 2.1, 2.0), 0.2, [['shirt', COL.white, COL.blue], ['shirt', COL.green], ['sock', COL.orange], ['pants', COL.navy]]);
+    laundry(plats.s8.at(-2.2, 2.4, 1.8), plats.s8.at(2.2, 2.2, 1.9), 0.18, [['sheet', COL.cream], ['sock', COL.red], ['shirt', COL.purple]]);
+    for (const pn of ['s2', 's4', 's7', 's8']) {
+      const P = plats[pn];
+      for (const sx of [-1, 1]) {
+        const a = P.at(sx * (P.w / 2 - 0.25), P.d / 2 - 0.35);
+        add(statics, cyl(0.07, 0.09, 2.5, 8), ink(COL.woodDark), a.x, P.y + 1.15, a.z);
+      }
     }
+    // flags on the shacks
+    flagOnPole(plats.s5.g, V3(1.6, plats.s5.y + 2.8 + 2.6 + 1.5, -1.0), 1.4, 1.2, 0.8, COL.blue, 0.2);
+    flagOnPole(plats.s12.g, V3(-1.0, plats.s12.y + 3.0 + 2.8 + 1.6, -1.0), 1.6, 1.3, 0.85, COL.green, -0.1);
   }
-  // flags on the shacks
-  flagOnPole(plats.s5.g, V3(1.6, plats.s5.y + 2.8 + 2.6 + 1.5, -1.0), 1.4, 1.2, 0.8, COL.blue, 0.2);
-  flagOnPole(plats.s12.g, V3(-1.0, plats.s12.y + 3.0 + 2.8 + 1.6, -1.0), 1.6, 1.3, 0.85, COL.green, -0.1);
   flagOnPole(yard.g, V3(3.6, DECK, -4.0), 4.2, 1.4, 0.9, COL.black, -0.4);
 
   // ----- rowboats moored around the town (bobbing) -----
   for (const [x, z, ry, c, trim] of [
     [-11.2, -1.6, 0.4, COL.red, COL.white],
     [12.4, -2.2, -0.2, COL.teal, COL.yellow],
-    [-19.5, -12.5, 1.2, COL.yellow, COL.blue],
-    [8.4, -16.4, 1.5, COL.blue, COL.white],
+    // (with v4 two move off the new links' way: SPEC4 §6.2)
+    [V4 ? -39.8 : -19.5, V4 ? -9.4 : -12.5, 1.2, COL.yellow, COL.blue],
+    [V4 ? 7.0 : 8.4, V4 ? -16.6 : -16.4, 1.5, COL.blue, COL.white],
     [-1.5, -15.5, 1.65, COL.green, COL.white],
   ]) {
     const g = new THREE.Group();
@@ -3460,7 +3511,8 @@ export function build(scene, ctx = {}) {
   // ----- a visiting cutter riding at anchor off the east arm -----
   {
     const ship = buildShip('cutter');
-    ship.userData.base = { x: 28.5, z: -13.5, h: -PI / 2 + 0.35 };
+    // (with v4 she anchors off Fisher's Pier, clear of the new decks: SPEC4 §6.2)
+    ship.userData.base = V4 ? { x: 40, z: -21, h: -PI / 2 + 0.35 } : { x: 28.5, z: -13.5, h: -PI / 2 + 0.35 };
     root.add(ship);
     anim.visitor = ship;
   }
@@ -3520,6 +3572,54 @@ export function build(scene, ctx = {}) {
       for (let i = 0; i < n; i++) puff.setColorAt(i, anim.smoke.c.setHex(0xffffff));
       puff.count = anim.smokeSrc.length * per;
     }
+  }
+
+  // ----- the Sunset Isles' kit (SPEC4 §11.1, ctx.v4) -----
+  // The art helpers the new modules build with, frozen: the town's parts, colours and baking, LOOK-2's inTheWay, the
+  // painted "Build me!" board (board(parent, x, y, z, ry), for the islet plots' tier 0), and stream(seed), a random
+  // stream of a module's own (the town's rand() is never drawn by them).
+  const kit = Object.freeze({
+    THREE,
+    add,
+    rbox,
+    cyl,
+    sphere,
+    rope,
+    rod,
+    beam,
+    ink,
+    thin,
+    flat,
+    COL,
+    WALLS,
+    ROOFS,
+    lantern,
+    shack,
+    sagCurve,
+    bake,
+    inTheWay: (f) => inTheWay(f),
+    board: (parent, x, y, z, ry) => boardArt(parent, x, y, z, ry),
+    glow: lanternGlow,
+    deck: (g, w, d, y, R) => deckSurface(g, w, d, y, {}, R),
+    stream: (seed) => mulberry32(seed),
+  });
+  const v4call = (f, ...args) => {
+    try {
+      return typeof f === 'function' ? f(...args) : null;
+    } catch (err) {
+      console.warn('sparrow v4:', err);
+      return null;
+    }
+  };
+  // the districts' decks, porches, boardwalks, bridges, islets, signposts and arches (v4): baked with the town's
+  // statics, into its own meshes (+0 calls)
+  const districtsArt = V4 ? v4call(districts4.buildDistricts, kit, islandPlan) : null;
+  if (districtsArt && districtsArt.statics) {
+    statics.add(districtsArt.statics);
+    // (the sea's surf round the islets and along Fisher's Pier)
+    for (const I of Object.values(islandPlan.ISLETS)) colliders.push({ x: I.x, z: I.z, r: I.r - 0.4 });
+    const F = islandPlan.FISHER_PIER;
+    addColliderRect((F.x0 + F.x1) / 2, F.z, F.x1 - F.x0, F.w + 1.2, 0, 0.3);
   }
 
   // ----- bake the statics -----
@@ -3731,21 +3831,55 @@ export function build(scene, ctx = {}) {
     const g = new THREE.Group();
     g.position.copy(plot.P.g.position);
     g.rotation.copy(plot.P.g.rotation);
+    // (v4: moved by the plot's kit offset, as its tier-0 kit is)
+    if (plot.off) {
+      g.translateX(plot.off[0]);
+      g.translateZ(plot.off[1]);
+    }
     return g;
   }
+  // a SPEC3 home's lit or dark windows are two chunks; the new plots' are one (§11.1)
+  const litOf = (plot, tier) => plot.kind === 'home' && !plot.v4 && tier > 0 && dev.lit[plot.id] !== false;
   /** The chunk of a plot at a tier (its tier-0 kit and "Build me!" board, or the buildings of tiers 1-3). */
   function plotChunk(plot, tier) {
-    const lit = plot.kind === 'home' && tier > 0 && dev.lit[plot.id] !== false;
+    const lit = litOf(plot, tier);
     const key = `${plot.id}:${tier}:${lit ? 1 : 0}`;
     let c = dev.chunks.get(key);
     if (c) return c;
     const holder = new THREE.Group();
     const smoke = [];
-    if (tier === 0) {
+    let parts = null;
+    if (plot.v4 && (tier > 0 || plot.islet)) {
+      // a new plot's building (buildings4, in its frame at its deck's height; the islets' tier 0 too), its smoke, its
+      // animated parts (drawn apart, kept with the chunk) and the Houseboat's barge (baked in with it, moored still)
+      const g = plotFrame(plot);
+      holder.add(g);
+      const k = v4call(buildings4.kit, plot.id, tier, kit);
+      if (k) {
+        k.position.y = plot.P.y;
+        g.add(k);
+        const m = k.userData.moored;
+        if (m && m.group) {
+          m.group.position.set(m.x, 0, m.z);
+          m.group.rotation.y = m.ry || 0;
+          g.add(m.group);
+        }
+        holder.updateMatrixWorld(true);
+        for (const q of k.userData.smoke || []) smoke.push({ world: k.localToWorld(V3(q.x, q.y, q.z)), s: q.s, colors: q.colors || null });
+        if (m && m.group) for (const q of m.smoke || []) smoke.push({ world: m.group.localToWorld(V3(q.x, q.y, q.z)), s: q.s, colors: q.colors || null });
+        parts = Array.isArray(k.userData.anim) ? k.userData.anim : [];
+      }
+    } else if (tier === 0) {
       holder.add(plot.kit0);
-      const b = plotFrame(plot);
-      buildMeBoard(plot, b);
-      holder.add(b);
+      if (V4) {
+        // (the plan's board, on the plot's porch in front of its place)
+        const pl = islandPlan.PLOT_PLACES.find((q) => q.plot === plot.id);
+        if (pl) holder.add(boardArt(new THREE.Group(), pl.board.x, plot.P.y, pl.board.z, pl.board.ry));
+      } else {
+        const b = plotFrame(plot);
+        buildMeBoard(plot, b);
+        holder.add(b);
+      }
       holder.updateMatrixWorld(true);
       for (const s of plot.smoke0) smoke.push({ world: s.obj.localToWorld(s.local.clone()), s: s.s });
     } else {
@@ -3758,6 +3892,7 @@ export function build(scene, ctx = {}) {
     c = devChunk(holder);
     holder.remove(...holder.children);
     c.smoke = smoke.map((s) => ({ world: s.world, s: s.s, colors: s.colors || null }));
+    c.parts = parts;
     dev.chunks.set(key, c);
     return c;
   }
@@ -3777,14 +3912,19 @@ export function build(scene, ctx = {}) {
   function buildMeBoard(plot, frame) {
     const at = BOARD[plot.id];
     if (!at) return;
+    boardArt(frame, at[0], plot.P.y, at[1], at[2]);
+  }
+  /** The "Build me!" board itself, at (x, y, z) of parent turned ry (its painted face toward +z). Returns parent. */
+  function boardArt(parent, x, y, z, ry) {
     const b = new THREE.Group();
-    b.position.set(at[0], plot.P.y, at[1]);
-    b.rotation.y = at[2];
-    frame.add(b);
+    b.position.set(x, y, z);
+    b.rotation.y = ry;
+    parent.add(b);
     add(b, rbox(0.12, 1.25, 0.12, 0.03), ink(COL.woodDark), 0, 0.62, -0.05);
     add(b, rbox(1.12, 0.62, 0.09, 0.04), ink(COL.woodDark), 0, 1.0, 0);
     if (dev.texMat) add(b, devPlane('buildme', 1.04, 0.54), dev.texMat, 0, 1.0, 0.05);
     for (const sx of [-1, 1]) add(b, sphere(6), flat(COL.iron), sx * 0.44, 1.2, 0.06, 0, 0, 0, 0.03);
+    return parent;
   }
   /** Rebake the layer from the plots' tiers now (and place the animated parts). show: { plotId: tier | null }
    * overrides a plot's tier (null: leave it out; the construction montage draws it apart meanwhile). */
@@ -3810,17 +3950,19 @@ export function build(scene, ctx = {}) {
   const topCache = new Map();
   function plotTop(plot) {
     if (!KRAKEN || !dev.built) return null;
-    const lit = plot.kind === 'home' && plot.tier > 0 && dev.lit[plot.id] !== false;
+    const lit = litOf(plot, plot.tier);
     const key = `${plot.id}:${plot.tier}:${lit ? 1 : 0}`;
     if (topCache.has(key)) return topCache.get(key);
     const c = dev.chunks.get(key);
     if (!c) return null;
     const R = Math.max(plot.P.w, plot.P.d) / 2;
+    const cx = plot.cx ?? plot.P.x;
+    const cz = plot.cz ?? plot.P.z;
     let top = -Infinity;
     for (const cls of ['ink', 'thin', 'flat']) {
       const a = c[cls] && c[cls].pos;
       if (!a) continue;
-      for (let i = 0; i < a.length; i += 3) if (a[i + 1] > top && Math.hypot(a[i] - plot.P.x, a[i + 2] - plot.P.z) < R) top = a[i + 1];
+      for (let i = 0; i < a.length; i += 3) if (a[i + 1] > top && Math.hypot(a[i] - cx, a[i + 2] - cz) < R) top = a[i + 1];
     }
     const out = Number.isFinite(top) ? r2(top) : null;
     topCache.set(key, out);
@@ -4570,6 +4712,11 @@ export function build(scene, ctx = {}) {
     if (!A.sails) devAnimBuild();
     const tierOf = (p) => (p && show && Object.prototype.hasOwnProperty.call(show, p.id) ? show[p.id] ?? p.tier : p ? p.tier : 0);
     const at = (plot, x, y, z) => {
+      if (V4) {
+        const f = plotFrame(plot); // (the kit offset)
+        f.updateMatrixWorld(true);
+        return f.localToWorld(V3(x, y, z));
+      }
       plot.P.g.updateMatrixWorld(true);
       return plot.P.g.localToWorld(V3(x, y, z));
     };
@@ -4588,6 +4735,46 @@ export function build(scene, ctx = {}) {
     const park = plotList.find((p) => p.id === 'park');
     A.jet.group.visible = !!park && tierOf(park) >= 2;
     if (A.jet.group.visible) A.jet.group.position.copy(at(park, 0, park.P.y + 1.28, -0.15));
+    if (V4) placeParts4(tierOf);
+  }
+  // The new plots' animated parts (buildings4's userData.anim: one mesh each, drawn apart): the tier standing now's,
+  // in the plot's frame; a replaced tier's leave (their geometry freed; the materials are the kit's).
+  dev.parts4 = new Map(); // plot id -> { tier, frame, parts }
+  function placeParts4(tierOf) {
+    for (const plot of plotList) {
+      if (!plot.v4) continue;
+      const tier = tierOf(plot);
+      const cur = dev.parts4.get(plot.id);
+      if (cur && cur.tier === tier) continue;
+      if (cur) {
+        dev.root.remove(cur.frame);
+        for (const a of cur.parts) a.group.traverse((o) => o.geometry && o.geometry.dispose());
+        const c = dev.chunks.get(`${plot.id}:${cur.tier}:0`);
+        if (c && c.parts === cur.parts) c.parts = null;
+        dev.parts4.delete(plot.id);
+      }
+      if (tier === null || !(tier > 0 || plot.islet)) continue;
+      const c = plotChunk(plot, tier);
+      if (!c.parts) {
+        // (built again: the last were freed with the tier they stood for)
+        const k = v4call(buildings4.kit, plot.id, tier, kit);
+        c.parts = k && Array.isArray(k.userData.anim) ? k.userData.anim : [];
+      }
+      if (!c.parts.length) continue;
+      const frame = plotFrame(plot);
+      frame.name = `sparrow-parts4:${plot.id}`;
+      frame.userData.keep = true;
+      for (const a of c.parts) {
+        if (!a || !a.group) continue;
+        if (!a.placed) {
+          a.group.position.y += plot.P.y;
+          a.placed = true;
+        }
+        frame.add(a.group);
+      }
+      dev.root.add(frame);
+      dev.parts4.set(plot.id, { tier, frame, parts: c.parts });
+    }
   }
   /** The layer's animation (each frame, with the town's): the sails turn, the beam sweeps, the fountain splashes;
    * a building going up; a new home's villagers waving from the porch. */
@@ -4600,7 +4787,7 @@ export function build(scene, ctx = {}) {
     if (dev.built && !dev.montage) {
       for (const plot of plotList) {
         if (plot.tier >= 3) continue;
-        const keys = plot.kind === 'home' ? [1, 0] : [0];
+        const keys = plot.kind === 'home' && !plot.v4 ? [1, 0] : [0];
         const miss = keys.find((l) => !dev.chunks.has(`${plot.id}:${plot.tier + 1}:${l}`));
         if (miss === undefined) continue;
         const was = dev.lit[plot.id];
@@ -4620,6 +4807,19 @@ export function build(scene, ctx = {}) {
       } else animatePerson(w.p, t, 'wave', {});
     }
     const A = dev.anim;
+    if (V4) {
+      for (const P4 of dev.parts4.values()) {
+        for (const a of P4.parts) {
+          if (!a || typeof a.update !== 'function') continue;
+          try {
+            a.update(t, dt);
+          } catch (err) {
+            a.update = null;
+            console.warn('sparrow v4: a part', err);
+          }
+        }
+      }
+    }
     if (A.sails && A.sails.group.visible) A.sails.spin.rotation.z = -t * 0.6;
     if (A.beam && A.beam.group.visible) A.beam.group.rotation.y = t * 0.6;
     if (A.jet && A.jet.group.visible) {
@@ -4846,17 +5046,64 @@ export function build(scene, ctx = {}) {
     let changed = false;
     const was = new Map(plotList.map((p) => [p.id, p.tier]));
     if (dev.montage) finishMontage();
+    if (V4) skipScene();
     for (const plot of plotList) {
+      if (plot.v4) continue; // (setIsland4's)
       const tier = t[plot.id];
       if (tier !== plot.tier) {
         plot.tier = tier;
         changed = true;
       }
     }
-    const built = opts && typeof opts.built === 'string' ? plotList.find((p) => p.id === opts.built) || null : null;
-    if (built && changed && built.tier > was.get(built.id)) startMontage(built, was.get(built.id));
+    const built = opts && typeof opts.built === 'string' ? plotList.find((p) => p.id === opts.built && !p.v4) || null : null;
+    if (built && changed && built.tier > was.get(built.id)) startBuild(built, was.get(built.id));
     else if (changed || !dev.built) rebuildDev();
     return changed;
+  }
+  /**
+   * The Sunset Isles' island record (pirates-ahoy-island4, { v, t: { homeE: 0..3, ... } }, SPEC4 §4.2): the eleven new
+   * plots show the building of their tier. opts.built: the plot just built (the construction scene, or the montage
+   * while the scene is a null object). Returns whether the island changed. With v4 false a no-op.
+   */
+  function setIsland4(s4, opts = {}) {
+    if (!V4) return false;
+    const t = islandRules.parseIsland4(s4).t;
+    let changed = false;
+    const was = new Map(plotList.map((p) => [p.id, p.tier]));
+    if (dev.montage) finishMontage();
+    skipScene();
+    for (const plot of plotList) {
+      if (!plot.v4) continue;
+      const tier = t[plot.id];
+      if (Number.isInteger(tier) && tier !== plot.tier) {
+        plot.tier = tier;
+        changed = true;
+      }
+    }
+    const built = opts && typeof opts.built === 'string' ? plotList.find((p) => p.id === opts.built && p.v4) || null : null;
+    if (built && changed && built.tier > was.get(built.id)) startBuild(built, was.get(built.id));
+    else if (changed || !dev.built) rebuildDev();
+    return changed;
+  }
+  // a build: the construction scene (v4, once 1P's scene runs), else SPEC3's montage
+  function startBuild(plot, from) {
+    if (V4 && v4.scene) {
+      const reduced = reducedMotion();
+      const ok = v4call(() => v4.scene.start({ id: plot.id, ...plotInfo(plot), tier: plot.tier, v4: !!plot.v4 }, from, plot.tier, { kind: plot.kind === 'home' ? 'home' : 'amenity', reduced }));
+      if (ok) {
+        rebuildDev({ [plot.id]: null }); // (the scene draws the plot apart meanwhile)
+        dev.scenePlot = plot;
+        return;
+      }
+    }
+    startMontage(plot, from);
+  }
+  function skipScene() {
+    if (!V4 || !v4.scene || !dev.scenePlot) return false;
+    v4call(() => v4.scene.skip());
+    dev.scenePlot = null;
+    rebuildDev();
+    return true;
   }
   /** The camera pose framing a plot (for the build panel: it glides there, beside the panel): looking at the plot
    * from round its front, the side, height and distance picked so that nothing tall stands between the lens and
@@ -4909,7 +5156,7 @@ export function build(scene, ctx = {}) {
     const yaw0 = PLOT_VIEW[plot.id] ?? (P.ry || 0);
     const H = plot.height;
     const R = Math.max(P.w, P.d) * 0.5;
-    const target = V3(P.x, P.y + Math.min(H, 7) * 0.42, P.z);
+    const target = V3(plot.cx ?? P.x, P.y + Math.min(H, 7) * 0.42, plot.cz ?? P.z);
     const tanV = Math.tan((25 * PI) / 180);
     const d0 = ((Math.max(H, 2 * R) * 0.5) / tanV) * 1.1 + R;
     const obs = poseObstacles(plot, d0 * 1.2 + R + 2);
@@ -4938,7 +5185,7 @@ export function build(scene, ctx = {}) {
                 const x = pos.x + dir.x * s;
                 const y = pos.y + dir.y * s;
                 const z = pos.z + dir.z * s;
-                if (Math.hypot(x - P.x, z - P.z) < R + 0.3 || y < 0) break; // reached the plot (or the sea)
+                if (Math.hypot(x - target.x, z - target.z) < R + 0.3 || y < 0) break; // reached the plot (or the sea)
                 if (obs.some((o) => inObstacle(o, x, y, z))) {
                   score += 1 + 2.5 * (1 - s / d);
                   break;
@@ -5046,8 +5293,8 @@ export function build(scene, ctx = {}) {
   // a fisherman in a rowboat swinging at anchor off the garden
   {
     const g = new THREE.Group();
-    const x = -15.2;
-    const z = 4.6;
+    const x = V4 ? -13.5 : -15.2; // (with v4 off the new boardwalks' way)
+    const z = V4 ? 7.5 : 4.6;
     g.position.set(x, 0, z);
     g.rotation.y = 0.9;
     g.userData.keep = true;
@@ -6116,6 +6363,31 @@ export function build(scene, ctx = {}) {
     if (Math.abs(d) <= step) return b;
     return a + Math.sign(d) * step;
   };
+  // (v4) on one of the plan's decks: a shack platform or its porches, an islet's sand or grass, Fisher's Pier
+  const profileY = (P, r) => {
+    if (r <= P[0][0]) return P[0][1];
+    for (let i = 1; i < P.length; i++) if (r <= P[i][0]) return P[i - 1][1] + ((P[i][1] - P[i - 1][1]) * (r - P[i - 1][0])) / (P[i][0] - P[i - 1][0]);
+    return P[P.length - 1][1];
+  };
+  const onDeck4 = (x, y, z) => {
+    for (const D of islandPlan.DECKS) {
+      if (D.kind === 'today') continue;
+      if (D.r !== undefined) {
+        const r = Math.hypot(x - D.x, z - D.z);
+        if (r <= D.r - 0.4 && Math.abs(y - profileY(D.profile, r)) < 0.45) return true;
+        continue;
+      }
+      if (Math.abs(y - D.y) >= 0.45) continue;
+      for (const q of [D, ...(D.porches || [])]) {
+        const dx = x - q.x;
+        const dz = z - q.z;
+        const c = Math.cos(q.ry || 0);
+        const sn = Math.sin(q.ry || 0);
+        if (Math.abs(dx * c - dz * sn) <= q.w / 2 && Math.abs(dx * sn + dz * c) <= q.d / 2) return true;
+      }
+    }
+    return false;
+  };
   // on a walkable deck, the garden or a walkable bridge (and at its height)?
   const onWalk = (x, y, z) => {
     for (const k of walkDecks) {
@@ -6124,6 +6396,7 @@ export function build(scene, ctx = {}) {
       if (Math.abs(dx * k.c - dz * k.s) <= k.hw && Math.abs(dx * k.s + dz * k.c) <= k.hd && Math.abs(y - k.y) < 0.45) return true;
     }
     if (Math.hypot(x - GARDEN.x, z - GARDEN.z) <= GARDEN.r - 0.4 && Math.abs(y - GARDEN.y) < 0.45) return true;
+    if (V4 && onDeck4(x, y, z)) return true;
     for (const l of walkData.links) {
       for (let i = 0; i + 1 < l.pts.length; i++) {
         const [ax, ay, az] = l.pts[i];
@@ -6157,6 +6430,11 @@ export function build(scene, ctx = {}) {
       }
       else if (f.npc) out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets, npc: f.npc });
       else out.push({ x: p.x, z: p.z, r: 0.35, index: i, greets: !!f.greets });
+    }
+    // (v4: the islanders out on the walk, drawn or not: folk4's walker()-shaped entries, SPEC4 §6.5)
+    if (V4 && v4.folk) {
+      const more = v4call(() => v4.folk.walkers());
+      if (Array.isArray(more)) for (const w of more) out.push(w);
     }
     return out;
   }
@@ -6268,6 +6546,12 @@ export function build(scene, ctx = {}) {
    */
   function cull(x, z, radius = 40, near = 0) {
     townView = Number.isFinite(x) && Number.isFinite(z);
+    if (V4 && townView) {
+      direct(x, z, near);
+      for (const zz of prizes) zz.ship.visible = true;
+      return;
+    }
+    if (V4) v4.drawn = null;
     for (const f of folk) {
       if (!townView) {
         f.p.visible = !f.villager; // (the villagers walk the town only: none in the shipyard view, SPEC3 §14)
@@ -6279,6 +6563,30 @@ export function build(scene, ctx = {}) {
       f.p.visible = d <= (f.villager ? Math.min(radius, 30) : radius) && d >= near;
     }
     for (const zz of prizes) zz.ship.visible = townView;
+  }
+  /**
+   * (v4) The crowd director (SPEC4 §7.2) in place of cull()'s radius: of everyone out (the townsfolk, the villagers,
+   * Bess and the professor pinned, and the islanders), islanders.plan() picks who is drawn (PEOPLE_DRAWN at most): the
+   * chat partner, everyone within 2 u of the captain, then within 6 u, then in front of the lens; (x, z) the lens.
+   */
+  function direct(x, z, near) {
+    const people = [];
+    for (let i = 0; i < folk.length; i++) {
+      const f = folk[i];
+      const w = f.p.parent === root ? f.p.position : f.p.getWorldPosition(tmpW);
+      people.push({ id: `f${i}`, x: w.x, z: w.z, pin: !!f.npc });
+    }
+    const crowd = v4.folk ? v4call(() => v4.folk.crowd()) : null;
+    if (Array.isArray(crowd)) for (const q of crowd) if (q && Number.isFinite(q.x) && Number.isFinite(q.z)) people.push({ id: q.id, x: q.x, z: q.z });
+    const cap = captainAt || { x, z };
+    const chat = v4.chat;
+    const s = v4call(crowdPlan, { x, z, cx: cap.x, cz: cap.z, chat: chat || null }, people, v4.drawn, lastT);
+    v4.drawn = s instanceof Set ? s : new Set(people.map((q) => q.id));
+    for (let i = 0; i < folk.length; i++) {
+      const f = folk[i];
+      const w = f.p.parent === root ? f.p.position : f.p.getWorldPosition(tmpW);
+      f.p.visible = v4.drawn.has(`f${i}`) && Math.hypot(w.x - x, w.z - z) >= near;
+    }
   }
   // Prize ships moored off the east arm (built from the two most valuable captures; the town view only)
   const PRIZE_BERTHS = [
@@ -6341,47 +6649,49 @@ export function build(scene, ctx = {}) {
     return along > 0 && along < WAIT.ahead && Math.abs(dx * fz - dz * fx) < WAIT.side && Math.hypot(dx, dz) > WAIT.inside;
   };
 
-  // ----- the Sunset Isles' seam (SPEC4 §11.1, ctx.v4) -----
-  // The art helpers the new modules build with, frozen: the town's parts, colours and baking, LOOK-2's inTheWay, and
-  // stream(seed), a random stream of a module's own (the town's rand() is never drawn by them).
-  const kit = Object.freeze({
-    THREE,
-    add,
-    rbox,
-    cyl,
-    sphere,
-    rope,
-    rod,
-    beam,
-    ink,
-    thin,
-    flat,
-    COL,
-    WALLS,
-    ROOFS,
-    lantern,
-    shack,
-    sagCurve,
-    bake,
-    inTheWay,
-    stream: (seed) => mulberry32(seed),
-  });
-  // (Stage 0: each module answers as a null object; 1N wires their art, walks and people in)
-  const v4 = { kit, districts: null, folk: null, critters: null, buildings: buildings4, construction: construction4 };
+  // ----- the Sunset Isles' seam (SPEC4 §6-§7, §11.1, ctx.v4) -----
+  // With v4: the plan's walk merged into env.walk (in place, so every holder of it sees it), the islanders (folk4),
+  // the animals (critters), the construction scene, and the crowd director in cull().
+  const v4 = { kit, districts: districtsArt, folk: null, critters: null, buildings: buildings4, construction: construction4, scene: null, drawn: null, prepared: false, chat: null };
   if (V4) {
-    const call = (f, ...args) => {
-      try {
-        return typeof f === 'function' ? f(...args) : null;
-      } catch (err) {
-        console.warn('sparrow v4:', err);
-        return null;
-      }
-    };
-    v4.districts = call(districts4.buildDistricts, kit, islandPlan);
-    v4.folk = call(folk4.createFolk4, kit, { people: [], walk: walkData });
-    v4.critters = call(critters4.createCritters, root, { reducedMotion: () => !!(typeof ctx.reducedMotion === 'function' ? ctx.reducedMotion() : ctx.reducedMotion) });
+    const w4 = v4call(islandPlan.walkData4, walkData, islandRules.PLOTS4);
+    if (w4) for (const k of Object.keys(w4)) walkData[k] = w4[k];
+    // the Houseboat's barge (tiers 2-3) moors off s17: the walk camera keeps off it from tier 0 (§6.3: the walk never
+    // changes with the tiers)
+    const hb = plotList.find((p) => p.id === 'homeF');
+    if (hb) {
+      const f = plotFrame(hb);
+      f.updateMatrixWorld(true);
+      const c = f.localToWorld(V3(4.35, 0, -0.62));
+      walkData.camBlockers.push({ x: r2(c.x), z: r2(c.z), w: 2.0, d: 4.4, ry: r3(yawOf(f)), y0: 0, y1: 4.6, moored: 'homeF' });
+    }
+    v4.folk = v4call(folk4.createFolk4, kit, { people: [], walk: walkData, root });
+    v4.critters = v4call(critters4.createCritters, root, { reducedMotion, walk: walkData, where: (id, lag) => (v4.folk ? v4.folk.trail(id, lag) : null) });
+    v4.scene = v4call(construction4.createConstruction, {
+      scene: root,
+      chunks: (id, tier) => {
+        const plot = plotList.find((p) => p.id === id);
+        return plot ? plotChunk(plot, tier) : null;
+      },
+      devMaterials: () => ({ ...dev.mats, tex: dev.texMat }),
+      pad: (id) => islandPlan.PADS[id] || null,
+      porch: (id) => islandPlan.PLOT_PLACES.find((q) => q.plot === id) || null,
+      door: (id, tier) => {
+        const plot = plotList.find((p) => p.id === id);
+        const inf = plot && plot.v4 ? v4call(buildings4.info, id, tier) : null;
+        if (!inf || !inf.door) return null;
+        const f = plotFrame(plot);
+        f.updateMatrixWorld(true);
+        const w = f.localToWorld(V3(inf.door.x ?? 0, plot.P.y, inf.door.z ?? 0));
+        return { x: w.x, y: w.y, z: w.z };
+      },
+      walkPoint: (x, z) => ({ x, z }),
+      builders: () => (v4.folk ? v4.folk.builders() : []),
+      islanders: () => v4.folk,
+      pose: (id) => plotPose(id),
+      sfx: ctx.sfx || null,
+    });
   }
-
   function update(t, dt0, ctx) {
     if (ctx && ctx.camera && ctx.camera.position) lastCam = { x: ctx.camera.position.x, z: ctx.camera.position.z };
     const amp = palette.waveAmp;
@@ -6530,6 +6840,21 @@ export function build(scene, ctx = {}) {
       }
       animatePerson(f.p, t, act, f.aopts);
     }
+    // (v4) the islanders (one built a frame from dock open), the animals, the construction scene
+    if (V4) {
+      if (v4.folk) {
+        if (!v4.prepared) v4.prepared = !!v4call(() => v4.folk.prepare());
+        v4call(() => v4.folk.update(t, dt, townView ? captainAt : null, townView ? v4.drawn : false));
+      }
+      if (v4.critters) v4call(() => v4.critters.update(t, dt, townView ? captainAt : null));
+      if (v4.scene && dev.scenePlot) {
+        v4call(() => v4.scene.step(dt));
+        if (!v4call(() => v4.scene.running)) {
+          dev.scenePlot = null;
+          rebuildDev();
+        }
+      }
+    }
     if (polly.pole) polly.pole.rotation.y = t * 2.4;
     for (const z of prizes) {
       if (!z.ship.visible) continue;
@@ -6577,7 +6902,12 @@ export function build(scene, ctx = {}) {
   }
 
   function dispose() {
-    for (const m of [v4.districts, v4.folk, v4.critters]) if (m && typeof m.dispose === 'function') m.dispose();
+    for (const m of [v4.districts, v4.folk, v4.critters, v4.scene]) if (m && typeof m.dispose === 'function') v4call(() => m.dispose());
+    // (the new plots' animated parts: those standing, and those kept with chunks baked ahead)
+    const partSets = new Set();
+    if (dev.parts4) for (const P4 of dev.parts4.values()) partSets.add(P4.parts);
+    for (const c of dev.chunks.values()) if (c && c.parts) partSets.add(c.parts);
+    for (const list of partSets) for (const a of list) if (a && a.group) a.group.traverse((o) => o.geometry && o.geometry.dispose());
     if (crewRig.parent) crewRig.parent.remove(crewRig);
     if (anim.visitor) disposeShip(anim.visitor); // its own clean-up (keeps the shared materials)
     for (const z of prizes) {
@@ -6637,7 +6967,41 @@ export function build(scene, ctx = {}) {
     plotPose,
     setRank,
     setVillagers,
-    finishBuild: finishMontage,
+    finishBuild: () => (V4 && skipScene()) || finishMontage(),
+    // the Sunset Isles (SPEC4 §11.1; with v4 false harmless no-ops)
+    setIsland4,
+    setIslanders(roster, opts = {}) {
+      if (!V4) return false;
+      if (v4.folk) v4call(() => v4.folk.set(roster, opts));
+      if (v4.critters) v4call(() => v4.critters.set(roster && Array.isArray(roster.animals) ? roster.animals : []));
+      return true;
+    },
+    districtAt: (x, z) => (V4 ? islandPlan.districtAt(x, z) : null),
+    // the islander the captain is chatting with (the crowd director draws them first), or null
+    setChat(id) {
+      if (V4) v4.chat = typeof id === 'string' ? id : null;
+    },
+    // the construction scene: { running, stage, t, kind } (null while none runs)
+    get scene() {
+      if (!V4 || !v4.scene || !dev.scenePlot) return null;
+      return { id: dev.scenePlot.id, running: !!v4call(() => v4.scene.running), stage: v4call(() => v4.scene.stage), t: v4call(() => v4.scene.t) };
+    },
+    // the lookout (§6.7): its place at the ladder's foot and the crow's nest's view (world)
+    get lookout() {
+      if (!V4 || !lookoutNest) return null;
+      const n = lookoutNest.getWorldPosition(V3());
+      const pl = walkData.places.find((q) => q.id === 'lookout') || null;
+      return { place: pl ? { ...pl } : null, nest: [r2(n.x), r2(n.y + 1.55), r2(n.z)], look: [r2(n.x), r2(n.y - 2), r2(n.z - 12)] };
+    },
+    get islanders() {
+      return V4 && v4.folk ? v4call(() => v4.folk.crowd()) || [] : [];
+    },
+    get critters() {
+      return V4 ? v4.critters : null;
+    },
+    get v4() {
+      return V4 ? v4 : null;
+    },
     buildTimes: { ...MONTAGE },
     get montage() {
       const M = dev.montage;

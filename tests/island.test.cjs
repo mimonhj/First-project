@@ -593,6 +593,509 @@ function rng(seed) {
       `in every argument of every function: no throws, well-formed results${problems.length ? ' -> ' + problems.slice(0, 6).join('; ') + more : ''}`);
   }
 
+  // ================================================================== the Sunset Isles (SPEC4 §4, §9, §10.1, §13.1)
+  // Appended in Stage 1 (1D): every check above is SPEC3's and unchanged; these check the new exports only:
+  // - PLOTS4 exactly, beside islandPlan's districts and pads; RANKS4, GIFT4, MUSEUM, AQUARIUM, RESCUE; totals4
+  //   3,450 / 12,550 / 16,000 (27,800 with SPEC3's 11,800)
+  // - tierOf4 / nextCost4 / build4 (order and reasons unknown, maxed, closed, poor) / onSale4 at each progress /
+  //   plotState4; perks4 at every tier; villagers4 2 / 4 / 6 (18 at most); gift4 ≤ 120 with the park's multiplier;
+  //   catchGold, museumGold ≤ 200, aquariumGold ≤ 150, rescue 10 / 20 / 30 % ≤ 150; rank4 at 0, 29, 30, 44, 45, 62, 63
+  // - parseIsland4 with the garbage battery, round trips, the rewrite rule, mergeIsland4
+  // - the perk rule: PERK4_SCOPE labels every perks4 key 'v4', 'gold' or 'delight', and none reaches a Voyage I–III battle
+  // - junk in every argument of every new function
+  {
+    const T4 = ['Rope Swing House', 'Treehouse', 'Treetop Lodge'];
+    // [id, name, district, platform, kind, tier names, prices, perk key, perk at tiers 1..3, height, tier 0, sale]
+    const KR = "Opens after The Kraken's Deep";
+    const ROWS4 = [
+      ['homeE', 'Treehouse', 'beach', 'beach', 'home', T4, [150, 350, 650], 'villagers', [2, 4, 6], 11, 'a giant palm', null],
+      ['homeF', 'Houseboat Moorings', 'lighthouse', 's17', 'home', ['Rowboat Home', 'Houseboat', 'Floating Manor'], [150, 350, 650], 'villagers', [2, 4, 6], 8, 'a little shack', null],
+      ['homeG', 'Hilltop Villa', 'hill', 'hill', 'home', ['Cottage', 'Villa', 'Domed Villa'], [150, 350, 650], 'villagers', [2, 4, 6], 9, 'a grassy plot', null],
+      ['forge', "Blacksmith's Forge", 'lantern', 's4', 'amenity', ['Anvil', 'Smithy', 'Iron Works'], [250, 550, 950], 'cutHold', [0.6, 0.45, 0.3], 8, 'a little shack', { unlocked: 10, why: KR }],
+      ['fishing', 'Fishing Hut', 'lighthouse', 's9', 'amenity', ['Drying Rack', 'Fishing Hut', 'Fish Market'], [150, 350, 650], 'catchGold', [20, 40, 60], 7, 'a little shack', null],
+      ['farm', 'Goat Farm', 'lantern', 's10', 'amenity', ['Goat Pen', 'Barn', 'Dairy & Orchard'], [200, 450, 800], 'goats', [2, 4, 6], 6, 'a little shack', null],
+      ['music', 'Music Hall', 'lantern', 's5', 'amenity', ["Fiddler's Stump", 'Bandstand', 'Shell Hall'], [200, 450, 800], 'musicLayers', [1, 2, 3], 8, 'a little shack', null],
+      ['museum', 'Trophy Museum', 'lantern', 's11', 'amenity', ['Curio Shed', 'Museum', 'Grand Gallery'], [250, 500, 900], 'museumGold', [15, 30, 50], 9, 'a little shack', { captures: 1, why: 'Opens after your first capture' }],
+      ['observatory', 'Observatory', 'hill', 'hill', 'amenity', ['Spyglass Post', 'Star Tower', 'Great Dome'], [300, 600, 1000], 'spyglass', [6, 12, 18], 11, 'a grassy hilltop', { unlocked: 10, why: KR }],
+      ['aquarium', 'Aquarium', 'lantern', 's12', 'amenity', ['Tide Pool', 'Aquarium', 'Grand Aquarium'], [300, 600, 1000], 'aquariumGold', [10, 20, 30], 7, 'a little shack', { unlocked: 11, why: 'Opens after Misty Mangroves' }],
+      ['grotto', 'Mermaid Grotto', 'beach', 'beach', 'amenity', ['Rock Pool', 'Grotto', 'Coral Palace'], [200, 400, 700], 'rescuePct', [10, 20, 30], 6, 'a sandy shore', { unlocked: 12, why: 'Opens after The Sunken Spires' }],
+    ];
+    const IDS4 = ROWS4.map((r) => r[0]);
+    const HOMES4 = ROWS4.filter((r) => r[4] === 'home').map((r) => r[0]);
+    const AMEN4 = ROWS4.filter((r) => r[4] === 'amenity').map((r) => r[0]);
+    const ROW4 = Object.fromEntries(ROWS4.map((r) => [r[0], r]));
+    const P4_0 = { cutHold: 0.8, catchGold: 0, museumGold: 0, spyglass: 0, aquariumGold: 0, rescuePct: 0, musicLayers: 0, goats: 0 };
+    const DEF4 = { v: 1, t: Object.fromEntries(IDS4.map((id) => [id, 0])) };
+    // §10.1's record text, exactly
+    const TEXT4 = '{"v":1,"t":{"homeE":0,"homeF":0,"homeG":0,"forge":0,"fishing":0,"farm":0,"music":0,"museum":0,"observatory":0,"aquarium":0,"grotto":0}}';
+    const isl4 = (t = {}) => ({ v: 1, t: { ...DEF4.t, ...t } });
+    const FULL = { unlocked: 12, captures: 1 }; // everything on sale
+
+    // ---------------------------------------------------------------- the exports and the tables (§4.1, §4.2, §11.1)
+    const fns4 = ['defaultIsland4', 'parseIsland4', 'serializeIsland4', 'mergeIsland4', 'tierOf4', 'nextCost4', 'totals4', 'plotState4', 'build4', 'onSale4', 'perks4', 'villagers4', 'tiersBuilt4', 'rank4', 'gift4', 'catchGold', 'museumGold', 'aquariumGold', 'rescue'];
+    const missing4 = fns4.filter((k) => typeof I[k] !== 'function');
+    const tables4 = ['PLOTS4', 'RANKS4', 'GIFT4', 'MUSEUM', 'AQUARIUM', 'RESCUE', 'PERK4_SCOPE'].filter((k) => !(k in I));
+    check(missing4.length === 0 && tables4.length === 0, `SPEC4 §11.1: island.js exports PLOTS4, RANKS4, GIFT4, MUSEUM, AQUARIUM, RESCUE, PERK4_SCOPE and the ${fns4.length} new functions${missing4.length || tables4.length ? ' -> missing ' + [...tables4, ...missing4].join(', ') : ''}`);
+    const want4 = ROWS4.map(([id, name, district, platform, kind, tiers, costs, key, perk, height, tier0, sale]) => ({ id, name, district, platform, kind, tiers, costs, perk: { [key]: perk }, height, tier0, sale }));
+    const bad4 = want4.filter((w, i) => !same(I.PLOTS4[i], w)).map((w) => `${w.id}: ${show(I.PLOTS4.find((p) => p.id === w.id))}`);
+    check(Array.isArray(I.PLOTS4) && I.PLOTS4.length === 11 && bad4.length === 0, `PLOTS4 is exactly SPEC4 §4.1's table, in its order (${IDS4.join(', ')}): names, districts, platforms, tiers, prices, perks, heights, the tier-0 words and when each goes on sale${bad4.length ? ' -> ' + bad4.join('; ') : ''}`);
+    const ids21 = [...I.PLOTS.map((p) => p.id), ...I.PLOTS4.map((p) => p.id)];
+    const shackPlats = I.PLOTS4.filter((p) => p.platform.startsWith('s')).map((p) => p.platform).sort();
+    check(new Set(ids21).size === 21 && same(shackPlats, ['s10', 's11', 's12', 's17', 's4', 's5', 's9']) && shackPlats.every((s) => !I.PLOTS.some((p) => p.platform === s)) &&
+      same(I.PLOTS4.filter((p) => !p.platform.startsWith('s')).map((p) => `${p.id}@${p.platform}`), ['homeE@beach', 'homeG@hill', 'observatory@hill', 'grotto@beach']),
+      `21 plots with their own ids; the new shack plots stand on the seven remaining shacks (s4, s5, s9, s10, s11, s12, s17: none a SPEC3 plot's), and the Treehouse and the Grotto on Sunset Beach, the Villa and the Observatory on Lookout Hill`);
+    const rising4 = I.PLOTS4.every((p) => p.tiers.length === 3 && p.costs.length === 3 && p.costs.every((c, k) => isInt(c) && c > 0 && (k === 0 || c > p.costs[k - 1])) &&
+      Object.keys(p.perk).length === 1 && Object.values(p.perk)[0].every((v, k, a) => typeof v === 'number' && v > 0 && (k === 0 || (Object.keys(p.perk)[0] === 'cutHold' ? v < a[k - 1] : v > a[k - 1]))) &&
+      p.tiers.every((n) => typeof n === 'string' && n.trim() === n && n.length > 0) && isInt(p.height) && p.height > 0);
+    check(rising4, 'each new plot has three named tiers; each tier costs more than the last and gives more (the Forge: a shorter hold) than the last');
+    check(same(I.RANKS4, [{ name: 'Hamlet', from: 0 }, { name: 'Village', from: 5 }, { name: 'Town', from: 12 }, { name: 'Harbour Town', from: 20 }, { name: 'Pirate Capital', from: 30 }, { name: 'Grand Port', from: 45 }, { name: 'Jewel of the Seas', from: 63 }]) &&
+      same(I.RANKS4.slice(0, 5), I.RANKS), 'RANKS4: SPEC3\'s five ranks, then Grand Port 45 and Jewel of the Seas 63 (RANKS stays as it was)');
+    check(same(I.GIFT4, { perVillager: 5, cap: 120 }) && same(I.MUSEUM, { cap: 200 }) && same(I.AQUARIUM, { cap: 150 }) && same(I.RESCUE, { cap: 150 }), 'GIFT4 { perVillager: 5, cap: 120 }, MUSEUM { cap: 200 }, AQUARIUM { cap: 150 }, RESCUE { cap: 150 }');
+    const frozen4 = (o) => !o || typeof o !== 'object' || (Object.isFrozen(o) && Object.values(o).every(frozen4));
+    check([I.PLOTS4, I.RANKS4, I.GIFT4, I.MUSEUM, I.AQUARIUM, I.RESCUE, I.PERK4_SCOPE].every(frozen4), 'every new table is frozen all the way down');
+
+    // islandPlan.js (pure) names the same districts and platforms
+    let plan = null;
+    try {
+      plan = await load('src/islandPlan.js');
+    } catch {
+      plan = null;
+    }
+    if (plan && Array.isArray(plan.DISTRICTS) && plan.PADS) {
+      const byD = Object.fromEntries(plan.DISTRICTS.map((d) => [d.id, d.plots]));
+      const badD = I.PLOTS4.filter((p) => !(byD[p.district] || []).includes(p.id) || !plan.PADS[p.id] || plan.PADS[p.id].platform !== p.platform).map((p) => p.id);
+      const all = plan.DISTRICTS.flatMap((d) => d.plots).sort();
+      check(badD.length === 0 && same(all, ids21.slice().sort()), `PLOTS4's districts and platforms are islandPlan's (DISTRICTS lists all 21 plots once; PADS[id].platform)${badD.length ? ' -> ' + badD.join(', ') : ''}`);
+    } else console.log('SKIP  islandPlan.js has no DISTRICTS / PADS to compare with');
+
+    // ---------------------------------------------------------------- totals (§4.1, §9): the exit check
+    const sum4 = (ids) => ids.reduce((n, id) => n + ROW4[id][6].reduce((a, b) => a + b, 0), 0);
+    const mine4 = { homes: sum4(HOMES4), amenities: sum4(AMEN4), all: sum4(IDS4) };
+    const t4 = I.totals4();
+    const fromPlots4 = I.PLOTS4.reduce((n, p) => n + p.costs.reduce((a, b) => a + b, 0), 0);
+    check(same(t4, { homes: 3450, amenities: 12550, all: 16000 }) && same(mine4, t4) && fromPlots4 === 16000 && t4.all + I.totals().all === 27800,
+      `totals4: new homes ${t4.homes}, new amenities ${t4.amenities}, the new plots ${t4.all} (the table summed here: ${mine4.homes} / ${mine4.amenities} / ${mine4.all}; PLOTS4 summed: ${fromPlots4}); with SPEC3's 11,800 the island costs ${t4.all + I.totals().all}`);
+    const tiers4 = I.PLOTS4.reduce((n, p) => n + p.costs.length, 0);
+    check(tiers4 === 33 && tiers4 + 30 === I.RANKS4[I.RANKS4.length - 1].from && Math.min(...I.PLOTS4.map((p) => p.costs[0])) === 150,
+      `${tiers4} new tiers (the feats' island4 and the Jewelled tricorn: 33), 63 in all (the Jewel of the Seas needs every one); the cheapest new building costs 150`);
+
+    // ---------------------------------------------------------------- tiers, prices, building, sale (§4.1, §8.6)
+    {
+      const problems = [];
+      for (const id of IDS4) for (let t = 0; t <= 3; t++) {
+        const rec = isl4({ [id]: t });
+        const wantCost = t < 3 ? ROW4[id][6][t] : null;
+        if (I.tierOf4(rec, id) !== t || I.nextCost4(rec, id) !== wantCost) problems.push(`${id} ${t}: tier ${I.tierOf4(rec, id)} next ${I.nextCost4(rec, id)}`);
+        if (I.tierOf4(JSON.stringify(rec), id) !== t) problems.push(`${id} ${t} from text`);
+      }
+      check(problems.length === 0 && I.tierOf4(TEXT4, 'nope') === 0 && I.nextCost4(TEXT4, 'nope') === null && I.tierOf4(TEXT4, 'homeA') === 0 && I.nextCost4(TEXT4, 'homeA') === null,
+        `tierOf4 / nextCost4 at every tier of every new plot (record or text); a SPEC3 or unknown id: tier 0, no price${problems.length ? ' -> ' + problems.slice(0, 4).join('; ') : ''}`);
+
+      // build4 one tier at a time, the price the table says; the whole set is 16,000
+      let rec = I.defaultIsland4();
+      let spent = 0;
+      let steps = 0;
+      const badB = [];
+      for (const id of IDS4) for (let t = 0; t < 3; t++) {
+        const before = JSON.stringify(rec);
+        const b = I.build4(rec, 1e6, id, FULL);
+        if (!b.ok || b.cost !== ROW4[id][6][t] || b.island4.t[id] !== t + 1 || JSON.stringify(rec) !== before || b.reason !== null) badB.push(`${id} ${t}: ${show(b)}`);
+        spent += b.cost;
+        steps++;
+        rec = b.island4;
+      }
+      check(badB.length === 0 && spent === 16000 && steps === 33 && I.tiersBuilt4(rec) === 33 && same(rec, isl4(Object.fromEntries(IDS4.map((id) => [id, 3])))),
+        `build4 raises one tier at a time at the table's price, never changes its input; building every new plot to tier 3 takes 33 builds and ${spent} gold${badB.length ? ' -> ' + badB.slice(0, 3).join('; ') : ''}`);
+      const r = (s4, purse, id, progress) => I.build4(s4, purse, id, progress);
+      const order = [
+        ['unknown', r(TEXT4, 1e6, 'castle', FULL)], ['unknown (a SPEC3 plot)', r(TEXT4, 1e6, 'homeA', FULL)],
+        ['maxed', r(isl4({ forge: 3 }), 1e6, 'forge', FULL)], ['maxed before closed', r(isl4({ forge: 3 }), 0, 'forge', { unlocked: 1 })],
+        ['closed', r(TEXT4, 1e6, 'forge', { unlocked: 9 })], ['closed before poor', r(TEXT4, 0, 'grotto', { unlocked: 11 })],
+        ['poor', r(TEXT4, 149, 'homeE', FULL)], ['poor at an upgrade', r(isl4({ homeE: 1 }), 349, 'homeE', FULL)],
+      ];
+      const wantR = ['unknown', 'unknown', 'maxed', 'maxed', 'closed', 'closed', 'poor', 'poor'];
+      const badR = order.filter(([, b], i) => b.ok !== false || b.reason !== wantR[i] || b.cost !== 0).map(([n, b]) => `${n}: ${show(b)}`);
+      const exact = r(TEXT4, 150, 'homeE', null);
+      check(badR.length === 0 && exact.ok && exact.cost === 150 && same(order[4][1].island4, DEF4),
+        `build4's refusals in order: unknown, maxed, closed (not on sale yet), poor; each costs nothing and keeps the record; exactly the price builds (the homes are on sale even with no progress)${badR.length ? ' -> ' + badR.join('; ') : ''}`);
+
+      // onSale4 at each progress (§4.1's "On sale" column)
+      const opensAt = { forge: [10, 0], observatory: [10, 0], aquarium: [11, 0], grotto: [12, 0], museum: [1, 1] };
+      const progs = [];
+      for (const unlocked of [1, 5, 9, 10, 11, 12, 99]) for (const captures of [0, 1, 7]) progs.push({ unlocked, captures });
+      const badS = [];
+      for (const id of IDS4) for (const g of progs) {
+        const [lv, cap] = opensAt[id] || [1, 0];
+        const ok = g.unlocked >= lv && g.captures >= cap;
+        const s = I.onSale4(id, g);
+        const why = ok ? '' : ROW4[id][11].why;
+        if (s.ok !== ok || s.why !== why) badS.push(`${id} ${show(g)}: ${show(s)}`);
+      }
+      const fresh = IDS4.filter((id) => I.onSale4(id, null).ok);
+      check(badS.length === 0 && same(fresh, ['homeE', 'homeF', 'homeG', 'fishing', 'farm', 'music']) && same(I.onSale4('homeA', FULL), { ok: false, why: '' }),
+        `onSale4 at ${progs.length} progresses: the three homes, the Fishing Hut, the Goat Farm and the Music Hall from the start; the Forge and the Observatory with Voyage IV (unlocked ≥ 10), the Aquarium after level 10, the Grotto after level 11, the Museum after the first capture, each with its reason${badS.length ? ' -> ' + badS.slice(0, 4).join('; ') : ''}`);
+      const junkProg = [undefined, null, 'x', 12, [], { unlocked: '12', captures: '3' }, { unlocked: NaN, captures: Infinity }, { unlocked: -5 }];
+      check(junkProg.every((g) => same(IDS4.map((id) => I.onSale4(id, g).ok), IDS4.map((id) => !opensAt[id]))), 'junk progress (missing, strings, NaN, negatives) counts as a fresh save: only the six always-on-sale plots');
+
+      // plotState4: the panel's words, agreeing with build4
+      const cases = [
+        [TEXT4, 500, 'forge', { unlocked: 9 }, { tier: 0, cost: 250, affordable: false, maxed: false, onSale: false, why: KR, label: KR, now: 'a little shack', next: 'Anvil · cut a net in 0.6 s' }],
+        [TEXT4, 500, 'forge', { unlocked: 10 }, { tier: 0, cost: 250, affordable: true, maxed: false, onSale: true, why: '', label: 'Build Anvil — 250 gold', now: 'a little shack', next: 'Anvil · cut a net in 0.6 s' }],
+        [isl4({ homeE: 1 }), 100, 'homeE', null, { tier: 1, cost: 350, affordable: false, maxed: false, onSale: true, why: '', label: 'Need 250 more gold', now: 'Rope Swing House · 2 villagers', next: 'Treehouse · 4 villagers' }],
+        [isl4({ homeE: 2 }), 650, 'homeE', null, { tier: 2, cost: 650, affordable: true, maxed: false, onSale: true, why: '', label: 'Upgrade to Treetop Lodge — 650 gold', now: 'Treehouse · 4 villagers', next: 'Treetop Lodge · 6 villagers' }],
+        [isl4({ museum: 3 }), 0, 'museum', null, { tier: 3, cost: null, affordable: false, maxed: true, onSale: false, why: 'Opens after your first capture', label: 'Fully built', now: 'Grand Gallery · +50 gold a ship captured', next: 'all done!' }],
+        [TEXT4, 1000, 'homeE', FULL, { tier: 0, cost: 150, affordable: true, maxed: false, onSale: true, why: '', label: 'Build Rope Swing House — 150 gold', now: 'a giant palm', next: 'Rope Swing House · 2 villagers' }],
+        [isl4({ music: 2 }), 800, 'music', FULL, { tier: 2, cost: 800, affordable: true, maxed: false, onSale: true, why: '', label: 'Upgrade to Shell Hall — 800 gold', now: 'Bandstand · a fiddle and a drum', next: 'Shell Hall · the whole band; the town dances' }],
+        [TEXT4, 1000, 'grotto', { unlocked: 11 }, { tier: 0, cost: 200, affordable: false, maxed: false, onSale: false, why: 'Opens after The Sunken Spires', label: 'Opens after The Sunken Spires', now: 'a sandy shore', next: 'Rock Pool · merfolk save 10% in a wreck' }],
+        [TEXT4, 1000, 'nope', FULL, { tier: 0, cost: null, affordable: false, maxed: false, onSale: false, why: '', label: '', now: '', next: '' }],
+      ];
+      const badP = cases.filter(([s4, purse, id, g, want]) => !same(I.plotState4(s4, purse, id, g), want)).map(([s4, purse, id, g]) => `${id}: ${show(I.plotState4(s4, purse, id, g))}`);
+      check(badP.length === 0, `plotState4: the not-on-sale reason as the label, Need N more gold, Build / Upgrade with the price, Fully built; Now / Next in the panel's words (${cases.length} cases)${badP.length ? ' -> ' + badP.join('; ') : ''}`);
+      const rr = rng(44);
+      const badA = [];
+      for (let k = 0; k < 2000; k++) {
+        const s4 = isl4(Object.fromEntries(IDS4.map((id) => [id, Math.floor(rr() * 4)])));
+        const id = IDS4[Math.floor(rr() * IDS4.length)];
+        const purse = Math.floor(rr() * 1200);
+        const g = { unlocked: 1 + Math.floor(rr() * 12), captures: Math.floor(rr() * 2) };
+        const st = I.plotState4(s4, purse, id, g);
+        const b = I.build4(s4, purse, id, g);
+        if (st.affordable !== b.ok || (b.ok && b.cost !== st.cost) || (!b.ok && b.reason === 'closed') !== (!st.onSale && !st.maxed) || (!b.ok && b.reason === 'maxed') !== st.maxed) badA.push(`${id} ${show(s4.t)} ${purse} ${show(g)}`);
+      }
+      check(badA.length === 0, `plotState4 and build4 agree on 2,000 random islands, purses and progresses (affordable ⇔ it builds; the closed and maxed states)${badA.length ? ' -> ' + badA.slice(0, 2).join('; ') : ''}`);
+    }
+
+    // ---------------------------------------------------------------- what the new plots give (§4.1)
+    {
+      const problems = [];
+      for (const id of IDS4) for (let t = 0; t <= 3; t++) {
+        const p = I.perks4(isl4({ [id]: t }));
+        const want = { ...P4_0 };
+        if (ROW4[id][7] in P4_0 && t > 0) want[ROW4[id][7]] = ROW4[id][8][t - 1];
+        if (!same(p, want)) problems.push(`${id} ${t}: ${show(p)}`);
+      }
+      check(problems.length === 0 && same(I.perks4(I.defaultIsland4()), P4_0), 'perks4 at every tier of every new plot: each amenity changes only its own perk (homes none); nothing built gives nothing (and the 0.8 s hold)');
+      const top = I.perks4(isl4(Object.fromEntries(IDS4.map((id) => [id, 3]))));
+      check(same(top, { cutHold: 0.3, catchGold: 60, museumGold: 50, spyglass: 18, aquariumGold: 30, rescuePct: 30, musicLayers: 3, goats: 6 }), `everything new built: ${show(top)}`);
+      let C = null;
+      try {
+        C = await load('src/combat.js');
+      } catch {
+        C = null;
+      }
+      if (C && C.RAIDERS && typeof C.RAIDERS.cutHold === 'number') check(I.perks4(null).cutHold === C.RAIDERS.cutHold && I.perks4(null).cutHold === 0.8, `without the Forge a net's hold is combat.js's RAIDERS.cutHold (${C.RAIDERS.cutHold} s), the raiders' rope cut`);
+      else console.log('SKIP  combat.js has no RAIDERS.cutHold to compare with');
+
+      // villagers4 and gift4
+      const badV = [];
+      let most = 0;
+      for (let k = 0; k < 64; k++) {
+        const t = Object.fromEntries(HOMES4.map((id, i) => [id, (k >> (2 * i)) & 3]));
+        const want = HOMES4.reduce((n, id) => n + [0, 2, 4, 6][t[id]], 0);
+        for (const park of [0, 1, 2, 3]) {
+          const s4 = isl4({ ...t, ...Object.fromEntries(AMEN4.map((id) => [id, (k + park) % 4])) });
+          const s = island({ park, homeA: 3, homeB: 3, homeC: 3, homeD: 3 });
+          const v = I.villagers4(s4);
+          const g = I.gift4(s, s4);
+          const wantG = Math.min(120, Math.round(5 * want * [1, 1.25, 1.5, 2][park]));
+          if (v !== want) badV.push(`villagers4 ${show(t)}: ${v}`);
+          if (g !== wantG || !isInt(g) || g < 0 || g > 120) badV.push(`gift4 ${show(t)} park ${park}: ${g} (want ${wantG})`);
+          if (I.villagers(s) !== 24 || I.gift(s) !== Math.min(240, Math.round(5 * 24 * [1, 1.25, 1.5, 2][park]))) badV.push('the SPEC3 gift moved');
+          most = Math.max(most, v);
+        }
+      }
+      check(badV.length === 0 && most === 18, `villagers4: 2 / 4 / 6 a new home by its tier, 18 at most (42 with SPEC3's 24); gift4 = 5 × villagers4 × the Flower Park's 1 / 1.25 / 1.5 / 2, whole gold, ≤ 120, beside SPEC3's gift (unchanged), at all 64 home and 4 park tiers${badV.length ? ' -> ' + badV.slice(0, 4).join('; ') : ''}`);
+      const exG = [[{}, {}, 0], [{}, { homeE: 1 }, 10], [{ park: 1 }, { homeE: 1 }, 13], [{ park: 3 }, { homeE: 1 }, 20], [{}, { homeE: 3, homeF: 3, homeG: 3 }, 90], [{ park: 1 }, { homeE: 3, homeF: 3, homeG: 3 }, 113], [{ park: 2 }, { homeE: 3, homeF: 3, homeG: 3 }, 120], [{ park: 3 }, { homeE: 3, homeF: 3, homeG: 3 }, 120]];
+      const badG = exG.filter(([s, s4, want]) => I.gift4(island(s), isl4(s4)) !== want).map(([s, s4, want]) => `${show(s)} ${show(s4)}: ${I.gift4(island(s), isl4(s4))} (want ${want})`);
+      check(badG.length === 0, `gift4 examples: a rope-swing house 10, with flower beds 13, with the bandstand 20; 18 villagers 90, ×1.25 113 (112.5 rounded), ×1.5 or ×2 the cap 120${badG.length ? ' -> ' + badG.join('; ') : ''}`);
+
+      // the gold perks, each with its own trigger and cap
+      const badC = [0, 1, 2, 3].filter((t) => I.catchGold(isl4({ fishing: t })) !== [0, 20, 40, 60][t]);
+      check(badC.length === 0, "catchGold: the Fishers' catch 0 / 20 / 40 / 60 gold a cleared level");
+      const badM = [];
+      for (let t = 0; t <= 3; t++) for (let n = 0; n <= 20; n++) {
+        const want = Math.min(200, [0, 15, 30, 50][t] * n);
+        if (I.museumGold(isl4({ museum: t }), n) !== want) badM.push(`tier ${t} × ${n}: ${I.museumGold(isl4({ museum: t }), n)}`);
+        const wantA = Math.min(150, [0, 10, 20, 30][t] * n);
+        if (I.aquariumGold(isl4({ aquarium: t }), n) !== wantA) badM.push(`aquarium tier ${t} × ${n}: ${I.aquariumGold(isl4({ aquarium: t }), n)}`);
+      }
+      const junkN = [-1, NaN, Infinity, -Infinity, '3', null, undefined, [], {}, 2.5];
+      const jm = junkN.map((n) => [I.museumGold(isl4({ museum: 3 }), n), I.aquariumGold(isl4({ aquarium: 3 }), n)]);
+      check(badM.length === 0 && same(jm.slice(0, 7).flat(), [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]) && same(jm[9], [100, 60]) && I.museumGold(isl4({ museum: 3 }), 1e12) === 200,
+        `museumGold 15 / 30 / 50 a capture ≤ 200 a level; aquariumGold 10 / 20 / 30 a creature ≤ 150 (0..20 of each at every tier; junk counts 0, 2.5 counts 2, a huge count stays at the cap)${badM.length ? ' -> ' + badM.slice(0, 4).join('; ') : ''}`);
+      const resc = [[0, 1000, 0], [1, 1000, 100], [2, 450, 90], [3, 150, 45], [3, 500, 150], [3, 501, 150], [1, 1e7, 150], [2, 13, 3], [3, 1, 0], [3, 2, 1], [3, 0, 0], [3, -500, 0], [3, NaN, 0], [3, Infinity, 0], [3, '500', 0], [3, null, 0], [3, 1e308, 150], [1, 333.7, 33]];
+      const badRs = resc.filter(([t, p, want]) => I.rescue(isl4({ grotto: t }), p) !== want).map(([t, p, want]) => `tier ${t}, ${show(p)}: ${I.rescue(isl4({ grotto: t }), p)} (want ${want})`);
+      check(badRs.length === 0, `rescue: the merfolk save 10 / 20 / 30 % of the plunder lost (whole gold, rounded), ≤ 150, nothing without the Grotto or on junk ("The merfolk saved 45 gold!" is tier 3 of 150; ${resc.length} cases)${badRs.length ? ' -> ' + badRs.join('; ') : ''}`);
+      let okAll = true;
+      for (let t = 0; t <= 3; t++) for (let p = 0; p <= 1200; p += 7) {
+        const g = I.rescue(isl4({ grotto: t }), p);
+        if (!isInt(g) || g < 0 || g > 150 || g !== Math.min(150, Math.round((p * [0, 10, 20, 30][t]) / 100))) okAll = false;
+      }
+      check(okAll, 'rescue at every tier for 0..1,200 gold of plunder: whole gold, 0..150');
+    }
+
+    // ---------------------------------------------------------------- ranks over all 21 plots (§4.2)
+    {
+      const split = (n) => {
+        const t = {};
+        const t4 = {};
+        for (const id of IDS) {
+          const k = Math.min(3, n);
+          t[id] = k;
+          n -= k;
+        }
+        for (const id of IDS4) {
+          const k = Math.min(3, n);
+          t4[id] = k;
+          n -= k;
+        }
+        return [island(t), isl4(t4)];
+      };
+      const want = [[0, 'Hamlet', 5], [29, 'Harbour Town', 30], [30, 'Pirate Capital', 45], [44, 'Pirate Capital', 45], [45, 'Grand Port', 63], [62, 'Grand Port', 63], [63, 'Jewel of the Seas', null]];
+      const bad = want.filter(([n, name, next]) => !same(I.rank4(...split(n)), { name, tiers: n, next })).map(([n]) => `${n}: ${show(I.rank4(...split(n)))}`);
+      // the new plots count as much as the old ones: 30 tiers all on the new plots is the Pirate Capital too
+      const newOnly = I.rank4(I.defaultIsland(), isl4(Object.fromEntries(IDS4.map((id, i) => [id, i < 10 ? 3 : 0]))));
+      check(bad.length === 0 && newOnly.name === 'Pirate Capital' && newOnly.tiers === 30,
+        `rank4 over all 21 plots at 0, 29, 30, 44, 45, 62, 63 tiers: ${want.map(([n, name]) => `${n} ${name}`).join(', ')} (with the tiers the next rank needs)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      let mono = true;
+      let prev = -1;
+      for (let n = 0; n <= 63; n++) {
+        const [s, s4] = split(n);
+        const r = I.rank4(s, s4);
+        const k = I.RANKS4.findIndex((x) => x.name === r.name);
+        if (I.tiersBuilt(s) + I.tiersBuilt4(s4) !== n || k < prev || r.tiers !== n || (r.next !== null && r.next <= n) || (n <= 30 && r.name !== I.rank(s).name)) mono = false;
+        prev = k;
+      }
+      check(mono, 'tiersBuilt4 counts every new tier; rank4 only ever rises, and up to 30 tiers names the same rank as SPEC3\'s rank()');
+    }
+
+    // ---------------------------------------------------------------- parseIsland4: the garbage battery (§10.1)
+    {
+      const parse = (raw) => {
+        try {
+          const s = I.parseIsland4(raw);
+          const okShape = s && Object.keys(s).join() === 'v,t' && s.v === 1 && Object.keys(s.t).join() === IDS4.join() && Object.values(s.t).every((v) => isInt(v) && v >= 0 && v <= 3);
+          return okShape ? { s } : { error: `invalid result ${show(s)}` };
+        } catch (e) {
+          return { error: `threw ${e && e.message}` };
+        }
+      };
+      check(same(I.defaultIsland4(), DEF4) && I.defaultIsland4() !== I.defaultIsland4() && I.serializeIsland4(I.defaultIsland4()) === TEXT4, `defaultIsland4 is a fresh record every call, and its text is §10.1's exactly: ${TEXT4}`);
+      const hostile = {};
+      Object.defineProperty(hostile, 't', { enumerable: true, get() { throw new Error('getter'); } });
+      const hostileTier = { t: { homeF: 2 } };
+      Object.defineProperty(hostileTier.t, 'homeE', { enumerable: true, get() { throw new Error('getter'); } });
+      const proxy = new Proxy({}, { get() { throw new Error('proxy'); }, has() { throw new Error('proxy'); }, ownKeys() { throw new Error('proxy'); }, getOwnPropertyDescriptor() { throw new Error('proxy'); } });
+      const { proxy: revoked, revoke } = Proxy.revocable({}, {});
+      revoke();
+      const junk = [
+        null, undefined, '', ' ', 'garbage', 'garbage{', '{', '}', '{}', '[]', '[1,2,3]', 'null', 'true', 'false', '42', '"str"',
+        'NaN', 'Infinity', '-Infinity', '1e400', '{"t":null}', '{"t":[]}', '{"t":[3,3,3,3,3,3,3,3,3,3,3]}', '{"t":"homeE"}', '[{"t":{"homeE":3}}]',
+        '{"T":{"homeE":3}}', '{"v":1,"t":{"HomeE":3,"GROTTO":3}}', '{"v":1,"tiers":{"homeE":3}}', TEXT0, '{"v":1,"t":{"homeA":3,"park":3}}', 42, -1, NaN, Infinity, true, false, [], [1, 2], {}, () => 1, Symbol('x'), 10n,
+        new Date(0), /x/, new Map([['t', { homeE: 3 }]]), new Set(['homeE']), hostile, proxy, revoked,
+        '\u0000', '\ud800', '{"t":{"homeE":3}', '{"v":1,"t":{"homeE":1,"grotto":2}',
+      ];
+      const bad = [];
+      for (const raw of junk) {
+        const r = parse(raw);
+        if (r.error) bad.push(`${show(raw)}: ${r.error}`);
+        else if (!same(r.s, DEF4)) bad.push(`${show(raw)}: ${show(r.s)}`);
+      }
+      check(bad.length === 0, `parseIsland4: ${junk.length} kinds of junk (cut JSON, arrays, wrong types, a SPEC3 record, throwing getters, proxies, a revoked proxy, a Map…) all give the default${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      check(same(parse(hostileTier).s, isl4({ homeF: 2 })), 'a throwing getter on one tier counts as tier 0; the other tiers are kept');
+      let sourceText = false;
+      JSON.parse('1', (k, v, ctx) => {
+        sourceText = !!(ctx && typeof ctx.source === 'string');
+        return v;
+      });
+      const tierFrom = (lit, id = 'museum') => {
+        const r = parse(`{"v":1,"t":{"homeE":2,"${id}":${lit}}}`);
+        return r.error ? r.error : r.s.t.homeE !== 2 ? 'lost the homeE tier' : r.s.t[id];
+      };
+      const cases = [
+        ['1', 1], ['2', 2], ['3', 3], ['0', 0], ['-0', 0], ['4', 3], ['99999', 3], ['-1', 0], ['-3', 0], ['"1"', 1], ['" 2 "', 2], ['"3"', 3], ['"03"', 3], ['"7"', 3],
+        ['"1e0"', 0], ['"2.5"', 0], ['"0x2"', 0], ['"Infinity"', 0], ['"NaN"', 0], ['""', 0], ['" "', 0], ['"1 2"', 0], ['"+1"', 0], ['"two"', 0],
+        ['2.5', 0], ['1.5', 0], ['-0.5', 0], ['1e400', 0], ['-1e400', 0], ['123456789012345678901', 0], ['"123456789012345678901"', 0],
+        ['null', 0], ['true', 0], ['false', 0], ['[1]', 0], ['{"v":1}', 0], ['{"__proto__":3}', 0],
+        ...(sourceText ? [['1e0', 0], ['2.0', 0], ['1E0', 0], ['3.0', 0], ['30e-1', 0]] : []),
+      ];
+      const badT = cases.filter(([lit, want]) => tierFrom(lit) !== want).map(([lit, want]) => `${lit} -> ${tierFrom(lit)} (want ${want})`);
+      check(badT.length === 0, `parseIsland4: each tier is a plain integer clamped to 0..3, else 0 (${cases.length} cases${sourceText ? ', incl. number literals like 1e0 and 2.0' : ''})${badT.length ? ' -> ' + badT.join('; ') : ''}`);
+      const objectCases = [
+        [1, 1], [3, 3], [4, 3], [-7, 0], [-0, 0], [NaN, 0], [Infinity, 0], [-Infinity, 0], [2.5, 0], [1 + Number.EPSILON, 0], [Number.MAX_SAFE_INTEGER + 2, 0],
+        ['1', 1], [' 2 ', 2], ['1e1', 0], [null, 0], [true, 0], [[1], 0], [{ valueOf: () => 1 }, 0], [new Number(1), 0], [new String('2'), 0], [1n, 0], [Symbol('1'), 0],
+      ];
+      const badO = [];
+      for (const [v, want] of objectCases) {
+        const r = parse({ t: { grotto: v, farm: 1 } });
+        const got = r.error || r.s.t.grotto;
+        if (got !== want || Object.is(got, -0) || (!r.error && r.s.t.farm !== 1)) badO.push(`${show(v)} -> ${got}`);
+      }
+      check(badO.length === 0, `parseIsland4 on a record object: the same tier rules (NaN, ±Infinity, 2.5, -0, boxed numbers, bigints, too big…)${badO.length ? ' -> ' + badO.join('; ') : ''}`);
+      const fbf = parse('{"v":1,"t":{"homeE":"1e1","homeF":2.5,"homeG":-3,"forge":99,"fishing":null,"farm":"2","music":1,"museum":3,"observatory":"x","aquarium":[2],"grotto":"3"}}');
+      check(!fbf.error && same(fbf.s.t, { homeE: 0, homeF: 0, homeG: 0, forge: 3, fishing: 0, farm: 2, music: 1, museum: 3, observatory: 0, aquarium: 0, grotto: 3 }), `parseIsland4 falls back tier by tier (${show(fbf.s || fbf.error)})`);
+      const extra = parse('{"v":1,"t":{"homeE":1,"homeA":3,"park":3,"castle":3,"toString":1,"constructor":3},"gold":999999,"villagers":42}');
+      check(!extra.error && same(extra.s, isl4({ homeE: 1 })) && same(I.parseIsland('{"v":1,"t":{"homeA":1,"homeE":3,"grotto":2}}'), island({ homeA: 1 })),
+        'unknown fields and ids are dropped, SPEC3 plot ids included; and parseIsland still drops every new id (the two records never share a plot)');
+      const proto = parse('{"__proto__":{"t":{"homeE":3}},"t":{"__proto__":{"homeF":3},"constructor":{"prototype":{"polluted":1}}}}');
+      const polluted = ({}).polluted !== undefined || Object.prototype.polluted !== undefined || ({}).homeF !== undefined || ({}).t !== undefined;
+      check(!proto.error && same(proto.s, DEF4) && !polluted, `__proto__ / constructor tricks give the default and pollute nothing (${show(proto.s || proto.error)})`);
+      check(same(parse(Object.create({ t: { homeE: 3 } })).s, DEF4) && same(parse({ t: Object.create({ homeE: 3 }) }).s, DEF4), 'inherited (non-own) fields and tiers are ignored');
+      const v2 = parse('{"v":2,"t":{"grotto":2}}');
+      const noV = parse('{"t":{"farm":1}}');
+      check(same(v2.s.t, isl4({ grotto: 2 }).t) && same(noV.s.t, isl4({ farm: 1 }).t) && I.serializeIsland4(noV.s) === TEXT4.replace('"farm":0', '"farm":1'), 'the tiers are read whatever "v" says (or without it), and written back as v 1');
+      const valid = '{"v":1,"t":{"homeE":3,"grotto":1}}';
+      const at4k = valid.slice(0, -1) + ' '.repeat(4096 - valid.length) + '}';
+      const over = valid.slice(0, -1) + ' '.repeat(4097 - valid.length) + '}';
+      check(at4k.length === 4096 && same(parse(at4k).s, isl4({ homeE: 3, grotto: 1 })) && over.length === 4097 && same(parse(over).s, DEF4), 'a record of exactly 4 KB is read; 4097 characters are refused (the default)');
+      const times = [];
+      const huge = [
+        ['2 MB of garbage', 'x'.repeat(2e6)],
+        ['a 1 MB record', JSON.stringify({ v: 1, t: { homeE: 3 }, pad: 'a'.repeat(1e6) })],
+        ['a 1 MB tier', `{"t":{"homeE":"${'1'.repeat(1e6)}"}}`],
+        ['100k nested arrays', '['.repeat(1e5) + ']'.repeat(1e5)],
+        ['2000 nested arrays (inside 4 KB)', '['.repeat(2000) + ']'.repeat(2000)],
+        ['a deep object in a tier', `{"t":{"homeE":${'{"a":'.repeat(500)}1${'}'.repeat(500)}}}`],
+        ['a deep object around the record', '{"t":'.repeat(500) + '1' + '}'.repeat(500)],
+        ['a megabyte object', { t: { homeE: 'x'.repeat(1e6) } }],
+      ];
+      const badH = [];
+      for (const [name, raw] of huge) {
+        const t0 = process.hrtime.bigint();
+        const res = parse(raw);
+        times.push(Number(process.hrtime.bigint() - t0) / 1e6);
+        if (res.error) badH.push(`${name}: ${res.error}`);
+        else if (!same(res.s, DEF4)) badH.push(`${name}: ${show(res.s)}`);
+      }
+      check(badH.length === 0 && Math.max(...times) < 1000, `parseIsland4: megabytes and deep nesting give the default quickly (slowest ${Math.max(...times).toFixed(1)} ms)${badH.length ? ' -> ' + badH.join('; ') : ''}`);
+      const badRT = [];
+      const recs = [];
+      for (const id of IDS4) for (let t = 0; t <= 3; t++) recs.push(isl4({ [id]: t }));
+      const r = rng(5);
+      for (let k = 0; k < 2000; k++) recs.push({ v: 1, t: Object.fromEntries(IDS4.map((id) => [id, Math.floor(r() * 4)])) });
+      for (const rec of recs) {
+        const text = I.serializeIsland4(rec);
+        const back = parse(text);
+        if (back.error || !same(back.s, rec) || I.serializeIsland4(back.s) !== text || text !== JSON.stringify(rec)) badRT.push(text);
+      }
+      check(badRT.length === 0, `serializeIsland4 → parseIsland4 round trips every new plot at every tier and 2,000 random records, in the §10.1 text${badRT.length ? ' -> ' + badRT.slice(0, 3).join('; ') : ''}`);
+      const rewrite = ['{"t":{"homeE":1}}', TEXT4.replace('}}', '},"x":1}'), TEXT4.replace('"grotto":0', '"grotto":"0"'), TEXT4.replace('"homeE":0', '"homeE":7'), ' ' + TEXT4, TEXT4.replace('"homeE":0,"homeF":0', '"homeF":0,"homeE":0'), TEXT4.replace('"homeE":0', '"homeA":1,"homeE":0')];
+      check(rewrite.every((raw) => I.serializeIsland4(I.parseIsland4(raw)) !== raw) && I.serializeIsland4(I.parseIsland4(TEXT4)) === TEXT4,
+        'a stored island4 record that needed fixing (missing plots, extra fields, digit strings, out of range, another key order, a SPEC3 id) serializes differently, so loadRecord rewrites it; the canonical text is left alone');
+      let texts;
+      let threw = '';
+      try {
+        texts = [I.serializeIsland4({ t: { homeE: 7, grotto: 'x', castle: 3, farm: 2 }, extra: true }), ...[null, undefined, 'garbage', 42, Symbol('x'), proxy, revoked].map((v) => I.serializeIsland4(v))];
+      } catch (e) {
+        threw = e.message;
+      }
+      check(!threw && texts[0] === TEXT4.replace('"homeE":0', '"homeE":3').replace('"farm":0', '"farm":2') && texts.slice(1).every((t) => t === TEXT4), `serializeIsland4 validates before writing; junk writes the default${threw ? ' -> ' + threw : ''}`);
+      const m = I.mergeIsland4('{"v":1,"t":{"homeE":2,"grotto":1}}', { t: { homeE: 1, grotto: 3, farm: 2 } });
+      const full4 = isl4(Object.fromEntries(IDS4.map((id) => [id, 3])));
+      check(same(m, isl4({ homeE: 2, grotto: 3, farm: 2 })) && same(I.mergeIsland4(full4, I.defaultIsland4()), full4) && same(I.mergeIsland4('junk', proxy), DEF4), 'mergeIsland4 (two tabs, §10.2): each new plot keeps the larger tier of the two');
+    }
+
+    // ---------------------------------------------------------------- the perk rule (SPEC4 §0.1, §2.8, §13.1)
+    {
+      const keys = Object.keys(I.perks4(null));
+      const scope = I.PERK4_SCOPE || {};
+      const labels = ['v4', 'gold', 'delight'];
+      check(same(Object.keys(scope).sort(), keys.slice().sort()) && keys.every((k) => labels.includes(scope[k])) && same(keys.filter((k) => scope[k] === 'v4'), ['cutHold', 'spyglass']) &&
+        same(keys.filter((k) => scope[k] === 'gold'), ['catchGold', 'museumGold', 'aquariumGold', 'rescuePct']) && same(keys.filter((k) => scope[k] === 'delight'), ['musicLayers', 'goats']),
+        `PERK4_SCOPE labels every perks4 key (and nothing else): v4 (cutHold: nets only; spyglass: fog and Old Coilback), gold (catch, Museum, Aquarium, rescue), delight (the town tune, goats) -> ${show(scope)}`);
+      const old = Object.keys(I.perks(null));
+      check(keys.every((k) => !old.includes(k)) && I.PLOTS4.every((p) => Object.keys(p.perk).every((k) => k === 'villagers' || keys.includes(k))),
+        `no new perk is one of SPEC3's battle perks (${old.join(', ')}), and every new plot's perk is a perks4 key (or a home's villagers)`);
+      // a delight changes no gold and no battle number; a gold perk is gold only; a v4 perk is none of the gold
+      const r = rng(77);
+      const badS = [];
+      for (let k = 0; k < 300; k++) {
+        const base = Object.fromEntries(IDS4.map((id) => [id, Math.floor(r() * 4)]));
+        const s = island(Object.fromEntries(IDS.map((id) => [id, Math.floor(r() * 4)])));
+        const a = isl4(base);
+        const out = (s4) => ({ p: I.perks(s), gift: I.gift(s), market: I.market(s, 900), gift4: I.gift4(s, s4), catch: I.catchGold(s4), museum: I.museumGold(s4, 3), aqua: I.aquariumGold(s4, 4), rescue: I.rescue(s4, 400), cut: I.perks4(s4).cutHold, spy: I.perks4(s4).spyglass });
+        const o0 = out(a);
+        for (const [id, label] of [['music', 'delight'], ['farm', 'delight'], ['forge', 'v4'], ['observatory', 'v4'], ['fishing', 'gold'], ['museum', 'gold'], ['aquarium', 'gold'], ['grotto', 'gold']]) {
+          const b = isl4({ ...base, [id]: (base[id] + 1) % 4 });
+          const o1 = out(b);
+          const changed = Object.keys(o0).filter((key) => !same(o0[key], o1[key]));
+          const allowed = { music: [], farm: [], forge: ['cut'], observatory: ['spy'], fishing: ['catch'], museum: ['museum'], aquarium: ['aqua'], grotto: ['rescue'] }[id];
+          if (changed.some((c) => !allowed.includes(c))) badS.push(`${id} (${label}) moved ${changed.join(', ')}`);
+        }
+      }
+      check(badS.length === 0, `over 300 random islands, each new amenity's tier moves only its own perk: a delight moves no gold and no battle number, a gold perk only its own gold, a v4 perk only its own (and SPEC3's perks, gift and market never move)${badS.length ? ' -> ' + badS.slice(0, 3).join('; ') : ''}`);
+      // §2.8: no Voyage I–III module reads the new perks; main.js wires them in Stage 2 (2A), on act-4 paths only
+      const V123 = ['src/mechanics.js', 'src/mechanics3.js', 'src/kraken.js', 'src/combat.js', 'src/boarding.js', 'src/specials.js', 'src/levels.js', 'src/act2.js', 'src/act3.js', 'src/upgrades.js', 'src/armory.js', 'src/overboard.js'];
+      const readers = [];
+      for (const f of V123) {
+        let src = '';
+        try {
+          src = fs.readFileSync(path.join(ROOT, f), 'utf8');
+        } catch {
+          continue;
+        }
+        for (const word of ['perks4', 'PERK4_SCOPE', 'spyglass', 'museumGold', 'aquariumGold', 'catchGold', 'rescuePct', 'island4']) if (new RegExp(`\\b${word}\\b`).test(src)) readers.push(`${f}: ${word}`);
+      }
+      check(readers.length === 0, `no Voyage I–III module (${V123.length} files: the mechanics, the Kraken, combat, boarding, specials, levels 1–9, upgrades, armory) reads perks4 or a new perk${readers.length ? ' -> ' + readers.join('; ') : ''}`);
+      let mainSrc4 = '';
+      try {
+        mainSrc4 = fs.readFileSync(path.join(ROOT, 'src/main.js'), 'utf8');
+      } catch {
+        mainSrc4 = '';
+      }
+      const uses = (mainSrc4.match(/\bperks4\s*\(/g) || []).length;
+      console.log(`INFO  main.js calls perks4() ${uses} time(s) (Stage 2 wires the Forge's hold and the spyglass on Voyage IV paths; battle.cjs checks levels 1–9 are unchanged)`);
+    }
+
+    // ---------------------------------------------------------------- junk in, well-formed results out
+    {
+      const hostile = {};
+      for (const k of ['v', 't', 'homeE', 'grotto', 'unlocked', 'captures', 'valueOf', 'toString']) Object.defineProperty(hostile, k, { enumerable: true, get() { throw new Error('getter'); } });
+      const proxy = new Proxy({}, { get() { throw new Error('proxy'); }, has() { throw new Error('proxy'); }, ownKeys() { throw new Error('proxy'); }, getOwnPropertyDescriptor() { throw new Error('proxy'); } });
+      const { proxy: revoked, revoke } = Proxy.revocable({}, {});
+      revoke();
+      const junk = [undefined, null, NaN, Infinity, -Infinity, -1, 0, -0, 0.5, 1e308, '12', '', 'homeE', 'grotto', 'homeA', '__proto__', true, false, [], [1, 2], {}, () => 1, Symbol('x'), 10n, new Date(0), hostile, proxy, revoked,
+        { v: 1, t: { homeE: NaN, grotto: -5, farm: Infinity } }, { t: hostile }, TEXT4, TEXT0];
+      const problems = [];
+      const tryIt = (name, fn, ok) => {
+        try {
+          const r = fn();
+          const why = ok(r);
+          if (why !== true) problems.push(`${name}: ${why === false ? show(r) : why}`);
+        } catch (e) {
+          problems.push(`${name}: threw ${e && e.message}`);
+        }
+      };
+      const okRec = (s) => s && s.v === 1 && Object.keys(s.t).join() === IDS4.join() && Object.values(s.t).every((v) => isInt(v) && v >= 0 && v <= 3);
+      const okState = (st) => st && isInt(st.tier) && st.tier <= 3 && (st.cost === null || isInt(st.cost)) && ['affordable', 'maxed', 'onSale'].every((k) => typeof st[k] === 'boolean') && ['why', 'label', 'now', 'next'].every((k) => typeof st[k] === 'string');
+      const okBuild = (b) => b && typeof b.ok === 'boolean' && okRec(b.island4) && isInt(b.cost) && (b.ok ? b.reason === null : ['unknown', 'maxed', 'closed', 'poor'].includes(b.reason));
+      const okPerks = (p) => p && Object.keys(p).join() === Object.keys(P4_0).join() && Object.values(p).every((v) => typeof v === 'number' && Number.isFinite(v) && v >= 0);
+      const okRank = (r) => r && I.RANKS4.some((x) => x.name === r.name) && isInt(r.tiers) && r.tiers <= 63 && (r.next === null || isInt(r.next));
+      const okGold = (cap) => (g) => isInt(g) && g >= 0 && g <= cap;
+      for (const j of junk) {
+        const J = show(j);
+        tryIt(`parseIsland4(${J})`, () => [I.parseIsland4(j), I.mergeIsland4(j, j), I.mergeIsland4(TEXT4, j), I.defaultIsland4()], (rs) => rs.every(okRec));
+        tryIt(`serializeIsland4(${J})`, () => I.serializeIsland4(j), (t) => typeof t === 'string' && okRec(JSON.parse(t)));
+        tryIt(`tierOf4(${J})`, () => [I.tierOf4(j, j), I.tierOf4(j, 'homeE'), I.tierOf4(TEXT4, j)], (rs) => rs.every((t) => isInt(t) && t >= 0 && t <= 3));
+        tryIt(`nextCost4(${J})`, () => [I.nextCost4(j, j), I.nextCost4(j, 'grotto'), I.nextCost4(TEXT4, j)], (rs) => rs.every((c) => c === null || isInt(c)));
+        tryIt(`onSale4(${J})`, () => [I.onSale4(j, j), I.onSale4('forge', j), I.onSale4(j, FULL)], (rs) => rs.every((s) => s && typeof s.ok === 'boolean' && typeof s.why === 'string'));
+        tryIt(`plotState4(${J})`, () => [I.plotState4(j, j, j, j), I.plotState4(j, 500, 'homeE', FULL), I.plotState4(TEXT4, j, 'forge', FULL), I.plotState4(TEXT4, 500, j, FULL), I.plotState4(TEXT4, 500, 'museum', j)], (rs) => rs.every(okState));
+        tryIt(`build4(${J})`, () => [I.build4(j, j, j, j), I.build4(j, 1e6, 'homeE', FULL), I.build4(TEXT4, j, 'grotto', FULL), I.build4(TEXT4, 1e6, j, FULL), I.build4(TEXT4, 1e6, 'forge', j)], (rs) => rs.every(okBuild));
+        tryIt(`perks4(${J})`, () => I.perks4(j), okPerks);
+        tryIt(`villagers4(${J})`, () => [I.villagers4(j), I.tiersBuilt4(j)], ([v, t]) => isInt(v) && v >= 0 && v <= 18 && isInt(t) && t >= 0 && t <= 33);
+        tryIt(`rank4(${J})`, () => [I.rank4(j, j), I.rank4(TEXT0, j), I.rank4(j, TEXT4)], (rs) => rs.every(okRank));
+        tryIt(`gift4(${J})`, () => [I.gift4(j, j), I.gift4(TEXT0, j), I.gift4(j, TEXT4)], (rs) => rs.every(okGold(120)));
+        tryIt(`catchGold(${J})`, () => I.catchGold(j), okGold(60));
+        tryIt(`museumGold(${J})`, () => [I.museumGold(j, j), I.museumGold(j, 3), I.museumGold(isl4({ museum: 3 }), j)], (rs) => rs.every(okGold(200)));
+        tryIt(`aquariumGold(${J})`, () => [I.aquariumGold(j, j), I.aquariumGold(j, 3), I.aquariumGold(isl4({ aquarium: 3 }), j)], (rs) => rs.every(okGold(150)));
+        tryIt(`rescue(${J})`, () => [I.rescue(j, j), I.rescue(j, 500), I.rescue(isl4({ grotto: 3 }), j)], (rs) => rs.every(okGold(150)));
+        tryIt(`totals4(${J})`, () => I.totals4(j), (t) => same(t, { homes: 3450, amenities: 12550, all: 16000 }));
+      }
+      const more = problems.length > 6 ? ` (+${problems.length - 6} more)` : '';
+      check(problems.length === 0, `${junk.length} kinds of junk in every argument of every new function: no throws, well-formed results${problems.length ? ' -> ' + problems.slice(0, 6).join('; ') + more : ''}`);
+    }
+  }
+
   console.log(failures ? `\n${failures} check(s) failed` : `\nAll island checks passed (${passes})`);
   process.exit(failures ? 1 : 0);
 })().catch((e) => {

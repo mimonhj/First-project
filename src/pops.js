@@ -4,11 +4,12 @@ import * as THREE from 'three';
 // "CAPTURED! +145". Each pop is a recycled DOM span in the #pops layer, anchored to a world point and
 // projected every frame, so it costs 0 draw calls. ≥ 24 px light text with a 3 px ink outline (fx.css).
 //
-// createPops(layerEl, camera, { reducedMotion, avoid, insetTop, furniture }) → {
-//   pop(text, x, y, z, style, mod) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'slow'
+// createPops(layerEl, camera, { reducedMotion, avoid, insetTop, furniture, live }) → {
+//   pop(text, x, y, z, style, mod, target) → boolean,   // style: 'dmg' | 'rake' | 'crit' | 'crew' | 'info' | 'slow'
 //                                           //        | 'capture' | 'gold' | 'bad' | 'fire' | 'frost' | 'stink'
-//                                           //        | 'kraken'; a '\n' (or "CRIT! <effect>", or for the
-//                                           //        four new styles "<WORD!> <more>", e.g. "FIRE OUT! SSSS!")
+//                                           //        | 'kraken' | 'foe4' | 'shell'; a '\n' (or "CRIT! <effect>", or
+//                                           //        for the six status and monster styles "<WORD!> <more>", e.g.
+//                                           //        "FIRE OUT! SSSS!")
 //                                           //        splits the text into a big line and a smaller second
 //                                           //        line; mod (optional, a word, or up to 3 words with
 //                                           //        spaces): an extra class pop-<mod> for each, e.g.
@@ -42,6 +43,15 @@ import * as THREE from 'three';
 // The Kraken Seas' words (SPEC3 §2.7, §5.7): 'fire' ON FIRE! / KA-BOOM!, 'frost' FROZEN! / FIRE OUT! SSSS!,
 // 'stink' STINKY! / Clothes-pegs!, 'kraken' SLAM! / BULLSEYE! / OUCH! / ACHOO! / TENTACLE!: each a status or a
 // monster's move a child must see, so they count as important (below).
+// Voyage IV's words (SPEC4 §3.1, WORDS4.pop): 'foe4' for the new foes (COCONUT!, BONK!, SPLOSH!, PUFF!, PFFT!, NET!,
+// PUFFERS!, SHE'S MENDING!, LUNGE!, THUD, DIZZY!, AIM!, FORT DOWN!), 'shell' for the Shellback (TOWER DOWN!, SNIP!,
+// BOULDER!, CHARGE!, BULLSEYE!, OUCH!, CLANG!, ACHOO!, BUMP!, the Golden Conch): important too. The mod 'warn' (a
+// telegraph's word) makes either a little bigger; 'eye' does for the Shellback's BULLSEYE!.
+// Per-target throttle (SPEC4 §0.1 phones): pop()'s optional 7th argument `target` (any key: a ship object, a part's
+// id) names what the word is about. On a phone in portrait (≤ 520 px wide, taller than wide) a target shows at most
+// one new WORD pop per WORD_GAP s: a later word inside the gap is not shown and goes to `live(text)` instead
+// (main's #game-live), and pop() returns false. Numbers ('dmg', 'crew'), CAPTURED!, gold, bad news and 'keep'
+// pops are never throttled; without a target (every call made today) nothing changes.
 // Throttle: ≤ 12 alive (the oldest makes room), ≤ 8 new per second; a pop over the rate waits up to
 // 0.4 s in a short queue (CAPTURED!, CRIT!, gold, bad news, statuses and the Kraken's words jump it) and is
 // dropped if it is still waiting then.
@@ -56,9 +66,13 @@ const MAX_ALIVE = 12;
 const RATE = 8; // new pops per second
 const QUEUE_MAX = 8;
 const QUEUE_AGE = 0.4;
-const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold', 'fire', 'frost', 'stink', 'kraken']);
+const IMPORTANT = new Set(['capture', 'crit', 'bad', 'gold', 'fire', 'frost', 'stink', 'kraken', 'foe4', 'shell']);
 // the styles whose "<WORD!> <more>" splits into two lines
-const SPLIT_BANG = new Set(['fire', 'frost', 'stink', 'kraken']);
+const SPLIT_BANG = new Set(['fire', 'frost', 'stink', 'kraken', 'foe4', 'shell']);
+// the per-target word throttle on portrait phones (SPEC4 §0.1): one new word a target per WORD_GAP s
+const WORD_GAP = 0.5;
+const NOT_WORDS = new Set(['dmg', 'crew', 'capture', 'gold', 'bad']);
+const portraitPhone = () => typeof window !== 'undefined' && window.innerWidth <= 520 && window.innerHeight > window.innerWidth;
 // A pop that finds no clear spot (a crowded short screen) waits up to ROOM_WAIT s for one (the words around it
 // rise and fade), looking again every ROOM_LOOK s; then it shows where it is least covered, except a word the
 // HIT mark's stickers already say or that only adds colour (DROPPABLE), which is let go. Important pops never wait.
@@ -88,6 +102,9 @@ const STYLES = {
   frost: { life: 1.4, rise: 40, pop: 1.25, wobble: -3 }, // FROZEN! (stiff), FIRE OUT! SSSS!
   stink: { life: 1.5, rise: 36, pop: 1.3, wobble: 11 }, // STINKY! (wobbly), Clothes-pegs!
   kraken: { life: 1.5, rise: 56, pop: 1.45, wobble: -8 }, // SLAM!, BULLSEYE!, OUCH!, ACHOO!
+  // SPEC4: the new foes and the Shellback
+  foe4: { life: 1.4, rise: 52, pop: 1.4, wobble: 7 }, // COCONUT!, SPLOSH!, NET!, LUNGE!, AIM!, FORT DOWN!
+  shell: { life: 1.5, rise: 56, pop: 1.45, wobble: -7 }, // TOWER DOWN!, SNIP!, BOULDER!, CHARGE!, BULLSEYE!
 };
 const EDGE = 6; // px kept clear at the screen edges (a pop near the edge slides in instead of being cut off)
 const GAP = 6; // px kept between a pop's line box and another pop or an avoided box (its outline and shadow)
@@ -126,7 +143,7 @@ function avoidBox(r, pad = AVOID_PAD) {
   return { l: l - px, t: t - py, r: rr + px, b: b + py };
 }
 
-export function createPops(layerEl, camera, { reducedMotion = false, avoid = null, insetTop = null, furniture = FURNITURE } = {}) {
+export function createPops(layerEl, camera, { reducedMotion = false, avoid = null, insetTop = null, furniture = FURNITURE, live = null } = {}) {
   const rm = typeof reducedMotion === 'function' ? () => !!reducedMotion() : () => !!reducedMotion;
   const hasDom = !!layerEl && typeof document !== 'undefined';
   if (hasDom) layerEl.classList.remove('hidden');
@@ -154,6 +171,19 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
   const waiting = []; // pops with no room yet: { ...q, lookAt }
   let tokens = RATE;
   let clock = 0;
+  // the per-target throttle: when each target last showed a word (objects weakly, ids by string)
+  const wordAtObj = new WeakMap();
+  const wordAtId = new Map();
+  function throttled(target, style, keep) {
+    if (target === undefined || target === null || keep || NOT_WORDS.has(style) || !portraitPhone()) return false;
+    const isObj = typeof target === 'object' || typeof target === 'function';
+    const key = isObj ? target : String(target);
+    const last = isObj ? wordAtObj.get(key) : wordAtId.get(key);
+    if (last !== undefined && clock - last < WORD_GAP) return true;
+    if (isObj) wordAtObj.set(key, clock);
+    else wordAtId.set(key, clock);
+    return false;
+  }
   // the caller's limits, read when a pop is placed and once a frame while pops are up
   let top = EDGE;
   let boxes = [];
@@ -535,12 +565,23 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
   }
 
   return {
-    pop(text, x, y, z, style = 'dmg', mod = '') {
+    pop(text, x, y, z, style = 'dmg', mod = '', target = null) {
       if (!hasDom || !Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return false;
       if (text === null || text === undefined || String(text).trim() === '') return false;
       // the mod words: plain lower-case words, at most 3 (anything else adds no class)
       const mods = typeof mod === 'string' ? [...new Set(mod.trim().split(/\s+/))].filter((m) => /^[a-z]{1,16}$/.test(m)).slice(0, 3) : [];
       const q = { text, x, y, z, style: typeof style === 'string' ? style : 'dmg', mods, keep: mods.includes('keep'), at: clock };
+      // a portrait phone: a second word on one target within WORD_GAP s goes to the live region only
+      if (throttled(target, q.style, q.keep)) {
+        if (typeof live === 'function') {
+          try {
+            live(String(text).replace(/\n/g, ' '));
+          } catch {
+            /* (the live region is the caller's) */
+          }
+        }
+        return false;
+      }
       // "−N CREW" right after its volley's damage at the same point: the damage pop's second line
       if (q.style === 'crew' && joinCrew(q)) return true;
       if (tokens >= 1) {
@@ -567,6 +608,8 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     update(dt) {
       const step = Number.isFinite(dt) && dt > 0 ? Math.min(dt, 0.25) : 0;
       clock += step;
+      // (forget the throttle's old string keys now and then)
+      if (wordAtId.size > 64) for (const [k, at] of wordAtId) if (clock - at > WORD_GAP * 4) wordAtId.delete(k);
       tokens = Math.min(RATE, tokens + RATE * step);
       while (queue.length && (clock - queue[0].at > QUEUE_AGE || tokens >= 1)) {
         const q = queue.shift();
@@ -606,6 +649,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
       queue.length = 0;
       waiting.length = 0;
       tokens = RATE;
+      wordAtId.clear();
     },
 
     get count() {

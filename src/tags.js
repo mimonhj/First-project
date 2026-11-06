@@ -40,8 +40,18 @@ import { noOutline } from './style.js';
 //                                    (world), world units per tag unit at the camera's distance, CSS px per
 //                                    tag unit on screen (where a tag keeps its size, 18-78 u away), and its
 //                                    extent in tag units (badges included)
-//   get count, get pips /* the InstancedMesh */, dispose()
+//   get count, get pips /* the InstancedMesh */, get pseudoCount, dispose()
 // }
+// Voyage IV (SPEC4 §3.3): update(ships, camera, t, dt, pseudo) also draws the pseudo foes' tags, pseudo being foes4.js's
+// tags() list ([{ id, name, x, y, z, frac, count, under, isNew, status? }]; junk entries are skipped): ONE sprite each
+// (+1 draw call a tag: its name tab and card painted on a canvas, cached by what they show) with its hull bar in the
+// pip mesh (no extra call). A pack's tag counts its boats ("Monkey Jollyboats ×4" and a row of little boats on its
+// card, the ones gone dark; no crew pips); Old Coilback's and a fort's show a hull bar (frac, with the ghost); the
+// Coilback under water reads UNDER WATER on its card instead of the bar; isNew adds a gold NEW star at the card's
+// left (a kind's first appearance, for MEET.newTag s); status (optional, specials.newStatus()'s shape) a status badge
+// at its right with its time dots, +1 draw call. read(id), rect(id, camera) and frame(id, camera) take a pseudo tag's
+// id as well as a ship. Ships: a truthy ship.tagNew puts a gold NEW on her name tab (the three new ship kinds' first
+// appearance; no extra draw call). With no pseudo list and no tagNew, everything is as before.
 // reducedMotion: a boolean or a function returning one: lost pips turn red without flashing.
 // Reads per ship: hp, maxHp, crewShown (may be fractional during a brawl), crew0, strikeAt, tagSlow
 // (0..1: the part of chain shot's slow still to run; 0 = not slowed), crewLost ({ n, from }: n counts
@@ -552,8 +562,35 @@ function drawAtlas() {
 // The name sits on an ink tab joined to the top of the bar card, so it reads over any sky or sea (cream
 // letters on ink, like the card below it) instead of floating pale letters a bar's height above it.
 const LABEL_FONT = '38px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
+const NEW_FONT = '28px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
 const TAB_H = 56; // px of the 80 px canvas
-function drawLabel(canvas, text) {
+// A gold NEW lozenge (ink letters on gold, an ink rim) with its left end at x, centred on y; returns its width.
+function newLozenge(ctx, x, y) {
+  ctx.save();
+  ctx.font = NEW_FONT;
+  const w = Math.ceil(ctx.measureText('NEW').width) + 22;
+  const h = 34;
+  const r = h / 2;
+  ctx.beginPath();
+  ctx.moveTo(x + r, y - r);
+  ctx.lineTo(x + w - r, y - r);
+  ctx.arc(x + w - r, y, r, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(x + r, y + r);
+  ctx.arc(x + r, y, r, Math.PI / 2, (Math.PI * 3) / 2);
+  ctx.closePath();
+  ctx.fillStyle = '#ffc93c';
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = '#fff4d6';
+  ctx.stroke();
+  ctx.fillStyle = '#1d1330';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText('NEW', x + w / 2, y + 2);
+  ctx.restore();
+  return w;
+}
+function drawLabel(canvas, text, isNew = false) {
   const ctx = canvas.getContext('2d');
   const W = canvas.width;
   const H = canvas.height;
@@ -562,8 +599,13 @@ function drawLabel(canvas, text) {
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.lineJoin = 'round';
-  // the tab: as wide as the name plus a margin (never past the canvas), round ends
-  const tw = Math.min(W - 8, Math.ceil(ctx.measureText(text).width) + 40);
+  // the tab: as wide as the name plus a margin (never past the canvas), round ends (and a NEW lozenge before
+  // the name, when it is new)
+  ctx.save();
+  ctx.font = NEW_FONT;
+  const nw = isNew ? Math.ceil(ctx.measureText('NEW').width) + 22 + 10 : 0;
+  ctx.restore();
+  const tw = Math.min(W - 8, Math.ceil(ctx.measureText(text).width) + 40 + nw);
   const x0 = (W - tw) / 2;
   const y0 = H - TAB_H;
   const r = TAB_H / 2;
@@ -578,9 +620,134 @@ function drawLabel(canvas, text) {
   ctx.fill();
   ctx.lineWidth = 6;
   ctx.strokeStyle = '#1d1330';
-  ctx.strokeText(text, W / 2, y0 + TAB_H / 2 + 2);
+  const tx = W / 2 + nw / 2;
+  ctx.strokeText(text, tx, y0 + TAB_H / 2 + 2);
   ctx.fillStyle = '#fff4d6';
-  ctx.fillText(text, W / 2, y0 + TAB_H / 2 + 2);
+  ctx.fillText(text, tx, y0 + TAB_H / 2 + 2);
+  if (isNew) newLozenge(ctx, x0 + 12, y0 + TAB_H / 2);
+  return tw;
+}
+
+// ---------------------------------------------------------------------------
+// Pseudo foes' tags (SPEC4 §3.3): one canvas a look (the name tab over an ink card with the boats or the words),
+// drawn on a 512 × 144 sprite of 8 × 2.25 tag units. The hull bar is drawn by the pip mesh, over the card.
+// ---------------------------------------------------------------------------
+const CARD_W = 512;
+const CARD_H = 144;
+const CARD_PX = CARD_W / LABEL_W; // px a tag unit
+const P_TAB_Y = 4; // px: the tab's top
+const P_CARD_Y = 62; // px: the card's top
+const P_CARD_H = 54; // px
+const P_CARD_W = Math.round(BG_W * CARD_PX);
+// where the sprite's middle sits in the tag (so the card's bottom is where a ship tag's is), and the bar's middle
+const P_SPRITE_Y = -0.375 + (P_CARD_Y + P_CARD_H - CARD_H / 2) / CARD_PX;
+const P_BAR_Y = P_SPRITE_Y - (P_CARD_Y + P_CARD_H / 2 - CARD_H / 2) / CARD_PX;
+const P_NEW_X = -(BG_W / 2 + 0.14 + 0.72); // tag units: the NEW star's middle
+const P_EXTENT = { l: -(BG_W / 2 + 0.14 + 1.44), r: ICON_X + ICON / 2, b: -0.375, t: P_SPRITE_Y + (CARD_H / 2 - P_TAB_Y) / CARD_PX };
+// Instances a pseudo tag uses in the pip mesh: the bar's track, its ghost and its fill, and 8 status dots.
+const P_PER = 3 + DOTS;
+function drawBoatIcon(ctx, x, y, lit) {
+  // a little rowboat seen from the side: hull, gunwale, a dot of a monkey
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.lineJoin = 'round';
+  ctx.beginPath();
+  ctx.moveTo(-17, -4);
+  ctx.quadraticCurveTo(-15, 10, 0, 10);
+  ctx.quadraticCurveTo(15, 10, 18, -6);
+  ctx.closePath();
+  ctx.fillStyle = lit ? '#ffd23f' : '#4a3b5c';
+  ctx.fill();
+  ctx.lineWidth = 4;
+  ctx.strokeStyle = lit ? '#fff4d6' : '#6d5f80';
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.arc(-1, -10, 6, 0, Math.PI * 2);
+  ctx.fillStyle = lit ? '#8a5531' : '#4a3b5c';
+  ctx.fill();
+  ctx.restore();
+}
+function drawPseudoCard(canvas, spec) {
+  const ctx = canvas.getContext('2d');
+  const W = canvas.width;
+  ctx.clearRect(0, 0, W, canvas.height);
+  ctx.font = LABEL_FONT;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.lineJoin = 'round';
+  const text = spec.text;
+  const tw = Math.min(W - 8, Math.ceil(ctx.measureText(text).width) + 40);
+  const x0 = (W - tw) / 2;
+  const r = TAB_H / 2;
+  // the card first (the tab overlaps its top edge a little, as on a ship's tag)
+  const cx0 = (W - P_CARD_W) / 2;
+  const cr = 12;
+  ctx.beginPath();
+  ctx.moveTo(cx0 + cr, P_CARD_Y);
+  ctx.lineTo(cx0 + P_CARD_W - cr, P_CARD_Y);
+  ctx.quadraticCurveTo(cx0 + P_CARD_W, P_CARD_Y, cx0 + P_CARD_W, P_CARD_Y + cr);
+  ctx.lineTo(cx0 + P_CARD_W, P_CARD_Y + P_CARD_H - cr);
+  ctx.quadraticCurveTo(cx0 + P_CARD_W, P_CARD_Y + P_CARD_H, cx0 + P_CARD_W - cr, P_CARD_Y + P_CARD_H);
+  ctx.lineTo(cx0 + cr, P_CARD_Y + P_CARD_H);
+  ctx.quadraticCurveTo(cx0, P_CARD_Y + P_CARD_H, cx0, P_CARD_Y + P_CARD_H - cr);
+  ctx.lineTo(cx0, P_CARD_Y + cr);
+  ctx.quadraticCurveTo(cx0, P_CARD_Y, cx0 + cr, P_CARD_Y);
+  ctx.closePath();
+  ctx.fillStyle = '#1d1330';
+  ctx.fill();
+  const my = P_CARD_Y + P_CARD_H / 2;
+  if (spec.under) {
+    // UNDER WATER: white words on a sea-blue strip, wavy lines either side
+    ctx.fillStyle = '#2f78d8';
+    ctx.beginPath();
+    ctx.roundRect?.(cx0 + 8, P_CARD_Y + 8, P_CARD_W - 16, P_CARD_H - 16, 10);
+    if (!ctx.roundRect) ctx.rect(cx0 + 8, P_CARD_Y + 8, P_CARD_W - 16, P_CARD_H - 16);
+    ctx.fill();
+    ctx.font = '30px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
+    ctx.fillStyle = '#ffffff';
+    ctx.fillText(spec.underText, W / 2, my + 2);
+  } else if (spec.boats > 0) {
+    // a pack: its boats in a row, the ones still afloat lit
+    const n = spec.boats;
+    const step = Math.min(48, (P_CARD_W - 30) / n);
+    for (let i = 0; i < n; i++) drawBoatIcon(ctx, W / 2 + (i - (n - 1) / 2) * step, my + 4, i < spec.count);
+  }
+  // the name tab
+  ctx.beginPath();
+  ctx.moveTo(x0 + r, P_TAB_Y);
+  ctx.lineTo(x0 + tw - r, P_TAB_Y);
+  ctx.arc(x0 + tw - r, P_TAB_Y + r, r, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(x0 + r, P_TAB_Y + TAB_H);
+  ctx.arc(x0 + r, P_TAB_Y + r, r, Math.PI / 2, (Math.PI * 3) / 2);
+  ctx.closePath();
+  ctx.fillStyle = '#1d1330';
+  ctx.fill();
+  ctx.font = LABEL_FONT;
+  ctx.lineWidth = 6;
+  ctx.strokeStyle = '#1d1330';
+  ctx.strokeText(text, W / 2, P_TAB_Y + TAB_H / 2 + 2);
+  ctx.fillStyle = '#fff4d6';
+  ctx.fillText(text, W / 2, P_TAB_Y + TAB_H / 2 + 2);
+  // NEW: a gold star with the word, left of the card
+  if (spec.isNew) {
+    const sx = W / 2 + P_NEW_X * CARD_PX;
+    const R = 46;
+    ctx.beginPath();
+    for (let i = 0; i <= 20; i++) {
+      const a = -Math.PI / 2 + (i / 20) * Math.PI * 2;
+      const rr = i % 2 ? R * 0.74 : R;
+      ctx.lineTo(sx + Math.cos(a) * rr, my + Math.sin(a) * rr);
+    }
+    ctx.closePath();
+    ctx.fillStyle = '#ffc93c';
+    ctx.fill();
+    ctx.lineWidth = 5;
+    ctx.strokeStyle = '#1d1330';
+    ctx.stroke();
+    ctx.font = '27px "Luckiest Guy", "Fredoka", "Comic Sans MS", system-ui, sans-serif';
+    ctx.fillStyle = '#1d1330';
+    ctx.fillText('NEW', sx, my + 2);
+  }
   return tw;
 }
 
@@ -617,6 +784,7 @@ const COLOR_PULSE = new THREE.Color(PULSE);
 const COLOR_LOST_A = new THREE.Color(LOST_A);
 const COLOR_LOST_B = new THREE.Color(LOST_B);
 const COLOR_TIMER = new THREE.Color(TIMER);
+const COLOR_GHOST = new THREE.Color(GHOST);
 const COLOR_DOT_ON = Object.fromEntries(Object.entries(DOT_ON).map(([k, v]) => [k, new THREE.Color(v)]));
 const _v = new THREE.Vector3();
 const AXIS_Z = new THREE.Vector3(0, 0, 1);
@@ -638,27 +806,65 @@ export function createTags(scene, { reducedMotion = false } = {}) {
   const pipMat = noOutline(new THREE.MeshBasicMaterial({ color: 0xffffff, fog: false }));
 
   // name labels, per name
-  const labels = new Map(); // text -> { canvas, tex, mat }
-  function labelMaterial(text) {
-    let e = labels.get(text);
+  const labels = new Map(); // text (+ NEW) -> { canvas, tex, mat }
+  const labelKey = (text, isNew) => (isNew ? `${text}\u0001NEW` : text);
+  function labelMaterial(text, isNew = false) {
+    const key = labelKey(text, isNew);
+    let e = labels.get(key);
     if (!e) {
       const canvas = document.createElement('canvas');
       canvas.width = 512;
       canvas.height = 80;
-      const tw = drawLabel(canvas, text);
+      const tw = drawLabel(canvas, text, isNew);
       const tex = new THREE.CanvasTexture(canvas);
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = 4;
       // Only the glyph pixels write depth, so the outline pass can't smear ink over the name.
       const mat = new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: true, alphaTest: 0.4 });
-      e = { canvas, tex, mat, text, tw };
-      labels.set(text, e);
+      e = { canvas, tex, mat, text, tw, isNew };
+      labels.set(key, e);
     }
     return e.mat;
   }
+  // the pseudo foes' tags, by id (each a group with its card sprite and a status badge)
+  const pseudo = new Map(); // id -> group
+  // the pseudo tags' cards, one a look (key: what it shows); the least recently used go past CARD_CAP
+  const cards = new Map(); // key -> { canvas, tex, mat, spec, tw, used }
+  const CARD_CAP = 24;
+  function cardMaterial(spec) {
+    const key = `${spec.text}|${spec.boats}|${spec.count}|${spec.under ? 1 : 0}|${spec.isNew ? 1 : 0}`;
+    let e = cards.get(key);
+    if (!e) {
+      const canvas = document.createElement('canvas');
+      canvas.width = CARD_W;
+      canvas.height = CARD_H;
+      const tw = drawPseudoCard(canvas, spec);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = 4;
+      const mat = new THREE.SpriteMaterial({ map: tex, fog: false, depthWrite: true, alphaTest: 0.4 });
+      e = { canvas, tex, mat, spec, tw, used: frame, key };
+      cards.set(key, e);
+      if (cards.size > CARD_CAP) {
+        const inUse = new Set([...pseudo.values()].map((g) => g.userData.card));
+        const old = [...cards.values()].filter((c) => !inUse.has(c.mat)).sort((a, b) => a.used - b.used);
+        for (const c of old.slice(0, cards.size - CARD_CAP)) {
+          cards.delete(c.key);
+          c.tex.dispose();
+          c.mat.dispose();
+        }
+      }
+    }
+    e.used = frame;
+    return e;
+  }
   const redrawLabels = () => {
     for (const e of labels.values()) {
-      e.tw = drawLabel(e.canvas, e.text);
+      e.tw = drawLabel(e.canvas, e.text, e.isNew);
+      e.tex.needsUpdate = true;
+    }
+    for (const e of cards.values()) {
+      e.tw = drawPseudoCard(e.canvas, e.spec);
       e.tex.needsUpdate = true;
     }
   };
@@ -700,12 +906,12 @@ export function createTags(scene, { reducedMotion = false } = {}) {
 
   // every pip and notch of every tag: one InstancedMesh, grown when more tags show than it holds
   let pips = null;
-  function makePips(tagsCap) {
+  function makePips(instances) {
     if (pips) {
       scene.remove(pips);
       pips.dispose();
     }
-    pips = new THREE.InstancedMesh(unitGeo, pipMat, tagsCap * PER_TAG);
+    pips = new THREE.InstancedMesh(unitGeo, pipMat, instances);
     pips.name = 'tag-pips';
     pips.frustumCulled = false; // instances move every frame; the bounds would always be stale
     pips.count = 0;
@@ -716,7 +922,7 @@ export function createTags(scene, { reducedMotion = false } = {}) {
     pips.instanceColor.setUsage(THREE.DynamicDrawUsage);
     scene.add(pips);
   }
-  makePips(12);
+  makePips(12 * PER_TAG);
 
   // fixed local matrices of the 10 pip slots
   const slotLocal = [];
@@ -740,7 +946,8 @@ export function createTags(scene, { reducedMotion = false } = {}) {
   // The name tab's width in tag units.
   function tabWidth(ship) {
     const name = (ship.type && ship.type.name) || String(ship.typeName || '');
-    const e = labels.get(name);
+    const g = byShip.get(ship);
+    const e = labels.get(labelKey(name, !!(g && g.userData.isNew)));
     return e ? (num(e.tw, 512) / 512) * LABEL_W : LABEL_W;
   }
 
@@ -750,6 +957,136 @@ export function createTags(scene, { reducedMotion = false } = {}) {
     const strike = clamp(num(ship.strikeAt, Math.floor(0.2 * crew0)), 0, crew0);
     return { crew0, shown, strike };
   }
+
+  // ---- the pseudo foes' tags (SPEC4 §3.3)
+  const UNDER_TEXT = 'UNDER WATER';
+  function pseudoGroup(id) {
+    let g = pseudo.get(id);
+    if (g) return g;
+    g = new THREE.Group();
+    g.name = 'tag-pseudo';
+    const card = new THREE.Sprite();
+    card.scale.set(LABEL_W, LABEL_W * (CARD_H / CARD_W), 1);
+    card.position.set(0, P_SPRITE_Y, 0);
+    const badge = new THREE.Sprite(iconMaterial(STATUS_CELLS.fire));
+    badge.scale.set(ICON, ICON, 1);
+    badge.position.set(ICON_X, P_BAR_Y, Z_FILL);
+    badge.visible = false;
+    g.add(card, badge);
+    g.visible = false;
+    g.userData = { id, cardSprite: card, card: null, badge, statusId: null, dots: 0, ratio: 1, ghostRatio: 1, hold: 0, max: 0, seen: 0, block: -1, bar: false, spec: null, grow: 1 };
+    pseudo.set(id, g);
+    scene.add(g);
+    return g;
+  }
+  function drawPseudo(plist, camera, t, step, base0, mats, cols, grow) {
+    let used = 0;
+    for (const e of plist) {
+      if (!e || typeof e !== 'object' || e.hidden) continue;
+      const id = typeof e.id === 'string' || typeof e.id === 'number' ? String(e.id) : null;
+      const x = num(e.x, NaN);
+      const z = num(e.z, NaN);
+      if (id === null || !Number.isFinite(x) || !Number.isFinite(z)) continue;
+      const g = pseudoGroup(id);
+      const u = g.userData;
+      u.seen = frame;
+      u.block = -1;
+      // the hull bar and its ghost (as a ship's)
+      const hasBar = Number.isFinite(e.frac) && !e.under;
+      const ratio = hasBar ? clamp(e.frac, 0, 1) : 1;
+      if (hasBar && u.bar && ratio < u.ratio - 1e-6) u.hold = GHOST_HOLD;
+      if (hasBar && !u.bar) u.ghostRatio = ratio;
+      u.ratio = ratio;
+      if (u.hold > 0) u.hold = Math.max(0, u.hold - step);
+      else u.ghostRatio += (ratio - u.ghostRatio) * Math.min(1, step * GHOST_RATE);
+      if (u.ghostRatio < ratio) u.ghostRatio = ratio;
+      u.bar = hasBar;
+      g.position.set(x, num(e.y, 3), z);
+      const d = g.position.distanceTo(camera.position);
+      g.visible = d > 10;
+      if (!g.visible) continue;
+      // the card: its name (a pack's with its count), the boats, UNDER WATER, NEW
+      const count = Number.isFinite(e.count) ? Math.max(0, Math.round(e.count)) : null;
+      if (count !== null) u.max = Math.min(8, Math.max(u.max, count));
+      const name = String(e.name ?? '').slice(0, 30);
+      const spec = { text: count !== null ? `${name} ×${count}` : name, boats: count !== null ? u.max : 0, count: count ?? 0, under: !!e.under, underText: UNDER_TEXT, isNew: !!e.isNew };
+      const card = cardMaterial(spec);
+      if (u.card !== card.mat) {
+        u.card = card.mat;
+        u.cardSprite.material = card.mat;
+      }
+      u.spec = spec;
+      u.tw = card.tw;
+      u.grow = grow;
+      g.scale.setScalar(clamp(d / 30, 0.6, 2.6) * grow);
+      g.quaternion.copy(camera.quaternion);
+      // a status badge at the right of the card (optional)
+      const st = e.status && typeof e.status === 'object' ? e.status : null;
+      const sid = st && typeof st.id === 'string' && Object.prototype.hasOwnProperty.call(STATUS_CELLS, st.id) ? st.id : null;
+      if (sid !== u.statusId) {
+        u.statusId = sid;
+        if (sid) u.badge.material = iconMaterial(STATUS_CELLS[sid]);
+      }
+      if (sid) {
+        const max = num(st.max, 0);
+        const left = max > 0 ? clamp(num(st.t, 0) / max, 0, 1) : num(st.t, 0) > 0 ? 1 : 0;
+        u.dots = clamp(Math.ceil(DOTS * left - 1e-6), 0, DOTS);
+      } else u.dots = 0;
+      u.badge.visible = !!sid;
+      g.updateMatrixWorld(true);
+      // its instances in the pip mesh: the bar's track, ghost and fill, the badge's dots
+      const base = base0 + used;
+      u.block = base;
+      const mw = g.matrixWorld;
+      const barW = BAR_W;
+      const put = (i, cx, cy, w, h, zz, color) => {
+        _local.compose(_pos.set(cx, cy, zz), _q.identity(), _scl.set(w, h, 1));
+        _m.multiplyMatrices(mw, _local).toArray(mats, (base + i) * 16);
+        color.toArray(cols, (base + i) * 3);
+      };
+      if (hasBar) {
+        const r = Math.max(0.001, ratio);
+        const gr = Math.max(r, u.ghostRatio);
+        put(0, 0, P_BAR_Y, barW, BAR_H, Z_PIP, COLOR_EMPTY);
+        if (gr > r + 0.002) put(1, -(1 - gr) * (barW / 2), P_BAR_Y, barW * gr, BAR_H, Z_GHOST + 0.006, COLOR_GHOST);
+        else {
+          ZERO.toArray(mats, (base + 1) * 16);
+          COLOR_GHOST.toArray(cols, (base + 1) * 3);
+        }
+        put(2, -(1 - r) * (barW / 2), P_BAR_Y, barW * r, BAR_H, Z_FILL, COLOR_RED);
+      } else {
+        for (let i = 0; i < 3; i++) {
+          ZERO.toArray(mats, (base + i) * 16);
+          COLOR_EMPTY.toArray(cols, (base + i) * 3);
+        }
+      }
+      for (let i = 0; i < DOTS; i++) {
+        if (!sid) {
+          ZERO.toArray(mats, (base + 3 + i) * 16);
+          COLOR_EMPTY.toArray(cols, (base + 3 + i) * 3);
+          continue;
+        }
+        const a = Math.PI / 2 - (i / DOTS) * Math.PI * 2;
+        _local.compose(_pos.set(ICON_X + Math.cos(a) * DOT_R, P_BAR_Y + Math.sin(a) * DOT_R, Z_DOT), _q.setFromAxisAngle(AXIS_Z, a), _scl.set(DOT, DOT, 1));
+        _m.multiplyMatrices(mw, _local).toArray(mats, (base + 3 + i) * 16);
+        (i < u.dots ? COLOR_DOT_ON[sid] : COLOR_EMPTY).toArray(cols, (base + 3 + i) * 3);
+      }
+      used += P_PER;
+    }
+    // pseudo tags not passed this frame hide (and go after a while)
+    for (const [id, g] of pseudo) {
+      if (g.userData.seen === frame) continue;
+      g.visible = false;
+      g.userData.block = -1;
+      if (frame - g.userData.seen > 600) {
+        scene.remove(g);
+        pseudo.delete(id);
+      }
+    }
+    return used;
+  }
+  // a pseudo tag's group by id (a string or number), or null
+  const pseudoOf = (k) => (typeof k === 'string' || typeof k === 'number' ? pseudo.get(String(k)) || null : null);
 
   const api = {
     add(ship) {
@@ -788,6 +1125,8 @@ export function createTags(scene, { reducedMotion = false } = {}) {
       const ratio = clamp(num(ship.hp, 1) / Math.max(1e-6, num(ship.maxHp, 1)), 0, 1);
       g.userData = {
         ship,
+        name,
+        isNew: false, // her name tab wears NEW (ship.tagNew)
         bg,
         ghost,
         fill,
@@ -826,16 +1165,18 @@ export function createTags(scene, { reducedMotion = false } = {}) {
       if (g.userData.fillMat) g.userData.fillMat.dispose();
     },
 
-    update(ships, camera, t = 0, dt = 0) {
+    update(ships, camera, t = 0, dt = 0, pseudoList = null) {
       if (disposed || !camera) return;
       frame++;
       const step = Math.max(0, num(dt, 0));
       let n = 0;
       const list = ships || [];
+      const plist = Array.isArray(pseudoList) ? pseudoList : [];
       // grow the pip mesh if more tags could show than it holds
       let want = 0;
       for (const s of list) if (byShip.has(s)) want++;
-      if (want * PER_TAG > pips.instanceMatrix.count) makePips(Math.max(want, Math.ceil((pips.instanceMatrix.count / PER_TAG) * 2)));
+      const need = want * PER_TAG + plist.length * P_PER;
+      if (need > pips.instanceMatrix.count) makePips(Math.max(need, pips.instanceMatrix.count * 2));
       const mats = pips.instanceMatrix.array;
       const cols = pips.instanceColor.array;
       const grow = growFor(camera);
@@ -864,6 +1205,11 @@ export function createTags(scene, { reducedMotion = false } = {}) {
         g.visible = !gone && d > 10 && !ship.tagHidden; // (tagHidden: a boarding shows her crews in its strip)
         if (!g.visible) continue;
 
+        const isNew = !!ship.tagNew;
+        if (isNew !== u.isNew) {
+          u.isNew = isNew;
+          u.label.material = labelMaterial(u.name, isNew);
+        }
         const pulse = ship.flash > 0 ? 1 + ship.flash : 1;
         u.grow = grow;
         g.scale.setScalar(clamp(d / 30, 0.6, 2.6) * grow * pulse);
@@ -1000,20 +1346,42 @@ export function createTags(scene, { reducedMotion = false } = {}) {
           g.userData.block = -1;
         }
       }
-      pips.count = n * PER_TAG;
-      pips.visible = n > 0;
-      if (n > 0) {
+      const used = n * PER_TAG + drawPseudo(plist, camera, t, step, n * PER_TAG, mats, cols, grow);
+      pips.count = used;
+      pips.visible = used > 0;
+      if (used > 0) {
         pips.instanceMatrix.clearUpdateRanges();
-        pips.instanceMatrix.addUpdateRange(0, n * PER_TAG * 16);
+        pips.instanceMatrix.addUpdateRange(0, used * 16);
         pips.instanceMatrix.needsUpdate = true;
         pips.instanceColor.clearUpdateRanges();
-        pips.instanceColor.addUpdateRange(0, n * PER_TAG * 3);
+        pips.instanceColor.addUpdateRange(0, used * 3);
         pips.instanceColor.needsUpdate = true;
       }
     },
 
     // Test hook: what a tag shows, with the crew pips and the notch read back from the InstancedMesh.
     read(ship) {
+      const pg = pseudoOf(ship);
+      if (pg) {
+        const u = pg.userData;
+        const sp = u.spec || {};
+        let lit = 0;
+        if (pg.visible && u.badge.visible && u.block >= 0) {
+          const on = COLOR_DOT_ON[u.statusId];
+          for (let i = 0; i < DOTS; i++) {
+            pips.getColorAt(u.block + 3 + i, _c);
+            if (Math.abs(_c.r - on.r) + Math.abs(_c.g - on.g) + Math.abs(_c.b - on.b) < 1e-3) lit++;
+          }
+        }
+        let fill = null;
+        if (pg.visible && u.bar && u.block >= 0) {
+          _inv.copy(pg.matrixWorld).invert();
+          pips.getMatrixAt(u.block + 2, _m);
+          _m.premultiply(_inv).decompose(_pos, _q, _scl);
+          fill = Math.round((_scl.x / BAR_W) * 1000) / 1000;
+        }
+        return { pseudo: true, visible: pg.visible, text: sp.text ?? null, count: sp.boats ? sp.count : null, boats: sp.boats || 0, under: !!sp.under, isNew: !!sp.isNew, bar: pg.visible && u.bar, hull: u.bar ? u.ratio : null, fill, ghost: u.bar ? u.ghostRatio : null, status: pg.visible && u.badge.visible ? { id: u.statusId, dots: lit } : null };
+      }
       const g = byShip.get(ship);
       if (!g) return null;
       const u = g.userData;
@@ -1027,6 +1395,7 @@ export function createTags(scene, { reducedMotion = false } = {}) {
         slow: g.visible && u.slow.visible ? Math.round(u.slowLeft * 1000) / 1000 : null,
         status: null,
         flash: g.visible ? u.flashing : 0,
+        isNew: g.visible && !!u.isNew,
       };
       if (u.block < 0 || !g.visible) return out;
       if (u.badge.visible) {
@@ -1061,7 +1430,8 @@ export function createTags(scene, { reducedMotion = false } = {}) {
     // The drawn tag on screen, in CSS px ({ l, t, r, b }): the card, the name tab and the badges showing.
     // null while it is hidden.
     rect(ship, camera) {
-      const g = byShip.get(ship);
+      const pg = pseudoOf(ship);
+      const g = pg || byShip.get(ship);
       if (!g || !g.visible || !camera || typeof window === 'undefined') return null;
       const u = g.userData;
       g.updateMatrixWorld(true);
@@ -1081,6 +1451,16 @@ export function createTags(scene, { reducedMotion = false } = {}) {
           }
         }
       };
+      if (pg) {
+        // the card, the name tab (as wide as its name), the NEW star, the status badge
+        const cardTop = P_SPRITE_Y + (CARD_H / 2 - P_CARD_Y) / CARD_PX;
+        add(-BG_W / 2, BG_W / 2, -0.375, cardTop);
+        const tw2 = (num(u.tw, CARD_W) / CARD_PX) / 2;
+        add(-tw2, tw2, cardTop, P_EXTENT.t);
+        if (u.spec && u.spec.isNew) add(P_NEW_X - 0.72, P_NEW_X + 0.72, P_BAR_Y - 0.72, P_BAR_Y + 0.72);
+        if (u.badge.visible) add(ICON_X - ICON / 2, ICON_X + ICON / 2, P_BAR_Y - ICON / 2, P_BAR_Y + ICON / 2);
+        return box;
+      }
       add(-BG_W / 2, BG_W / 2, BG_BOTTOM + LIFT, BG_TOP + LIFT);
       const tw = tabWidth(u.ship) / 2;
       add(-tw, tw, TAB_BOTTOM, TAB_TOP);
@@ -1094,6 +1474,16 @@ export function createTags(scene, { reducedMotion = false } = {}) {
     // units a tag unit is at `camera`'s distance (its size on screen, both badges counted) and what it covers in
     // tag units (badges, name tab and timer included: the tag at its biggest). null if the ship has no tag.
     frame(ship, camera) {
+      const pg = pseudoOf(ship);
+      if (pg && camera) {
+        const x = pg.position.x;
+        const y = pg.position.y;
+        const z = pg.position.z;
+        const d = Math.hypot(x - camera.position.x, y - camera.position.y, z - camera.position.z);
+        const grow = growFor(camera);
+        const tw2 = (num(pg.userData.tw, CARD_W) / CARD_PX) / 2;
+        return { x, y, z, size: clamp(d / 30, 0.6, 2.6) * grow, px: grow * unitPx(camera), l: Math.min(P_EXTENT.l, -tw2), r: Math.max(P_EXTENT.r, tw2), t: P_EXTENT.t, b: P_EXTENT.b };
+      }
       const g = byShip.get(ship);
       if (!g || !camera) return null;
       const wy = ship.mesh ? ship.mesh.position.y : 0;
@@ -1109,6 +1499,11 @@ export function createTags(scene, { reducedMotion = false } = {}) {
     get count() {
       return tags.size;
     },
+    get pseudoCount() {
+      let n = 0;
+      for (const g of pseudo.values()) if (g.visible) n++;
+      return n;
+    },
     get pips() {
       return pips;
     },
@@ -1118,6 +1513,13 @@ export function createTags(scene, { reducedMotion = false } = {}) {
       disposed = true;
       fonts?.removeEventListener?.('loadingdone', redrawLabels);
       for (const ship of [...byShip.keys()]) api.remove(ship);
+      for (const g of pseudo.values()) scene.remove(g);
+      pseudo.clear();
+      for (const e of cards.values()) {
+        e.tex.dispose();
+        e.mat.dispose();
+      }
+      cards.clear();
       if (pips) {
         scene.remove(pips);
         pips.dispose();

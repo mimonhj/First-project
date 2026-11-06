@@ -11,12 +11,39 @@
 //   blockers: static obstacles { x, z, r, h } | { x, z, w, d, ry, h } (inflated by the walker's radius).
 //   places:   { id, name, x, z, r, face, ... }; spawn: { x, z, h }; radius (optional, default 0.3).
 // Everything here works on the ground plan (x, z) plus the surface height; nothing is ever mutated.
+//
+// The path graph (SPEC4 §6.6) is built once, on the first path() or the first read of `graph` (the town reads
+// it at dock open, behind the "Rowing to…" toast). Its nodes dedupe through a grid map and its edges are only
+// tried between nodes in neighbouring cells, which gives exactly the nodes (in order) and the edges (sorted
+// [i, j], i < j) of trying every node against every node; path() hooks its ends on through the same grid, A*
+// reuses arrays sized once per graph and string pulling remembers its node-to-node answers. clear() answers
+// as the step-by-step test always did, in one cell lookup a step. tests/walkgraph.test.cjs compares all of it
+// with the brute force.
 
 const CLIMB = 0.35; // the most the feet may rise or drop in one step
 const SUB = 0.1; // move() and the path checks advance in steps no longer than this
 const SLIDE = [15, 30, 45, 60].map((d) => (d * Math.PI) / 180); // a blocked step tries these turns, either way
 const EPS = 1e-9;
 const CELL = 2; // spatial hash cell for obstacles and surfaces
+const DUP = 0.2; // two graph nodes closer than this on both axes are one (and the dedupe grid's cell)
+const LINK = 1.75; // graph edges join nodes at most this far apart
+const NEAR = 2.5; // path() hooks its two ends onto the nodes this near
+const NODE_CELL = 2; // the node grid's cell for edges and near() (>= LINK, so neighbouring cells hold every pair)
+const MEMO_MAX = 1 << 16; // node-to-node clear() answers kept for string pulling, then forgotten and started again
+const PROBE = 24; // a straight walk of this many steps or more looks at three of them first (clearXZ)
+const TAME = 1e4; // walk data within this many u of the origin takes the grid shortcuts; beyond it, today's code
+// a grid cell's key: 15 bits of each index (unique for every cell within TAME of the origin; a point further
+// out may share a cell's key, which only adds candidates that the exact tests then drop)
+const gridKey = (i, j) => ((i & 0x7fff) << 15) | (j & 0x7fff);
+// the cells [i0..i1] x [j0..j1] that hold every point within rad of (x, z) on both axes (with a margin
+// for rounding, so no candidate is ever missed); null a billion u out, where the callers look at every node
+const FAR = 1e9;
+function cellSpan(x, z, rad, cell) {
+  if (!(Math.abs(x) <= FAR && Math.abs(z) <= FAR)) return null;
+  const mx = rad + 1e-9 + 1e-15 * Math.abs(x);
+  const mz = rad + 1e-9 + 1e-15 * Math.abs(z);
+  return [Math.floor((x - mx) / cell), Math.floor((x + mx) / cell), Math.floor((z - mz) / cell), Math.floor((z + mz) / cell)];
+}
 
 const num = (v, d = 0) => (typeof v === 'number' && Number.isFinite(v) ? v : d);
 
@@ -66,9 +93,20 @@ export function createWalk(data = {}) {
   const places = (Array.isArray(data.places) ? data.places : []).filter((p) => p && Number.isFinite(p.x) && Number.isFinite(p.z));
   const spawn = data.spawn && Number.isFinite(data.spawn.x) ? { x: data.spawn.x, z: data.spawn.z, h: num(data.spawn.h) } : null;
 
+  // Is every number of the walk within TAME? Then no sum or product in the tests below can overflow (so none
+  // is ever NaN) and every grid cell has its own key, so the shortcuts give exactly what today's tests give; a
+  // walk that isn't takes today's code throughout.
+  const small = (...v) => v.every((q) => Math.abs(q) <= TAME);
+  const tame =
+    small(R0) &&
+    areas.every((a) => small(a.x, a.z, a.y, a.kind === 'circle' ? a.r : Math.hypot(a.hw, a.hd)) && (!a.prof || a.prof.every((p) => small(p[0], p[1])))) &&
+    segs.every((s) => small(s.ax, s.ay, s.az, s.bx, s.by, s.bz, s.hw)) &&
+    obstacles.every((o) => small(o.x, o.z, o.r !== undefined ? o.r : Math.hypot(o.hw, o.hd)));
+
   // ---- spatial hash (obstacles by their reach, surfaces by their bounds) ----
   const hash = new Map();
-  const key = (i, j) => i * 73856093 + j * 19349663;
+  // (small integers when tame, so a lookup allocates nothing; today's key otherwise)
+  const key = tame ? gridKey : (i, j) => i * 73856093 + j * 19349663;
   const put = (minX, minZ, maxX, maxZ, kind, item) => {
     for (let i = Math.floor(minX / CELL); i <= Math.floor(maxX / CELL); i++) {
       for (let j = Math.floor(minZ / CELL); j <= Math.floor(maxZ / CELL); j++) {
@@ -257,7 +295,131 @@ export function createWalk(data = {}) {
     return best;
   }
 
-  const free = (x, z) => inside(x, z) && !blocked(x, z, R0);
+  // r - obsDist(o, x, z) > EPS (o blocks a walker of radius r at x, z), turning the far ones away before the
+  // square root: an obstacle's signed distance is never less than its outline's on one axis alone (give or
+  // take a rounding far below EPS on a tame walk), so one that is further than r on an axis can't block
+  const hits = (o, x, z, r) => {
+    const dx = x - o.x;
+    const dz = z - o.z;
+    if (o.r !== undefined) {
+      if (Math.abs(dx) - o.r > r || Math.abs(dz) - o.r > r) return false;
+      return r - (Math.hypot(dx, dz) - o.r) > EPS;
+    }
+    const lx = Math.abs(dx * o.c - dz * o.s) - o.hw;
+    const lz = Math.abs(dx * o.s + dz * o.c) - o.hd;
+    if (lx > r || lz > r) return false;
+    return r - (Math.hypot(Math.max(lx, 0), Math.max(lz, 0)) + Math.min(Math.max(lx, lz), 0)) > EPS;
+  };
+  // inside(x, z) && !blocked(x, z, r) in one cell lookup (the same tests as theirs)
+  function freeAt(x, z, r) {
+    if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+    if (!tame) return inside(x, z) && !blocked(x, z, r);
+    const c = cellAt(x, z);
+    const A = c.areas;
+    let on = false;
+    for (let k = 0; k < A.length; k++) {
+      if (inArea(A[k], x, z)) {
+        on = true;
+        break;
+      }
+    }
+    if (!on) {
+      const S = c.segs;
+      for (let k = 0; k < S.length; k++) {
+        const s = S[k];
+        let t = s.l2 > EPS ? ((x - s.ax) * s.dx + (z - s.az) * s.dz) / s.l2 : 0;
+        t = t < 0 ? 0 : t > 1 ? 1 : t;
+        if (Math.hypot(x - (s.ax + s.dx * t), z - (s.az + s.dz * t)) <= s.hw + EPS) {
+          on = true;
+          break;
+        }
+      }
+    }
+    if (!on) return false;
+    const O = c.obs;
+    for (let k = 0; k < O.length; k++) if (hits(O[k], x, z, r)) return false;
+    return true;
+  }
+  // One step of a straight walk on a tame walk: inside(x, z), !blocked(x, z, r) and heightAt(x, z, y), with
+  // the same tests in the same order as theirs, in one cell lookup; the height there, or NaN when the step
+  // can't stand there. (On a tame walk every height is finite, as y is.)
+  function stepAt(x, z, y, r) {
+    const c = cellAt(x, z);
+    const A = c.areas;
+    let best = NaN;
+    for (let k = 0; k < A.length; k++) {
+      const a = A[k];
+      const dx = x - a.x;
+      const dz = z - a.z;
+      let h;
+      if (a.kind === 'circle') {
+        if (!(dx * dx + dz * dz <= a.r * a.r + EPS)) continue;
+        h = a.prof ? areaY(a, x, z) : a.y;
+      } else {
+        if (!(Math.abs(dx * a.c - dz * a.s) <= a.hw + EPS && Math.abs(dx * a.s + dz * a.c) <= a.hd + EPS)) continue;
+        h = a.y;
+      }
+      if (best !== best || Math.abs(h - y) < Math.abs(best - y)) best = h;
+    }
+    const S = c.segs;
+    for (let k = 0; k < S.length; k++) {
+      const s = S[k];
+      let t = s.l2 > EPS ? ((x - s.ax) * s.dx + (z - s.az) * s.dz) / s.l2 : 0;
+      t = t < 0 ? 0 : t > 1 ? 1 : t;
+      if (!(Math.hypot(x - (s.ax + s.dx * t), z - (s.az + s.dz * t)) <= s.hw + EPS)) continue;
+      const h = s.ay + (s.by - s.ay) * t;
+      if (best !== best || Math.abs(h - y) < Math.abs(best - y)) best = h;
+    }
+    if (best !== best) return NaN;
+    const O = c.obs;
+    for (let k = 0; k < O.length; k++) if (hits(O[k], x, z, r)) return NaN;
+    return best;
+  }
+  // clear() from (ax, az), whose height is y0 (heightAt(ax, az): null off the walk), to (bx, bz)
+  function clearXZ(ax, az, bx, bz, r, y0 = heightAt(ax, az)) {
+    if (!tame) return clearAsToday(ax, az, bx, bz, r, y0);
+    const L = Math.hypot(bx - ax, bz - az);
+    const n = Math.max(1, Math.ceil(L / SUB));
+    let y = y0;
+    if (y === null) return false;
+    // A long walk first looks at three of its steps (the same points), only at where they stand: one off the
+    // walk or blocked fails it whichever step comes first, as most of string pulling's long looks do.
+    if (n >= PROBE && n < 1e9) {
+      for (let q = 0; q < 3; q++) {
+        const t = Math.floor((n * (q === 0 ? 2 : q === 1 ? 1 : 3)) / 4) / n; // (steps n/2, n/4, 3n/4)
+        if (!freeAt(ax + (bx - ax) * t, az + (bz - az) * t, r)) return false;
+      }
+    }
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      const x = ax + (bx - ax) * t;
+      const z = az + (bz - az) * t;
+      if (!Number.isFinite(x) || !Number.isFinite(z)) return false;
+      const ny = stepAt(x, z, y, r);
+      if (ny !== ny || Math.abs(ny - y) > CLIMB) return false;
+      y = ny;
+    }
+    return true;
+  }
+  // (the step-by-step test as it always was, for a walk that isn't tame)
+  function clearAsToday(ax, az, bx, bz, r, y0) {
+    const L = Math.hypot(bx - ax, bz - az);
+    const n = Math.max(1, Math.ceil(L / SUB));
+    let y = y0;
+    if (y === null) return false;
+    for (let i = 1; i <= n; i++) {
+      const t = i / n;
+      const x = ax + (bx - ax) * t;
+      const z = az + (bz - az) * t;
+      if (!inside(x, z) || blocked(x, z, r)) return false;
+      const ny = heightAt(x, z, y);
+      if (ny === null || Math.abs(ny - y) > CLIMB) return false;
+      y = ny;
+    }
+    return true;
+  }
+
+  const free = (x, z) => freeAt(x, z, R0);
   function snap(x, z, maxDist = 3) {
     if (!Number.isFinite(x) || !Number.isFinite(z)) return null;
     if (free(x, z)) return { x, z };
@@ -280,20 +442,7 @@ export function createWalk(data = {}) {
 
   // Can a walker go straight from a to b? (every SUB along it inside, free and within a step's climb)
   function clear(a, b, r = R0) {
-    const L = Math.hypot(b.x - a.x, b.z - a.z);
-    const n = Math.max(1, Math.ceil(L / SUB));
-    let y = heightAt(a.x, a.z);
-    if (y === null) return false;
-    for (let i = 1; i <= n; i++) {
-      const t = i / n;
-      const x = a.x + (b.x - a.x) * t;
-      const z = a.z + (b.z - a.z) * t;
-      if (!inside(x, z) || blocked(x, z, r)) return false;
-      const ny = heightAt(x, z, y);
-      if (ny === null || Math.abs(ny - y) > CLIMB) return false;
-      y = ny;
-    }
-    return true;
+    return clearXZ(a.x, a.z, b.x, b.z, num(r, R0));
   }
 
   // ---- the graph: area centres and a grid over each area, portal centres, link ends and every 1.5
@@ -302,10 +451,30 @@ export function createWalk(data = {}) {
   function graph() {
     if (G) return G;
     const nodes = [];
+    // a node within DUP of an earlier one on both axes is that node: only the earlier nodes in the
+    // dedupe grid's cells round it can be
+    const dups = new Map();
     const addNode = (x, z) => {
+      const span = tame ? cellSpan(x, z, DUP, DUP) : null;
+      if (!span) {
+        for (const n of nodes) if (Math.abs(n.x - x) < DUP && Math.abs(n.z - z) < DUP) return;
+      } else {
+        const [i0, i1, j0, j1] = span;
+        for (let i = i0; i <= i1; i++) {
+          for (let j = j0; j <= j1; j++) {
+            const e = dups.get(gridKey(i, j));
+            if (e) for (const n of e) if (Math.abs(n.x - x) < DUP && Math.abs(n.z - z) < DUP) return;
+          }
+        }
+      }
       if (!free(x, z)) return;
-      for (const n of nodes) if (Math.abs(n.x - x) < 0.2 && Math.abs(n.z - z) < 0.2) return;
-      nodes.push({ x, z });
+      const n = { x, z };
+      nodes.push(n);
+      if (!tame) return;
+      const k = gridKey(Math.floor(x / DUP), Math.floor(z / DUP));
+      const e = dups.get(k);
+      if (e) e.push(n);
+      else dups.set(k, [n]);
     };
     const GRID = 0.8;
     for (const a of areas) {
@@ -348,20 +517,104 @@ export function createWalk(data = {}) {
       if (s) addNode(s.x, s.z);
     }
     if (spawn) addNode(spawn.x, spawn.z);
-    const edges = [];
-    const adj = nodes.map(() => []);
-    const LINK = 1.75;
-    for (let i = 0; i < nodes.length; i++) {
-      for (let j = i + 1; j < nodes.length; j++) {
-        const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].z - nodes[j].z);
-        if (d > LINK || !clear(nodes[i], nodes[j])) continue;
-        edges.push([i, j]);
-        adj[i].push([j, d]);
-        adj[j].push([i, d]);
+    const N = nodes.length;
+    // the node grid (for the edges and near()): each cell's node indices, ascending
+    const cells = new Map();
+    if (tame) {
+      for (let i = 0; i < N; i++) {
+        const k = gridKey(Math.floor(nodes[i].x / NODE_CELL), Math.floor(nodes[i].z / NODE_CELL));
+        const e = cells.get(k);
+        if (e) e.push(i);
+        else cells.set(k, [i]);
       }
     }
-    G = { nodes, edges, adj };
+    const nodeY = nodes.map((n) => heightAt(n.x, n.z)); // each node's height, as clear() from it starts
+    const edges = [];
+    const lens = [];
+    const deg = new Int32Array(N);
+    const buf = new Int32Array(N);
+    for (let i = 0; i < N; i++) {
+      // the nodes after i in the cells round it, in index order: the pairs the every-pair loop would try
+      let m = 0;
+      const span = tame ? cellSpan(nodes[i].x, nodes[i].z, LINK, NODE_CELL) : null;
+      if (!span) for (let j = i + 1; j < N; j++) buf[m++] = j;
+      else {
+        const [i0, i1, j0, j1] = span;
+        for (let ci = i0; ci <= i1; ci++) {
+          for (let cj = j0; cj <= j1; cj++) {
+            const e = cells.get(gridKey(ci, cj));
+            if (e) for (let q = 0; q < e.length; q++) if (e[q] > i) buf[m++] = e[q];
+          }
+        }
+      }
+      const cand = buf.subarray(0, m).sort(); // (a typed array sorts by value)
+      for (let q = 0; q < m; q++) {
+        const j = cand[q];
+        const d = Math.hypot(nodes[i].x - nodes[j].x, nodes[i].z - nodes[j].z);
+        if (d > LINK || !clearXZ(nodes[i].x, nodes[i].z, nodes[j].x, nodes[j].z, R0, nodeY[i])) continue;
+        edges.push([i, j]);
+        lens.push(d);
+        deg[i]++;
+        deg[j]++;
+      }
+    }
+    // each node's neighbours in typed arrays (node k's are at [first[k], first[k + 1])), in the order its edges
+    // were found, as A* has always looked at them
+    const first = new Int32Array(N + 1);
+    for (let k = 0; k < N; k++) first[k + 1] = first[k] + deg[k];
+    const nbr = new Int32Array(first[N]);
+    const len = new Float64Array(first[N]);
+    const at = first.slice(0, N);
+    for (let e = 0; e < edges.length; e++) {
+      const [i, j] = edges[e];
+      nbr[at[i]] = j;
+      len[at[i]++] = lens[e];
+      nbr[at[j]] = i;
+      len[at[j]++] = lens[e];
+    }
+    const nx = new Float64Array(N);
+    const nz = new Float64Array(N);
+    for (let k = 0; k < N; k++) {
+      nx[k] = nodes[k].x;
+      nz[k] = nodes[k].z;
+    }
+    // A*'s arrays, sized once: an entry counts only when its stamp is this search's
+    const heapCap = Math.max(16, 2 * N);
+    G = {
+      nodes,
+      edges,
+      first,
+      nbr,
+      len,
+      nx,
+      nz,
+      cells,
+      nodeY,
+      memo: new Map(),
+      g: new Float64Array(N),
+      prev: new Int32Array(N),
+      seen: new Uint32Array(N),
+      shut: new Uint32Array(N),
+      goalD: new Float64Array(N),
+      goalS: new Uint32Array(N),
+      stamp: 0,
+      heapF: new Float64Array(heapCap),
+      heapI: new Int32Array(heapCap),
+    };
     return G;
+  }
+
+  // clear() from node i to node j, remembered (string pulling asks the same pairs again)
+  function clearNodes(i, j) {
+    const k = i * G.nodes.length + j;
+    let v = G.memo.get(k);
+    if (v === undefined) {
+      const { nodes } = G;
+      v = clearXZ(nodes[i].x, nodes[i].z, nodes[j].x, nodes[j].z, R0, G.nodeY[i]);
+      if (G.memo.size >= MEMO_MAX) G.memo.clear();
+      G.memo.set(k, v);
+    }
+    return v;
   }
 
   function path(from, to) {
@@ -370,90 +623,152 @@ export function createWalk(data = {}) {
     const b = snap(to.x, to.z, 3);
     if (!a || !b) return [];
     if (clear(a, b)) return [a, b];
-    const { nodes, adj } = graph();
-    // hook the two ends onto the graph
+    const { nodes, cells } = graph();
+    // hook the two ends onto the graph: the nodes within NEAR, nearest first (ties in index order), that
+    // can be walked to straight, at most 8
     const near = (p) => {
       const out = [];
-      for (let i = 0; i < nodes.length; i++) {
+      const take = (i) => {
         const d = Math.hypot(nodes[i].x - p.x, nodes[i].z - p.z);
-        if (d <= 2.5) out.push([i, d]);
+        if (d <= NEAR) out.push([i, d]);
+      };
+      const span = tame ? cellSpan(p.x, p.z, NEAR, NODE_CELL) : null;
+      if (!span) for (let i = 0; i < nodes.length; i++) take(i);
+      else {
+        const [i0, i1, j0, j1] = span;
+        for (let ci = i0; ci <= i1; ci++) {
+          for (let cj = j0; cj <= j1; cj++) {
+            const e = cells.get(gridKey(ci, cj));
+            if (e) for (const i of e) take(i);
+          }
+        }
       }
-      out.sort((u, v) => u[1] - v[1]);
-      return out.filter(([i]) => clear(p, nodes[i])).slice(0, 8);
+      out.sort((u, v) => u[1] - v[1] || u[0] - v[0]);
+      const ok = [];
+      for (const q of out) {
+        if (clearXZ(p.x, p.z, nodes[q[0]].x, nodes[q[0]].z, R0)) ok.push(q);
+        if (ok.length === 8) break;
+      }
+      return ok;
     };
     const starts = near(a);
-    const goals = new Map(near(b).map(([i, d]) => [i, d]));
-    if (!starts.length || !goals.size) return [];
-    // A* (the goal edges are the last hop)
-    const N = nodes.length;
-    const g = new Float64Array(N).fill(Infinity);
-    const prev = new Int32Array(N).fill(-1);
-    const done = new Uint8Array(N);
-    const h = (i) => Math.hypot(nodes[i].x - b.x, nodes[i].z - b.z);
-    const open = [];
+    const goals = near(b);
+    if (!starts.length || !goals.length) return [];
+    // A* (the goal edges are the last hop); g and prev count only where seen holds this search's stamp, a
+    // node is done when shut does and a goal when goalS does, so nothing is cleared or allocated per search
+    if (G.stamp >= 0xfffffffe) {
+      G.seen.fill(0);
+      G.shut.fill(0);
+      G.goalS.fill(0);
+      G.stamp = 0;
+    }
+    const S = ++G.stamp;
+    const { g, prev, seen, shut, goalD, goalS, first, nbr, len, nx, nz } = G;
+    for (const [i, d] of goals) {
+      goalS[i] = S;
+      goalD[i] = d;
+    }
+    const bx = b.x;
+    const bz = b.z;
+    // a binary heap of (f, node) in two typed arrays, sifted exactly as an array of pairs would be
+    let hf = G.heapF;
+    let hi = G.heapI;
+    let size = 0;
     const push = (i, f) => {
-      open.push([f, i]);
-      let k = open.length - 1;
+      if (size === hf.length) {
+        const nf = new Float64Array(hf.length * 2);
+        const ni = new Int32Array(hi.length * 2);
+        nf.set(hf);
+        ni.set(hi);
+        G.heapF = hf = nf;
+        G.heapI = hi = ni;
+      }
+      let k = size++;
+      hf[k] = f;
+      hi[k] = i;
       while (k > 0) {
         const p = (k - 1) >> 1;
-        if (open[p][0] <= open[k][0]) break;
-        [open[p], open[k]] = [open[k], open[p]];
+        if (hf[p] <= hf[k]) break;
+        const tf = hf[p];
+        const ti = hi[p];
+        hf[p] = hf[k];
+        hi[p] = hi[k];
+        hf[k] = tf;
+        hi[k] = ti;
         k = p;
       }
     };
-    const pop = () => {
-      const top = open[0];
-      const last = open.pop();
-      if (open.length) {
-        open[0] = last;
+    for (const [i, d] of starts) {
+      seen[i] = S;
+      g[i] = d;
+      prev[i] = -1;
+      push(i, d + Math.hypot(nx[i] - bx, nz[i] - bz));
+    }
+    let best = -1;
+    let bestCost = Infinity;
+    while (size) {
+      // pop the least f
+      const f = hf[0];
+      const i = hi[0];
+      size--;
+      if (size) {
+        hf[0] = hf[size];
+        hi[0] = hi[size];
         let k = 0;
         for (;;) {
           const l = 2 * k + 1;
           const r = l + 1;
           let m = k;
-          if (l < open.length && open[l][0] < open[m][0]) m = l;
-          if (r < open.length && open[r][0] < open[m][0]) m = r;
+          if (l < size && hf[l] < hf[m]) m = l;
+          if (r < size && hf[r] < hf[m]) m = r;
           if (m === k) break;
-          [open[m], open[k]] = [open[k], open[m]];
+          const tf = hf[m];
+          const ti = hi[m];
+          hf[m] = hf[k];
+          hi[m] = hi[k];
+          hf[k] = tf;
+          hi[k] = ti;
           k = m;
         }
       }
-      return top;
-    };
-    for (const [i, d] of starts) {
-      g[i] = d;
-      push(i, d + h(i));
-    }
-    let best = -1;
-    let bestCost = Infinity;
-    while (open.length) {
-      const [f, i] = pop();
-      if (done[i]) continue;
+      if (shut[i] === S) continue;
       if (f >= bestCost) break;
-      done[i] = 1;
-      if (goals.has(i) && g[i] + goals.get(i) < bestCost) {
-        bestCost = g[i] + goals.get(i);
+      shut[i] = S;
+      if (goalS[i] === S && g[i] + goalD[i] < bestCost) {
+        bestCost = g[i] + goalD[i];
         best = i;
       }
-      for (const [j, d] of adj[i]) {
-        if (done[j] || g[i] + d >= g[j]) continue;
-        g[j] = g[i] + d;
+      const gi = g[i];
+      for (let e = first[i]; e < first[i + 1]; e++) {
+        const j = nbr[e];
+        const gj = gi + len[e];
+        if (shut[j] === S || (seen[j] === S && gj >= g[j])) continue;
+        seen[j] = S;
+        g[j] = gj;
         prev[j] = i;
-        push(j, g[j] + h(j));
+        push(j, gj + Math.hypot(nx[j] - bx, nz[j] - bz));
       }
     }
     if (best < 0) return [];
     const chain = [];
-    for (let i = best; i >= 0; i = prev[i]) chain.push(nodes[i]);
+    for (let i = best; i >= 0; i = prev[i]) chain.push(i);
     chain.reverse();
-    const pts = [a, ...chain, b];
-    // string pulling: from each corner, go straight to the furthest point still in clear view
+    // string pulling over [a, ...chain, b]: from each corner, go straight to the furthest point still in
+    // clear view (a to b is known not clear, from above)
+    const last = chain.length + 1;
+    const at = (k) => (k === 0 ? a : k === last ? b : nodes[chain[k - 1]]);
+    const see = (k, m) => {
+      if (k > 0 && m < last) return clearNodes(chain[k - 1], chain[m - 1]);
+      if (k === 0 && m === last) return false;
+      return clear(at(k), at(m));
+    };
     const out = [a];
     let i = 0;
-    while (i < pts.length - 1) {
-      let j = pts.length - 1;
-      while (j > i + 1 && !clear(pts[i], pts[j])) j--;
-      out.push({ x: pts[j].x, z: pts[j].z });
+    while (i < last) {
+      let j = last;
+      while (j > i + 1 && !see(i, j)) j--;
+      const p = at(j);
+      out.push({ x: p.x, z: p.z });
       i = j;
     }
     return out;

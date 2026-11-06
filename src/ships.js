@@ -28,6 +28,10 @@ import { findLook, maxTier } from './upgrades.js';
 // The Kraken Seas (SPEC3 §4.3): the Shark Raider, the Bomb Ketch, the Iron Turtle, the Fire Ship,
 // the Squid Skiff and the Inkheart; on the player's ship the Big rudder & wheel tiers and the keg
 // rack of special shot; and on every ship userData.statusAnchors, where statusfx.js draws a status.
+//
+// The Sunset Isles (SPEC4 §3.1): the Sting Sloop, the Net Sloop (her net bundle whirls before she casts:
+// userData.whirl) and the Coral Witch's Barge (userData.helm: where the witch stands); setNet() drapes a
+// net over any ship a Net Sloop has TANGLED.
 
 const PI = Math.PI;
 const TAU = PI * 2;
@@ -4948,6 +4952,908 @@ function squidProw(S, hull, C, M) {
 }
 
 /** Small deterministic RNG for per-type detail placement. */
+// ---------------------------------------------------------------------------
+// Voyage IV · The Sunset Isles (SPEC4 §3.1): the Sting Sloop, the Net Sloop and the Coral Witch's Barge,
+// the Net Sloop's whirling net (userData.whirl) and the net that drapes over a tangled ship (setNet)
+// ---------------------------------------------------------------------------
+
+/** An open rope tube along a polyline of Vector3s (net ropes): radius r, `radial` sides, outward normals. */
+function ropeTube(pts, r, radial = 4) {
+  const n = pts.length;
+  const rl = radial + 1;
+  const pos = new Float32Array(n * rl * 3);
+  const nor = new Float32Array(n * rl * 3);
+  const idx = [];
+  const T = V3();
+  const B = V3();
+  let N = null;
+  for (let i = 0; i < n; i++) {
+    T.subVectors(pts[Math.min(n - 1, i + 1)], pts[Math.max(0, i - 1)]).normalize();
+    if (!N) N = Math.abs(T.y) < 0.9 ? V3(0, 1, 0) : V3(1, 0, 0);
+    N.addScaledVector(T, -N.dot(T)).normalize(); // carried along: no twist
+    B.crossVectors(T, N);
+    for (let k = 0; k <= radial; k++) {
+      const a = (k / radial) * TAU;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      const o = (i * rl + k) * 3;
+      const nx = N.x * c + B.x * s;
+      const ny = N.y * c + B.y * s;
+      const nz = N.z * c + B.z * s;
+      pos[o] = pts[i].x + nx * r;
+      pos[o + 1] = pts[i].y + ny * r;
+      pos[o + 2] = pts[i].z + nz * r;
+      nor[o] = nx;
+      nor[o + 1] = ny;
+      nor[o + 2] = nz;
+    }
+  }
+  for (let i = 0; i < n - 1; i++) {
+    for (let k = 0; k < radial; k++) {
+      const a = i * rl + k;
+      const b = a + rl;
+      idx.push(a, a + 1, b, b, a + 1, b + 1);
+    }
+  }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(nor, 3));
+  g.setAttribute('uv', new THREE.BufferAttribute(new Float32Array(n * rl * 2), 2));
+  g.setIndex(idx);
+  return g;
+}
+
+/**
+ * The ropes of a fishing net laid over the surface P(s, t) → Vector3 (s, t in 0..1): both diagonals of an
+ * ns × nt grid of diamonds, `seg` samples a diamond side, and hem ropes (o.hem: any of 's0', 's1', 't0', 't1';
+ * radius o.hemR) along the named edges. Returns plain geometries (position, normal, uv; indexed).
+ */
+function netRopes(P, ns, nt, r, o = {}) {
+  const out = [];
+  const seg = o.seg ?? 3;
+  const line = (fs, t0, t1) => {
+    if (t1 - t0 < 1e-4) return;
+    const n = Math.max(2, Math.ceil((t1 - t0) * nt * seg) + 1);
+    const pts = [];
+    for (let i = 0; i < n; i++) {
+      const t = lerp(t0, t1, i / (n - 1));
+      pts.push(P(clamp(fs(t), 0, 1), t));
+    }
+    out.push(ropeTube(pts, r, o.radial ?? 4));
+  };
+  // s·ns − t·nt = c (rising) and s·ns + t·nt = c (falling); the corner stubs are left out
+  for (let c = -nt + 1; c < ns; c++) line((t) => (c + t * nt) / ns, Math.max(0, -c / nt), Math.min(1, (ns - c) / nt));
+  for (let c = 1; c < ns + nt; c++) line((t) => (c - t * nt) / ns, Math.max(0, (c - ns) / nt), Math.min(1, c / nt));
+  const hr = o.hemR ?? r * 1.5;
+  const edge = (f, n) => {
+    const pts = [];
+    for (let i = 0; i <= n; i++) pts.push(f(i / n));
+    out.push(ropeTube(pts, hr, o.radial ?? 4));
+  };
+  for (const h of o.hem || []) {
+    if (h === 's0') edge((t) => P(0, t), Math.ceil(nt * seg));
+    if (h === 's1') edge((t) => P(1, t), Math.ceil(nt * seg));
+    if (h === 't0') edge((s) => P(s, 0), Math.ceil(ns * seg));
+    if (h === 't1') edge((s) => P(s, 1), Math.ceil(ns * seg));
+  }
+  return out;
+}
+
+/** A cork float (a squat rounded barrel) at p, its axis along dir, as a plain geometry. */
+function corkGeo(p, dir, s = 1) {
+  const g = new THREE.BufferGeometry().copy(cyl(0.1, 0.1, 0.16, 10));
+  g.scale(s, s, s);
+  g.applyQuaternion(new THREE.Quaternion().setFromUnitVectors(UP, dir.clone().normalize()));
+  g.translate(p.x, p.y, p.z);
+  return g;
+}
+
+// One shared vertex-colour toon material per outline weight (the net drape, the whirling net bundle).
+const vcMats = new Map();
+function vcMat(outline = THIN) {
+  const key = JSON.stringify(outline);
+  let m = vcMats.get(key);
+  if (!m) {
+    m = new THREE.MeshToonMaterial({ vertexColors: true, gradientMap: gradientMap(3) });
+    setOutline(m, outline);
+    m.name = 'ship:net';
+    vcMats.set(key, m);
+  }
+  return m;
+}
+
+/** Merge plain geometries into one vertex-coloured geometry: parts = [{ geo, color }] (hex colours). */
+function paintMerge(parts) {
+  const geos = parts.map(({ geo, color }) => {
+    const g = new THREE.BufferGeometry();
+    for (const name of ['position', 'normal', 'uv']) {
+      const a = geo.attributes[name];
+      g.setAttribute(name, a ? a.clone() : new THREE.BufferAttribute(new Float32Array(geo.attributes.position.count * (name === 'uv' ? 2 : 3)), name === 'uv' ? 2 : 3));
+    }
+    if (geo.index) g.setIndex(geo.index.clone());
+    ensureIndex(g);
+    if (!geo.attributes.normal) g.computeVertexNormals();
+    const c = new THREE.Color(color); // (linear, as vertex colours are)
+    const n = g.attributes.position.count;
+    const col = new Float32Array(n * 3);
+    for (let i = 0; i < n; i++) {
+      col[i * 3] = c.r;
+      col[i * 3 + 1] = c.g;
+      col[i * 3 + 2] = c.b;
+    }
+    g.setAttribute('color', new THREE.BufferAttribute(col, 3));
+    return g;
+  });
+  const merged = mergeGeometries(geos, false);
+  for (const g of geos) g.dispose();
+  return merged;
+}
+
+/** A decal on the hull at station u, height y, on the side whose ship-local x has the sign of `side`. */
+function hullDecal(S, hull, shapes, size, u, y, side, material, depth = 0.06, rot = 0) {
+  const g = extrude(shapes, depth / size, 8);
+  g.scale(size, size, size);
+  if (rot) g.rotateZ(rot);
+  const { p, n } = hullPoint(hull, u, y, side, depth * 0.35);
+  // z out of the hull, y up: the decal reads the right way round from outside on either side
+  const m = add(S.group, g, material, p.toArray());
+  m.quaternion.copy(surfaceQuat(n));
+  return m;
+}
+
+/**
+ * A lateen sail on a long yard across the mast. Points are [zShip, y]: peak (the yard's high aft end), tack (its
+ * low fore end) and clew (the low aft corner). Adds the yard; partsFn(def) gives the panels (b runs from the peak
+ * down to the foot, a from the yard to the leech). Returns the sail mesh.
+ */
+function lateenSail(S, peak, tack, clew, belly, partsFn, o = {}) {
+  const H = [-peak[0], peak[1]];
+  const Tk = [-tack[0], tack[1]];
+  const Cl = [-clew[0], clew[1]];
+  const bow = o.leechBow ?? 0;
+  const foot = o.footBow ?? 0;
+  const def = {
+    nu: o.nu ?? 12,
+    nv: o.nv ?? 14,
+    thick: 0.08,
+    p: 6,
+    map: (a, b) => {
+      const l = [lerp(H[0], Tk[0], b), lerp(H[1], Tk[1], b)];
+      const r = [lerp(H[0], Cl[0], b), lerp(H[1], Cl[1], b)];
+      let x = lerp(l[0], r[0], a);
+      let y = lerp(l[1], r[1], a);
+      x += bow * Math.sin(PI * b) * a * a; // the leech curves out a little
+      y -= foot * Math.sin(PI * a) * b * b * b; // and the foot sags
+      return [x, y];
+    },
+    belly: (a, b) => belly * Math.sin(PI * Math.min(1, a * 0.9 + 0.05)) * Math.sin(PI * Math.min(1, b * 0.92)) * Math.sqrt(b),
+  };
+  const mesh = foreAftSail(S, S.group, def, partsFn, { p: V3() });
+  const d = V3(0, peak[1] - tack[1], peak[0] - tack[0]).normalize();
+  const a = V3(0, tack[1], tack[0]).addScaledVector(d, -(o.yardFore ?? 0.45));
+  const b = V3(0, peak[1], peak[0]).addScaledVector(d, o.yardAft ?? 0.35);
+  const m = mat(o.spar ?? 0x5a3a24);
+  spar(S.group, m, a, b, o.yardR ?? 0.085, (o.yardR ?? 0.085) * 0.6, 8);
+  add(S.group, sphere(), m, a.toArray(), null, (o.yardR ?? 0.085) * 1.05);
+  add(S.group, sphere(), m, b.toArray(), null, (o.yardR ?? 0.085) * 0.7);
+  return mesh;
+}
+
+/** A cartoon wasp, ~1 unit wide (the Sting Sloop's colours): a body with two stripes, head, wings and the sting. */
+function waspShapes() {
+  const body = new THREE.Shape();
+  body.absellipse(0.06, -0.04, 0.29, 0.17, 0, TAU, false, 0);
+  for (const [x, h] of [[0.0, 0.125], [0.15, 0.115]]) body.holes.push(roundRectShape(0.065, h * 2, 0.03, x, -0.04));
+  const head = new THREE.Shape();
+  head.absellipse(-0.33, 0.0, 0.13, 0.12, 0, TAU, false, 0);
+  head.holes.push(circlePath(-0.37, 0.03, 0.045));
+  const sting = polyShape([[0.31, 0.0], [0.5, -0.07], [0.31, -0.11]]);
+  const wings = [];
+  for (const [x, rot] of [[-0.06, 0.45], [0.12, -0.25]]) {
+    const w = new THREE.Shape();
+    w.absellipse(x, 0.25, 0.09, 0.17, 0, TAU, false, rot);
+    wings.push(w);
+  }
+  const ant = [polyShape([[-0.4, 0.09], [-0.52, 0.27], [-0.49, 0.29], [-0.37, 0.11]]), polyShape([[-0.32, 0.11], [-0.33, 0.31], [-0.3, 0.31], [-0.29, 0.12]])];
+  return [body, head, sting, ...wings, ...ant];
+}
+
+/** A fish, ~1 unit long, facing -x (the Net Sloop's colours). */
+function fishShapes() {
+  const body = new THREE.Shape();
+  body.absellipse(-0.08, 0, 0.33, 0.2, 0, TAU, false, 0);
+  body.holes.push(circlePath(-0.28, 0.05, 0.045));
+  const gill = new THREE.Path();
+  gill.absarc(-0.24, 0, 0.12, -0.9, 0.9, false);
+  gill.absarc(-0.24, 0, 0.085, 0.9, -0.9, true);
+  gill.closePath();
+  body.holes.push(gill);
+  const tail = polyShape([[0.2, 0], [0.47, 0.22], [0.4, 0], [0.47, -0.22]]);
+  const fin = polyShape([[-0.12, 0.17], [0.05, 0.3], [0.1, 0.16]]);
+  return [body, tail, fin];
+}
+
+/** A scallop shell, ~1 unit wide: a fan of lobes over a hinge with two ears; ribs as slots when `ribs`. */
+function scallopShapes(ribs = false) {
+  const s = new THREE.Shape();
+  const N = 7;
+  const R = 0.5;
+  const a0 = PI * 0.13;
+  const a1 = PI * 0.87;
+  const cy = -0.36;
+  s.moveTo(-0.17, cy - 0.06);
+  s.lineTo(-0.17, cy + 0.06);
+  for (let i = 0; i < N; i++) {
+    const A = lerp(a1, a0, i / N);
+    const Bn = lerp(a1, a0, (i + 1) / N);
+    const M = 8;
+    for (let k = 0; k <= M; k++) {
+      const q = k / M;
+      const ang = lerp(A, Bn, q);
+      const r = R + 0.055 * Math.sin(PI * q);
+      s.lineTo(Math.cos(ang) * r, cy + Math.sin(ang) * r);
+    }
+  }
+  s.lineTo(0.17, cy + 0.06);
+  s.lineTo(0.17, cy - 0.06);
+  s.lineTo(-0.17, cy - 0.06);
+  if (ribs) {
+    for (let i = 1; i < N; i++) {
+      const ang = lerp(a1, a0, i / N);
+      const c = Math.cos(ang);
+      const sn = Math.sin(ang);
+      const px = -sn;
+      const py = c;
+      const w0 = 0.012;
+      const w1 = 0.022;
+      const r0 = 0.14;
+      const r1 = 0.43;
+      const hole = new THREE.Path();
+      hole.moveTo(c * r0 + px * w0, cy + sn * r0 + py * w0);
+      hole.lineTo(c * r0 - px * w0, cy + sn * r0 - py * w0);
+      hole.lineTo(c * r1 - px * w1, cy + sn * r1 - py * w1);
+      hole.lineTo(c * r1 + px * w1, cy + sn * r1 + py * w1);
+      hole.closePath();
+      s.holes.push(hole);
+    }
+  }
+  return [s];
+}
+
+/** A white net lattice panel (bars round diamond holes), w × h, for a sail decal. */
+function latticeShapes(w, h, nx, ny) {
+  const s = roundRectShape(w, h, 0.08);
+  const dx = w / nx;
+  const dy = h / ny;
+  const bar = Math.min(dx, dy) * 0.11;
+  for (let i = 0; i < nx; i++) {
+    for (let j = 0; j < ny; j++) {
+      const cx = -w / 2 + (i + 0.5) * dx;
+      const cy = -h / 2 + (j + 0.5) * dy;
+      const hx = dx / 2 - bar;
+      const hy = dy / 2 - bar;
+      const d = new THREE.Path();
+      d.moveTo(cx, cy - hy);
+      d.lineTo(cx + hx, cy);
+      d.lineTo(cx, cy + hy);
+      d.lineTo(cx - hx, cy);
+      d.closePath();
+      s.holes.push(d);
+    }
+  }
+  return [s];
+}
+
+/** A branching coral growing out of the hull at `base`, leaning out to the side whose ship-local x has sign xs. */
+function coralTuft(parent, m, tipM, base, xs, s = 1, lean = 0) {
+  const out = xs;
+  for (const [lz, len, up] of [[-0.6, 0.85, 1], [0.05, 1.1, 1.15], [0.65, 0.8, 0.95]]) {
+    const d = V3(out * 0.55, up, lz + lean).normalize();
+    const mid = base.clone().addScaledVector(d, len * 0.5 * s);
+    rod(parent, m, base, mid, 0.075 * s, 8);
+    for (const f of [-1, 1]) {
+      const d2 = V3(out * (0.35 + 0.25 * (f > 0 ? 1 : 0)), up * 0.9, lz + lean + f * 0.55).normalize();
+      const tip = mid.clone().addScaledVector(d2, len * 0.45 * s);
+      rod(parent, m, mid, tip, 0.06 * s, 8);
+      add(parent, sphere(), tipM, tip.toArray(), null, 0.085 * s);
+    }
+  }
+}
+
+function buildStinger(S, T) {
+  // the Sting Sloop: a fast xebec-rigged wasp, black-and-yellow from her stripes to her sails, an iron sting for a
+  // bowsprit, big bug eyes and feelers on her bow
+  const C = { yellow: 0xffcc1c, black: 0x1f1b24, wall: 0x6b4a24, deck: 0xc99e62, plank: 0x9c7344, spar: 0x3b2b21, iron: 0x2b2833, eye: 0x17141c, glint: 0xffffff, flag: 0x1a171e };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 1.55,
+    deck: 1.15,
+    bw: 0.17,
+    yc: 0.72,
+    n: 2.4,
+    tumble: 0.06,
+    sternLen: 0.13,
+    sternP: 2.2,
+    bowStart: 0.46,
+    bowP: 1.55,
+    bowQ: 1.0,
+    bowRise: 0.45,
+    sternRise: 0.4,
+    sternRiseSpan: 0.24,
+    bowLift: 0.85,
+    sternLift: 0.8,
+    bowRake: 0.95,
+    sternRake: 0.38,
+    midPinch: 0.05,
+    breaks: [{ rel: -0.2 }, { abs: 0.98 }, { abs: 0.6 }],
+  });
+  const yellow = mat(C.yellow);
+  const black = mat(C.black);
+  addHull(S, hull, { bands: [yellow, black, yellow, black], rim: black, wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -3.2, 2.6, 4);
+  cutwater(S, hull, C.black, 0.09);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.8, sd, { frame: C.black, scale: 0.85 });
+
+  // the wasp's face on both bow cheeks: a big googly bug eye looking ahead, and a curled feeler each side
+  const whiteM = mat(C.glint, { outline: THIN });
+  const pupilM = toon(C.eye, { outline: false });
+  const glintM = toon(C.glint, { outline: false });
+  for (const sd of [-1, 1]) {
+    const e = hullPoint(hull, 0.84, 1.22, sd, 0.03);
+    const q = surfaceQuat(e.n);
+    const fwd = V3(0, 0, 1).addScaledVector(e.n, -e.n.z).normalize();
+    const eye = add(S.group, sphere(), whiteM, e.p.toArray(), null, [0.34, 0.3, 0.09]);
+    eye.quaternion.copy(q);
+    const pc = e.p.clone().addScaledVector(e.n, 0.06).addScaledVector(fwd, 0.1);
+    const pu = add(S.group, sphere(), pupilM, pc.toArray(), null, [0.19, 0.2, 0.045]);
+    pu.quaternion.copy(q);
+    const gl = add(S.group, sphere(), glintM, pc.clone().addScaledVector(e.n, 0.035).addScaledVector(fwd, 0.055).addScaledVector(UP, 0.075).toArray(), null, [0.055, 0.055, 0.02]);
+    gl.quaternion.copy(q);
+  }
+  // feelers from the stem head, curling forward, with round tips
+  const head = hull.stem(4).at(-1);
+  for (const sd of [-1, 1]) {
+    const pts = [];
+    for (let i = 0; i <= 8; i++) {
+      const t = i / 8;
+      pts.push(V3(sd * (0.08 + 0.42 * t), head.y - 0.05 + 1.15 * Math.sin(t * PI * 0.62), head.z - 0.25 + 0.75 * t * t));
+    }
+    add(S.group, taperTube(pts, (t) => 0.05 * (1 - 0.35 * t), 16, 6), black);
+    add(S.group, sphere(), black, pts.at(-1).toArray(), null, 0.1);
+  }
+  // the sting: a long iron spike for a bowsprit, banded at its root
+  const iron = mat(C.iron);
+  const sAng = 0.12;
+  const sDir = V3(0, Math.sin(sAng), Math.cos(sAng));
+  const sBase = V3(0, hull.rail(1) - 0.32, hull.zAt(1, hull.rail(1)) - 0.85);
+  const sting = add(S.group, lathe('sting', [[0.0001, 0], [0.17, 0.04], [0.2, 0.35], [0.16, 1.1], [0.1, 1.8], [0.035, 2.35], [0.0001, 2.5]], 10), iron, sBase.toArray());
+  sting.quaternion.setFromUnitVectors(UP, sDir);
+  for (const [k, m] of [[0.75, yellow], [1.05, black]]) {
+    const ring = add(S.group, torus(0.16, 0.05, 14, 6), m, sBase.clone().addScaledVector(sDir, k).toArray());
+    ring.quaternion.setFromUnitVectors(FWD, sDir);
+  }
+
+  // two raked masts with striped lateen sails (wasp stripes: bands across the sail)
+  const sparM = mat(C.spar);
+  const zf = 1.75;
+  const zm = -0.85;
+  mast(S, zf, D, 6.4, 0.13, C.spar, { rake: 0.1 });
+  mast(S, zm, D, 7.6, 0.15, C.spar, { rake: -0.03 });
+  shrouds(S, hull, zm, 6.6, { n: 2, rake: -0.03 });
+  shrouds(S, hull, zf, 5.4, { n: 2, rake: 0.1, spread: 0.36 });
+  const stripes = (n) => (d) => {
+    const parts = [];
+    for (let k = 0; k < n; k++) parts.push({ geo: pillowGeometry(d, 0, 1, k / n, (k + 1) / n), material: k % 2 ? black : yellow });
+    return parts;
+  };
+  const foreSail = lateenSail(S, [-0.15, 6.95], [3.85, 2.2], [0.1, 1.95], 0.42, stripes(4), { spar: C.spar, leechBow: 0.25, footBow: 0.12 });
+  const mainSail = lateenSail(S, [-3.95, 8.05], [0.95, 2.25], [-3.25, 2.05], 0.5, stripes(5), { spar: C.spar, leechBow: 0.3, footBow: 0.12 });
+  // a little cross-tree on the main mast (the boarders' rope anchors)
+  const ys = 5.25;
+  const zs = zm - ys * Math.sin(0.03);
+  rod(S.group, sparM, V3(-0.9, ys, zs), V3(0.9, ys, zs), 0.045, 6);
+  S.yardTips = { port: { x: 0.9, y: ys, z: r3(zs) }, star: { x: -0.9, y: ys, z: r3(zs) } };
+  S.dropSail = { mesh: mainSail, kind: 'foreaft', yb: 2.1 };
+  S.droopSail = { mesh: foreSail, kind: 'foreaft', yb: 2.05 };
+  // her colours: a yellow wasp on black, from the main masthead
+  flagMesh(S, {
+    p: V3(0, 8.15, zm - 7.6 * Math.sin(0.03)),
+    len: 1.85,
+    h: 0.95,
+    shape: 'swallow',
+    mat: mat(C.flag),
+    decal: { shapes: waspShapes(), size: 0.78, cx: 0.4, cy: 0.0, mat: mat(C.yellow, { outline: false }) },
+    yaw: -0.2,
+    staff: C.spar,
+  });
+  // the stern: a tiller, a lantern on a post, a rope coil and a water cask
+  rod(S.group, mat(C.wall), V3(0, D + 0.3, -3.55), V3(0, D + 0.6, -2.75), 0.06, 6);
+  rod(S.group, sparM, V3(-0.5, D, -3.3), V3(-0.5, D + 1.05, -3.3), 0.05, 6);
+  lantern(S, S.group, -0.5, D + 1.25, -3.3, { s: 0.75 });
+  add(S.group, torus(0.22, 0.075, 16, 8), mat(ROPE), [0.48, D + 0.07, -2.55], [PI / 2, 0, 0]);
+  barrel(S, -0.45, D, -1.55, STAVE, 0x3a2a24, 0.7);
+  add(S.group, rbox(0.75, 0.2, 0.6, 0.08), black, [0, D + 0.09, 0.55]);
+
+  S.deckSpots = [
+    { x: 0.6, y: D, z: -0.2, h: PI / 2 },
+    { x: -0.6, y: D, z: -0.2, h: -PI / 2 },
+    { x: 0.55, y: D, z: -1.75, h: PI / 2 },
+    { x: -0.6, y: D, z: -2.45, h: -PI / 2 },
+    { x: 0, y: D, z: 2.75, h: PI },
+  ];
+  S.fireSpots = [[0.1, D, -1.15, 0.65]];
+}
+
+function buildNetSloop(S, T) {
+  // the Net Sloop: a beamy bottle-green fishing sloop hung with white nets and cork floats, a gaff sail with a net
+  // panel, and a derrick on her foredeck whose net bundle whirls round before she casts (userData.whirl)
+  const C = { green: 0x0d6b53, greenDark: 0x08483a, white: 0xf6f3ea, rim: 0x5a3a22, wall: 0x7d5434, deck: 0xcba66e, plank: 0x9e7849, sail: 0x0f7559, net: 0xf8f5ec, cork: 0xe2862a, spar: 0x5c3f28, basket: 0xc9a05a, fish: 0xaec4cf, flag: 0x0b5a46 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 1.7,
+    deck: 1.2,
+    bw: 0.2,
+    yc: 0.82,
+    n: 2.6,
+    tumble: 0.1,
+    sternLen: 0.17,
+    sternP: 1.9,
+    bowStart: 0.56,
+    bowP: 1.9,
+    bowQ: 0.8,
+    bowRise: 0.55,
+    sternRise: 0.2,
+    bowLift: 1.0,
+    sternLift: 0.75,
+    bowRake: 0.42,
+    sternRake: 0.3,
+    breaks: [{ rel: -0.17 }, { rel: -0.29 }],
+  });
+  addHull(S, hull, { bands: [mat(C.green), mat(C.white), mat(C.greenDark)], rim: mat(C.rim), wall: mat(C.wall), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -3.1, 3.0, 5);
+  cutwater(S, hull, C.rim, 0.1);
+  for (let i = 0; i < T.guns; i++) for (const sd of [-1, 1]) gun(S, hull, gunOffset(T, i), 0.85, sd, { frame: C.white, scale: 0.9 });
+
+  // white nets hung over both rails in swags, cork floats along their hems (the gun port left clear)
+  const netM = mat(C.net, { outline: THIN });
+  const corkM = mat(C.cork, { outline: THIN });
+  const swags = [[-2.75, -0.62], [0.62, 2.35]];
+  for (const sd of [-1, 1]) {
+    const sx = -sd; // ship-local x of this side
+    for (const [z0, z1] of swags) {
+      const top = (z) => hull.railAt(z) - hull.rb * 1.6;
+      const P = (s, t) => {
+        const z = lerp(z0, z1, t);
+        const yTop = top(z);
+        const yBot = 0.98 - 0.26 * Math.sin(PI * t);
+        const y = lerp(yTop, yBot, s);
+        return V3(sx * (hull.widthAt(z, y) + 0.05 + 0.03 * Math.sin(PI * s)), y, z);
+      };
+      for (const g of netRopes(P, 2, Math.max(3, Math.round((z1 - z0) / 0.42)), 0.026, { hem: ['s0', 's1'], hemR: 0.04 })) add(S.group, g, netM);
+      for (let k = 0; k < 4; k++) {
+        const p = P(1, (k + 0.5) / 4);
+        add(S.group, corkGeo(p.add(V3(sx * 0.05, -0.03, 0)), V3(0, 0, 1), 0.9), corkM);
+      }
+    }
+  }
+
+  // the mast and a gaff mainsail: green, with a white net panel on both sides
+  const mz = -0.7;
+  mast(S, mz, D, 8.2, 0.16, C.spar);
+  shrouds(S, hull, mz, 7.3, { n: 3 });
+  const sailM = mat(C.sail);
+  const latticeM = mat(C.net, { outline: false });
+  const net = latticeShapes(2.3, 3.4, 4, 6);
+  const gaff = quadDef([mz - 0.25, 7.2], [mz - 3.0, 8.1], [-3.95, 2.4], [mz - 0.25, 2.3], 0.5, { nu: 16, nv: 12, leechBow: 0.3 });
+  const gaffSail = foreAftSail(S, S.group, gaff, (d) => [
+    { geo: pillowGeometry(d), material: sailM },
+    { geo: sailDecal(d, net, 1, -(mz - 1.65), 4.85, 1, 0.06, 0.04), material: latticeM },
+    { geo: sailDecal(d, net, 1, -(mz - 1.65), 4.85, -1, 0.06, 0.04), material: latticeM },
+  ], { p: V3() });
+  const sparM = mat(C.spar);
+  rod(S.group, sparM, V3(0, 7.22, mz - 0.1), V3(0, 8.12, mz - 3.15), 0.085, 8); // gaff
+  rod(S.group, sparM, V3(0, 2.25, mz - 0.1), V3(0, 2.35, -4.1), 0.1, 8); // boom
+  S.dropSail = { mesh: gaffSail, kind: 'foreaft', yb: 2.3 };
+  S.droopSail = S.dropSail;
+  const ys = 5.6;
+  rod(S.group, sparM, V3(-1.0, ys, mz), V3(1.0, ys, mz), 0.045, 6);
+  S.yardTips = { port: { x: 1.0, y: ys, z: mz }, star: { x: -1.0, y: ys, z: mz } };
+  flagMesh(S, {
+    p: V3(0, 8.75, mz),
+    len: 1.9,
+    h: 1.05,
+    mat: mat(C.flag),
+    decal: { shapes: fishShapes(), size: 0.75, cx: 0.45, cy: 0.0, mat: mat(C.net, { outline: false }) },
+    yaw: -0.18,
+    staff: C.spar,
+  });
+
+  // the net derrick on the foredeck: a king post, a boom leaning out over the bow and the net bundle at its tip
+  const zk = 1.9;
+  rod(S.group, sparM, V3(0, D - 0.05, zk), V3(0, D + 2.35, zk), 0.13, 10);
+  add(S.group, sphere(), sparM, [0, D + 2.42, zk], null, 0.15);
+  const tip = V3(0, 5.15, 3.55);
+  rod(S.group, sparM, V3(0, D + 0.7, zk + 0.05), tip, 0.085, 8);
+  ropeLine(S.group, V3(0, D + 2.4, zk), tip, 0.025);
+  add(S.group, sphere(), mat(C.rim), [tip.x, tip.y, tip.z], null, 0.13);
+  // the bundle: hangs from a swivel at the tip (kept: it whirls), lumps of white net, corks and its rope
+  const pivot = new THREE.Group();
+  pivot.name = 'net-whirl';
+  pivot.position.copy(tip);
+  pivot.userData.keep = true;
+  S.group.add(pivot);
+  const arm = new THREE.Group();
+  pivot.add(arm);
+  const ropeL = 1.0;
+  const parts = [{ geo: ropeTube([V3(0, -0.05, 0), V3(0, -ropeL * 0.5, 0), V3(0, -ropeL, 0)], 0.03, 5), color: 0x3b2a22 }];
+  const lump = (x, y, z, r, sy = 0.85) => {
+    const g = new THREE.BufferGeometry().copy(sphereLo());
+    g.scale(r, r * sy, r);
+    g.translate(x, y, z);
+    parts.push({ geo: g, color: C.net });
+  };
+  const by = -ropeL - 0.32;
+  lump(0, by, 0, 0.42);
+  lump(0.25, by - 0.12, 0.12, 0.3);
+  lump(-0.22, by - 0.1, -0.15, 0.32);
+  lump(0.05, by + 0.22, -0.05, 0.28);
+  // net ropes over the lumps: a few loops round the bundle
+  for (let k = 0; k < 3; k++) {
+    const pts = [];
+    const tilt = (k - 1) * 0.7;
+    for (let i = 0; i <= 16; i++) {
+      const a = (i / 16) * TAU;
+      const v = V3(Math.cos(a) * 0.44, Math.sin(a) * 0.4, 0).applyAxisAngle(UP, tilt).applyAxisAngle(V3(1, 0, 0), 0.25);
+      pts.push(v.add(V3(0, by, 0)));
+    }
+    parts.push({ geo: ropeTube(pts, 0.025, 4), color: 0xd8cfb8 });
+  }
+  for (const [x, y, z] of [[0.4, by - 0.05, 0.1], [-0.36, by + 0.05, 0.22], [0.1, by - 0.36, -0.3], [-0.12, by - 0.3, 0.32], [0.3, by + 0.25, -0.25]]) {
+    parts.push({ geo: corkGeo(V3(x, y, z), V3(x, 0.3, z), 0.95), color: C.cork });
+  }
+  const bundle = new THREE.Mesh(paintMerge(parts), vcMat(THIN));
+  bundle.name = 'net-bundle';
+  arm.add(bundle);
+  // speed lines trailing the bundle round its circle while it whirls (unit radius; scaled to the swing)
+  const swoosh = [];
+  for (const [y, f0, f1, r] of [[0.12, 0.3, 1.55, 0.05], [-0.14, 0.4, 1.25, 0.04]]) {
+    const pts = [];
+    for (let i = 0; i <= 14; i++) {
+      const f = lerp(f0, f1, i / 14);
+      pts.push(V3(Math.cos(f), y, Math.sin(f)));
+    }
+    swoosh.push(taperTube(pts, (t) => r * (1 - 0.75 * t), 20, 5));
+  }
+  const trail = new THREE.Mesh(mergeGeometries(swoosh, false), toon(0xffffff, { outline: THIN }));
+  for (const g of swoosh) g.dispose();
+  trail.name = 'net-swoosh';
+  trail.visible = false;
+  pivot.add(trail);
+  S.whirl = { pivot, arm, trail, rope: ropeL + 0.32, a: 0, t: null, ph: 1.3 };
+
+  // a heap of net and a fish basket aft, a lantern on the boom gallows, a hatch
+  for (const [x, y, z, r] of [[0.55, D + 0.2, -3.0, 0.42], [0.85, D + 0.15, -2.55, 0.3], [0.3, D + 0.12, -2.45, 0.28]]) add(S.group, sphere(), netM, [x, y, z], null, [r, r * 0.55, r]);
+  for (const [x, z] of [[0.65, -3.1], [0.2, -2.55], [0.95, -2.75]]) add(S.group, corkGeo(V3(x, D + 0.36, z), V3(0.3, 1, 0.2), 0.8), corkM);
+  barrel(S, -0.6, D, -2.75, C.basket, 0x7a5a2c, 0.8);
+  const fishM = mat(C.fish, { outline: THIN });
+  for (const [x, z, r] of [[-0.68, -2.68, 0.4], [-0.5, -2.85, -0.5]]) {
+    add(S.group, cone(0.09, 0.32, 6), fishM, [x, D + 0.62, z], [r, 0, 0.3 * Math.sign(r)], [1, 1, 0.35]);
+  }
+  rod(S.group, sparM, V3(0.0, D, -3.75), V3(0.0, D + 1.1, -3.75), 0.06, 6);
+  lantern(S, S.group, 0, D + 1.3, -3.75, { s: 0.75 });
+  add(S.group, rbox(0.9, 0.24, 0.7, 0.08), mat(C.rim), [0, D + 0.11, 0.55]);
+
+  S.deckSpots = [
+    { x: 0.8, y: D, z: -0.05, h: PI / 2 },
+    { x: -0.8, y: D, z: -0.05, h: -PI / 2 },
+    { x: 0.8, y: D, z: -1.6, h: PI / 2 },
+    { x: -0.8, y: D, z: -1.6, h: -PI / 2 },
+    { x: 0.42, y: D, z: 2.35, h: PI / 2 },
+    { x: -0.42, y: D, z: 2.35, h: -PI / 2 },
+  ];
+  S.fireSpots = [[0.2, D, -1.0, 0.75]];
+}
+
+function buildWitch(S, T) {
+  // the Coral Witch's Barge: a broad sea-green barge crusted with pink coral and shells, a conch for a figurehead,
+  // a scallop throne at the stern behind her bubbling green cauldron, glowing jellyfish lanterns and a kelp-hung
+  // lateen sail. No guns. userData.helm is where the witch stands (facing the bow).
+  S.brace = 0.3;
+  const C = { coral: 0xff6f86, coralDeep: 0xe24a6a, sea: 0x2fb79c, seaDark: 0x1d8a78, seaDeep: 0x136457, pearl: 0xfff0e8, shell: 0xffd2c2, shellRib: 0xf59aa6, deck: 0xdcc59a, plank: 0xae9468, wall: 0x8a5a44, iron: 0x2b2a33, brew: 0x74f08c, jelly: 0xff9ad8, kelp: 0x2f7d45, spar: 0x6a4a34, sail: 0x35bfa2, conch: 0xffe3c8, mouth: 0xff8aa2, flag: 0xff6f86 };
+  const hull = makeHull({
+    L: T.len,
+    W: T.wid,
+    rail: 1.6,
+    deck: 1.2,
+    bw: 0.28,
+    yc: 0.76,
+    n: 3.2,
+    tumble: 0.035,
+    sternLen: 0.2,
+    sternP: 1.7,
+    bowStart: 0.62,
+    bowP: 1.5,
+    bowQ: 0.95,
+    bowRise: 0.42,
+    sternRise: 0.42,
+    bowLift: 0.78,
+    sternLift: 0.62,
+    bowRake: 0.75,
+    sternRake: 0.55,
+    midPinch: 0.02,
+    breaks: [{ rel: -0.22 }, { abs: 0.56 }],
+  });
+  const coral = mat(C.coral);
+  addHull(S, hull, { bands: [coral, mat(C.sea), mat(C.seaDark)], rim: mat(C.pearl), wall: mat(C.coralDeep), deck: mat(C.deck) });
+  S.hull = hull;
+  const D = hull.D;
+  deckPlanks(S, hull, C.plank, -2.9, 3.2, 6);
+  cutwater(S, hull, C.coralDeep, 0.11);
+
+  // the stern platform and its scallop throne; the witch stands in front of it (S.captainSpot → userData.helm)
+  const cab = sternCastle(S, hull, { z1: -3.05, y0: 1.0, y1: 1.85, color: C.sea, cap: C.coral, top: C.deck, r: 0.26, over: 0.08 });
+  const shellM = mat(C.shell);
+  const ribM = mat(C.shellRib, { outline: THIN });
+  const zt = cab.z0 + 0.55;
+  const throne = new THREE.Group();
+  throne.position.set(0, cab.y1 - 0.05, zt);
+  throne.rotation.x = -0.22; // leaning back
+  S.group.add(throne);
+  const fanG = extrude(scallopShapes(false), 0.16 / 3.4, 10);
+  fanG.scale(3.4, 3.4, 3.4);
+  add(throne, fanG, shellM, [0, 1.3, 0]);
+  const ribG = extrude(scallopShapes(true), 0.06 / 3.05, 10);
+  ribG.scale(3.05, 3.05, 3.05);
+  add(throne, ribG, ribM, [0, 1.32, 0.12]);
+  add(throne, sphere(), mat(C.pearl), [0, 0.07, 0.22], null, [0.75, 0.2, 0.42]); // the seat, a fat pearl cushion
+  S.captainSpot = { x: 0, y: r3(cab.y1), z: r3(cab.z1 - 0.6), h: 0 };
+
+  // her cauldron, bubbling green, in front of the platform
+  const zc = -2.25;
+  const iron = mat(C.iron);
+  add(S.group, lathe('cauldron', [[0.0001, 0.06], [0.3, 0.07], [0.5, 0.2], [0.58, 0.42], [0.55, 0.64], [0.47, 0.74], [0.54, 0.79], [0.52, 0.86], [0.42, 0.84], [0.0001, 0.8]], 16), iron, [0, D, zc]);
+  for (let k = 0; k < 3; k++) {
+    const a = (k / 3) * TAU + 0.4;
+    rod(S.group, iron, V3(Math.cos(a) * 0.38, D + 0.25, zc + Math.sin(a) * 0.38), V3(Math.cos(a) * 0.48, D, zc + Math.sin(a) * 0.48), 0.06, 6);
+  }
+  const brew = glow(S, C.brew, 1.0, true, 0.15);
+  add(S.group, cyl(0.47, 0.47, 0.05, 16), brew, [0, D + 0.81, zc]);
+  for (const [x, y, z, r] of [[0.12, 0.92, 0.05, 0.14], [-0.18, 0.88, -0.1, 0.1], [0.05, 1.12, -0.12, 0.08], [-0.08, 1.32, 0.06, 0.06]]) add(S.group, sphere(), brew, [x, D + y, zc + z], null, r);
+
+  // jellyfish lanterns on two poles at the platform's front corners
+  const jelly = glow(S, C.jelly, 1.0, true, 0.12);
+  const poleM = mat(C.spar);
+  const jellyTail = mat(C.coralDeep, { outline: false });
+  for (const sd of [-1, 1]) {
+    const x = sd * (cab.w / 2 - 0.2);
+    const z = cab.z1 - 0.15;
+    rod(S.group, poleM, V3(x, cab.y1, z), V3(x, cab.y1 + 1.55, z), 0.05, 6);
+    rod(S.group, poleM, V3(x, cab.y1 + 1.55, z), V3(x * 1.12, cab.y1 + 1.62, z + 0.25), 0.04, 6);
+    const jy = cab.y1 + 1.35;
+    const jz = z + 0.3;
+    add(S.group, sphere(), jelly, [x * 1.12, jy, jz], null, [0.28, 0.22, 0.28]);
+    for (let k = 0; k < 4; k++) {
+      const a = (k / 4) * TAU + 0.4;
+      const pts = [];
+      for (let i = 0; i <= 5; i++) pts.push(V3(x * 1.12 + Math.cos(a) * 0.16 + 0.05 * Math.sin(i * 1.4 + k), jy - 0.05 - i * 0.12, jz + Math.sin(a) * 0.16));
+      add(S.group, taperTube(pts, (t) => 0.035 * (1 - 0.6 * t), 8, 5), jellyTail);
+    }
+  }
+
+  // coral crusted on her bow cheeks and stern quarters, shells along her sea-green band
+  const tipM = mat(C.pearl);
+  const coralBranch = mat(C.coral);
+  for (const sd of [-1, 1]) {
+    for (const [u, y, s, lean] of [[0.86, 1.35, 0.95, 0.35], [0.74, 1.05, 0.7, 0.1], [0.11, 1.3, 0.8, -0.4]]) {
+      const { p } = hullPoint(hull, u, y, sd, -0.04);
+      coralTuft(S.group, coralBranch, tipM, p, sd, s, lean);
+    }
+    for (const [u, y, sz, rot] of [[0.27, 0.93, 0.66, 0.1], [0.45, 0.88, 0.58, -0.12], [0.62, 0.93, 0.64, 0.16]]) hullDecal(S, hull, scallopShapes(false), sz, u, y, sd, mat(C.shell, { outline: THIN }), 0.05, rot);
+  }
+
+  // the conch figurehead on her stem, spire forward
+  const head = hull.stem(4).at(-1);
+  const conch = new THREE.Group();
+  conch.position.set(0, head.y + 0.08, head.z + 0.05);
+  conch.rotation.x = 1.25; // lying forward and up
+  S.group.add(conch);
+  const conchM = mat(C.conch);
+  add(conch, lathe('conch', [[0.0001, -0.62], [0.12, -0.55], [0.26, -0.4], [0.4, -0.15], [0.46, 0.05], [0.4, 0.2], [0.32, 0.3], [0.26, 0.42], [0.18, 0.55], [0.1, 0.72], [0.0001, 0.86]], 14), conchM);
+  for (const [y, r] of [[0.33, 0.29], [0.5, 0.19], [0.66, 0.11]]) add(conch, torus(r, 0.045, 16, 6), conchM, [0, y, 0], [PI / 2, 0, 0]);
+  for (let k = 0; k < 6; k++) {
+    const a = (k / 6) * TAU;
+    const spike = add(conch, cone(0.07, 0.24, 6), conchM, [Math.cos(a) * 0.44, 0.1, Math.sin(a) * 0.44]);
+    spike.quaternion.setFromUnitVectors(UP, V3(Math.cos(a), 0.35, Math.sin(a)).normalize());
+  }
+  for (const sx of [-1, 1]) add(conch, sphere(), mat(C.mouth, { outline: THIN }), [sx * 0.34, -0.14, 0], null, [0.1, 0.36, 0.2]);
+
+  // one tall mast and a sea-green lateen sail with a pink scallop on it, kelp streaming from the yard
+  const mzt = 1.45;
+  mast(S, mzt, D, 7.7, 0.16, C.spar, { rake: 0.04 });
+  shrouds(S, hull, mzt, 6.9, { n: 2, rake: 0.04 });
+  const sailM = mat(C.sail);
+  const decalM = mat(C.coral, { outline: false });
+  const peak = [-1.6, 8.45];
+  const tack = [4.25, 2.35];
+  const clew = [-1.05, 2.4];
+  const shell = scallopShapes(true);
+  const sail = lateenSail(S, peak, tack, clew, 0.5, (d) => [
+    { geo: pillowGeometry(d), material: sailM },
+    { geo: sailDecal(d, shell, 1.55, -0.8, 3.8, 1, 0.07, 0), material: decalM },
+    { geo: sailDecal(d, shell, 1.55, -0.8, 3.8, -1, 0.07, 0), material: decalM },
+  ], { spar: C.spar, leechBow: 0.3, footBow: 0.1, yardFore: 0.3 });
+  const kelpM = mat(C.kelp, { outline: THIN });
+  for (const f of [0.18, 0.4, 0.62, 0.83]) {
+    const p = V3(0, lerp(tack[1], peak[1], f), lerp(tack[0], peak[0], f));
+    const pts = [];
+    const len = 1.1 + 0.5 * tri(f * 3.7);
+    for (let i = 0; i <= 6; i++) pts.push(V3(-0.15 + 0.12 * Math.sin(i * 1.3 + f * 9), p.y - 0.05 - (i / 6) * len, p.z + 0.08 * Math.sin(i * 1.7 + f * 5)));
+    add(S.group, taperTube(pts, (t) => 0.06 * (1 - 0.55 * t), 10, 5), kelpM);
+  }
+  const sparM = mat(C.spar);
+  const ys = 5.3;
+  const zs = mzt + ys * Math.sin(0.04);
+  rod(S.group, sparM, V3(-1.05, ys, zs), V3(1.05, ys, zs), 0.045, 6);
+  S.yardTips = { port: { x: 1.05, y: ys, z: r3(zs) }, star: { x: -1.05, y: ys, z: r3(zs) } };
+  S.dropSail = { mesh: sail, kind: 'foreaft', yb: 2.4 };
+  S.droopSail = S.dropSail;
+  flagMesh(S, {
+    p: V3(0, 8.2, mzt + 7.7 * Math.sin(0.04)),
+    len: 1.8,
+    h: 1.0,
+    shape: 'swallow',
+    mat: mat(C.flag),
+    decal: { shapes: scallopShapes(false), size: 0.66, cx: 0.4, cy: 0.04, mat: mat(C.pearl, { outline: false }) },
+    yaw: -0.18,
+    staff: C.spar,
+  });
+  // a chest of pearls and a basket of shells on deck
+  treasureChest(S, 0.85, D, 0.35, -0.35, { wood: C.wall, gold: C.pearl, open: true, w: 0.7 });
+  add(S.group, rbox(0.9, 0.22, 0.7, 0.08), mat(C.wall), [0, D + 0.1, -0.85]);
+
+  S.deckSpots = [
+    { x: 0.95, y: D, z: -0.6, h: PI / 2 },
+    { x: -0.95, y: D, z: -0.6, h: -PI / 2 },
+    { x: -0.9, y: D, z: 0.6, h: -PI / 2 },
+    { x: 0.95, y: D, z: -1.75, h: PI / 2 },
+    { x: 0, y: D, z: 2.85, h: PI },
+  ];
+  S.fireSpots = [[-0.3, D, 0.2, 0.8]];
+}
+
+/**
+ * Hang a net over a ship built by buildShip (SPEC4 §3.1, TANGLED by a Net Sloop): on = true shows it (it drops on
+ * from above in 0.35 s of the visual time animateShip gets, then sways), false takes it off at once. One merged,
+ * vertex-coloured mesh over her waist, draped over both rails with cork floats on its hems: +2 draw calls while
+ * shown, none while hidden; built on the first call and kept (disposeShip frees it). State: userData.net { on }.
+ * Returns whether the net is shown (false for anything that is not a ship).
+ */
+export function setNet(group, on) {
+  const P = group ? PRIV.get(group) : null;
+  if (!P) return false;
+  const u = group.userData;
+  const want = !!on;
+  if (want && !P.net) P.net = netDrape(group);
+  if (!P.net) return false;
+  if (!u.net) u.net = { on: false };
+  if (want && !u.net.on) P.netAt = null; // drop it on afresh
+  u.net.on = want;
+  P.net.visible = want;
+  if (!want) {
+    P.net.position.set(0, 0, 0);
+    P.net.scale.set(1, 1, 1);
+  }
+  return want;
+}
+
+/** The net that drapes over a tangled ship: fitted to her waist from userData (rail anchors, hull sides, deck). */
+function netDrape(group) {
+  const ud = group.userData;
+  const A = ud.statusAnchors;
+  const side = ud.hullSide;
+  if (!A || !Array.isArray(A.rail) || A.rail.length < 4 || !side || !Array.isArray(side.half)) return null;
+  const port = A.rail.filter((p) => p.x > 0).sort((a, b) => a.z - b.z);
+  if (port.length < 2) return null;
+  const at = (z, key) => {
+    if (z <= port[0].z) return port[0][key];
+    for (let i = 1; i < port.length; i++) if (z <= port[i].z) return lerp(port[i - 1][key], port[i][key], (z - port[i - 1].z) / (port[i].z - port[i - 1].z));
+    return port.at(-1)[key];
+  };
+  const halfAt = (z) => {
+    const f = clamp((z - side.z0) / side.dz, 0, side.half.length - 1.001);
+    const i = Math.floor(f);
+    return lerp(side.half[i], side.half[i + 1], f - i);
+  };
+  const z0 = port[0].z - 0.3;
+  const z1 = port.at(-1).z + 0.3;
+  const wMid = at((z0 + z1) / 2, 'x');
+  const arch = clamp(wMid * 0.9, 0.9, 1.8);
+  const hang = 0.24; // the share of s on each hanging side
+  const P = (s, t) => {
+    const z = lerp(z0, z1, t);
+    const w = Math.max(0.3, at(z, 'x')) + 0.07;
+    const yr = at(z, 'y') + 0.06;
+    const low = Math.min(yr - 0.25, Math.max(0.95, (ud.deckY || 1.2) - 0.25));
+    const wLow = Math.max(w - 0.02, halfAt(z) + 0.08);
+    const sag = 0.12 * Math.sin(PI * t * 3) ** 2; // dips between the spars it catches on
+    const h = arch * (0.72 + 0.45 * Math.sin(PI * t)) - sag;
+    if (s < hang) {
+      const q = s / hang;
+      return V3(lerp(wLow, w, q), lerp(low + 0.1 * Math.sin(PI * t * 2.5) ** 2, yr, q), z);
+    }
+    if (s > 1 - hang) {
+      const q = (1 - s) / hang;
+      return V3(-lerp(wLow, w, q), lerp(low + 0.1 * Math.cos(PI * t * 2.5) ** 2, yr, q), z);
+    }
+    const q = (s - hang) / (1 - 2 * hang);
+    return V3(w * Math.cos(PI * q), yr + h * Math.pow(Math.sin(PI * q), 0.75), z);
+  };
+  const across = 2 * (A.rail[0].y - 0.9) + PI * 0.5 * (wMid + arch);
+  const ns = Math.max(6, Math.round(across / 0.5));
+  const nt = Math.max(4, Math.round((z1 - z0) / 0.5));
+  const parts = netRopes(P, ns, nt, 0.04, { hem: ['s0', 's1', 't0', 't1'], hemR: 0.06, seg: 3 }).map((geo) => ({ geo, color: 0xf7f3e8 }));
+  for (const s of [0, 1]) {
+    const n = Math.max(4, Math.round((z1 - z0) / 0.6));
+    for (let k = 0; k < n; k++) {
+      const p = P(s, (k + 0.5) / n);
+      parts.push({ geo: corkGeo(p.add(V3(0, -0.06, 0)), V3(0, 0, 1), 0.95), color: 0xe2862a });
+    }
+  }
+  const mesh = new THREE.Mesh(paintMerge(parts), vcMat(THIN));
+  for (const { geo } of parts) geo.dispose();
+  mesh.name = 'net-drape';
+  mesh.visible = false;
+  mesh.userData.keep = true;
+  group.add(mesh);
+  return mesh;
+}
+
+const NET_DROP = 0.35; // s for a cast net to drop over the ship
+
+/** The net drape: drops on from above, then sways a little with the ship. */
+function animateNet(P, t) {
+  const m = P.net;
+  if (!m || !m.visible) return;
+  if (P.netAt == null || t < P.netAt) P.netAt = t;
+  const q = clamp((t - P.netAt) / NET_DROP, 0, 1);
+  const e = 1 - q;
+  m.position.y = 1.6 * e * e;
+  const s = 1 + 0.12 * e;
+  const sway = 0.02 * Math.sin(t * 2.1);
+  m.scale.set(s, 1 + sway, s);
+}
+
+const WHIRL_UP = 0.45; // s for the Net Sloop's net to get whirling
+const WHIRL_DOWN = 0.35; // s for it to swing down again
+
+/** The Net Sloop's net bundle: hangs and sways at rest; whirls round over her bow while userData.whirl is on. */
+function animateWhirl(P, w, t) {
+  const W = P.whirl;
+  const dt = W.t == null ? 0 : clamp(t - W.t, 0, 0.1);
+  W.t = t;
+  if (typeof w.level === 'number' && Number.isFinite(w.level)) w.k = clamp(w.level, 0, 1);
+  else w.k = w.on ? Math.min(1, w.k + dt / WHIRL_UP) : Math.max(0, w.k - dt / WHIRL_DOWN);
+  const k = sstep(0, 1, w.k);
+  W.a = (W.a + dt * TAU * 1.15 * k) % TAU;
+  W.pivot.rotation.y = W.a;
+  const swing = 1.05 * k + 0.07 * (1 - k) * Math.sin(t * 1.4 + W.ph);
+  W.arm.rotation.z = swing;
+  W.arm.rotation.x = 0.05 * (1 - k) * Math.sin(t * 1.1 + W.ph * 2);
+  // the speed lines: on the bundle's circle, behind it (it moves toward -z here), only once it really whirls
+  W.trail.visible = k > 0.35;
+  if (W.trail.visible) {
+    const R = W.rope * Math.sin(swing);
+    W.trail.position.y = -W.rope * Math.cos(swing);
+    W.trail.scale.set(R, 1, R);
+  }
+}
+
 function mulberry(seed) {
   let a = seed >>> 0;
   return () => {
@@ -4977,11 +5883,10 @@ const BUILDERS = {
   fireship: buildFireship,
   skiff: buildSkiff,
   inkheart: buildInkheart,
-  // Voyage IV (SPEC4 §11.1): stand-ins until 1H's models replace these three lines (each builder sizes its hull
-  // from the type's len and wid), so buildShip never throws for them
-  stinger: buildCutter,
-  netsloop: buildPrivateer,
-  witch: buildBombKetch,
+  // Voyage IV · The Sunset Isles (SPEC4 §3.1)
+  stinger: buildStinger,
+  netsloop: buildNetSloop,
+  witch: buildWitch,
 };
 
 // ---------------------------------------------------------------------------
@@ -5646,6 +6551,12 @@ function raiseFlag(group, P, look) {
  *   Bomb Ketch and Inkheart: mortar: { muzzle: {x, y, z}, dir: {x, y, z}, fire(t) } where a shell or ink pot
  *     leaves (ship-local) and the bore's direction; fire(t), with the visual time animateShip gets, makes the
  *     mortar jump and blow a smoke ring
+ *   Net Sloop only: whirl: { on, level, k } her net bundle at the derrick's tip: set on = true and it swings
+ *     out and whirls round over her bow within 0.45 s (the NET! telegraph), on = false and it swings down
+ *     again in 0.35 s; or set level (0..1) to drive it directly (null = follow on); k is what animateShip shows
+ *   Coral Witch's Barge only: helm: {x, y, z, h} where the witch stands on her stern platform, in front of
+ *     her scallop throne, facing the bow (a person is not part of the model)
+ *   any ship after setNet(group, on): net: { on } (see setNet)
  *   player only: helm: {x, y, z, h} (the captain's place behind the wheel, facing the bow), coils (grapnels
  *     shown), hullSpots: [{x, y, z, side, h}] (on the hull sides just above the waterline, h = yaw facing
  *     the hull) and blockers: [{x, z, r} | {x, z, hx, hz}] (deck props) }
@@ -5723,6 +6634,8 @@ export function buildShip(typeKey, opts = {}) {
   group.userData.statusAnchors = statusAnchors(S, hull);
   if (S.fuse) group.userData.fuse = { lit: false, level: null, k: 0 };
   if (S.mortar) group.userData.mortar = mortarApi(S.mortar);
+  if (S.whirl) group.userData.whirl = { on: false, level: null, k: 0 };
+  if (S.captainSpot) group.userData.helm = S.captainSpot;
   const sources = new Map();
   for (const t of [top, droop]) {
     if (!t || !t.ranges || sources.has(t.mesh)) continue;
@@ -5752,6 +6665,9 @@ export function buildShip(typeKey, opts = {}) {
     fuse: S.fuse,
     fuseT: null,
     mortar: S.mortar,
+    whirl: S.whirl || null,
+    net: null,
+    netAt: null,
   });
   return group;
 }
@@ -5918,10 +6834,12 @@ export function animateShip(group, t, speedRatio = 0) {
       fx.obj.rotation.y = fx.ph * 7 + q * 1.2;
     }
   }
-  if (u.fuse || u.mortar) {
+  if (u.fuse || u.mortar || u.whirl || u.net) {
     const P = PRIV.get(group);
     if (P && P.fuse && u.fuse) animateFuse(P, u.fuse, t);
     if (P && P.mortar && u.mortar) animateMortar(P.mortar, u.mortar, t);
+    if (P && P.whirl && u.whirl) animateWhirl(P, u.whirl, t);
+    if (P && P.net && u.net) animateNet(P, t);
   }
 }
 

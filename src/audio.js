@@ -45,6 +45,9 @@ const SFX_CAP = {
   ignite: 4, crackle: 2, sizzle: 3, freeze: 4, stink: 4, blast: 2, clang: 4, ram: 3, mortar: 3, fuse: 3, spout: 3, horn: 1,
   rogue: 2, surf: 2, ink: 3, krakenRise: 1, slam: 4, grab: 2, gurgle: 1, sneeze: 1, bell: 2, bonk: 2, squawk: 2, build: 1,
   crate: 2, tentacle: 4, geyser: 4,
+  coconut: 4, netWhirl: 2, puff: 4, conch: 2, song: 2, hiss: 2, clack: 4, tidebell: 1, snip: 2, boulder: 2, crabCharge: 1,
+  yawn: 1, newFoe: 1, whistle: 1, thud: 4, tok: 4, saw: 1, pop: 6, brush: 1, chime: 3, door: 1, tada: 1, purr: 1, woof: 2,
+  meh: 2, hoot: 1, giggle: 2, fwap: 2, foghorn: 1,
 };
 // Loops (a burning ship's crackle, a waterspout's wind) are started even out of earshot, so the handle's
 // set({ distance }) can bring them in as you sail closer.
@@ -64,6 +67,13 @@ const SFX_GAIN = {
   ignite: 1.2, crackle: 1, sizzle: 0.5, freeze: 0.64, stink: 0.62, blast: 0.6, clang: 1.45, ram: 2.5, mortar: 2.6, fuse: 0.83,
   spout: 0.84, horn: 0.61, rogue: 0.44, surf: 0.71, ink: 1.8, krakenRise: 1.26, slam: 1.2, grab: 0.8, gurgle: 1.6, sneeze: 1.4,
   bell: 1.38, bonk: 0.52, squawk: 1.76, build: 1.05, crate: 1.8, tentacle: 1.35, geyser: 1,
+  // The Sunset Isles, set the same way: the warnings (coconut, netWhirl, puff, conch, song, hiss, clack, tidebell, snip,
+  // boulder, crabCharge) as loud as the Kraken Seas' (tentacle, geyser, horn), heard from their foe 15-40 u off; the
+  // construction scene's knocks and the islanders' animals at the town's footsteps' level; the foghorn soft and far.
+  coconut: 2.5, netWhirl: 2.2, puff: 1.43, conch: 0.95, song: 2.7, hiss: 0.56, clack: 3.8, tidebell: 1.43, snip: 1.53,
+  boulder: 1.27, crabCharge: 1.07, yawn: 1.68, newFoe: 0.91, whistle: 0.61, thud: 1.58, tok: 6.6, saw: 1.43, pop: 3,
+  brush: 0.95, chime: 1.38, door: 2.57, tada: 0.62, purr: 2.8, woof: 1.13, meh: 0.98, hoot: 0.25, giggle: 2.54, fwap: 3.1,
+  foghorn: 0.9,
 };
 const SCENE_GAIN = {
   menu: { music: 0.95, amb: 1.3 },
@@ -80,6 +90,10 @@ const SCENE_GAIN = {
   deep: { music: 1.55, amb: 1.84 }, // a quiet night: a little under the other levels
   kraken: { music: 0.85, amb: 1.32 }, // the theme a touch over them; its dread drone 4 LU under the theme
   quiz: { music: 0.95, amb: 1.4 }, // the town's levels: walking up to the Riddle Bell changes nothing you can hear
+  mangroves: { music: 1.6, amb: 2 },
+  spires: { music: 1.25, amb: 1 },
+  shoals: { music: 1.28, amb: 1.22 },
+  shellback: { music: 1.1, amb: 1.33 }, // like the Kraken: the theme a touch over the seas
 };
 
 export const SFX_NAMES = [
@@ -94,8 +108,16 @@ export const SFX_NAMES = [
   'ignite', 'crackle', 'sizzle', 'freeze', 'stink', 'blast', 'clang', 'ram', 'mortar', 'fuse', 'spout', 'horn', 'rogue',
   'surf', 'ink', 'krakenRise', 'slam', 'grab', 'gurgle', 'sneeze', 'bell', 'bonk', 'squawk', 'build', 'crate',
   'tentacle', 'geyser',
+  // The Sunset Isles (SPEC4 §11.1): Voyage IV's foes and their warnings, the Shellback, the meet card's bugle, the
+  // construction scene, the islanders' animals, the fog. Names that already exist are reused (squawk, click, splash...).
+  'coconut', 'netWhirl', 'puff', 'conch', 'song', 'hiss', 'clack', 'tidebell', 'snip', 'boulder', 'crabCharge', 'yawn',
+  'newFoe', 'whistle', 'thud', 'tok', 'saw', 'pop', 'brush', 'chime', 'door', 'tada', 'purr', 'woof', 'meh', 'hoot',
+  'giggle', 'fwap', 'foghorn',
 ];
-export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano', 'doubloon', 'frost', 'maelstrom', 'town', 'atolls', 'cape', 'deep', 'kraken', 'quiz'];
+export const SCENE_NAMES = ['menu', 'dock', 'europe', 'bali', 'volcano', 'doubloon', 'frost', 'maelstrom', 'town', 'atolls', 'cape', 'deep', 'kraken', 'quiz', 'mangroves', 'spires', 'shoals', 'shellback'];
+// Scenes where the Music Hall's band can join the town tune (setTownLayers): ashore, and at the Riddle Bell.
+const BAND_SCENES = { town: true, quiz: true };
+const TOWN_LAYERS = 3; // the fiddle, the drum, the squeezebox
 // Scenes that play another scene's music: ashore on Sparrow's Floating Island you hear the title-screen tune (its
 // recording too, when there is one) over the harbour, and at Professor Barnacle's Riddle Bell too. Going between two
 // scenes that share their music carries it on from where it is instead of starting it again.
@@ -110,10 +132,14 @@ const tuneOf = (scene) => TUNE_OF[scene] || scene;
 // sfx: one-shots and fanfares, by sound name. gain: level trim, set so each recording is as loud as the
 // synthesised version it replaces (measured on offline renders through the same mix, see tests/audio.cjs).
 // duck: seconds a fanfare holds the music down. frames: a loop's exact length in samples at 48 kHz (build.py prints
-// it), so decoder padding can be cut off. Anything not listed here is synthesised.
+// it), so decoder padding can be cut off. band: the loop's beat grid and chords, for the Music Hall's band to play
+// along with it ashore (setTownLayers): `beats` beats fill the loop exactly, the first at `first` s, `perBar` to a bar
+// (a dotted quarter each, three steps to a beat), and the chords bar by bar, round and round. Measured from the
+// recording: its onsets fold onto one phase in every 10 s of it, and its chords cycle D D Bm A. Anything not listed
+// here is synthesised.
 export const RECORDED = {
   music: {
-    menu: { file: 'music-menu.mp3', gain: 0.489, frames: 2880107 },
+    menu: { file: 'music-menu.mp3', gain: 0.489, frames: 2880107, band: { beats: 112, first: 0.229, perBar: 2, chords: 'D D Bm A' } },
     dock: { file: 'music-dock.mp3', gain: 0.483, frames: 2303712 },
     europe: { file: 'music-europe.mp3', gain: 0.29, frames: 3575076 },
     volcano: { file: 'music-volcano.mp3', gain: 0.658, frames: 3839872 },
@@ -300,6 +326,9 @@ const CHORD = {
   G: [55, 59, 62], Gm: [55, 58, 62], A: [57, 61, 64], Am: [57, 60, 64], Bb: [58, 62, 65], Eb: [51, 55, 58],
   E: [52, 56, 59], Cm: [48, 51, 55], Fm: [53, 56, 60], Ab: [56, 60, 63], Bm: [59, 62, 66], B: [59, 63, 66],
   Bdim: [59, 62, 65, 68],
+  // The Sunset Isles: sevenths for the bossa and the march, the dominant of E minor.
+  C7: [48, 52, 55, 58], B7: [59, 63, 66, 69], A7: [57, 61, 64, 67], Dmaj7: [50, 54, 57, 61], Gmaj7: [55, 59, 62, 66],
+  Bm7: [59, 62, 66, 69], Em7: [52, 55, 59, 62], 'F#m7': [54, 57, 61, 64],
 };
 
 // Move chord tones into [lo, hi].
@@ -496,6 +525,91 @@ const KRAKEN_TUNE = {
   // The drone: 40 Hz with the harmonics a phone's small speaker can play (§5.7.1), and a 41 Hz twin beating slowly.
   drone: [[40, 0.45], [41, 0.3], [80, 0.5], [120, 0.36], [160, 0.32], [240, 0.24]],
   droneLevel: 0.11,
+};
+
+// ---- The Sunset Isles (SPEC4 §2.3-2.5)
+
+// Misty Mangroves: a bayou waltz in G major (3/4 at 138 bpm, eighth-note steps). A Cajun accordion and a banjo trade
+// the tune over a jug's "oom" and the banjo's "pah-pah", a washboard scratching the eighths, and a chorus of frogs
+// croaking on beats 2 and 4 of every four (so they roll across the waltz). A A' B A''.
+const MANGROVES = {
+  bar: 6,
+  dur: 60 / 138 / 2,
+  scale: [7, 9, 11, 0, 2, 4, 6],
+  melody: `D5:2 G5:2 G5 A5 | B5:2 A5:2 G5:2 | E5:2 C6:2 B5 A5 | G5:4 D5:2 |
+           D5:2 G5:2 G5 A5 | B5:2 A5:2 G5:2 | A5:2 F#5:2 E5 F#5 | G5:6 |
+           D5:2 G5:2 G5 A5 | B5:2 A5:2 G5:2 | E5:2 C6:2 B5 A5 | G5:2 E5:2 D5:2 |
+           C5:2 E5:2 G5:2 | B4:2 D5:2 G5:2 | F#5:2 A5:2 C6:2 | B5:6 |
+           E5:2 G5:2 C6:2 | B5:2 A5:2 G5:2 | F#5:2 A5:2 D6:2 | C6:2 B5:2 A5:2 |
+           G5:2 B5:2 E6:2 | D6:2 C6:2 B5:2 | A5:2 B5 A5 G5 F#5 | A5:4 D5:2 |
+           D5:2 G5:2 G5 A5 | B5:2 A5:2 G5:2 | E5:2 C6:2 B5 A5 | G5:4 D5:2 |
+           D5:2 G5:2 G5 A5 | B5:2 A5:2 G5:2 | A5:2 F#5:2 E5 F#5 | G5:4 -:2`,
+  chords: `G G C G G G D G  G G C Em C G D G  C C D D Em G D D  G G C G G G D G`,
+};
+
+// The Sunken Spires: a slow bossa in D major (4/4 at 88 bpm, sixteenth-note steps). A glass marimba and a harp take
+// turns with the tune and its rippling chords, a soft bass and a rim click on the bossa's clave, a shaker, and whales
+// singing far off in the long notes, over a sea choir's pad.
+const SPIRES = {
+  bar: 16,
+  dur: 60 / 88 / 4,
+  melody: `F#5:6 E5:2 C#5:8 | D5:6 C#5:2 B4:8 | G5:4 F#5:2 E5:2 D5:4 B4:4 | C#5:12 -:4 |
+           A5:6 F#5:2 E5:8 | F#5:6 D5:2 B4:8 | B5:4 A5:2 F#5:2 G5:4 D5:4 | E5:12 -:4 |
+           C#6:6 A5:2 E5:8 | D6:6 B5:2 F#5:8 | G5:4 B5:2 D6:2 C#6:4 B5:4 | A5:12 -:4 |
+           B5:6 A5:2 F#5:8 | A5:6 E5:2 C#5:8 | D5:4 E5:4 G5:4 C#5:4 | D5:12 -:4`,
+  chords: `Dmaj7 Bm7 Em7 A7 Dmaj7 Bm7 Gmaj7 A7  F#m7 Bm7 Em7 A7 Gmaj7 F#m7 Em7/A7 Dmaj7`,
+  clave: [0, 3, 6, 10, 13], // the bossa clave, on the bar's sixteenths (a rim click)
+};
+
+// Shellback Shoals: a carnival march in F major (4/4 at 120 bpm, eighth-note steps). Trumpets, then steel pans, then
+// both in octaves with the tune, a tuba on the beat, brass hits and pan strums off it, a marching snare with a roll
+// into each section, the big drum, a cowbell and a samba whistle at the end of the chorus. A B A'.
+const SHOALS = {
+  bar: 8,
+  dur: 60 / 120 / 2,
+  melody: `C5:2 F5:2 A5:2 F5:2 | G5:3 E5 C5:4 | A5:2 C6:2 A5:2 F5:2 | G5:6 -:2 |
+           D5:2 F5:2 Bb5:2 A5:2 | A5:2 G5 F5 C5:4 | E5:2 G5:2 Bb5:2 E5:2 | F5:4 -:2 C5:2 |
+           D6:3 C6:3 Bb5:2 | Bb5:3 A5:3 G5:2 | A5:2 G5:2 E5:2 C5:2 | F5:6 -:2 |
+           D6:3 C6:3 Bb5:2 | D6:3 Bb5:3 G5:2 | C6:2 Bb5:2 G5:2 E5:2 | C5:4 G5:4 |
+           C5:2 F5:2 A5:2 F5:2 | G5:3 E5 C5:4 | A5:2 C6:2 A5:2 F5:2 | G5:6 -:2 |
+           D5:2 F5:2 Bb5:2 A5:2 | A5:2 G5 F5 C5:4 | E5:2 G5:2 Bb5:2 E5:2 | F5:4 -:4`,
+  chords: `F C7 F C7 Bb F C7 F  Bb Gm C7 F Bb Gm C7 C7  F C7 F C7 Bb F C7 F`,
+};
+
+// The Shellback: first the dread (the music drops to a drone on low E with the harmonics a phone can play, while the
+// island stirs), then its theme: a crab-walk in 5/4 (3 + 2, eighth-note steps; faster in the Charge): a tuba walking
+// sideways up and back, castanet claws snapping, timpani on the two halves of the bar, and a choir; horns join with
+// the tune from the Waking. Driven off, it breaks into a sleepy E major lullaby and falls quiet. A B.
+const SHELLBACK_TUNE = {
+  bar: 10,
+  beat: 2, // steps in a beat (a quarter): where the dread gives way to the theme and back
+  dur: 60 / 126 / 2,
+  fast: 0.8, // the Charge (phase 3): the steps shrink to this (25% faster)
+  autoStart: 10, // s: with nobody calling setMusicPhase the theme starts after the dread (4 s) and the wake (6 s)
+  melody: `B4:6 G4:2 E4:2 | F#4:3 G4:3 A4:4 | G4:6 E4:2 C5:2 | B4:6 -:4 |
+           B4:6 D5:2 E5:2 | F#5:3 E5:3 D5:4 | C5:6 B4:2 A4:2 | B4:10 |
+           E5:6 D5:2 C5:2 | G5:6 E5:4 | C5:3 D5:3 E5:4 | F#5:6 D#5:4 |
+           E5:6 G5:2 F#5:2 | E5:3 D5:3 C5:4 | B4:3 C5:3 D#5:4 | E5:6 -:4`,
+  tuba: `E2:3 E2 G2:2 A2:2 Bb2:2 | B2:3 B2 Bb2:2 A2:2 G2:2 | C3:3 C3 B2:2 A2:2 G2:2 | F#2:3 F#2 A2:2 B2:2 D#2:2 |
+         E2:3 E2 G2:2 A2:2 Bb2:2 | B2:3 B2 Bb2:2 A2:2 G2:2 | A2:3 A2 C3:2 B2:2 A2:2 | B2:3 B2 A2:2 F#2:2 D#2:2 |
+         C3:3 C3 G2:2 E2:2 G2:2 | C3:3 C3 D3:2 E3:2 C3:2 | A2:3 A2 E2:2 G2:2 A2:2 | B2:3 B2 F#2:2 A2:2 D#2:2 |
+         E2:3 E2 G2:2 A2:2 Bb2:2 | C3:3 C3 B2:2 A2:2 G2:2 | B2:3 B2 A2:2 F#2:2 D#2:2 | E2:3 E2 B2:2 G2:2 E2:2`,
+  chords: `Em Em C B7 Em Em Am B7  C C Am B7 Em C B7 Em`,
+  claws: [0, 1, 3, 6, 7], // castanets: the claws clack in the 3 + 2 (accents on the two halves)
+  // The drone: low E (41.2 Hz) with the harmonics a phone's small speaker can play (82-247 Hz, §3.6.1), and a twin a
+  // hair sharp beating slowly against it.
+  drone: [[41.2, 0.38], [42, 0.24], [82.4, 0.55], [123.5, 0.45], [164.8, 0.38], [247, 0.3]],
+  droneLevel: 0.11,
+};
+
+// The Music Hall's band joining the town tune (setTownLayers): a fiddle (1), a frame drum (2), a squeezebox (3). They
+// follow the tune's own chords (the jig's when it is synthesised, RECORDED.music.menu.band's over the recording).
+const BAND = {
+  fiddle: 0.024, // levels: under the tune, never over the effects (§15)
+  drum: 0.3,
+  box: 0.022,
+  // The fiddle's lilt over each 6/8 bar: [step, chord tone (0 root, 1 third, 2 fifth, 3 root up), steps long].
+  lilt: [[0, 2, 2], [2, 1, 1], [3, 3, 2], [5, 2, 1]],
 };
 
 // ---------------------------------------------------------------------------
@@ -1404,6 +1518,133 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     }
     o.connect(g);
     g.connect(out);
+  }
+
+  // ---- The Sunset Isles' instruments
+
+  // Banjo: a plucked string with the drum head's bright twang (a peak near 2.4 kHz, the boom rolled off), short.
+  function banjo(v, out, t, f, vel, len = 0.3) {
+    const hp = filt(v, 'highpass', 200, -3);
+    const pk = filt(v, 'peaking', 2400, 1.2);
+    pk.gain.value = 7;
+    hp.connect(pk);
+    pk.connect(out);
+    pluck(v, hp, t, f, vel, len);
+  }
+
+  // A jug band's jug: buzzing lips (a saw through the jug's mouth, a band near 320 Hz) over a soft hollow tone,
+  // scooping up into each note: "whomp".
+  function jug(v, out, t, f, dur, vel) {
+    const g = gain(v, 0);
+    const end = sus(g.gain, t, vel, 0.025, t + dur, 0.08);
+    const bp = filt(v, 'bandpass', 320, 2.5);
+    const bg = gain(v, 0.55);
+    for (const type of ['triangle', 'sawtooth']) {
+      const o = osc(v, type, f * 0.88, t, end);
+      o.frequency.exponentialRampToValueAtTime(f, t + 0.05);
+      if (type === 'triangle') o.connect(g);
+      else o.connect(bp);
+    }
+    bp.connect(bg);
+    bg.connect(g);
+    g.connect(out);
+  }
+
+  // Washboard: a thimble's "chk" on the ridges, or (scrape) a run down them.
+  function washboard(v, out, t, vel, scrape = false) {
+    if (!scrape) {
+      hiss(v, out, t, vel, 0.035, 'bandpass', 3800, 1.5);
+      hiss(v, out, t, vel * 0.4, 0.012, 'highpass', 6500, -3);
+      return;
+    }
+    const end = t + 0.2;
+    const n = noise(v, t, end);
+    const bp = filt(v, 'bandpass', 3200, 1.4);
+    const chop = gain(v, 0.5);
+    lfo(v, 46, 0.5, chop.gain, t, end, 'sawtooth');
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, 0.01, t + 0.15, 0.04);
+    n.connect(bp);
+    bp.connect(chop);
+    chop.connect(g);
+    g.connect(out);
+  }
+
+  // A frog: "rib-bit", a buzzy croak (a saw pulsing 38 times a second through its throat's formant), twice.
+  function frog(v, out, t, f, vel) {
+    for (const [dt, d, r0, r1, a] of [[0, 0.08, 1, 1.06, 1], [0.12, 0.12, 1.12, 0.9, 0.85]]) {
+      const s = t + dt;
+      const end = s + d + 0.02;
+      const o = osc(v, 'sawtooth', f * r0, s, end);
+      o.frequency.exponentialRampToValueAtTime(f * r1, s + d);
+      const pulse = gain(v, 0.5);
+      lfo(v, 38, 0.5, pulse.gain, s, end, 'square');
+      const bp = filt(v, 'bandpass', f * 4.5, 3);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, s);
+      g.gain.linearRampToValueAtTime(vel * a, s + 0.012);
+      g.gain.setValueAtTime(vel * a, s + d - 0.02);
+      g.gain.linearRampToValueAtTime(0, s + d + 0.01);
+      o.connect(pulse);
+      pulse.connect(bp);
+      bp.connect(g);
+      g.connect(out);
+    }
+  }
+
+  // Harp: a plucked gut string with a round, soft attack, ringing long.
+  function harp(v, out, t, f, vel, len = 1.2) {
+    pluck(v, out, t, f, vel * 0.8, len);
+    const g = gain(v, 0);
+    const end = perc(g.gain, t, vel * 0.45, 0.004, len);
+    osc(v, 'sine', f, t, end).connect(g);
+    g.connect(out);
+  }
+
+  // Glass marimba: a mallet on a glass bar: a pure, slowly shimmering tone (a twin 0.8 Hz off), its octave ringing
+  // softly, and the mallet's tick.
+  function glassMarimba(v, out, t, f, vel, decay = 0.9) {
+    bell(v, out, t, f, vel, decay, 3, 0.25, 0.8);
+    const h = gain(v, 0);
+    const hend = perc(h.gain, t, vel * 0.18, 0.003, decay * 0.6);
+    osc(v, 'sine', f * 2.003, t, hend).connect(h);
+    h.connect(out);
+    const k = gain(v, 0);
+    const kend = perc(k.gain, t, vel * 0.3, 0.001, 0.04);
+    osc(v, 'sine', f * 4.2, t, kend).connect(k);
+    k.connect(out);
+  }
+
+  // A cowbell: two clanking partials through a hollow band, short.
+  function cowbell(v, out, t, vel) {
+    const g = gain(v, 0);
+    const end = perc(g.gain, t, vel, 0.001, 0.22);
+    const bp = filt(v, 'bandpass', 800, 2);
+    for (const f of [562, 845]) osc(v, 'square', f, t, end).connect(bp);
+    bp.connect(g);
+    g.connect(out);
+  }
+
+  // A samba whistle: a shrill pea-whistle trill ("prrreet"), `dur` long.
+  function sambaWhistle(v, out, t, dur, vel) {
+    const end = t + dur + 0.03;
+    const o = osc(v, 'sine', 2900, t, end);
+    o.frequency.setValueAtTime(2700, t);
+    o.frequency.linearRampToValueAtTime(3000, t + 0.04);
+    lfo(v, 28, 160, o.frequency, t, end, 'square');
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, 0.01, t + dur, 0.03);
+    o.connect(g);
+    g.connect(out);
+    hiss(v, out, t, vel * 0.5, dur, 'bandpass', 5800, 3);
+  }
+
+  // A marching snare: the stick's crack and the wires' rattle; `roll` buzzes it.
+  function snare(v, out, t, vel, roll = 0) {
+    hiss(v, out, t, vel, 0.1, 'bandpass', 1900, 0.9);
+    hiss(v, out, t, vel * 0.6, 0.06, 'highpass', 5000, -3);
+    drum(v, out, t, vel * 0.35, 190, 0.06, 1.3);
+    for (let k = 1; k < roll; k++) hiss(v, out, t + k * 0.04, vel * 0.5 * (0.6 + 0.4 * (k / roll)), 0.05, 'bandpass', 2100, 0.9);
   }
 
   // A loop's level: in over `fade`, held, out over `fade` by `end` (the loops can be stopped early by their handle).
@@ -3158,6 +3399,644 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       cb.connect(cg);
       cg.connect(v.in);
     },
+
+    // ---- The Sunset Isles: Voyage IV's foes and their warnings, the Shellback, the meet card, the fog, ashore.
+
+    coconut(v, t, p, o) {
+      // A monkey lobbing a coconut (`duration` s of flight, 1.5 by default, so it ends as it lands): a cheeky
+      // "ook-ook!", then the nut tumbling through the air, "whup-whup-whup", coming closer.
+      const dur = clamp(Number(o.duration) || 1.5, 0.4, 4);
+      const q = p * R1();
+      for (const [dt, f, a] of [[0, 560, 0.8], [0.17, 700, 0.65]]) {
+        const s = t + dt;
+        vox(v, v.in, [[s, f * q], [s + 0.05, f * 1.4 * q], [s + 0.13, f * 1.1 * q]], [[s, 380, 900], [s + 0.13, 420, 1000]],
+          [[s, 0], [s + 0.02, a], [s + 0.1, a * 0.7], [s + 0.14, 0]], 0, 0.4);
+      }
+      const w = t + Math.min(0.35, dur * 0.3);
+      const end = t + dur;
+      const n = noise(v, w, end + 0.02);
+      const bp = filt(v, 'bandpass', 1200, 3);
+      bp.frequency.setValueAtTime(1300 * q, w);
+      bp.frequency.exponentialRampToValueAtTime(600 * q, end);
+      const tumble = gain(v, 0.5);
+      const l = lfo(v, 8, 0.5, tumble.gain, w, end + 0.02);
+      l.frequency.linearRampToValueAtTime(11, end);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, w);
+      g.gain.linearRampToValueAtTime(0.25, w + 0.1);
+      g.gain.linearRampToValueAtTime(0.7, end - 0.02);
+      g.gain.linearRampToValueAtTime(0, end + 0.02);
+      n.connect(bp);
+      bp.connect(tumble);
+      tumble.connect(g);
+      g.connect(v.in);
+    },
+
+    netWhirl(v, t, p) {
+      // A Net Sloop whirling her net overhead (its 1.6 s warning): the rope creaks as it starts, then
+      // "whoom-whoom-whoom", faster and faster, and the net flies with a "fwip".
+      const q = p * R1();
+      const end = t + 1.6;
+      const o = osc(v, 'sawtooth', 170 * q, t, t + 0.3);
+      o.frequency.linearRampToValueAtTime(230 * q, t + 0.25);
+      const cb = filt(v, 'bandpass', 1100 * q, 8);
+      const cg = gain(v, 0);
+      sus(cg.gain, t, 0.3, 0.03, t + 0.18, 0.08);
+      o.connect(cb);
+      cb.connect(cg);
+      cg.connect(v.in);
+      const n = noise(v, t, end + 0.25);
+      const bp = filt(v, 'bandpass', 700, 2);
+      const sweep = lfo(v, 2.4, 320 * q, bp.frequency, t, end);
+      sweep.frequency.linearRampToValueAtTime(4.6, end);
+      const whoosh = gain(v, 0.5);
+      const pulse = lfo(v, 2.4, 0.5, whoosh.gain, t, end);
+      pulse.frequency.linearRampToValueAtTime(4.6, end);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.5, t + 0.4);
+      g.gain.linearRampToValueAtTime(0.9, end);
+      g.gain.linearRampToValueAtTime(0, end + 0.05);
+      n.connect(bp);
+      bp.connect(whoosh);
+      whoosh.connect(g);
+      g.connect(v.in);
+      const f = noise(v, end, end + 0.25);
+      const fb = filt(v, 'bandpass', 900, 2);
+      fb.frequency.setValueAtTime(900 * q, end);
+      fb.frequency.exponentialRampToValueAtTime(3200 * q, end + 0.2);
+      const fg = gain(v, 0);
+      perc(fg.gain, end, 0.6, 0.02, 0.2);
+      f.connect(fb);
+      fb.connect(fg);
+      fg.connect(v.in);
+    },
+
+    puff(v, t, p, o) {
+      // A Puffer Mine puffing up (`duration` s, 1.5 by default, until it pops): a squeaky "PUFF!", then a rubbery
+      // balloon stretching higher and higher, wobbling as it swells.
+      const dur = clamp(Number(o.duration) || 1.5, 0.4, 4);
+      const q = p * R1();
+      const sq = osc(v, 'sine', 900 * q, t, t + 0.18);
+      sq.frequency.exponentialRampToValueAtTime(1500 * q, t + 0.1);
+      sq.frequency.exponentialRampToValueAtTime(1200 * q, t + 0.16);
+      lfo(v, 30, 60 * q, sq.frequency, t, t + 0.18);
+      const sg = gain(v, 0);
+      perc(sg.gain, t, 0.22, 0.01, 0.15);
+      sq.connect(sg);
+      sg.connect(v.in);
+      hiss(v, v.in, t + 0.02, 0.5, 0.12, 'bandpass', 1300 * q, 1.2);
+      const s = t + 0.15;
+      const end = t + dur;
+      const b = osc(v, 'triangle', 220 * q, s, end + 0.03);
+      b.frequency.exponentialRampToValueAtTime(720 * q, end);
+      const wob = lfo(v, 6, 14 * q, b.frequency, s, end + 0.03);
+      wob.frequency.linearRampToValueAtTime(10, end);
+      const bp = filt(v, 'bandpass', 600, 2);
+      bp.frequency.setValueAtTime(500 * q, s);
+      bp.frequency.exponentialRampToValueAtTime(1600 * q, end);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, s);
+      g.gain.linearRampToValueAtTime(0.25, s + 0.15);
+      g.gain.linearRampToValueAtTime(0.6, end - 0.02);
+      g.gain.linearRampToValueAtTime(0, end + 0.03);
+      b.connect(bp);
+      bp.connect(g);
+      g.connect(v.in);
+    },
+
+    conch(v, t, p) {
+      // The Coral Witch's conch (her 1.8 s summons; the Golden Conch too): a hollow shell call scooping up a minor
+      // third and holding, "hoo-OOOO", with bubbles rising round it. It warns, so it sounds the same every time.
+      const s = t;
+      const f = 233 * p;
+      const end = s + 1.55;
+      const g = gain(v, 0);
+      sus(g.gain, s, 0.42, 0.15, s + 1.2, 0.3);
+      const vib = osc(v, 'sine', 5, s, end);
+      const depth = gain(v, 0);
+      depth.gain.setValueAtTime(0, s);
+      depth.gain.linearRampToValueAtTime(f * 0.01, s + 1);
+      vib.connect(depth);
+      const body = filt(v, 'bandpass', f * 2.4, 1.4);
+      const nasal = filt(v, 'peaking', 720, 2);
+      nasal.gain.value = 5;
+      for (const [type, a] of [['triangle', 1], ['sine', 0.6]]) {
+        const o = osc(v, type, f, s, end);
+        o.frequency.setValueAtTime(f, s);
+        o.frequency.exponentialRampToValueAtTime(f * 1.19, s + 0.3);
+        depth.connect(o.frequency);
+        const og = gain(v, a);
+        o.connect(og);
+        og.connect(body);
+      }
+      body.connect(nasal);
+      nasal.connect(g);
+      g.connect(v.in);
+      const n = noise(v, s, end);
+      const nb = filt(v, 'bandpass', f * 1.19 * 4, 4);
+      const ng = gain(v, 0);
+      sus(ng.gain, s, 0.12, 0.1, s + 1.2, 0.25);
+      n.connect(nb);
+      nb.connect(ng);
+      ng.connect(v.in);
+      bubbleTrain(v, v.in, s + 0.3, 1.3, 0.06, 400 * p, 1300 * p, [0.1, 0.05]);
+      roomSend(v, 0.45);
+    },
+
+    song(v, t, p) {
+      // The Coral Witch singing her fleet well (her 1.5 s warning): a harp gliding up a sea-green scale from one side
+      // to the other, and the top notes ringing on with a sparkle.
+      const scale = [0, 2, 4, 7, 9, 12, 14, 16, 19, 21, 24, 26];
+      scale.forEach((k, i) => {
+        const s = t + i * 0.055;
+        const pn = panner(v, -0.6 + (1.2 * i) / (scale.length - 1));
+        pn.connect(v.in);
+        harp(v, pn, s, mtof(62 + k) * p, 0.16 * (0.75 + (0.25 * i) / scale.length), i < scale.length - 3 ? 0.5 : 1.2);
+      });
+      const c = t + scale.length * 0.055;
+      [86, 90, 93].forEach((m, i) => bell(v, v.in, c + i * 0.07, mtof(m) * p, 0.035, 0.8, 3.5, 0.4));
+      roomSend(v, 0.5);
+    },
+
+    hiss(v, t, p, o) {
+      // Old Coilback about to lunge (`duration` s of warning, 1.6 by default, ending on the lunge): a serpent's
+      // hiss rising, "sssSSSS", with a breathy growl under it.
+      const dur = clamp(Number(o.duration) || 1.6, 0.4, 4);
+      const end = t + dur;
+      const q = p * R1();
+      const n = noise(v, t, end + 0.06);
+      const hp = filt(v, 'highpass', 2500, -3);
+      const bp = filt(v, 'bandpass', 3500, 2);
+      bp.frequency.setValueAtTime(3400 * q, t);
+      bp.frequency.exponentialRampToValueAtTime(6800 * q, end);
+      const flutter = gain(v, 0.85);
+      lfo(v, 13, 0.15, flutter.gain, t, end + 0.06);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.3, t + 0.12);
+      g.gain.linearRampToValueAtTime(1, end - 0.03);
+      g.gain.linearRampToValueAtTime(0, end + 0.05);
+      n.connect(hp);
+      hp.connect(bp);
+      bp.connect(flutter);
+      flutter.connect(g);
+      g.connect(v.in);
+      const b = noise(v, t, end + 0.06);
+      const bb = filt(v, 'bandpass', 800 * q, 3);
+      const bg = gain(v, 0);
+      bg.gain.setValueAtTime(0, t);
+      bg.gain.linearRampToValueAtTime(0.4, end - 0.05);
+      bg.gain.linearRampToValueAtTime(0, end + 0.05);
+      b.connect(bb);
+      bb.connect(bg);
+      bg.connect(v.in);
+    },
+
+    clack(v, t, p) {
+      // "Click-clack": a Rock Fort's gun locking on (a cock's click and the hammer's clack), or roof tiles going on.
+      const q = p * R1();
+      hiss(v, v.in, t, 1.1, 0.02, 'bandpass', 3200 * q, 3);
+      bell(v, v.in, t, 2600 * q, 0.04, 0.06, 2.76, 0.6);
+      const s = t + 0.09;
+      hiss(v, v.in, s, 1.4, 0.04, 'bandpass', 1400 * q, 3);
+      hiss(v, v.in, s, 0.9, 0.06, 'bandpass', 700 * q, 5);
+      drum(v, v.in, s, 0.18, 240 * q, 0.05, 1.3);
+    },
+
+    tidebell(v, t, p) {
+      // The tide is going out (its 3 s warning): a ship's bell struck twice and twice again, "ding-ding... ding-ding",
+      // deeper and longer than the Riddle Bell.
+      for (const [dt, a] of [[0, 1], [0.3, 0.85], [0.95, 0.95], [1.25, 0.8]]) {
+        const s = t + dt;
+        for (const [r, amp, d] of [[0.5, 0.05, 2.4], [1, 0.15, 1.9], [1.2, 0.07, 1.4], [1.5, 0.05, 1.1], [2, 0.07, 0.9], [2.5, 0.035, 0.5], [3, 0.025, 0.35]]) {
+          const g = gain(v, 0);
+          const end = perc(g.gain, s, amp * a, 0.002, d);
+          osc(v, 'sine', 587 * p * r, s, end).connect(g);
+          g.connect(v.in);
+        }
+        hiss(v, v.in, s, 0.3 * a, 0.02, 'bandpass', 3000 * p, 2);
+      }
+      roomSend(v, 0.35);
+    },
+
+    snip(v, t, p, o) {
+      // The Shellback's claw sweep (`duration` s of warning, 1.8 by default): two quick "snip-snip"s as the claw
+      // opens, its shell creaking as it draws back, then a great SNAP as it sweeps.
+      const dur = clamp(Number(o.duration) || 1.8, 0.6, 4);
+      const q = p * R1();
+      for (const s of [t, t + 0.17]) {
+        const n = noise(v, s, s + 0.1);
+        const bp = filt(v, 'bandpass', 4200, 2);
+        bp.frequency.setValueAtTime(5200 * q, s);
+        bp.frequency.exponentialRampToValueAtTime(2600 * q, s + 0.07);
+        const g = gain(v, 0);
+        perc(g.gain, s, 0.6, 0.005, 0.07);
+        n.connect(bp);
+        bp.connect(g);
+        g.connect(v.in);
+        hiss(v, v.in, s + 0.07, 0.9, 0.02, 'bandpass', 2100 * q, 4);
+      }
+      const c = t + 0.45;
+      const end = t + dur;
+      if (end - c > 0.2) {
+        const o2 = osc(v, 'sawtooth', 95 * q, c, end);
+        o2.frequency.linearRampToValueAtTime(140 * q, end - 0.05);
+        const rough = gain(v, 0.6);
+        lfo(v, 21, 0.4, rough.gain, c, end, 'triangle');
+        const cb = filt(v, 'bandpass', 900 * q, 6);
+        const cg = gain(v, 0);
+        cg.gain.setValueAtTime(0, c);
+        cg.gain.linearRampToValueAtTime(0.35, end - 0.08);
+        cg.gain.linearRampToValueAtTime(0, end);
+        o2.connect(rough);
+        rough.connect(cb);
+        cb.connect(cg);
+        cg.connect(v.in);
+      }
+      hiss(v, v.in, end, 1.1, 0.04, 'bandpass', 2400 * q, 1.5);
+      hiss(v, v.in, end, 0.55, 0.03, 'highpass', 4000, -3);
+      boom(v, v.in, end, 0.3, 80 * q, 0.2, 1.8);
+      const w = noise(v, end, end + 0.35);
+      const wb = filt(v, 'bandpass', 1500, 1.2);
+      wb.frequency.setValueAtTime(2200 * q, end);
+      wb.frequency.exponentialRampToValueAtTime(600 * q, end + 0.3);
+      const wg = gain(v, 0);
+      perc(wg.gain, end, 0.4, 0.02, 0.3);
+      w.connect(wb);
+      wb.connect(wg);
+      wg.connect(v.in);
+      roomSend(v, 0.3);
+    },
+
+    boulder(v, t, p, o) {
+      // The Shellback heaving a boulder at you (`duration` s of warning, 2 by default, ending as it lands: its
+      // splash is the 'splash'): rock grinding as it lifts, "hrrumph", then a deep whistle tumbling down at you.
+      const dur = clamp(Number(o.duration) || 2, 0.6, 5);
+      const q = p * R1();
+      const lift = Math.min(0.45, dur * 0.25);
+      const n = noise(v, t, t + lift + 0.1);
+      const lp = filt(v, 'lowpass', 500 * q, 2);
+      const chop = gain(v, 0.5);
+      lfo(v, 24, 0.5, chop.gain, t, t + lift + 0.1, 'sawtooth');
+      const g = gain(v, 0);
+      sus(g.gain, t, 0.9, 0.05, t + lift, 0.08);
+      n.connect(lp);
+      lp.connect(chop);
+      chop.connect(g);
+      g.connect(v.in);
+      boom(v, v.in, t, 0.25, 60 * q, 0.3, 1.6);
+      const s = t + lift;
+      const end = t + dur;
+      const w = osc(v, 'sine', 950 * q, s, end + 0.03);
+      w.frequency.exponentialRampToValueAtTime(320 * q, end);
+      const wg = gain(v, 0);
+      wg.gain.setValueAtTime(0, s);
+      wg.gain.linearRampToValueAtTime(0.1, s + 0.1);
+      wg.gain.linearRampToValueAtTime(0.26, end - 0.02);
+      wg.gain.linearRampToValueAtTime(0, end + 0.03);
+      const tumble = gain(v, 0.7);
+      lfo(v, 6, 0.3, tumble.gain, s, end + 0.03);
+      w.connect(tumble);
+      tumble.connect(wg);
+      wg.connect(v.in);
+      const a = noise(v, s, end + 0.03);
+      const ab = filt(v, 'bandpass', 900 * q, 6);
+      ab.frequency.setValueAtTime(950 * q, s);
+      ab.frequency.exponentialRampToValueAtTime(320 * q, end);
+      const ag = gain(v, 0);
+      ag.gain.setValueAtTime(0, s);
+      ag.gain.linearRampToValueAtTime(0.7, end - 0.02);
+      ag.gain.linearRampToValueAtTime(0, end + 0.03);
+      a.connect(ab);
+      ab.connect(ag);
+      ag.connect(v.in);
+    },
+
+    crabCharge(v, t, p, o) {
+      // The Shellback crouching to charge (`duration` s of warning, 2 by default): a growl building as its legs
+      // skitter faster and faster, then the stampede, a rush of clattering feet.
+      const dur = clamp(Number(o.duration) || 2, 0.6, 5);
+      const q = p * R1();
+      const end = t + dur;
+      const r = osc(v, 'sawtooth', 52 * q, t, end + 0.1);
+      r.frequency.exponentialRampToValueAtTime(88 * q, end);
+      const rough = gain(v, 0.55);
+      lfo(v, 23, 0.45, rough.gain, t, end + 0.1, 'triangle');
+      const b1 = filt(v, 'bandpass', 380, 3);
+      b1.frequency.setValueAtTime(320, t);
+      b1.frequency.exponentialRampToValueAtTime(620, end);
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.35, t + 0.2);
+      g.gain.linearRampToValueAtTime(1, end - 0.05);
+      g.gain.linearRampToValueAtTime(0, end + 0.1);
+      r.connect(rough);
+      rough.connect(b1);
+      b1.connect(g);
+      g.connect(v.in);
+      // The feet, the left legs and the right: clicks from 6 a second to 22, then the stampede for a second (one
+      // re-triggered noise burst per side).
+      [-0.4, 0.4].forEach((pan, side) => {
+        const fe = end + 1.15;
+        const n = noise(v, t, fe);
+        const bp = filt(v, 'bandpass', (side ? 3100 : 2400) * q, 4);
+        const fg = gain(v, 0);
+        for (let s = t + 0.05 + side * 0.04; s < end + 1.1; ) {
+          const u = clamp((s - t) / dur, 0, 1);
+          const run = s >= end;
+          const a = run ? 0.5 * (1 - (s - end) / 1.1) + 0.15 : 0.12 + 0.3 * u;
+          fg.gain.setValueAtTime(0, s);
+          fg.gain.linearRampToValueAtTime(a, s + 0.002);
+          fg.gain.exponentialRampToValueAtTime(a * 1e-3, s + 0.012);
+          fg.gain.linearRampToValueAtTime(0, s + 0.014);
+          s += 2 * (run ? 0.025 + Math.random() * 0.02 : 1 / (6 + 16 * u));
+        }
+        const pn = panner(v, pan);
+        n.connect(bp);
+        bp.connect(fg);
+        fg.connect(pn);
+        pn.connect(v.in);
+      });
+      boom(v, v.in, end, 0.35, 55 * q, 0.5, 2);
+      hiss(v, v.in, end, 0.6, 0.8, 'bandpass', 500 * q, 1);
+      roomSend(v, 0.3);
+    },
+
+    yawn(v, t, p) {
+      // The Shellback scuttling home to sleep: a huge, slow, sleepy yawn, "hhaaaAAAwww-mm", and a contented "mm-mm".
+      const q = p * R1();
+      vox(v, v.in, [[t, 130 * q], [t + 0.5, 185 * q], [t + 1.4, 115 * q], [t + 1.9, 85 * q]],
+        [[t, 500, 1000], [t + 0.6, 760, 1150], [t + 1.4, 620, 900], [t + 1.9, 360, 800]],
+        [[t, 0], [t + 0.35, 0.6], [t + 0.9, 0.85], [t + 1.6, 0.5], [t + 2, 0]], 0.012, 0.9);
+      for (const [dt, f] of [[2.15, 120], [2.4, 105]]) {
+        const s = t + dt;
+        vox(v, v.in, [[s, f * q], [s + 0.16, f * 0.9 * q]], [[s, 300, 900]], [[s, 0], [s + 0.03, 0.4], [s + 0.13, 0.3], [s + 0.18, 0]], 0, 0);
+      }
+      bubbleTrain(v, v.in, t + 2.7, 0.5, 0.04, 300 * q, 700 * q, [0.08, 0.14]);
+      roomSend(v, 0.3);
+    },
+
+    newFoe(v, t, p) {
+      // A new kind is met (its card): a two-note bugle call rising a fourth, "ta-DAAH!", bright and short.
+      brassLine(v, v.in, [[t, 392 * p, 0.11, 0.03], [t + 0.15, 523.25 * p, 0.55, 0.18]], 0.22, 1.25);
+      brassLine(v, v.in, [[t, 196 * p, 0.11, 0.03], [t + 0.15, 261.63 * p, 0.55, 0.18]], 0.08, 0.9);
+      hiss(v, v.in, t + 0.15, 0.04, 0.5, 'highpass', 6000, -3);
+      roomSend(v, 0.4);
+    },
+
+    whistle(v, t, p) {
+      // Builder Bess whistling her crew over: "wheet-wheeoo!", two whistled notes, the second sliding up and away.
+      const q = p * R1();
+      for (const [dt, f0, f1, f2, d] of [[0, 1250, 1850, 1800, 0.17], [0.24, 1550, 2150, 1350, 0.42]]) {
+        const s = t + dt;
+        const end = s + d + 0.03;
+        const o = osc(v, 'sine', f0 * q, s, end);
+        o.frequency.exponentialRampToValueAtTime(f1 * q, s + Math.min(0.08, d * 0.4));
+        o.frequency.exponentialRampToValueAtTime(f2 * q, s + d);
+        lfo(v, 6, 18 * q, o.frequency, s, end);
+        const g = gain(v, 0);
+        sus(g.gain, s, 0.2, 0.02, s + d - 0.02, 0.04);
+        o.connect(g);
+        g.connect(v.in);
+        hiss(v, v.in, s, 0.05, d, 'bandpass', f1 * q, 8);
+      }
+    },
+
+    thud(v, t, p) {
+      // THUD: something heavy coming down (a foundation stone, a net on your deck, the Shellback's shell nudging you):
+      // a dull, deep knock and a puff of dust.
+      const q = p * R1();
+      boom(v, v.in, t, 0.42, 58 * q, 0.3, 2.2);
+      hiss(v, v.in, t, 1.3, 0.12, 'bandpass', 300 * q, 3);
+      hiss(v, v.in, t, 0.5, 0.15, 'lowpass', 600 * q, 0);
+      hiss(v, v.in, t + 0.02, 0.12, 0.3, 'bandpass', 1600 * q, 0.7);
+    },
+
+    tok(v, t, p) {
+      // "Tok": a mallet on a post or a plank, bright and woody.
+      const q = p * (0.95 + Math.random() * 0.1);
+      hiss(v, v.in, t, 1.3, 0.06, 'bandpass', 950 * q, 6);
+      hiss(v, v.in, t, 0.5, 0.04, 'bandpass', 2100 * q, 4);
+      drum(v, v.in, t, 0.25, 230 * q, 0.06, 1.3);
+      bell(v, v.in, t + 0.003, 1900 * q, 0.03, 0.08, 2.76, 0.6);
+    },
+
+    saw(v, t, p) {
+      // A hand saw going at a plank: four strokes, push and pull, the teeth rasping.
+      const q = p * R1();
+      for (let k = 0; k < 4; k++) {
+        const s = t + k * 0.27;
+        const up = k % 2 === 0;
+        const n = noise(v, s, s + 0.25);
+        const bp = filt(v, 'bandpass', 2000, 2);
+        bp.frequency.setValueAtTime((up ? 1600 : 2600) * q, s);
+        bp.frequency.linearRampToValueAtTime((up ? 2600 : 1700) * q, s + 0.22);
+        const chop = gain(v, 0.5);
+        lfo(v, up ? 85 : 70, 0.5, chop.gain, s, s + 0.25, 'sawtooth');
+        const g = gain(v, 0);
+        sus(g.gain, s, 0.55, 0.04, s + 0.18, 0.05);
+        n.connect(bp);
+        bp.connect(chop);
+        chop.connect(g);
+        g.connect(v.in);
+      }
+    },
+
+    pop(v, t, p) {
+      // POP! A puffer bursting (or sent home with a "pfft"), a chimney popping on: a cartoon cork pop and a puff of air.
+      const q = p * R1();
+      const o = osc(v, 'sine', 320 * q, t, t + 0.14);
+      o.frequency.exponentialRampToValueAtTime(1400 * q, t + 0.025);
+      o.frequency.exponentialRampToValueAtTime(650 * q, t + 0.1);
+      const g = gain(v, 0);
+      perc(g.gain, t, 0.45, 0.003, 0.1);
+      o.connect(g);
+      g.connect(v.in);
+      hiss(v, v.in, t, 0.6, 0.012, 'highpass', 3000, -3);
+      hiss(v, v.in, t + 0.01, 0.35, 0.12, 'bandpass', 2400 * q, 1.2);
+      boom(v, v.in, t, 0.1, 120 * q, 0.1, 1.5);
+    },
+
+    brush(v, t, p) {
+      // A paintbrush sweeping colour on: three soft, wet swishes.
+      const q = p * R1();
+      for (let k = 0; k < 3; k++) {
+        const s = t + k * 0.27;
+        hiss(v, v.in, s, 0.25, 0.03, 'bandpass', 700 * q, 3);
+        const n = noise(v, s, s + 0.26);
+        const bp = filt(v, 'bandpass', 2200, 1);
+        bp.frequency.setValueAtTime(2300 * q, s);
+        bp.frequency.exponentialRampToValueAtTime(1300 * q, s + 0.22);
+        const g = gain(v, 0);
+        sus(g.gain, s, 0.4, 0.07, s + 0.12, 0.1);
+        n.connect(bp);
+        bp.connect(g);
+        g.connect(v.in);
+      }
+    },
+
+    chime(v, t, p) {
+      // A sparkle: a little glass chime "ting!" and a second, higher, a moment after.
+      const q = p * (0.97 + Math.random() * 0.06);
+      bell(v, v.in, t, 2093 * q, 0.1, 0.9, 3.5, 0.35);
+      bell(v, v.in, t + 0.06, 3136 * q, 0.06, 0.7, 3.5, 0.3);
+      const pn = panner(v, Math.random() < 0.5 ? -0.4 : 0.4);
+      pn.connect(v.in);
+      bell(v, pn, t + 0.12, 4186 * q, 0.03, 0.4, 3, 0.2);
+      roomSend(v, 0.2);
+    },
+
+    door(v, t, p) {
+      // A new front door opening: the latch clicks, the hinge creaks round, and the door bumps the wall.
+      const q = p * R1();
+      hiss(v, v.in, t, 0.9, 0.02, 'bandpass', 2600 * q, 3);
+      hiss(v, v.in, t + 0.03, 0.6, 0.03, 'bandpass', 1500 * q, 4);
+      const s = t + 0.1;
+      const end = s + 0.6;
+      const o = osc(v, 'sawtooth', 170 * q, s, end + 0.05);
+      o.frequency.linearRampToValueAtTime(250 * q, s + 0.25);
+      o.frequency.linearRampToValueAtTime(205 * q, end);
+      const rough = gain(v, 0.7);
+      lfo(v, 17, 0.3, rough.gain, s, end + 0.05, 'triangle');
+      const bp = filt(v, 'bandpass', 1100 * q, 9);
+      const g = gain(v, 0);
+      sus(g.gain, s, 0.4, 0.05, end - 0.1, 0.08);
+      o.connect(rough);
+      rough.connect(bp);
+      bp.connect(g);
+      g.connect(v.in);
+      drum(v, v.in, end, 0.22, 140 * q, 0.1, 1.4);
+      hiss(v, v.in, end, 0.8, 0.07, 'bandpass', 700 * q, 4);
+    },
+
+    tada(v, t, p) {
+      // Moved in! A little brass "ta-DAAA!" (G to C), bells and a shimmer.
+      brassChord(v, v.in, t, [55, 59, 62, 67].map((m) => mtof(m) * p), 0.1, 0.13, 1.1);
+      const c = t + 0.16;
+      brassChord(v, v.in, c, [60, 64, 67, 72].map((m) => mtof(m) * p), 0.75, 0.16, 1.15);
+      drum(v, v.in, c, 0.35, 60, 0.35);
+      [84, 88, 91, 96].forEach((m, i) => bell(v, v.in, c + 0.05 + i * 0.05, mtof(m) * p, 0.04, 0.8, 3.5, 0.5));
+      hiss(v, v.in, c, 0.08, 1, 'highpass', 6000, -3);
+      roomSend(v, 0.4);
+    },
+
+    purr(v, t, p) {
+      // A cat being petted: a little "mrrp?", then a purr breathing in and out (its rumble carried by the band
+      // round 400 Hz, which small speakers can play).
+      const q = p * R1();
+      vox(v, v.in, [[t, 420 * q], [t + 0.1, 600 * q], [t + 0.2, 500 * q]], [[t, 300, 1300], [t + 0.2, 480, 1600]],
+        [[t, 0], [t + 0.03, 0.35], [t + 0.16, 0.25], [t + 0.22, 0]], 0, 0.2);
+      for (const [dt, d, f, a] of [[0.3, 0.55, 360, 0.6], [0.9, 0.65, 450, 0.5]]) {
+        const s = t + dt;
+        const end = s + d;
+        const n = noise(v, s, end + 0.02);
+        const bp = filt(v, 'bandpass', f * q, 1.3);
+        const lp = filt(v, 'lowpass', 1000, -3);
+        const rumble = gain(v, 0.5);
+        lfo(v, 24, 0.5, rumble.gain, s, end + 0.02, 'triangle');
+        const g = gain(v, 0);
+        g.gain.setValueAtTime(0, s);
+        g.gain.linearRampToValueAtTime(a, s + d * 0.4);
+        g.gain.linearRampToValueAtTime(0, end);
+        n.connect(bp);
+        bp.connect(lp);
+        lp.connect(rumble);
+        rumble.connect(g);
+        g.connect(v.in);
+      }
+    },
+
+    woof(v, t, p) {
+      // A dog: "woof! woof!", two happy barks.
+      const q = p * R1();
+      for (const [dt, k] of [[0, 1], [0.28, 0.92]]) {
+        const s = t + dt;
+        const f = 300 * q * k;
+        vox(v, v.in, [[s, f], [s + 0.04, f * 1.2], [s + 0.16, f * 0.72]], [[s, 650, 1300], [s + 0.16, 420, 900]],
+          [[s, 0], [s + 0.015, 0.9], [s + 0.1, 0.55], [s + 0.17, 0]], 0, 0.9);
+        hiss(v, v.in, s, 0.5, 0.06, 'bandpass', 1100 * q, 1.5);
+      }
+    },
+
+    meh(v, t, p) {
+      // A goat: "Meeeh-eh-eh!", a bleat with its wobble.
+      const q = p * R1();
+      const trem = gain(v, 0.7);
+      lfo(v, 9, 0.3, trem.gain, t, t + 0.8);
+      trem.connect(v.in);
+      vox(v, trem, [[t, 380 * q], [t + 0.1, 430 * q], [t + 0.7, 360 * q]], [[t, 350, 1900], [t + 0.08, 560, 1800], [t + 0.7, 600, 1650]],
+        [[t, 0], [t + 0.05, 0.8], [t + 0.55, 0.65], [t + 0.75, 0]], 0.05, 0.2);
+    },
+
+    hoot(v, t, p) {
+      // An owl: "Hoo! hoo-hoo", soft and breathy.
+      const q = p * R1();
+      for (const [dt, f, d, a] of [[0, 390, 0.32, 0.5], [0.45, 355, 0.16, 0.4], [0.66, 355, 0.22, 0.4]]) {
+        const s = t + dt;
+        const end = s + d + 0.06;
+        const o = osc(v, 'sine', f * 0.96 * q, s, end);
+        o.frequency.exponentialRampToValueAtTime(f * q, s + 0.06);
+        const g = gain(v, 0);
+        sus(g.gain, s, a, 0.05, s + d, 0.06);
+        o.connect(g);
+        g.connect(v.in);
+        hiss(v, v.in, s, 0.06, d, 'bandpass', 2 * f * q, 4);
+      }
+    },
+
+    giggle(v, t, p) {
+      // A monkey: "hee-hee-hee-hee!", quick and cheeky, tumbling down.
+      const q = p * R1();
+      for (let k = 0; k < 4; k++) {
+        const s = t + k * 0.11;
+        const f = (880 - k * 45) * q;
+        vox(v, v.in, [[s, f], [s + 0.06, f * 1.18]], [[s, 340, 2300]], [[s, 0], [s + 0.012, 0.6], [s + 0.06, 0.45], [s + 0.085, 0]], 0, 0.5);
+      }
+    },
+
+    fwap(v, t, p) {
+      // A Sting Sloop dancing away: her sails snapping full, "fwap-fwap!", and the rush of her turn.
+      const q = p * R1();
+      clothFlap(v, t, q, 0.9, 24, 0.16);
+      clothFlap(v, t + 0.19, q * 0.92, 0.75, 19, 0.24);
+      hiss(v, v.in, t, 0.5, 0.05, 'bandpass', 1400 * q, 1.5);
+      const n = noise(v, t + 0.1, t + 0.7);
+      const bp = filt(v, 'bandpass', 600, 1);
+      bp.frequency.setValueAtTime(500 * q, t + 0.1);
+      bp.frequency.exponentialRampToValueAtTime(1500 * q, t + 0.6);
+      const g = gain(v, 0);
+      sus(g.gain, t + 0.1, 0.25, 0.15, t + 0.4, 0.2);
+      n.connect(bp);
+      bp.connect(g);
+      g.connect(v.in);
+    },
+
+    foghorn(v, t, p) {
+      // A foghorn far off in the mangroves: a soft, low "beee-OOOH", muffled by the mist. It sounds the same every time.
+      const f0 = 196 * p;
+      const f1 = 147 * p;
+      const end = t + 2.9;
+      const g = gain(v, 0);
+      g.gain.setValueAtTime(0, t);
+      g.gain.linearRampToValueAtTime(0.3, t + 0.45);
+      g.gain.setValueAtTime(0.3, t + 1.5);
+      g.gain.linearRampToValueAtTime(0.38, t + 1.75);
+      g.gain.setValueAtTime(0.38, t + 2.3);
+      g.gain.linearRampToValueAtTime(0, end);
+      const lp = filt(v, 'lowpass', 650, 2);
+      for (const dt of [-6, 6]) {
+        const o = osc(v, 'sawtooth', f0, t, end);
+        o.detune.value = dt;
+        o.frequency.setValueAtTime(f0, t + 1.55);
+        o.frequency.exponentialRampToValueAtTime(f1, t + 1.75);
+        o.connect(lp);
+      }
+      lp.connect(g);
+      g.connect(v.in);
+      hiss(v, v.in, t, 0.06, 2.5, 'bandpass', 400, 2);
+      roomSend(v, 0.7);
+    },
   };
 
   // Canvas flapping: low-passed noise chopped at `rate` Hz (slowing down).
@@ -3320,6 +4199,8 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
   // Where the fight is, for music that follows it (the Kraken's, see SONGS.kraken): set by setMusicPhase().
   let musicPhase = 0;
   let phaseCalls = 0;
+  // How many of the Music Hall's band play with the town tune (setTownLayers, 0..TOWN_LAYERS).
+  let townLayers = 0;
 
   // sc.music says what the scene's music is: 'rec' (a recording), 'synth' (the sequenced tune), or 'wait'
   // (silent until its recording arrives, at most until sc.waitUntil). `carry`: where the music of the scene being
@@ -3393,6 +4274,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       sc.st0 = from;
       sc.i = Math.ceil((t - from) / sc.song.dur - 1e-6);
     }
+    sc.band = BAND_SCENES[sc.name] ? synthBand(sc) : null;
   }
 
   // A recording on a loop. `fade`: swell in (it is replacing silence or the synthesised tune mid-scene).
@@ -3412,6 +4294,7 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     }
     s.connect(g);
     g.connect(sc.dry);
+    sc.band = BAND_SCENES[sc.name] ? recordedBand(sc, rec, t) : null;
   }
 
   // A recorded ambience bed on a loop, entered at a random point so it does not always start the same way.
@@ -3544,6 +4427,16 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
           if (t >= now - 0.02) song.step(sc.i, t); // skip notes we were too late for (stalled main thread)
           sc.i++;
           t = sc.st0 + sc.i * song.dur;
+        }
+        // The Music Hall's band, on the tune's grid (nothing is made while the layers are off).
+        const band = sc.band;
+        if (band) {
+          let tb = band.st0 + band.i * band.dur;
+          while (tb < end) {
+            if (townLayers > 0 && tb >= now - 0.02) bandStep(band, band.i, tb);
+            band.i++;
+            tb = band.st0 + band.i * band.dur;
+          }
         }
         // No new ambience events once the scene is fading out.
         if (sc.stopAt === Infinity) {
@@ -4392,7 +5285,380 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       };
       return song;
     },
+
+    // ---- The Sunset Isles
+
+    mangroves(sc) {
+      const { bar: BAR, dur: SD, scale } = MANGROVES;
+      const mel = parseScore(MANGROVES.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(MANGROVES.chords);
+      const lead = sc.bus(0.15, 0.25);
+      const bj = sc.bus(-0.3, 0.15);
+      const box = sc.bus(0.25, 0.2);
+      const low = sc.bus(0, 0.05);
+      const board = sc.bus(0.35, 0.08);
+      const frogs = [sc.bus(-0.6, 0.35), sc.bus(0.6, 0.35)];
+      // Who has the tune per pass and section (A A' B A''): the accordion, the banjo (rolling its long notes), or the
+      // accordion with the banjo a third below.
+      const roles = [
+        ['box', 'box', 'banjo', 'both'],
+        ['banjo', 'box', 'box', 'both'],
+      ];
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const sec = bar >> 3;
+          const ch = CHORD[chords[bar][0]];
+          const role = roles[pass & 1][sec];
+          for (const n of at[pos] || []) {
+            const d = n.len * SD;
+            const v = voice();
+            const f = mtof(n.m);
+            if (role === 'banjo') {
+              for (let k = 0; k < n.len; k++) banjo(v, lead, t + k * SD, f, k ? 0.13 : 0.2, SD * 1.2);
+            } else reed(v, lead, t, [n.m], d * 0.85, 0.07, 3200, 8);
+            if (role === 'both') {
+              const h = diatonic(n.m, -2, scale);
+              if (h != null) banjo(v, bj, t, mtof(h), 0.12, Math.min(d, 0.6));
+            }
+          }
+          const v = voice();
+          const root = ch[0] % 12;
+          // Oom-pah-pah: the jug on 1 (the root, the fifth every other bar), chords on 2 and 3 (the banjo's, or the
+          // accordion's while the banjo has the tune).
+          if (s === 0) jug(v, low, t, mtof(36 + root + (bar % 2 ? 7 : 0)), SD * 1.5, 0.15);
+          if (s === 2 || s === 4) {
+            const tones = voicing(ch, 55, 67);
+            if (role === 'banjo') reed(v, box, t, tones, SD * 0.8, 0.028, 2200, 7);
+            else tones.forEach((m, k) => banjo(v, bj, t + k * 0.012, mtof(m), k ? 0.07 : 0.09, 0.2));
+          }
+          // The washboard scratches every eighth (harder on the beats), with a run down it into each section.
+          washboard(v, board, t, s % 2 ? 0.07 : 0.12);
+          if (bar % 8 === 7 && s === 4) washboard(v, board, t + SD / 2, 0.18, true);
+          // The frogs croak on beats 2 and 4 of every four, a low one and a high one taking turns.
+          const beat = bar * 3 + (s >> 1);
+          if (s % 2 === 0 && beat % 2 === 1) {
+            const hi = (beat >> 1) & 1;
+            frog(v, frogs[hi], t, mtof((hi ? 43 : 36) + root), 0.06);
+          }
+        },
+      };
+    },
+
+    spires(sc) {
+      const { bar: BAR, dur: SD, clave } = SPIRES;
+      const mel = parseScore(SPIRES.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(SPIRES.chords);
+      const lead = sc.bus(0.15, 0.45);
+      const ripple = sc.bus(-0.3, 0.45);
+      const bass = sc.bus(0, 0.08);
+      const kit = sc.bus(0.25, 0.15);
+      const pad = sc.bus(0, 0.6);
+      const wh = sc.bus(0, 0.85);
+      const ROLL = [0, 1, 2, 3, 4, 3, 2, 1]; // the ripple rocks up the chord and back, an eighth a note
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const half = chords[bar].length > 1 && s >= BAR / 2 ? 1 : 0;
+          const ch = CHORD[chords[bar][half]];
+          const glassLead = !(pass & 1); // the glass marimba has the tune on the first pass, the harp on the second
+          const v = voice();
+          for (const n of at[pos] || []) {
+            const d = n.len * SD;
+            if (glassLead) glassMarimba(v, lead, t, mtof(n.m), 0.085, Math.min(1.8, d + 0.5));
+            else harp(v, lead, t, mtof(n.m), 0.13, Math.min(2.2, d + 0.6));
+          }
+          if (s % 2 === 0) {
+            const tones = voicing(ch, 57, 74).sort((a, b) => a - b);
+            const m = tones[ROLL[(s >> 1) % ROLL.length] % tones.length] + (ROLL[(s >> 1) % ROLL.length] >= tones.length ? 12 : 0);
+            if (glassLead) harp(v, ripple, t, mtof(m), 0.05, 0.9);
+            else glassMarimba(v, ripple, t, mtof(m), 0.032, 0.8);
+          }
+          // The bossa bass: the root on 1 and 3, the fifth below just before each.
+          const root = ch[0] % 12;
+          if (s === 0 || s === 8) pluck(v, bass, t, mtof(36 + root), 0.42, SD * 5.5);
+          if (s === 6 || s === 14) pluck(v, bass, t, mtof(31 + root), 0.3, SD * 1.8);
+          // The rim on the clave, a soft kick on 1 and 3, a shaker on the sixteenths.
+          if (clave.includes(s)) hiss(v, kit, t, 0.3, 0.025, 'bandpass', 1700, 6);
+          if (s === 0 || s === 8) drum(v, kit, t, 0.14, 56, 0.25, 1.4);
+          hiss(v, kit, t, s % 4 === 2 ? 0.03 : 0.016, 0.04, 'highpass', 7000, -3);
+          // The sea's choir breathing the chords every two bars, and whales singing in the tune's long rests.
+          if (s === 0 && bar % 2 === 0) choir(v, pad, t, voicing(ch, 50, 64).slice(0, 3), 2 * BAR * SD * 0.95, 0.007, 'oo');
+          if (s === 0 && bar % 4 === 3 && rng() < 0.9) {
+            const w = t + rand(0, SD * 4);
+            const f = rand(240, 340);
+            const pts = rng() < 0.5
+              ? [[w, f], [w + 0.9, f * 1.5], [w + 2, f * 1.2], [w + 2.8, f * 0.85]]
+              : [[w, f * 1.3], [w + 1, f * 0.9], [w + 1.9, f * 1.15], [w + 2.7, f * 0.75]];
+            whale(v, wh, pts, 0.04);
+          }
+        },
+      };
+    },
+
+    shoals(sc) {
+      const { bar: BAR, dur: SD } = SHOALS;
+      const mel = parseScore(SHOALS.melody, BAR);
+      const len = mel.bars * BAR;
+      const at = byStep(mel.notes, len);
+      const chords = parseChords(SHOALS.chords);
+      const lead = sc.bus(0.15, 0.3);
+      const pans = sc.bus(-0.25, 0.3);
+      const low = sc.bus(0, 0.08);
+      const hits = sc.bus(0.3, 0.2);
+      const drums = sc.bus(0, 0.12);
+      const bells = sc.bus(0.45, 0.12);
+      // Who has the tune per pass and section (A B A'): the trumpets, the steel pans, or both an octave apart.
+      const roles = [
+        ['brass', 'pan', 'both'],
+        ['pan', 'brass', 'both'],
+      ];
+      return {
+        dur: SD,
+        len,
+        step(i, t) {
+          const pos = i % len;
+          const pass = Math.floor(i / len);
+          const bar = Math.floor(pos / BAR);
+          const s = pos % BAR;
+          const sec = Math.floor(bar / 8);
+          const ch = CHORD[chords[bar][0]];
+          const role = roles[pass & 1][sec];
+          for (const n of at[pos] || []) {
+            const d = n.len * SD;
+            const v = voice();
+            const f = mtof(n.m);
+            if (role === 'pan') steelpan(v, lead, t, f, 0.085, Math.min(1.1, d + 0.3));
+            else brass(v, lead, t, f, d * 0.85, 0.065, 1.1);
+            if (role === 'both') steelpan(v, pans, t, f * 2, 0.05, Math.min(1, d + 0.3));
+          }
+          const v = voice();
+          const root = ch[0] % 12;
+          // The tuba on 1 and 3 (the root, then the fifth below).
+          if (s === 0) brass(v, low, t, mtof(41 + ((root - 5 + 12) % 12)), SD * 1.5, 0.1, 2.2);
+          if (s === 4) brass(v, low, t, mtof(36 + ((root + 7) % 12)), SD * 1.5, 0.08, 2.2);
+          // Off the beat: brass hits while the pans sing, pan strums while the trumpets do.
+          const tones = voicing(ch, 58, 70);
+          if (s === 3 || s === 7) {
+            if (role === 'pan') brassChord(v, hits, t, tones.map(mtof), SD * 0.6, 0.035, 0.9);
+            else tones.forEach((m, k) => steelpan(v, pans, t + k * 0.015, mtof(m), 0.028, 0.35));
+          }
+          // The marching snare (harder on 2 and 4), the big drum on 1 and 3, a roll into every fourth bar's end.
+          if (bar % 4 === 3 && s >= 4) snare(v, drums, t, 0.12 + (s - 4) * 0.03, 3);
+          else snare(v, drums, t, s === 2 || s === 6 ? 0.16 : s % 2 ? 0.05 : 0.08);
+          if (s === 0 || s === 4) {
+            boom(v, drums, t, 0.2, 52, 0.4, 1.8);
+            hiss(v, drums, t, 0.8, 0.1, 'bandpass', 320, 1.4);
+          }
+          // A cowbell on the carnival's 3 + 3 + 2, and a samba whistle at the end of the chorus.
+          if (s === 0 || s === 3 || s === 6) cowbell(v, bells, t, s ? 0.025 : 0.035);
+          if (bar === 15 && (s === 4 || s === 6)) sambaWhistle(v, bells, t, SD * 0.8, 0.03);
+        },
+      };
+    },
+
+    // The Shellback: the dread, then the theme, following the fight through setMusicPhase() as the Kraken's does: 0 the
+    // dread (the drone, the island grumbling awake), 1 the theme (the Fort), 2 with the horns' tune (the Waking), 3 the
+    // theme faster (the Charge), 4 driven off (a sleepy lullaby chord, then quiet). Changes land on a beat; the tempo
+    // changes on a bar line. With nobody calling setMusicPhase the theme starts by itself after SHELLBACK_TUNE.autoStart s.
+    shellback(sc) {
+      const K = SHELLBACK_TUNE;
+      const BAR = K.bar;
+      const mel = parseScore(K.melody, BAR);
+      const tb = parseScore(K.tuba, BAR);
+      const len = mel.bars * BAR;
+      const atM = byStep(mel.notes, len);
+      const atT = byStep(tb.notes, len);
+      const chords = parseChords(K.chords);
+      const lead = sc.bus(0.15, 0.35);
+      const choirs = sc.bus(-0.2, 0.5);
+      const low = sc.bus(0, 0.12);
+      const claws = [sc.bus(-0.45, 0.15), sc.bus(0.45, 0.15)];
+      const stabs = sc.bus(0.3, 0.25);
+      const drums = sc.bus(0, 0.25);
+      const stir = sc.bus(0, 0.1);
+      const t0 = sc.st0;
+      const dv = sc.sv;
+      const level = gain(dv, 0);
+      const mix = gain(dv, 1);
+      for (const [f, a] of K.drone) {
+        const g = gain(dv, a);
+        osc(dv, 'sine', f, t0, null).connect(g);
+        g.connect(mix);
+      }
+      const swell = gain(dv, 0.85);
+      lfo(dv, 0.19, 0.15, swell.gain, t0);
+      mix.connect(swell);
+      swell.connect(level);
+      level.connect(sc.bus(0, 0.15));
+      const drone = (t, on) => {
+        level.gain.cancelScheduledValues(t);
+        level.gain.setTargetAtTime(on ? K.droneLevel : 0, t, on ? 0.6 : 0.5);
+      };
+      const calls0 = phaseCalls;
+      let k = 0; // steps since the current mode began
+      let ph = 0;
+
+      function dread(t) {
+        const v = voice();
+        // The island grumbling awake: a deep rumble every couple of beats (quicker after the dread's 4 s), sand
+        // trickling, bubbles boiling up.
+        if (k % (k < 16 ? 4 : 3) === 0) {
+          boom(v, stir, t, 0.22, 44, 0.5, 1.5);
+          hiss(v, stir, t, 0.9, 0.35, 'bandpass', 160, 1.4);
+          hiss(v, stir, t, 0.3, 0.2, 'bandpass', 330, 2);
+        }
+        if (rng() < 0.2) hiss(v, stir, t + rand(0, 0.2), 0.05, rand(0.2, 0.5), 'highpass', 3500, -3);
+        if (rng() < 0.12) bubbleTrain(v, stir, t, 0.7, 0.05, 200, 520, [0.08, 0.15], rng);
+      }
+
+      function theme(t) {
+        const SD = song.dur;
+        const pos = k % len;
+        const bar = Math.floor(pos / BAR);
+        const s = pos % BAR;
+        const sec = bar >> 3;
+        const name = chords[bar][0];
+        const ch = CHORD[name];
+        const v = voice();
+        // The tuba's crab-walk, short and bouncy.
+        for (const n of atT[pos] || []) brass(v, low, t, mtof(n.m), n.len * SD * 0.7, 0.11, 2);
+        // Castanet claws on the 3 + 2, both claws snapping on the halves; a flurry in the Charge.
+        if (K.claws.includes(s)) castanet(v, claws[s < 6 ? 0 : 1], t, s === 0 || s === 6 ? 0.22 : 0.13);
+        if (ph >= 3 && s % 2 === 1) castanet(v, claws[(s >> 1) & 1], t, 0.1);
+        // Timpani on the two halves of the bar (tonic, or the dominant over B7), a roll into each phrase.
+        const tp = mtof(name === 'B7' ? 35 : 40);
+        if (s === 0) timpani(v, drums, t, tp, 0.5);
+        if (s === 6) timpani(v, drums, t, tp, ph >= 2 ? 0.38 : 0.3, 0.7);
+        if (bar % 4 === 3 && s >= 8) {
+          for (let r = 0; r < 3; r++) timpani(v, drums, t + (r * SD) / 3, mtof(40), 0.12 + (s - 8) * 0.08 + r * 0.02, 0.35);
+        }
+        // The choir breathes the chords; from the Waking the horns have the tune, the choir joining them in the second half.
+        if (s === 0) choir(v, choirs, t, voicing(ch, 52, 64).slice(0, 3), BAR * SD * 0.98, sec && ph >= 2 ? 0.016 : 0.011, sec ? 'aa' : 'oo');
+        if (ph >= 2) for (const n of atM[pos] || []) brass(v, lead, t, mtof(n.m), n.len * SD * 0.9, sec ? 0.065 : 0.055, sec ? 1.1 : 0.85);
+        // Brass stabs in the Charge.
+        if (ph >= 3 && (s === 0 || s === 6)) brassChord(v, stabs, t, voicing(ch, 50, 62).slice(0, 3).map(mtof), SD * 0.7, 0.045, 0.9);
+      }
+
+      function finale(t) {
+        // Driven off: a soft timpani roll into a sleepy E major lullaby chord, a little tune drifting down, and quiet.
+        const v = voice();
+        for (let r = 0; r < 6; r++) timpani(v, drums, t + r * 0.08, mtof(40), 0.08 + r * 0.02, 0.3);
+        const c = t + 0.55;
+        choir(v, choirs, c, [64, 68, 71], 3.2, 0.02, 'oo');
+        brassChord(v, lead, c, [52, 56, 59, 64].map(mtof), 2.4, 0.06, 0.7);
+        brass(v, low, c, mtof(40), 2.4, 0.08, 1.6);
+        [83, 80, 76, 71, 76].forEach((m, j) => glassMarimba(v, lead, c + 0.3 + j * 0.42, mtof(m), 0.05, 1.4));
+      }
+
+      const song = {
+        dur: K.dur,
+        len,
+        mode: null, // 'dread' | 'theme' | 'done'
+        step(i, t) {
+          // On each beat (a quarter), follow the fight: a new mode starts there, at its own bar 1.
+          if (song.mode === null || k % K.beat === 0) {
+            ph = musicPhase;
+            if (phaseCalls === calls0 && t - t0 >= K.autoStart) ph = 1;
+            const want = ph >= 4 ? 'done' : ph >= 1 ? 'theme' : 'dread';
+            if (want !== song.mode && !(song.mode === 'done' && want === 'theme')) {
+              drone(t, want === 'dread');
+              if (want === 'done' && song.mode === 'theme') finale(t);
+              song.mode = want;
+              k = 0;
+            }
+          }
+          // The Charge plays faster, from a bar line: the steps shrink and the clock is re-anchored on this step.
+          if (k % BAR === 0) {
+            const d = song.mode === 'theme' && ph === 3 ? K.dur * K.fast : K.dur;
+            if (d !== song.dur) {
+              sc.st0 = t - i * d;
+              song.dur = d;
+            }
+          }
+          if (song.mode === 'dread') dread(t);
+          else if (song.mode === 'theme') theme(t);
+          k++;
+        },
+      };
+      return song;
+    },
   };
+
+  // ---- The Music Hall's band (setTownLayers): a sequencer on the town tune's own eighth-note grid, in its own voice
+  // buses (into the synthesised tune's faders, or the scene's music fader over a recording), playing only while the
+  // layers are on. `st0` + n × `dur`: when eighth n falls; eighth 0 starts a bar; `chordAt(n)`: its chord; `cycle`:
+  // the tune's length in eighths.
+  function makeBand(sc, st0, dur, cycle, chordAt, i, synth) {
+    const out = (pan, send) => {
+      const p = panner(sc.cv, pan);
+      p.connect(synth ? sc.synthDry : sc.dry);
+      const s = gain(sc.cv, send);
+      p.connect(s);
+      s.connect(synth ? sc.synthWet : sc.wet);
+      return p;
+    };
+    return { st0, dur, cycle, chordAt, i, fiddle: out(-0.35, 0.3), drum: out(0.3, 0.12), box: out(0.2, 0.2) };
+  }
+
+  // Over the synthesised jig: its chords, its steps.
+  function synthBand(sc) {
+    const chords = parseChords(MENU.chords);
+    const len = sc.song.len;
+    return makeBand(sc, sc.st0, sc.song.dur, len, (m) => chords[Math.floor(m / MENU.bar) % chords.length][0], sc.i, true);
+  }
+
+  // Over the recording: the beat grid and chords in RECORDED (band), from where the recording is playing.
+  function recordedBand(sc, rec, t) {
+    const B = rec.band;
+    const L = rec.buffer.duration;
+    if (!(B && B.beats > 0 && L > 0)) return null;
+    const dur = L / B.beats / 3;
+    const cycle = B.beats * 3;
+    const perBar = B.perBar * 3;
+    const chords = B.chords.trim().split(/\s+/);
+    // Eighth 0 is where the recording's first downbeat is played (the start of this pass of the loop); the loop
+    // holds a whole number of eighths, so the grid runs on across its seam.
+    const st0 = sc.recAt + B.first - sc.recFrom;
+    return makeBand(sc, st0, dur, cycle, (m) => chords[Math.floor(m / perBar) % chords.length], Math.ceil((t - st0) / dur - 1e-6), false);
+  }
+
+  // One eighth of the band: the fiddle's lilt (layer 1), the frame drum (2), the squeezebox's chords (3).
+  function bandStep(b, n, t) {
+    const m = ((n % b.cycle) + b.cycle) % b.cycle;
+    const s = m % 6;
+    const bar = Math.floor(m / 6);
+    const ch = CHORD[b.chordAt(m)];
+    if (!ch) return;
+    const E = b.dur;
+    const tri = ch.slice(0, 3);
+    const v = voice();
+    if (townLayers >= 1) {
+      const tones = voicing(tri, 62, 74);
+      for (const [at, k, l] of BAND.lilt) if (at === s) fiddle(v, b.fiddle, t, mtof(k === 3 ? tones[0] + 12 : tones[k]), l * E * 0.9, BAND.fiddle);
+    }
+    if (townLayers >= 2) {
+      const down = s % 3 === 0;
+      drum(v, b.drum, t, BAND.drum * (s === 0 ? 0.5 : down ? 0.4 : 0.18), down ? 150 : 210, down ? 0.14 : 0.06, 1.3);
+      hiss(v, b.drum, t, BAND.drum * (down ? 0.1 : 0.06), 0.05, 'highpass', 6000, -3);
+      if (bar % 4 === 3 && s >= 4) drum(v, b.drum, t + E / 2, BAND.drum * 0.2, 230, 0.05, 1.2);
+    }
+    if (townLayers >= 3 && (s === 2 || s === 5)) reed(v, b.box, t, voicing(tri, 55, 67), E * 0.75, BAND.box, 2400, 7);
+  }
 
   // =========================================================================
   // Ambience: continuous beds plus randomly timed events
@@ -4838,6 +6104,111 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
     g.connect(panner(v, rand(-0.6, 0.6))).connect(sc.amb);
   }
 
+  // ---- The Sunset Isles' ambience
+
+  // Crickets all round: two of them, a high trill chopped into chirps, each at its own pace, left and right.
+  function cricketBed(sc, t0, lvl) {
+    const v = sc.av;
+    for (const [f, rate, pan] of [[4700, 3.7, -0.6], [5300, 4.4, 0.55]]) {
+      const n = noise(v, t0, null);
+      const bp = filt(v, 'bandpass', f, 9);
+      const trill = gain(v, 0.5);
+      lfo(v, 62, 0.5, trill.gain, t0, null, 'square');
+      const chirp = gain(v, 0.5);
+      lfo(v, rate, 0.5, chirp.gain, t0, null, 'square');
+      const g = gain(v, lvl);
+      lfo(v, 0.05 + rate * 0.01, lvl * 0.4, g.gain, t0);
+      n.connect(bp);
+      bp.connect(trill);
+      trill.connect(chirp);
+      chirp.connect(g);
+      g.connect(panner(v, pan)).connect(sc.amb);
+    }
+  }
+
+  // A frog somewhere in the roots: one to three "ribbit"s.
+  function croak(sc, t, vel) {
+    const v = voice();
+    const pn = panner(v, rand(-0.9, 0.9));
+    pn.connect(sc.amb);
+    const f = rand(85, 170);
+    for (let k = 0, n = 1 + Math.floor(rng() * 3); k < n; k++) frog(v, pn, t + k * rand(0.3, 0.45), f * rand(0.97, 1.03), vel * rand(0.6, 1));
+  }
+
+  // A drop falling from the leaves into still water: "plip".
+  function drip(sc, t, vel) {
+    const v = voice();
+    const f = rand(900, 1500);
+    const o = osc(v, 'sine', f, t, t + 0.12);
+    o.frequency.exponentialRampToValueAtTime(f * 2.1, t + 0.02);
+    o.frequency.exponentialRampToValueAtTime(f * 1.6, t + 0.1);
+    const g = gain(v, 0);
+    perc(g.gain, t, vel, 0.002, 0.09);
+    o.connect(g);
+    g.connect(panner(v, rand(-0.8, 0.8))).connect(sc.amb);
+  }
+
+  // The coral currents running through the drowned streets: water rushing past the columns, two bands drifting.
+  function streamBed(sc, t0, lvl) {
+    const v = sc.av;
+    for (const [f, q, rate, pan] of [[900, 0.8, 0.13, -0.4], [2300, 1.2, 0.17, 0.4]]) {
+      const n = noise(v, t0, null, R.noise2);
+      const bp = filt(v, 'bandpass', f, q);
+      lfo(v, rate, f * 0.25, bp.frequency, t0);
+      const flow = gain(v, lvl);
+      lfo(v, rate * 6.3, lvl * 0.25, flow.gain, t0);
+      n.connect(bp);
+      bp.connect(flow);
+      flow.connect(panner(v, pan)).connect(sc.amb);
+    }
+  }
+
+  // The sleeping Shellback, far across the bay: a deep, slow snore (a rattling breath in, a whistling breath out),
+  // and its snore bubbles rising.
+  function snore(sc, t, vel) {
+    const v = voice();
+    const pn = panner(v, rand(-0.3, 0.3));
+    pn.connect(sc.amb);
+    const din = rand(1.2, 1.6);
+    const n = noise(v, t, t + din + 0.1);
+    const bp = filt(v, 'bandpass', 260, 2);
+    bp.frequency.setValueAtTime(200, t);
+    bp.frequency.linearRampToValueAtTime(320, t + din);
+    const rattle = gain(v, 0.5);
+    lfo(v, rand(26, 32), 0.5, rattle.gain, t, t + din + 0.1, 'triangle');
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, din * 0.5, t + din * 0.8, 0.2);
+    n.connect(bp);
+    bp.connect(rattle);
+    rattle.connect(g);
+    g.connect(pn);
+    const o = t + din + 0.25;
+    const dout = rand(1, 1.4);
+    const w = noise(v, o, o + dout + 0.1);
+    const wb = filt(v, 'bandpass', 650, 5);
+    wb.frequency.setValueAtTime(700, o);
+    wb.frequency.linearRampToValueAtTime(520, o + dout);
+    const wg = gain(v, 0);
+    sus(wg.gain, o, vel * 0.5, dout * 0.3, o + dout * 0.6, dout * 0.35);
+    w.connect(wb);
+    wb.connect(wg);
+    wg.connect(pn);
+    bubbleTrain(v, pn, o + dout * 0.5, 0.8, vel * 0.5, 180, 420, [0.08, 0.16], rng);
+  }
+
+  // Shells and pebbles clattering under something big walking on the sand.
+  function clatter(sc, t, vel) {
+    const v = voice();
+    const d = rand(0.3, 0.7);
+    const c = sample(v, R.crackle, t, t + d + 0.05, rand(1.6, 2.4), rng() * 2);
+    const bp = filt(v, 'bandpass', rand(1800, 2800), 1.2);
+    const g = gain(v, 0);
+    sus(g.gain, t, vel, 0.03, t + d * 0.6, d * 0.4);
+    c.connect(bp);
+    bp.connect(g);
+    g.connect(panner(v, rand(-0.7, 0.7))).connect(sc.amb);
+  }
+
   const AMBIENCE = {
     menu(sc, t0) {
       seaBed(sc, t0, 0.05, 520);
@@ -4967,6 +6338,44 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       emit(sc, 4, (t) => (groan(sc, t, 0.05), rand(8, 15)));
       emit(sc, 6, (t) => (rumble(sc, t, 0.3), rand(9, 16)));
     },
+    mangroves(sc, t0) {
+      // A misty bayou: still water lapping at the roots, crickets all round, frogs croaking here and there, drips from
+      // the leaves, a bird now and then.
+      seaBed(sc, t0, 0.045, 420);
+      cricketBed(sc, t0, 0.022);
+      emit(sc, 1, (t) => (wash(sc, t, 0.06, 700, rand(0.8, 1.4), rand(1.5, 2.4)), rand(4, 8)));
+      emit(sc, 1.5, (t) => (croak(sc, t, 0.05), rand(1.5, 5)));
+      emit(sc, 2, (t) => (drip(sc, t, 0.03), rand(0.8, 3)));
+      emit(sc, 5, (t) => (bird(sc, t, 0.018), rand(8, 18)));
+    },
+    spires(sc, t0) {
+      // A drowned city at noon: a clear sea, the coral currents rushing through the columns, gulls, coral tinkling
+      // like glass, bubbles.
+      seaBed(sc, t0, 0.04, 700);
+      streamBed(sc, t0, 0.025);
+      emit(sc, 0.5, (t) => (wash(sc, t, 0.07, 1600, rand(0.6, 1), rand(1.2, 2)), rand(2.5, 5)));
+      emit(sc, 2, (t) => (gull(sc, t, 0.025), rand(6, 13)));
+      emit(sc, 3, (t) => (tinkle(sc, t, 0.007), rand(5, 10)));
+      emit(sc, 1.5, (t) => (bubbles(sc, t, 0.025), rand(3, 7)));
+    },
+    shoals(sc, t0) {
+      // A sunset over golden sandbanks: surf breaking on the bars, gulls, a bell buoy, a warm wind, and from the
+      // island in the bay... a snore.
+      seaBed(sc, t0, 0.05, 560);
+      windBed(sc, t0, 0.02, 1100, 1.5);
+      emit(sc, 0.5, (t) => (wash(sc, t, 0.1, 1700, rand(0.5, 0.9), rand(1.6, 2.6)), rand(3, 6)));
+      emit(sc, 2, (t) => (gull(sc, t, 0.03), rand(5, 11)));
+      emit(sc, 4, (t) => (buoyBell(sc, t, 0.012), rand(8, 15)));
+      emit(sc, 6, (t) => (snore(sc, t, 0.05), rand(9, 14)));
+    },
+    shellback(sc, t0) {
+      // The Shellback awake: the shoals' surf, sand and shells clattering under its legs, a rumble under it all.
+      seaBed(sc, t0, 0.05, 520);
+      emit(sc, 0.5, (t) => (wash(sc, t, 0.09, 1400, rand(0.6, 1), rand(1.6, 2.4)), rand(3, 5)));
+      emit(sc, 1, (t) => (clatter(sc, t, 0.04), rand(2, 5)));
+      emit(sc, 3, (t) => (rumble(sc, t, 0.25), rand(8, 14)));
+      emit(sc, 5, (t) => (gull(sc, t, 0.02), rand(9, 16)));
+    },
   };
 
   return {
@@ -4979,6 +6388,10 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
       const k = Math.round(Number(n));
       musicPhase = Number.isFinite(k) ? clamp(k, 0, 4) : 0;
       phaseCalls++;
+    },
+    setTownLayers(n) {
+      const k = Math.round(Number(n));
+      townLayers = Number.isFinite(k) ? clamp(k, 0, TOWN_LAYERS) : 0;
     },
     names: { sfx: Object.keys(SFX), songs: Object.keys(SONGS), ambience: Object.keys(AMBIENCE) },
     hasRecording: (key) => recs.has(key),
@@ -5012,6 +6425,8 @@ function createEngine(ctx, { seed = (Math.random() * 4294967296) >>> 0, pending 
         recordedPlays: S.recPlays,
         recordings: [...recs.keys()],
         musicPhase,
+        townLayers,
+        band: !!(current && current.band),
         musicMode: current && current.song && current.song.mode ? current.song.mode : null,
         musicStep: current && current.song ? current.song.dur : null,
         time: ctx.currentTime,
@@ -5035,6 +6450,7 @@ export function createAudio() {
   let muted = loadMuted();
   let musicVolume = 1;
   let musicPhase = null; // the last setMusicPhase(), handed to the engine when it starts
+  let townLayers = 0; // the last setTownLayers(), likewise
   let scene = null;
   let offTimer = 0;
   let resumeAt = -1e9; // wall-clock ms of the last resume request
@@ -5171,6 +6587,7 @@ export function createAudio() {
           eng.setMaster(0, true);
           eng.setMusicVolume(musicVolume);
           if (musicPhase != null) eng.setMusicPhase(musicPhase);
+          eng.setTownLayers(townLayers);
           if (scene) eng.setScene(scene); // fades in (nothing to fade out yet)
           for (const rec of recordings) if (rec.kind === 'sfx') decode(rec);
           want(scene);
@@ -5225,6 +6642,16 @@ export function createAudio() {
       if (eng) guard(() => eng.setMusicPhase(n));
     },
 
+    // The Music Hall's band joining the town tune ashore (SPEC4 §4.1): 0 none, 1 a fiddle, 2 and a frame drum, 3 and a
+    // squeezebox (its tier; perks4().musicLayers). They play along with the town tune, recorded or synthesised, in
+    // time and on its chords, coming in (or stopping) on the tune's next eighth; elsewhere they wait for the town.
+    // Cheap enough to call every frame.
+    setTownLayers(n) {
+      const k = Math.round(Number(n));
+      townLayers = Number.isFinite(k) ? clamp(k, 0, TOWN_LAYERS) : 0;
+      if (eng) guard(() => eng.setTownLayers(townLayers));
+    },
+
     // Optional per-frame top-up of the scheduler (the timer also does it). `dt` is not needed:
     // all timing comes from the audio clock.
     update() {
@@ -5273,6 +6700,7 @@ async function renderOffline({
   late = null, // { key: seconds }: injected recordings that only arrive at that time (mid-scene takeovers)
   phases = null, // [{ at, phase }]: setMusicPhase(phase) at that time (the Kraken's music following the fight)
   phase = null, // setMusicPhase(phase) before the scene starts
+  townLayers = null, // setTownLayers(n) before the scene starts (the Music Hall's band in the town)
 } = {}) {
   const OAC = window.OfflineAudioContext || window.webkitOfflineAudioContext;
   const ctx = new OAC(2, Math.ceil(seconds * sampleRate), sampleRate);
@@ -5307,6 +6735,7 @@ async function renderOffline({
   if (!ambience) eng.buses.amb.gain.value = 0;
   if (sfxOff) eng.buses.sfx.gain.value = 0;
   if (phase != null) eng.setMusicPhase(phase);
+  if (townLayers != null) eng.setTownLayers(townLayers);
   for (const p of phases || []) {
     // (a render quantum off the progressive scheduler's 0.25 s grid: one suspend per frame)
     const k = Math.round(p.at * 128);
@@ -5406,6 +6835,19 @@ function validateScores() {
         return [...sc.errors.map((e) => `${name} ${e}`), ...(n !== sc.bars ? [`${name}: ${n} chords for ${sc.bars} bars`] : [])];
       }),
     ...[ATOLLS, CAPE, DEEP, KRAKEN_TUNE].flatMap((x) => parseChords(x.chords).flat().filter((c) => !CHORD[c]).map((c) => `unknown chord ${c}`)),
+    // The Sunset Isles likewise, and the band's chart of the recorded town tune.
+    ...[['mangroves', MANGROVES, 'melody'], ['spires', SPIRES, 'melody'], ['shoals', SHOALS, 'melody'], ['shellback', SHELLBACK_TUNE, 'melody'], ['shellback tuba', SHELLBACK_TUNE, 'tuba']]
+      .flatMap(([name, x, part]) => {
+        const sc = parseScore(x[part], x.bar);
+        const n = parseChords(x.chords).length;
+        return [...sc.errors.map((e) => `${name} ${e}`), ...(n !== sc.bars ? [`${name}: ${n} chords for ${sc.bars} bars`] : [])];
+      }),
+    ...[MANGROVES, SPIRES, SHOALS, SHELLBACK_TUNE].flatMap((x) => parseChords(x.chords).flat().filter((c) => !CHORD[c]).map((c) => `unknown chord ${c}`)),
+    ...Object.entries(RECORDED.music).filter(([, r]) => r.band).flatMap(([name, r]) => {
+      const cs = r.band.chords.trim().split(/\s+/);
+      const bars = r.band.beats / r.band.perBar;
+      return [...cs.filter((c) => !CHORD[c]).map((c) => `${name} band: unknown chord ${c}`), ...(bars % cs.length ? [`${name} band: ${cs.length} chords do not divide ${bars} bars`] : [])];
+    }),
   ];
 }
 

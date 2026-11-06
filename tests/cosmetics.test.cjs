@@ -5,6 +5,9 @@
 // - wearing, buying, trophies (sanitizeLook), itemState labels and Surprise me!
 // - captainOpts / crewOpts / enemyCrewOpts emit only buildPerson options people.js accepts (§7.10),
 //   with hex colours from PALETTE; the default crew look leaves a sailor exactly as they are
+// - appended: the Kraken Seas (SPEC3) and the Sunset Isles (SPEC4 §13.1: the Jewelled tricorn and the baby
+//   hermit crab, the feats shell and island4 against island.js's PLOTS4 and pools.js's voyage4 record, the
+//   Sting, Net and Witch crews)
 const fs = require('fs');
 const path = require('path');
 
@@ -32,7 +35,11 @@ const show = (v) => {
     const s = JSON.stringify(v);
     return s === undefined ? String(v) : s.length > 60 ? s.slice(0, 60) + '…' : s;
   } catch {
-    return Object.prototype.toString.call(v);
+    try {
+      return Object.prototype.toString.call(v);
+    } catch {
+      return '[hostile object]'; // a proxy whose traps throw can't even be named
+    }
   }
 };
 // A small seeded RNG for the tests (mulberry32).
@@ -63,14 +70,14 @@ const deepFreeze = (o) => {
   const CAP = ['hat', 'coat', 'beard', 'hair', 'hairstyle', 'skin', 'body', 'pet', 'patch'];
   const CREW = ['shirt', 'head', 'sash'];
   const CATALOGUE = {
-    hat: { free: ['tricorn', 'bandana', 'straw', 'none'], paid: { bicorne: 120, plume: 180 }, trophy: { crown: ['legend', 1], mortarboard: ['quiz', 9] }, def: 'tricorn' },
+    hat: { free: ['tricorn', 'bandana', 'straw', 'none'], paid: { bicorne: 120, plume: 180 }, trophy: { crown: ['legend', 1], mortarboard: ['quiz', 9], jeweled: ['island4', 33] }, def: 'tricorn' },
     coat: { free: ['crimson', 'navy', 'none'], paid: { black: 60, emerald: 60, plum: 60 }, trophy: { admiral: ['captures', 10], governor: ['island', 30] }, def: 'crimson' },
     beard: { free: ['full', 'goatee', 'stubble', 'none'], paid: { braids: 80, handlebar: 40 }, trophy: {}, def: 'full' },
     hair: { free: ['brown', 'black', 'ginger', 'blonde', 'grey'], paid: { sea: 50, coral: 50 }, trophy: {}, def: 'brown' },
     hairstyle: { free: ['crop', 'long', 'ponytail', 'bald'], paid: {}, trophy: {}, def: 'crop' },
     skin: { free: ['s1', 's2', 's3', 's4', 's5', 's6', 's7'], paid: {}, trophy: {}, def: 's3' },
     body: { free: ['broad', 'slim'], paid: {}, trophy: {}, def: 'broad' },
-    pet: { free: ['none'], paid: { parrot: 150, macaw: 150 }, trophy: { golden: ['rakes', 50], octopus: ['kraken', 1], rainbow: ['stars', 27] }, def: 'none' },
+    pet: { free: ['none'], paid: { parrot: 150, macaw: 150 }, trophy: { golden: ['rakes', 50], octopus: ['kraken', 1], rainbow: ['stars', 27], hermit: ['shell', 1] }, def: 'none' },
     patch: { free: ['off', 'on'], paid: {}, trophy: {}, def: 'off' },
     shirt: { free: ['own', 'red', 'blue', 'black', 'teal', 'paint'], paid: { navy: 60, sunset: 60 }, trophy: {}, def: 'own' },
     head: { free: ['mixed', 'bandanas', 'caps'], paid: { tricorns: 80 }, trophy: { skull: ['boardings', 15] }, def: 'mixed' },
@@ -90,9 +97,9 @@ const deepFreeze = (o) => {
   };
   const DEFAULT_LOOK_TEXT = '{"v":1,"cap":{"hat":"tricorn","coat":"crimson","beard":"full","hair":"brown","hairstyle":"crop","skin":"s3","body":"broad","pet":"none","patch":"off"},"crew":{"shirt":"own","head":"mixed","sash":"own"},"own":[]}';
   const SPEC_LOOK_TEXT = '{"v":1,"cap":{"hat":"tricorn","coat":"crimson","beard":"full","hair":"brown","hairstyle":"crop","skin":"s3","body":"broad","pet":"none","patch":"off"},"crew":{"shirt":"own","head":"mixed","sash":"own"},"own":["hat.plume","coat.black"]}';
-  const DEFAULT_FEATS = { captures: 0, boardings: 0, rakes: 0, crits: 0, legend: 0, kraken: 0, quiz: 0, stars: 0, island: 0, prizes: {} };
-  const SPEC_FEATS_TEXT = '{"captures":3,"boardings":5,"rakes":41,"crits":12,"legend":0,"kraken":0,"quiz":0,"stars":0,"island":0,"prizes":{"privateer":2,"galleon":1}}';
-  const ALL_FEATS = { captures: 10, boardings: 15, rakes: 50, crits: 0, legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30, prizes: {} }; // every trophy, exactly
+  const DEFAULT_FEATS = { captures: 0, boardings: 0, rakes: 0, crits: 0, legend: 0, kraken: 0, quiz: 0, stars: 0, island: 0, shell: 0, island4: 0, prizes: {} };
+  const SPEC_FEATS_TEXT = '{"captures":3,"boardings":5,"rakes":41,"crits":12,"legend":0,"kraken":0,"quiz":0,"stars":0,"island":0,"shell":0,"island4":0,"prizes":{"privateer":2,"galleon":1}}';
+  const ALL_FEATS = { captures: 10, boardings: 15, rakes: 50, crits: 0, legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30, shell: 1, island4: 33, prizes: {} }; // every trophy, exactly
 
   // buildPerson options people.js accepts: today's options plus the §7.10 extensions, `earring` (§7.9
   // has captainOpts set it) and the two people.js adds for the wardrobe: `vest` (a hex, or null for
@@ -103,7 +110,7 @@ const deepFreeze = (o) => {
     seed: (v) => Number.isSafeInteger(v),
     kind: oneOf('pirate', 'man', 'woman', 'kid', 'old'),
     outfit: oneOf('pirate'),
-    hat: oneOf('tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard'),
+    hat: oneOf('tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard', 'jeweled'),
     hatColor: isHex,
     coat: (v) => v === null || isHex(v),
     coatTrim: isHex,
@@ -121,7 +128,7 @@ const deepFreeze = (o) => {
     eyepatch: oneOf(true, false),
     earring: oneOf(true, false),
     pegLeg: oneOf(true, false),
-    pet: oneOf('none', 'parrot', 'octopus'),
+    pet: oneOf('none', 'parrot', 'octopus', 'hermit'),
     petColor: (v) => !!v && typeof v === 'object' && Object.keys(v).sort().join() === 'body,head,wing' && Object.values(v).every(isHex),
     tool: oneOf('mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors'),
     scale: (v) => Number.isFinite(v) && v > 0,
@@ -254,7 +261,7 @@ const deepFreeze = (o) => {
       const t = ITEMS[id].trophy;
       return !FEAT_IDS.includes(t.feat) || !(Number.isInteger(t.min) && t.min > 0) || typeof t.text !== 'string' || !t.text.trim();
     });
-    check(trophies.length === 8 && tBad.length === 0, `${trophies.length} trophies, each naming a FEAT_IDS entry, a minimum and an unlock text (${trophies.map((id) => `${id}: ${ITEMS[id].trophy.feat} ≥ ${ITEMS[id].trophy.min}`).join(', ')})${tBad.length ? ' -> ' + tBad.join(', ') : ''}`);
+    check(trophies.length === 10 && tBad.length === 0, `${trophies.length} trophies, each naming a FEAT_IDS entry, a minimum and an unlock text (${trophies.map((id) => `${id}: ${ITEMS[id].trophy.feat} ≥ ${ITEMS[id].trophy.min}`).join(', ')})${tBad.length ? ' -> ' + tBad.join(', ') : ''}`);
 
     let frozen = Object.isFrozen(ITEMS) && Object.isFrozen(PALETTE);
     try {
@@ -266,7 +273,7 @@ const deepFreeze = (o) => {
     frozen = frozen && ITEMS['hat.plume'].price === 180;
     check(frozen && Object.values(PALETTE).every(isHex), `PALETTE (${Object.keys(PALETTE).length} named hex colours) and ITEMS are frozen`);
 
-    check(same(FEAT_IDS, ['captures', 'boardings', 'rakes', 'crits', 'legend', 'kraken', 'quiz', 'stars', 'island']), `FEAT_IDS: ${FEAT_IDS.join(', ')}`);
+    check(same(FEAT_IDS, ['captures', 'boardings', 'rakes', 'crits', 'legend', 'kraken', 'quiz', 'stars', 'island', 'shell', 'island4']), `FEAT_IDS: ${FEAT_IDS.join(', ')}`);
     const enemyTypes = Object.keys(SHIP_TYPES).filter((k) => k !== 'player');
     check(same([...FEAT_PRIZE_TYPES].sort(), [...enemyTypes].sort()) && FEAT_PRIZE_TYPES.length === enemyTypes.length, `FEAT_PRIZE_TYPES equals the enemy ship types of shipTypes.js (${FEAT_PRIZE_TYPES.join(', ')})`);
 
@@ -462,7 +469,7 @@ const deepFreeze = (o) => {
     const pr = parseF('{"prizes":{"galleon":1,"player":4,"Cutter":2,"__proto__":{"cutter":3},"toString":1,"constructor":2,"phantom":"2","raider":0,"junk":-4,"cutter":5}}');
     check(!pr.error && same(pr.F.prizes, { cutter: 5, galleon: 1, phantom: 2 }), `prizes: enemy ship types only, plain integers, zeros left out, written in FEAT_PRIZE_TYPES order (${show(pr.F ? pr.F.prizes : pr.error)})`);
     const fbf = parseF('{"captures":"x","boardings":4,"rakes":2.5,"crits":"12","legend":5,"prizes":[1,2]}');
-    check(!fbf.error && same(fbf.F, { captures: 0, boardings: 4, rakes: 0, crits: 12, legend: 1, kraken: 0, quiz: 0, stars: 0, island: 0, prizes: {} }), `parseFeats falls back field by field (${show(fbf.F || fbf.error)})`);
+    check(!fbf.error && same(fbf.F, { captures: 0, boardings: 4, rakes: 0, crits: 12, legend: 1, kraken: 0, quiz: 0, stars: 0, island: 0, shell: 0, island4: 0, prizes: {} }), `parseFeats falls back field by field (${show(fbf.F || fbf.error)})`);
     const ex = parseF('{"captures":1,"kills":99,"gold":5,"prizes":{"cutter":1},"v":2}');
     check(!ex.error && same(ex.F, { ...DEFAULT_FEATS, captures: 1, prizes: { cutter: 1 } }), 'unknown fields are dropped');
     const p = parseF('{"__proto__":{"polluted":1,"captures":3},"prizes":{"__proto__":{"polluted":1}},"constructor":{"prototype":{"polluted":1}}}');
@@ -537,7 +544,7 @@ const deepFreeze = (o) => {
     const badF = [];
     for (let i = 0; i < 300; i++) {
       const F = { captures: Math.floor(rng() * 1e6), boardings: Math.floor(rng() * 50), rakes: Math.floor(rng() * 500), crits: Math.floor(rng() * 99), legend: rng() < 0.5 ? 1 : 0,
-        kraken: rng() < 0.5 ? 1 : 0, quiz: Math.floor(rng() * 10), stars: Math.floor(rng() * 28), island: Math.floor(rng() * 31), prizes: {} };
+        kraken: rng() < 0.5 ? 1 : 0, quiz: Math.floor(rng() * 10), stars: Math.floor(rng() * 28), island: Math.floor(rng() * 31), shell: rng() < 0.5 ? 1 : 0, island4: Math.floor(rng() * 34), prizes: {} };
       for (const t of FEAT_PRIZE_TYPES) if (rng() < 0.4) F.prizes[t] = 1 + Math.floor(rng() * 9999);
       const text = K.serializeFeats(F);
       const back = parseF(text);
@@ -795,7 +802,7 @@ const deepFreeze = (o) => {
     );
     // Every captain item: the options people.js understands, colours from PALETTE, the item visible in them.
     const bad = [];
-    const HAT = { tricorn: 'tricorn', bandana: 'bandana', straw: 'straw', none: 'none', bicorne: 'bicorne', plume: 'plumed', crown: 'crown', mortarboard: 'mortarboard' };
+    const HAT = { tricorn: 'tricorn', bandana: 'bandana', straw: 'straw', none: 'none', bicorne: 'bicorne', plume: 'plumed', crown: 'crown', mortarboard: 'mortarboard', jeweled: 'jeweled' };
     for (const id of Object.keys(ITEMS).filter((i) => ITEMS[i].group === 'captain')) {
       const it = ITEMS[id];
       const L = K.wear(lookWith({}, {}, PAID), ALL_FEATS, id).look;
@@ -815,7 +822,7 @@ const deepFreeze = (o) => {
         hairstyle: () => o.hairStyle === k,
         skin: () => o.skin === PALETTE[k],
         body: () => o.kind === (k === 'slim' ? 'woman' : 'pirate') && o.outfit === 'pirate',
-        pet: () => (k === 'none' ? o.pet === 'none' && !('petColor' in o) : o.pet === (k === 'octopus' ? 'octopus' : 'parrot') && PERSON_OPTS.petColor(o.petColor)),
+        pet: () => (k === 'none' ? o.pet === 'none' && !('petColor' in o) : o.pet === (k === 'octopus' || k === 'hermit' ? k : 'parrot') && PERSON_OPTS.petColor(o.petColor)),
         patch: () => o.eyepatch === (k === 'on'),
       }[it.slot];
       if (!shows()) bad.push(`${id}: not in the options (${show(o)})`);
@@ -1031,12 +1038,12 @@ const deepFreeze = (o) => {
       check(bad.length === 0 && same(K.KRAKEN_ITEMS, NEW_IDS) && same(inOrder, NEW_IDS) && Object.isFrozen(K.KRAKEN_ITEMS),
         `KRAKEN_ITEMS: the four trophies in catalogue order (${show(K.KRAKEN_ITEMS)}), named "Professor's mortarboard" (quiz ≥ 9), "Governor's coat" (island ≥ 30), "Baby kraken" (kraken ≥ 1), "Rainbow macaw" (stars ≥ 27), with unlock texts and PALETTE swatches${bad.length ? ' -> ' + bad.join('; ') : ''}`);
       const locks = NEW_IDS.map((id) => K.itemState(null, null, 0, id).lockText);
-      check(same(locks, ['Locked: pass all 9 quiz islands', 'Locked: build every plot up to tier 3', 'Locked: drive off the Kraken', 'Locked: win all 27 quiz stars']), `the new trophies read ${locks.map((l) => `"${l}"`).join(', ')}`);
+      check(same(locks, ['Locked: pass all 9 quiz islands', 'Locked: build the first ten plots up to tier 3', 'Locked: drive off the Kraken', 'Locked: win all 27 quiz stars']), `the new trophies read ${locks.map((l) => `"${l}"`).join(', ')}`);
     }
 
     // ---- today's 64 items and ten crews are exactly as before (fingerprints of the pre-Kraken catalogue)
     {
-      const ids = Object.keys(ITEMS).filter((id) => !NEW_IDS.includes(id));
+      const ids = Object.keys(ITEMS).filter((id) => !NEW_IDS.includes(id) && !['hat.jeweled', 'pet.hermit'].includes(id));
       const items = fnv(JSON.stringify(ids.map((id) => ITEMS[id])));
       const opts = fnv(JSON.stringify(ids.map((id) => [K.captainOpts(null, id), K.crewOpts(null, 3, { kind: 'pirate', seed: 3 }, null, id)])));
       const OLD = ['cutter', 'privateer', 'prahu', 'junk', 'corsair', 'manowar', 'inferno', 'galleon', 'raider', 'phantom'];
@@ -1085,7 +1092,7 @@ const deepFreeze = (o) => {
       }
       check(bad.length === 0, `parseFeats: kraken 0..1, quiz 0..9, stars 0..27, island 0..30, plain integers only, field by field (${cases.length + objCases.length} cases)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
       const text = K.serializeFeats({ prizes: { inkheart: 1, shark: 2 }, island: 12, stars: 20, quiz: 7, kraken: 1, captures: 5 });
-      check(text === '{"captures":5,"boardings":0,"rakes":0,"crits":0,"legend":0,"kraken":1,"quiz":7,"stars":20,"island":12,"prizes":{"shark":2,"inkheart":1}}',
+      check(text === '{"captures":5,"boardings":0,"rakes":0,"crits":0,"legend":0,"kraken":1,"quiz":7,"stars":20,"island":12,"shell":0,"island4":0,"prizes":{"shark":2,"inkheart":1}}',
         `serializeFeats writes the four new feats after legend and before prizes, in FEAT_IDS order (${text})`);
     }
 
@@ -1103,14 +1110,14 @@ const deepFreeze = (o) => {
         const old = JSON.parse(raw);
         const kept = ['captures', 'boardings', 'rakes', 'crits', 'legend'].every((k) => F[k] === old[k]) && same(F.prizes, old.prizes);
         const zero = NEW_FEATS.every((k) => F[k] === 0);
-        if (!kept || !zero || once === raw || K.serializeFeats(K.parseFeats(once)) !== once || once !== raw.replace(',"prizes"', ',"kraken":0,"quiz":0,"stars":0,"island":0,"prizes"')) bad.push(`${raw} -> ${once}`);
+        if (!kept || !zero || once === raw || K.serializeFeats(K.parseFeats(once)) !== once || once !== raw.replace(',"prizes"', ',"kraken":0,"quiz":0,"stars":0,"island":0,"shell":0,"island4":0,"prizes"')) bad.push(`${raw} -> ${once}`);
       }
       check(bad.length === 0, `a feats record from before the Kraken Seas keeps every counter and prize, reads kraken / quiz / stars / island as 0, and is rewritten once (then canonical)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
     }
 
     // ---- MAX_FEATS and prizes
     {
-      check(same(K.MAX_FEATS, ['legend', 'kraken', 'quiz', 'stars', 'island']) && Object.isFrozen(K.MAX_FEATS) && K.MAX_FEATS.every((f) => FEAT_IDS.includes(f)),
+      check(same(K.MAX_FEATS, ['legend', 'kraken', 'quiz', 'stars', 'island', 'shell', 'island4']) && Object.isFrozen(K.MAX_FEATS) && K.MAX_FEATS.every((f) => FEAT_IDS.includes(f)),
         `MAX_FEATS (merged by the larger value between tabs, never added): ${K.MAX_FEATS.join(', ')}`);
       const pr = parseF('{"prizes":{"kraken":3,"inkheart":1,"skiff":2,"fireship":1,"ironclad":4,"bombketch":5,"shark":6,"Kraken":1}}');
       check(!pr.error && same(pr.F.prizes, { shark: 6, bombketch: 5, ironclad: 4, fireship: 1, skiff: 2, inkheart: 1 }),
@@ -1202,6 +1209,298 @@ const deepFreeze = (o) => {
       }
       const off = Object.keys(faction).filter((k) => !faction[k]);
       check(off.length === 0, `enemyCrewOpts: the six new crews dress as §4.3 says (${Object.keys(faction).length} checks)${off.length ? ' -> ' + off.join('; ') + (clash.length ? ' ' + clash.join(', ') : '') : ''}`);
+    }
+  }
+
+  // ================================================================== appended: the Sunset Isles (SPEC4 §0.1, §4.2, §10.1–10.3, §11.1, §13.1)
+  // The two trophies and their feats, island4's 33 against island.js's PLOTS4 (and shell's 1 and the prize mirror
+  // against pools.js's voyage4 record), the two new feats (caps, order, the one-time rewrite of today's records, the
+  // stale-tab rule), FEAT_MAX, V4_ITEMS and the three new crews' looks; the catalogue, the looks and the sixteen
+  // crews of 559cf54 are pinned unchanged but for the Governor's coat's new text.
+  {
+    const fnv = (str) => {
+      let h = 0x811c9dc5;
+      for (let i = 0; i < str.length; i++) h = Math.imul(h ^ str.charCodeAt(i), 0x01000193) >>> 0;
+      return h.toString(16).padStart(8, '0');
+    };
+    const I = await load('src/island.js');
+    const P = await load('src/pools.js');
+    const V4 = {
+      'hat.jeweled': ['island4', 33, 'Jewelled tricorn', 'build every new plot up to tier 3'],
+      'pet.hermit': ['shell', 1, 'Baby hermit crab', 'drive off the Shellback'],
+    };
+    const V4_IDS = Object.keys(V4);
+    const V4_FEATS = ['shell', 'island4'];
+    const V4_SHIPS = ['stinger', 'netsloop', 'witch'];
+    const PSEUDO = ['jolly', 'puffer', 'coilback', 'fort', 'shellback', 'kraken'];
+
+    // ---- V4_ITEMS and the two trophies; the Governor's coat keeps its feat with its new text
+    {
+      const bad = [];
+      for (const [id, [feat, min, name, text]] of Object.entries(V4)) {
+        const it = ITEMS[id];
+        if (!it) {
+          bad.push(`${id} missing`);
+          continue;
+        }
+        const t = it.trophy || {};
+        if (t.feat !== feat || t.min !== min || it.name !== name || t.text !== text) bad.push(`${id}: ${show({ name: it.name, feat: t.feat, min: t.min, text: t.text })}`);
+        if (it.price || it.isDefault || it.group !== 'captain' || typeof t.unit !== 'string' || !t.unit.trim()) bad.push(`${id}: price / default / group / unit`);
+        if (!it.swatch.length || !it.swatch.every((h) => PALETTE_HEX.has(h))) bad.push(`${id}: swatch outside PALETTE`);
+      }
+      const inOrder = Object.keys(ITEMS).filter((id) => V4_IDS.includes(id));
+      check(bad.length === 0 && same(K.V4_ITEMS, V4_IDS) && same(inOrder, V4_IDS) && Object.isFrozen(K.V4_ITEMS) && !K.V4_ITEMS.some((id) => K.KRAKEN_ITEMS.includes(id)) && K.KRAKEN_ITEMS.length === 4,
+        `V4_ITEMS: the two Sunset Isles trophies in catalogue order (${show(K.V4_ITEMS)}), "Jewelled tricorn" (island4 ≥ 33) and "Baby hermit crab" (shell ≥ 1), with texts, units and PALETTE swatches; KRAKEN_ITEMS still the four${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      const locks = V4_IDS.map((id) => K.itemState(null, null, 0, id).lockText);
+      const gv = ITEMS['coat.governor'];
+      const gvs = K.itemState(null, { island: 29, island4: 33 }, 1e6, 'coat.governor');
+      check(same(locks, ['Locked: build every new plot up to tier 3', 'Locked: drive off the Shellback']) && gv.trophy.feat === 'island' && gv.trophy.min === 30 && gv.trophy.unit === 'island tiers built' &&
+        gvs.lockText === 'Locked: build the first ten plots up to tier 3' && gvs.locked,
+        `the trophies read ${locks.map((l) => `"${l}"`).join(', ')}; the Governor's coat stays island ≥ 30 and reads "${gvs.lockText}"`);
+    }
+
+    // ---- the catalogue, the looks and the crews of 559cf54 are as they were (but for the Governor's coat's text)
+    {
+      const ids = Object.keys(ITEMS).filter((id) => !V4_IDS.includes(id));
+      const items = fnv(JSON.stringify(ids.map((id) => (id === 'coat.governor' ? { ...ITEMS[id], trophy: { ...ITEMS[id].trophy, text: 'build every plot up to tier 3' } } : ITEMS[id]))));
+      const opts = fnv(JSON.stringify(ids.map((id) => [K.captainOpts(null, id), K.crewOpts(null, 3, { kind: 'pirate', seed: 3 }, null, id)])));
+      const OLD16 = FEAT_PRIZE_TYPES.filter((t) => !V4_SHIPS.includes(t));
+      const crews = fnv(JSON.stringify(OLD16.map((t) => Array.from({ length: 60 }, (_, sd) => K.enemyCrewOpts(t, sd)))));
+      const NEWP = ['wasp', 'waspBlack', 'bottle', 'cork', 'coral', 'seaGreen', 'pearl']; // the three new crews' (the trophies reuse 559cf54's colours)
+      const pal = Object.entries(PALETTE).filter(([k]) => !NEWP.includes(k));
+      check(ids.length === 68 && OLD16.length === 16 && items === 'b8cf4ae2' && opts === 'f273b634' && crews === '17dec5c5' && pal.length === 59 && fnv(JSON.stringify(pal)) === 'a81c6b72' && NEWP.every((k) => isHex(PALETTE[k])),
+        `559cf54's ${ids.length} items, the looks they give, its ${OLD16.length} crews and its ${pal.length} colours are unchanged (fingerprints ${items} / ${opts} / ${crews} / ${fnv(JSON.stringify(pal))}); ${NEWP.length} new colours`);
+    }
+
+    // ---- island4's 33 is island.js's PLOTS4 tiers; shell's 1 and the prize mirror are pools.js's voyage4 record
+    {
+      const tiers4 = (I.PLOTS4 || []).reduce((n, p) => n + p.tiers.length, 0);
+      const tiers = I.PLOTS.reduce((n, p) => n + p.tiers.length, 0);
+      const full4 = I.parseIsland4(JSON.stringify({ v: 1, t: Object.fromEntries(I.PLOTS4.map((p) => [p.id, p.tiers.length])) }));
+      const top4 = I.RANKS4[I.RANKS4.length - 1];
+      const caps = K.parseFeats({ shell: 99, island4: 99, island: 99 });
+      check(I.PLOTS4.length === 11 && I.PLOTS4.every((p) => p.tiers.length === 3) && tiers4 === 33 && I.tiersBuilt4(full4) === tiers4 && top4.from === tiers + tiers4 &&
+        ITEMS['hat.jeweled'].trophy.min === tiers4 && K.FEAT_MAX.island4 === tiers4 && caps.island4 === tiers4 &&
+        tiers === 30 && ITEMS['coat.governor'].trophy.min === tiers && K.FEAT_MAX.island === tiers && caps.island === tiers,
+        `island.js: ${I.PLOTS4.length} new plots, ${tiers4} tiers (all built: ${I.tiersBuilt4(full4)}) = the Jewelled tricorn's minimum = FEAT_MAX.island4 (${K.FEAT_MAX.island4}); the first ten plots' ${tiers} tiers = the Governor's coat = FEAT_MAX.island (stays 30); ${top4.name} at ${top4.from} = ${tiers} + ${tiers4}`);
+      const allTypes = Object.fromEntries([...FEAT_PRIZE_TYPES, ...PSEUDO, 'player'].map((t) => [t, 12000]));
+      const v4 = P.parseVoyage4(JSON.stringify({ v: 1, plays: [0, 0, 0], met: 0, won: 7, tips: 0, prizes: allTypes }));
+      const ships = P.V4_KINDS.filter((k) => !P.isPseudo(k));
+      const pseudo = P.V4_KINDS.filter((k) => P.isPseudo(k));
+      const fromV4 = K.parseFeats({ shell: v4.won, prizes: v4.prizes });
+      check(v4.won === K.FEAT_MAX.shell && ITEMS['pet.hermit'].trophy.min === K.FEAT_MAX.shell && same(Object.keys(v4.prizes), V4_SHIPS) && Object.values(v4.prizes).every((n) => n === 9999) &&
+        same(ships, V4_SHIPS) && same(FEAT_PRIZE_TYPES.slice(-3), V4_SHIPS) && pseudo.length === 5 && !pseudo.some((k) => FEAT_PRIZE_TYPES.includes(k)) && same(fromV4.prizes, { stinger: 9999, netsloop: 9999, witch: 9999 }) && fromV4.shell === 1,
+        `pools.js: voyage4's won caps at ${v4.won} (= FEAT_MAX.shell = the hermit crab's minimum); its prizes mirror exactly the three new ship types (${Object.keys(v4.prizes).join(', ')}, ≤ 9,999 like feats.prizes), the last three FEAT_PRIZE_TYPES; its five pseudo kinds (${pseudo.join(', ')}) are never prizes`);
+    }
+
+    // ---- FEAT_MAX, MAX_FEATS and the order the feats are written in
+    {
+      const want = { legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30, shell: 1, island4: 33 };
+      const big = K.parseFeats(Object.fromEntries(FEAT_IDS.map((f) => [f, 5e6])));
+      const capped = FEAT_IDS.every((f) => big[f] === (want[f] ?? 1e6));
+      check(same(K.FEAT_MAX, want) && Object.isFrozen(K.FEAT_MAX) && same(Object.keys(K.FEAT_MAX), K.MAX_FEATS) && capped && same(FEAT_IDS.slice(-3), ['island', 'shell', 'island4']),
+        `FEAT_MAX ${show(K.FEAT_MAX)} (frozen, the MAX_FEATS in order); parseFeats caps every counter by it (else 1,000,000); shell and island4 come after island (${show(big)})`);
+      const text = K.serializeFeats({ prizes: { witch: 2, inkheart: 1, stinger: 3, shark: 2, netsloop: 1, kraken: 4, jolly: 2 }, island4: 20, shell: 1, island: 12, kraken: 1, captures: 5 });
+      check(text === '{"captures":5,"boardings":0,"rakes":0,"crits":0,"legend":0,"kraken":1,"quiz":0,"stars":0,"island":12,"shell":1,"island4":20,"prizes":{"shark":2,"inkheart":1,"stinger":3,"netsloop":1,"witch":2}}',
+        `serializeFeats writes shell and island4 after island and before prizes, and the three new prize types after the Kraken ones (${text})`);
+    }
+
+    // ---- shell 0..1 and island4 0..33: plain integers, clamped, field by field
+    {
+      let sourceText = false;
+      JSON.parse('1', (k, v, ctx) => { sourceText = !!(ctx && typeof ctx.source === 'string'); return v; });
+      // [literal, shell (max 1), island4 (max 33)]
+      const cases = [
+        ['0', 0, 0], ['1', 1, 1], ['2', 1, 2], ['30', 1, 30], ['32', 1, 32], ['33', 1, 33], ['34', 1, 33], ['63', 1, 33], ['999999', 1, 33], ['1000001', 1, 33],
+        ['-0', 0, 0], ['-1', 0, 0], ['-33', 0, 0], ['"5"', 1, 5], ['" 33 "', 1, 33], ['"1e1"', 0, 0], ['"2.5"', 0, 0], ['"0x21"', 0, 0], ['""', 0, 0],
+        ['2.5', 0, 0], ['0.5', 0, 0], ['1e400', 0, 0], ['123456789012345678901', 0, 0], ['null', 0, 0], ['true', 0, 0], ['[1]', 0, 0], ['{"n":1}', 0, 0], ['"NaN"', 0, 0],
+        ...(sourceText ? [['1e1', 0, 0], ['2.0', 0, 0], ['1E0', 0, 0]] : []),
+      ];
+      const bad = [];
+      for (const [lit, ...want] of cases) {
+        const r = parseF(`{"captures":4,"island":12,"shell":${lit},"island4":${lit},"kraken":1,"prizes":{"witch":2}}`);
+        const got = r.error ? [r.error] : V4_FEATS.map((f) => r.F[f]);
+        if (!same(got, want) || r.F.captures !== 4 || r.F.island !== 12 || r.F.kraken !== 1 || r.F.prizes.witch !== 2) bad.push(`${lit} -> ${show(got)} (want ${want})`);
+      }
+      const objCases = [[3, 1, 3], [1, 1, 1], [40, 1, 33], [-3, 0, 0], [-0, 0, 0], [NaN, 0, 0], [Infinity, 0, 0], [2.5, 0, 0], ['4', 1, 4], [new Number(4), 0, 0], [{ valueOf: () => 4 }, 0, 0], [4n, 0, 0], [[4], 0, 0], [true, 0, 0]];
+      for (const [v, s, i4] of objCases) {
+        const r = parseF({ shell: v, island4: v, island: 5 });
+        if (r.error || r.F.shell !== s || r.F.island4 !== i4 || Object.is(r.F.shell, -0) || Object.is(r.F.island4, -0) || r.F.island !== 5) bad.push(`${show(v)} -> ${show(r.F || r.error)}`);
+      }
+      const hostileF = {};
+      Object.defineProperty(hostileF, 'shell', { enumerable: true, get() { throw new Error('getter'); } });
+      hostileF.island4 = 7;
+      const hf = parseF(hostileF);
+      if (hf.error || hf.F.shell !== 0 || hf.F.island4 !== 7) bad.push(`a throwing shell getter -> ${show(hf.F || hf.error)}`);
+      const inh = parseF(Object.create({ shell: 1, island4: 33 }));
+      if (inh.error || inh.F.shell !== 0 || inh.F.island4 !== 0) bad.push('inherited shell / island4 were read');
+      const pr = parseF('{"__proto__":{"shell":1,"island4":33},"shell":"1","island4":"x"}');
+      if (pr.error || pr.F.shell !== 1 || pr.F.island4 !== 0 || ({}).shell !== undefined) bad.push(`__proto__ -> ${show(pr.F || pr.error)}`);
+      check(bad.length === 0, `parseFeats: shell 0..1 and island4 0..33, plain integers only, field by field, own properties only (${cases.length + objCases.length + 3} cases${sourceText ? ', incl. 1e1 and 2.0' : ''})${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    }
+
+    // ---- §10.3 / §0.1: today's feats records read shell and island4 as 0 and are rewritten once with them; an older
+    //      build's rewrite (no shell, no island4, no new prize keys) reads the same way, for main to re-derive them
+    {
+      const TODAY = [
+        '{"captures":0,"boardings":0,"rakes":0,"crits":0,"legend":0,"kraken":0,"quiz":0,"stars":0,"island":0,"prizes":{}}', // 559cf54's fresh record
+        '{"captures":3,"boardings":5,"rakes":41,"crits":12,"legend":0,"kraken":0,"quiz":0,"stars":0,"island":0,"prizes":{"privateer":2,"galleon":1}}',
+        '{"captures":12,"boardings":15,"rakes":50,"crits":9,"legend":1,"kraken":1,"quiz":9,"stars":27,"island":30,"prizes":{"cutter":4,"phantom":1,"shark":2,"inkheart":1}}',
+      ];
+      const SPEC2 = '{"captures":3,"boardings":5,"rakes":41,"crits":12,"legend":0,"prizes":{"privateer":2,"galleon":1}}';
+      const bad = [];
+      for (const raw of TODAY) {
+        const F = K.parseFeats(raw);
+        const once = K.serializeFeats(F);
+        const old = JSON.parse(raw);
+        const kept = Object.keys(old).filter((k) => k !== 'prizes').every((k) => F[k] === old[k]) && same(F.prizes, old.prizes);
+        if (!kept || F.shell !== 0 || F.island4 !== 0 || once !== raw.replace(',"prizes"', ',"shell":0,"island4":0,"prizes"') || K.serializeFeats(K.parseFeats(once)) !== once) bad.push(`${raw} -> ${once}`);
+      }
+      const s2 = K.serializeFeats(K.parseFeats(SPEC2));
+      if (s2 !== SPEC2.replace(',"prizes"', ',"kraken":0,"quiz":0,"stars":0,"island":0,"shell":0,"island4":0,"prizes"')) bad.push(`${SPEC2} -> ${s2}`);
+      check(bad.length === 0 && K.serializeFeats(null) === TODAY[0].replace(',"prizes"', ',"shell":0,"island4":0,"prizes"'),
+        `a feats record from 559cf54 (or from before the Kraken Seas) keeps every counter and prize, reads shell and island4 as 0 and is rewritten once, with "shell":0,"island4":0 before "prizes" (then canonical)${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+      // what an older tab writes back after this build saved shell, island4 and a new prize: the new fields are gone
+      const mine = K.serializeFeats({ captures: 7, island: 30, shell: 1, island4: 33, prizes: { witch: 2, cutter: 1 } });
+      const older = JSON.stringify({ ...JSON.parse(mine), shell: undefined, island4: undefined, prizes: { cutter: 1 } });
+      const back = K.parseFeats(older);
+      const tooBig = K.parseFeats('{"island":63,"island4":63}');
+      check(back.shell === 0 && back.island4 === 0 && same(back.prizes, { cutter: 1 }) && back.island === 30 && back.captures === 7 && tooBig.island === 30 && tooBig.island4 === 33,
+        `after an older tab's rewrite the feats read shell 0, island4 0 and no witch prize (main re-derives them from -voyage4 and -island4), the rest kept; island never holds the new plots (63 reads as island 30, island4 33)`);
+    }
+
+    // ---- prizes keep the three new ship types and drop every pseudo kind (none of them is a ship)
+    {
+      const pr = parseF('{"prizes":{"witch":3,"jolly":5,"puffer":2,"coilback":1,"fort":4,"shellback":1,"kraken":3,"stinger":10000,"Witch":2,"netsloop":"6","player":1,"cutter":1}}');
+      check(!pr.error && same(pr.F.prizes, { cutter: 1, stinger: 9999, netsloop: 6, witch: 3 }),
+        `prizes count stinger, netsloop and witch (capped at 9,999, in FEAT_PRIZE_TYPES order); jolly, puffer, coilback, fort, shellback, kraken and player are not ships and are dropped (${show(pr.F ? pr.F.prizes : pr.error)})`);
+    }
+
+    // ---- the two trophies lock and unlock by their own feats only (the old island feat never wins the tricorn)
+    {
+      const bad = [];
+      const MAXED = { captures: 99, boardings: 99, rakes: 99, crits: 99, legend: 1, kraken: 1, quiz: 9, stars: 27, island: 30, shell: 1, island4: 33 };
+      for (const [id, [feat, min]] of Object.entries(V4)) {
+        const it = ITEMS[id];
+        const short = { [feat]: min - 1 };
+        const won = { [feat]: min };
+        const others = { ...MAXED, [feat]: min - 1 };
+        const sLocked = K.itemState(null, short, 1e6, id);
+        const sOthers = K.itemState(null, others, 1e6, id);
+        const sWon = K.itemState(null, JSON.stringify(won), 0, id);
+        if (!sLocked.locked || sLocked.affordable || !sOthers.locked || sWon.locked || sWon.label !== 'Trophy won' || !sWon.owned || sWon.price !== 0) bad.push(`${id} itemState`);
+        if (K.wear(null, short, id).reason !== 'locked' || K.wear(null, others, id).reason !== 'locked') bad.push(`${id}: worn without its own feat`);
+        const w = K.wear(null, won, id);
+        if (!w.ok || w.look.cap[it.slot] !== it.key) bad.push(`${id}: not worn once won`);
+        if (K.buy(null, 1e9, id).reason !== 'trophy') bad.push(`${id}: buyable`);
+        if (K.sanitizeLook(w.look, others).cap[it.slot] !== DEFAULT_LOOK.cap[it.slot] || K.sanitizeLook(w.look, won).cap[it.slot] !== it.key) bad.push(`${id}: sanitizeLook`);
+      }
+      const gov = K.itemState(null, { island4: 33, shell: 1 }, 0, 'coat.governor');
+      if (!gov.locked) bad.push("the Governor's coat is won by island4");
+      check(bad.length === 0, `each new trophy: locked (not wearable, not buyable) one short of its own feat even with every other feat maxed (island 30 never wins the Jewelled tricorn, island4 33 never the Governor's coat); worn free, "Trophy won", once earned; sanitizeLook takes it off when unearned${bad.length ? ' -> ' + bad.join('; ') : ''}`);
+    }
+
+    // ---- §10.1: the look record accepts the two trophies (kept by parseLook, checked against the feats by sanitizeLook)
+    {
+      const raw = '{"v":1,"cap":{"hat":"jeweled","coat":"governor","beard":"full","hair":"brown","hairstyle":"crop","skin":"s3","body":"broad","pet":"hermit","patch":"off"},"crew":{"shirt":"own","head":"mixed","sash":"own"},"own":[]}';
+      const L = K.parseLook(raw);
+      const all = K.sanitizeLook(raw, '{"island":30,"island4":33,"shell":1}');
+      const none = K.sanitizeLook(raw, '{"island":30}');
+      const half = K.sanitizeLook(raw, { shell: 1 });
+      check(K.serializeLook(L) === raw && K.serializeLook(all) === raw && same(none.cap, { ...DEFAULT_LOOK.cap, coat: 'governor' }) && same(half.cap, { ...DEFAULT_LOOK.cap, pet: 'hermit' }),
+        'a saved look wearing the Jewelled tricorn and the hermit crab reads back and is written exactly as stored; sanitizeLook keeps each only with its own feat');
+    }
+
+    // ---- what the trophies look like (people.js options), and that people.js draws them
+    {
+      const src = fs.readFileSync(path.join(ROOT, 'src/people.js'), 'utf8');
+      const hatsSrc = (src.match(/export const HATS = \[([^\]]*)\]/) || [])[1] || '';
+      const HATS = hatsSrc.split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean);
+      const colOf = (name) => {
+        const m = src.match(new RegExp(`const ${name} = Object\\.freeze\\(\\{([^}]*)\\}\\)`));
+        return m ? Object.fromEntries(m[1].split(',').map((kv) => kv.split(':').map((x) => x.trim())).filter((kv) => kv.length === 2).map(([k, v]) => [k, Number(v)])) : {};
+      };
+      const HERMIT = colOf('HERMIT_COL');
+      const OCTO = colOf('OCTO_COL');
+      const jewel = Number(((src.match(/const JEWEL = (0x[0-9a-f]+)/) || [])[1]) || NaN);
+      const jt = K.captainOpts(null, 'hat.jeweled');
+      const tri = K.captainOpts(null, 'hat.tricorn');
+      const hc = K.captainOpts(null, 'pet.hermit');
+      const others = ['pet.parrot', 'pet.macaw', 'pet.golden', 'pet.octopus', 'pet.rainbow'].map((id) => JSON.stringify(K.captainOpts(null, id).petColor));
+      const it = (id) => ITEMS[id];
+      const checks = {
+        "people.js has the 'jeweled' hat and builds the 'hermit' pet": HATS.includes('jeweled') && new RegExp("opts\\.pet === 'hermit'").test(src),
+        'the Jewelled tricorn is a jeweled hat in people.js JEWEL (PALETTE.plum), unlike the plain tricorn': jt.hat === 'jeweled' && jt.hatColor === jewel && jt.hatColor === PALETTE.plum && tri.hat === 'tricorn' && tri.hatColor !== jt.hatColor,
+        'the baby hermit crab is the one from Shellback Shoals (people.js HERMIT_COL = PALETTE rainbowBody / goldenHead / coralDye)': hc.pet === 'hermit' && Object.keys(HERMIT).length === 3 && same(hc.petColor, { body: HERMIT.body, wing: HERMIT.wing, head: HERMIT.head }) &&
+          same(hc.petColor, { body: PALETTE.rainbowBody, wing: PALETTE.goldenHead, head: PALETTE.coralDye }) && Object.values(hc.petColor).every((h) => PALETTE_HEX.has(h)),
+        'the hermit crab looks like no other pet (three colours, unlike the baby kraken and the parrots)': new Set(Object.values(hc.petColor)).size === 3 && !others.includes(JSON.stringify(hc.petColor)) && OCTO.body !== hc.petColor.body,
+        'their swatches show their own colours': it('hat.jeweled').swatch[0] === jt.hatColor && it('pet.hermit').swatch.every((h) => Object.values(hc.petColor).includes(h)),
+        'wearing both with the Governor\'s coat gives valid options': !badOpts(K.captainOpts(K.wear(K.wear(K.wear(null, ALL_FEATS, 'hat.jeweled').look, ALL_FEATS, 'pet.hermit').look, ALL_FEATS, 'coat.governor').look)),
+      };
+      const off = Object.keys(checks).filter((k) => !checks[k]);
+      check(off.length === 0, `the Sunset Isles trophies' looks: ${Object.keys(checks).length} checks (people.js's jeweled hat and hermit crab, their colours, swatches)${off.length ? ' -> ' + off.join('; ') : ''}`);
+    }
+
+    // ---- people.js's option lists (SPEC4 §11.1, 1G): the full new hats and tools are there; what cosmetics.js may
+    //      emit (PERSON_OPTS) is a part of them, and the islanders' new hats and tools are no item's or crew's
+    {
+      const src = fs.readFileSync(path.join(ROOT, 'src/people.js'), 'utf8');
+      const listOf = (name) => (((src.match(new RegExp(`export const ${name} = \\[([^\\]]*)\\]`)) || [])[1]) || '').split(',').map((x) => x.trim().replace(/^'|'$/g, '')).filter(Boolean);
+      const HATS = listOf('HATS');
+      const TOOLS = listOf('TOOLS');
+      const FULL_HATS = ['tricorn', 'bandana', 'cap', 'straw', 'kerchief', 'none', 'bicorne', 'plumed', 'crown', 'horned', 'mortarboard', 'toque', 'souwester', 'startop', 'jeweled'];
+      const FULL_TOOLS = ['mop', 'brush', 'bucket', 'crate', 'rod', 'fiddle', 'hammer', 'lantern', 'none', 'cutlass', 'tape', 'scissors', 'pointer', 'drum', 'spyglass', 'book', 'basket', 'squeezebox'];
+      const ISLANDER_ONLY = { hat: ['toque', 'souwester', 'startop'], tool: ['pointer', 'drum', 'spyglass', 'book', 'basket', 'squeezebox'] };
+      const looks = [
+        ...Object.keys(ITEMS).flatMap((id) => [K.captainOpts(null, id), K.crewOpts(null, 5, { kind: 'pirate', seed: 5 }, null, id)]),
+        ...[...FEAT_PRIZE_TYPES, 'jolly', 'shellback'].flatMap((t) => Array.from({ length: 24 }, (_, sd) => K.enemyCrewOpts(t, sd))),
+      ];
+      const accepted = { hat: FULL_HATS.filter((h) => PERSON_OPTS.hat(h)), tool: FULL_TOOLS.filter((t) => PERSON_OPTS.tool(t)) };
+      const ok = FULL_HATS.every((h) => HATS.includes(h)) && FULL_TOOLS.every((t) => TOOLS.includes(t)) &&
+        accepted.hat.length === 12 && accepted.hat.includes('jeweled') && !ISLANDER_ONLY.hat.some((h) => PERSON_OPTS.hat(h)) &&
+        accepted.tool.length === 12 && !ISLANDER_ONLY.tool.some((t) => PERSON_OPTS.tool(t)) &&
+        looks.every((o) => (o.hat === undefined || HATS.includes(o.hat)) && (o.tool === undefined || TOOLS.includes(o.tool)) && !ISLANDER_ONLY.hat.includes(o.hat) && (o.tool === undefined || o.tool === 'none'));
+      check(ok, `people.js has the full option lists (${HATS.length} hats, ${TOOLS.length} tools: + toque, souwester, startop, jeweled; + drum, spyglass, book, basket, squeezebox); cosmetics.js emits ${accepted.hat.length} of the hats (jeweled the new one) and only tool 'none', never an islander's hat or tool (${looks.length} looks)`);
+    }
+
+    // ---- the three new crews (SPEC4 §11.1): Sting yellow-and-black stripes and bandanas; Net green caps and white
+    //      shirts; the Witch's coral sashes and shell earrings. Pseudo kinds have no crew.
+    {
+      const L = Object.fromEntries(V4_SHIPS.map((t) => [t, Array.from({ length: 60 }, (_, sd) => K.enemyCrewOpts(t, sd))]));
+      const all = (t, fn) => L[t].every(fn);
+      const some = (t, fn) => L[t].some(fn);
+      const rgb = (h) => [(h >> 16) & 255, (h >> 8) & 255, h & 255];
+      const lum = (h) => rgb(h).reduce((s, c) => s + c, 0) / 3;
+      const [wr, wg, wb] = rgb(PALETTE.wasp);
+      const [br, bg, bb] = rgb(PALETTE.bottle);
+      const [cr, cg, cb] = rgb(PALETTE.coral);
+      const faction = {
+        'the colours are what they say (wasp yellow, near-black, bottle green, coral pink)': wr > 200 && wg > 160 && wb < 80 && lum(PALETTE.waspBlack) < 50 && bg > br && bg > bb && cr > 220 && cr > cg + 60 && cb > cg,
+        'stinger: bandanas, yellow shirts with black stripes, black sashes': all('stinger', (o) => o.kind === 'pirate' && o.hat === 'bandana' && [PALETTE.waspBlack, PALETTE.wasp].includes(o.hatColor) && o.stripes === true && o.shirt === PALETTE.wasp && o.shirt2 === PALETTE.waspBlack && o.vest === null && o.accent === PALETTE.waspBlack && !('coat' in o)) &&
+          some('stinger', (o) => o.hatColor === PALETTE.waspBlack) && some('stinger', (o) => o.hatColor === PALETTE.wasp),
+        'netsloop: bottle-green caps, plain white shirts': all('netsloop', (o) => o.kind === 'pirate' && o.hat === 'cap' && o.hatColor === PALETTE.bottle && o.stripes === false && o.shirt === PALETTE.white && o.shirt2 === PALETTE.white && o.vest === null && [PALETTE.bottle, PALETTE.cork].includes(o.accent) && !('coat' in o)) &&
+          some('netsloop', (o) => o.accent === PALETTE.bottle) && some('netsloop', (o) => o.accent === PALETTE.cork),
+        "witch: coral sashes and earrings on every sailor, coral on every head (a coral kerchief, or a bare head of coral-pink hair), sea-green or pearl shirts": all('witch', (o) => o.kind === 'pirate' && o.accent === PALETTE.coral && o.earring === true && (o.hat === 'kerchief' ? o.hatColor === PALETTE.coral && !('hair' in o) : o.hat === 'none' && !('hatColor' in o) && o.hair === PALETTE.coralDye) && [PALETTE.seaGreen, PALETTE.pearl].includes(o.shirt) && o.shirt2 === o.shirt && o.stripes === false && o.vest === null) &&
+          ['kerchief', 'none'].every((h) => [PALETTE.seaGreen, PALETTE.pearl].every((s) => L.witch.slice(0, 16).some((o) => o.hat === h && o.shirt === s))),
+        'the jollyboats, puffers, Old Coilback, the forts, the Shellback and the Kraken have no crew (a plain pirate)': PSEUDO.every((t) => [1, 2, 7].every((sd) => same(K.enemyCrewOpts(t, sd), { kind: 'pirate', seed: sd }))),
+      };
+      // every faction has a look of its own: the three new crews dress a sailor like no other ship type does
+      const sig = (o) => JSON.stringify(['kind', 'hat', 'hatColor', 'coat', 'shirt', 'shirt2', 'vest', 'skin', 'accent'].map((k) => o[k]));
+      const groups = {};
+      for (const t of FEAT_PRIZE_TYPES) groups[t] = new Set(Array.from({ length: 24 }, (_, sd) => sig(K.enemyCrewOpts(t, sd))));
+      const clash = [];
+      for (const a of V4_SHIPS) for (const b of FEAT_PRIZE_TYPES) if (a !== b && [...groups[a]].some((v) => groups[b].has(v))) clash.push(`${a}/${b}`);
+      faction['each new crew differs from every other ship type\'s'] = clash.length === 0;
+      // neighbouring sailors differ where there is a pick (the first pick alternates; the second runs at most 4)
+      for (const [name, t, key, most] of [['stinger bandanas', 'stinger', (o) => o.hatColor, 2], ['netsloop sashes', 'netsloop', (o) => o.accent, 2], ['witch shirts', 'witch', (o) => o.shirt, 2], ['witch hats', 'witch', (o) => o.hat, 4]]) {
+        const vals = Array.from({ length: 200 }, (_, sd) => key(K.enemyCrewOpts(t, sd)));
+        let run = 1;
+        let longest = 1;
+        for (let i = 1; i < vals.length; i++) longest = Math.max(longest, (run = vals[i] === vals[i - 1] ? run + 1 : 1));
+        faction[`${name} vary from sailor to sailor (longest run ${longest})`] = new Set(vals.slice(1, 9)).size > 1 && longest <= most;
+      }
+      const off = Object.keys(faction).filter((k) => !faction[k]);
+      check(off.length === 0, `enemyCrewOpts: the three new crews dress as SPEC4 §11.1 says (${Object.keys(faction).length} checks)${off.length ? ' -> ' + off.join('; ') + (clash.length ? ' ' + clash.join(', ') : '') : ''}`);
     }
   }
 

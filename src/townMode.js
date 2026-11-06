@@ -32,7 +32,7 @@
 //   quiz: { record(), save(rec, gold, info) → { ok, reason? } | bool } (quizPanel.js's contract),
 //   optional: hints() → lifebuoys a quiz round, rebuildShip() (the docked ship again, with a new recipe's keg)
 import { createTown } from './town.js';
-import { ITEMS, SLOTS, SLOT_NAMES, KRAKEN_ITEMS, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
+import { ITEMS, SLOTS, SLOT_NAMES, KRAKEN_ITEMS, V4_ITEMS, itemState, surprise, captainOpts, crewOpts } from './cosmetics.js';
 import { ARMORY, armoryMaxTier, armoryNextCost, armoryStatText, parseArmoryConfig } from './armory.js';
 import { SPECIAL_IDS, SPECIAL, RECIPES, LOADS, WORDS3, onSale, buyRecipe, parsePowder } from './specials.js';
 import { parseIsland, tierOf, perks, rank as islandRank, villagers as islandVillagers } from './island.js';
@@ -154,6 +154,13 @@ export function createTownMode(ctx = {}) {
     KRAKEN = !!(typeof C.withKraken === 'function' ? C.withKraken() : C.withKraken);
   } catch {
     KRAKEN = false;
+  }
+  // Sunset Isles (SPEC4 §0.1): read once; false hides the Voyage IV trophies, so the town stays exactly today's
+  let V4 = false;
+  try {
+    V4 = !!(typeof C.withV4 === 'function' ? C.withV4() : C.withV4);
+  } catch {
+    V4 = false;
   }
   const PLACES = KRAKEN ? PLACES_KRAKEN : PLACES_TODAY;
   const $ = (id, tag = 'div') => document.getElementById(id) || document.createElement(tag);
@@ -354,7 +361,7 @@ export function createTownMode(ctx = {}) {
   // ----- wardrobe -----
   const itemBtns = new Map(); // id -> button
   // the Kraken Seas trophies stay out of the wardrobe and the log until that voyage is in the game
-  const hiddenItem = (id) => !KRAKEN && KRAKEN_ITEMS.includes(id);
+  const hiddenItem = (id) => (!KRAKEN && KRAKEN_ITEMS.includes(id)) || (!V4 && V4_ITEMS.includes(id));
   const groupEls = new Map(); // slot -> { group, buyWrap, buyBtn, why }
   let paintBtn = null;
   function buildWardrobe() {
