@@ -805,6 +805,46 @@ function pathProblems(W, p, from, to) {
         console.log(`INFO  on the decks a band's edge may meet a pad or a post where a link runs in along it (a walker slides along it): ${lipsDeck.length} such points`);
         check(stuck.length === 0 && runs.length === (d4.links.length - data.links.length) * 10, `a jog held across each of the ${d4.links.length - data.links.length} new links from either end, straight along its line or 5° or 15° off it (sliding along the rope), gets across: nothing by the far end pins it${stuck.length ? ' -> stuck: ' + stuck.map((r) => r.id).slice(0, 8).join(', ') : ` (slowest ${Math.max(...runs.map((r) => r.s)).toFixed(1)} s)`}`);
       }
+      // -- onto each new link from its deck and round its bends, as a child steers (the jog above starts on the link at
+      // its end post and heads straight for the far one, so it never walks a run-in, never steps from the deck onto
+      // the link and never turns: a run-in that turned back on itself past the end post (s1S2 at s2, 2D's walking
+      // section) or a square bend at a deck's edge (s4S3) was outside what it tried). He starts 0.6 u behind the link's
+      // land end, holds a jog at its next point 0.8 u or more ahead and, within T of that point, at the next one again
+      // (T 0.35 to 0.7: he turns a little early, cutting the corner), straight at it or 0.1 rad off (a stick)
+      {
+        const stuck = [];
+        let n = 0;
+        for (const l of d4.links.slice(data.links.length)) {
+          for (const dir of [1, -1]) {
+            const pts = dir === 1 ? l.pts : [...l.pts].reverse();
+            const a = pts[0];
+            const b = pts[pts.length - 1];
+            const L = Math.hypot(b[0] - a[0], b[2] - a[2]) || 1;
+            for (const T of [0.35, 0.5, 0.6, 0.7]) {
+              for (const off of [0, 0.1, -0.1]) {
+                let k = 1;
+                while (k < pts.length - 1 && Math.hypot(pts[k][0] - a[0], pts[k][2] - a[2]) < 0.8) k++;
+                const d1 = Math.hypot(pts[k][0] - a[0], pts[k][2] - a[2]) || 1;
+                const s0 = W4.snap(a[0] - ((pts[k][0] - a[0]) / d1) * 0.6, a[2] - ((pts[k][2] - a[2]) / d1) * 0.6, 1);
+                let p = { x: s0.x, z: s0.z, y: W4.heightAt(s0.x, s0.z, a[1]) };
+                let h = Math.atan2(pts[k][0] - p.x, pts[k][2] - p.z) + off;
+                let ok = false;
+                for (let t = 0; t < 10 && !ok; t += 1 / 60) {
+                  if (k < pts.length - 1 && Math.hypot(pts[k][0] - p.x, pts[k][2] - p.z) < T) {
+                    while (k < pts.length - 1 && Math.hypot(pts[k][0] - p.x, pts[k][2] - p.z) < T) k++;
+                    h = Math.atan2(pts[k][0] - p.x, pts[k][2] - p.z) + off;
+                  }
+                  p = W4.move(p, (Math.sin(h) * 3.0) / 60, (Math.cos(h) * 3.0) / 60, R);
+                  ok = ((p.x - a[0]) * (b[0] - a[0]) + (p.z - a[2]) * (b[2] - a[2])) / (L * L) > 1.02 || Math.hypot(p.x - b[0], p.z - b[2]) <= 0.7;
+                }
+                n++;
+                if (!ok) stuck.push(`${l.id}${dir > 0 ? '>' : '<'} T${T}${off ? (off > 0 ? '+' : '-') : ''} at ${f2(p.x)},${f2(p.z)}`);
+              }
+            }
+          }
+        }
+        check(stuck.length === 0 && n === (d4.links.length - data.links.length) * 24, `${n} jogs from the deck onto each new link and round its bends, steered as a child steers (at its next point 0.8 u ahead, turning 0.35 to 0.7 u early, straight or 0.1 rad off), all get across: no run-in turns back on itself and no bend's inside corner pins him${stuck.length ? ' -> stuck: ' + [...new Set(stuck.map((s) => s.split(' ')[0]))].join(', ') + ' (' + stuck.slice(0, 4).join('; ') + ')' : ''}`);
+      }
       // -- a walker already out on a new link (a quarter, half and three quarters along, in the middle of the band or
       // near either rope) and held toward either end, straight at its mouth or 5°, 10° or 15° off: a loosely held
       // stick still gets him off at the far end (nothing pins him by a pad, a post or a prop)

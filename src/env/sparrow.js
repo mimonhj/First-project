@@ -6689,11 +6689,22 @@ export function build(scene, ctx = {}) {
   };
 
   // ----- (v4) the Music Hall's plaza dance (§4.1): with the Music Hall at tier 3 the villagers dance on the plaza for
-  // DANCE.dur s every DANCE.every s. As it begins, each of the plan's dance spots the islanders left free (folk4 takes
-  // those within its reach) takes the nearest villager on the plaza within VDANCE.join of it whose way there is clear:
-  // he leaves his loop (his clock held), runs out, dances, walks back (folk4.danceStep) and goes on where he left it.
-  // A dance already under way when the town first sees it (the dock just opened) is let be. ----
-  const VDANCE = { join: 6, late: 0.5, clear: 0.32 };
+  // DANCE.dur s every DANCE.every s. As it begins, the plan's dance spots the islanders left free (folk4 takes those
+  // within its reach) go to the villagers near the plaza: each one's way there is a route over the deck, straight or
+  // round the market stalls by the plaza's turning points (DANCE_VIA), no longer than VDANCE.reach and clear of every
+  // walk blocker, Bess and Barnacle and the plaza's standing folk, off every rope bridge, place circle, doorway and
+  // the gangplank (a villager on the deck before a bridge may leave it in his first VDANCE.free u); as many as can
+  // dance do (then the shortest routes). Each leaves his loop (his clock held), runs out along his route, dances,
+  // runs (or walks) back (folk4.danceRouteStep) and goes on where he left it. A dance already under way when the
+  // town first sees it (the dock just opened) is let be. ----
+  const VDANCE = { reach: 8, free: 2, late: 0.5, clear: 0.32, folk: 0.35, step: 0.2, tries: 20000 };
+  // the plaza's turning points: behind the stalls at the east gap (the way to the spot between the stalls), the north-
+  // west corner and the west end (the stalls and their barrels close every other way from behind the stalls)
+  const DANCE_VIA = [
+    { x: 2.5, z: -13.6 },
+    { x: -5.4, z: -13.2 },
+    { x: -5.4, z: -11.2 },
+  ];
   let musicPlot = null;
   const danceSpots = () => {
     const out = [];
@@ -6706,27 +6717,108 @@ export function build(scene, ctx = {}) {
     }
     return out;
   };
-  // (the straight way from a to b keeps `clear` off every walk blocker: the stalls, barrels and posts of the plaza)
-  const wayClear = (a, b) => {
+  const segDist = (x, z, ax, az, bx, bz) => {
+    const L2 = (bx - ax) ** 2 + (bz - az) ** 2 || 1;
+    const u = clamp(((x - ax) * (bx - ax) + (z - az) * (bz - az)) / L2, 0, 1);
+    return Math.hypot(x - ax - (bx - ax) * u, z - az - (bz - az) * u);
+  };
+  // what a dancer's way keeps off, near the plaza (gathered once, at the first dance: the walk data is whole by then)
+  let danceNear = null;
+  function danceGround() {
+    if (danceNear) return danceNear;
+    const S = danceSpots();
+    const cx = S.length ? S.reduce((a, q) => a + q.x, 0) / S.length : 0;
+    const cz = S.length ? S.reduce((a, q) => a + q.z, 0) / S.length : 0;
+    const near = (x, z, m = 0) => Math.abs(x - cx) < 16 + m && Math.abs(z - cz) < 13 + m;
+    const people = [];
+    for (const n of walkData.npcs || []) if (near(n.x, n.z)) people.push({ x: n.x, z: n.z, r: (n.r || 0.35) + 0.1 });
+    // the plaza's standing folk (sellers, the customer, the fiddler and his dancer, the bench sitters)
+    for (const f of folk) if (!f.path && !f.villager && f.p && f.p.parent === root && near(f.p.position.x, f.p.position.z)) people.push({ x: f.p.position.x, z: f.p.position.z, r: VDANCE.folk });
+    const blockers = walkData.blockers.filter((q) => near(q.x, q.z, (q.r ?? Math.hypot(q.w || 0, q.d || 0)) + 1));
+    const areas = walkData.areas.filter((a) => (a.kind === 'circle' ? near(a.x, a.z, a.r) : near(a.x, a.z, Math.hypot(a.w, a.d) / 2)));
+    const links = walkData.links.map((l) => l.pts).filter((P) => P.some((q) => near(q[0], q[2], 4)));
+    danceNear = { blockers, areas, people, links, places: walkData.places, doors: walkData.doors || [], spawn: walkData.spawn };
+    return danceNear;
+  }
+  // may a dancer's way pass (x, z)? On the deck, clear of the blockers and the folk standing there
+  function danceFree(x, z) {
+    const G = danceGround();
+    let deck = false;
+    for (const a of G.areas) {
+      if (a.kind === 'circle') {
+        if (Math.hypot(x - a.x, z - a.z) <= a.r) deck = true;
+      } else {
+        const c = Math.cos(a.ry || 0);
+        const sn = Math.sin(a.ry || 0);
+        if (Math.abs((x - a.x) * c - (z - a.z) * sn) <= a.w / 2 && Math.abs((x - a.x) * sn + (z - a.z) * c) <= a.d / 2) deck = true;
+      }
+      if (deck) break;
+    }
+    if (!deck) return false;
+    for (const q of G.blockers) {
+      if (q.r !== undefined) {
+        if (q.r > 0 && Math.hypot(x - q.x, z - q.z) < q.r + VDANCE.clear) return false;
+        continue;
+      }
+      const c = Math.cos(q.ry || 0);
+      const sn = Math.sin(q.ry || 0);
+      const lx = Math.abs((x - q.x) * c - (z - q.z) * sn) - q.w / 2;
+      const lz = Math.abs((x - q.x) * sn + (z - q.z) * c) - q.d / 2;
+      if (Math.hypot(Math.max(lx, 0), Math.max(lz, 0)) < VDANCE.clear) return false;
+    }
+    for (const q of G.people) if (Math.hypot(x - q.x, z - q.z) < q.r + VDANCE.clear) return false;
+    return true;
+  }
+  // where a dancer's way never goes: a rope bridge, a place circle, a doorway, the gangplank ('keep'), or the deck
+  // right before a bridge ('mouth': as nearBridge, its 3 u run-in, 1 u either side)
+  function danceKeep(x, z) {
+    const G = danceGround();
+    for (const P of G.links) {
+      for (let i = 0; i + 1 < P.length; i++) if (segDist(x, z, P[i][0], P[i][2], P[i + 1][0], P[i + 1][2]) < 0.75) return 'keep';
+    }
+    for (const p of G.places) if (Math.hypot(x - p.x, z - p.z) < p.r + 0.35) return 'keep';
+    for (const d of G.doors) if (Math.hypot(x - d.x, z - d.z) < 1.5) return 'keep';
+    if (G.spawn && Math.hypot(x - G.spawn.x, z - G.spawn.z) < 1.9) return 'keep';
+    for (const P of G.links) {
+      for (const [e, n] of [[P[0], P[1]], [P[P.length - 1], P[P.length - 2]]]) {
+        const L = Math.hypot(n[0] - e[0], n[2] - e[2]) || 1;
+        const ux = (n[0] - e[0]) / L;
+        const uz = (n[2] - e[2]) / L;
+        if (segDist(x, z, e[0] - ux * 3, e[2] - uz * 3, e[0], e[2]) < 1.0) return 'mouth';
+      }
+    }
+    return null;
+  }
+  // the straight way from a to b, for a dancer who set out from `from` (null: a leg between two of the plaza's turning
+  // points, or on from one to a spot)
+  function danceLeg(a, b, from) {
     const L = Math.hypot(b.x - a.x, b.z - a.z);
-    const n = Math.max(1, Math.ceil(L / 0.2));
+    const n = Math.max(1, Math.ceil(L / VDANCE.step));
     for (let i = 0; i <= n; i++) {
       const x = a.x + ((b.x - a.x) * i) / n;
       const z = a.z + ((b.z - a.z) * i) / n;
-      for (const q of walkData.blockers) {
-        if (q.r !== undefined) {
-          if (q.r > 0 && Math.hypot(x - q.x, z - q.z) < q.r + VDANCE.clear) return false;
-          continue;
-        }
-        const c = Math.cos(q.ry || 0);
-        const sn = Math.sin(q.ry || 0);
-        const lx = Math.abs((x - q.x) * c - (z - q.z) * sn) - q.w / 2;
-        const lz = Math.abs((x - q.x) * sn + (z - q.z) * c) - q.d / 2;
-        if (Math.hypot(Math.max(lx, 0), Math.max(lz, 0)) < VDANCE.clear) return false;
-      }
+      if (!danceFree(x, z)) return false;
+      const k = danceKeep(x, z);
+      if (k && !(k === 'mouth' && from && Math.hypot(x - from.x, z - from.z) < VDANCE.free)) return false;
     }
     return true;
-  };
+  }
+  const routeLen = (r) => r.reduce((s, q, i) => (i ? s + Math.hypot(q.x - r[i - 1].x, q.z - r[i - 1].z) : 0), 0);
+  // a dancer's shortest way from p to the spot s: straight, or round one or two of the plaza's turning points
+  function danceRoute(p, s, via) {
+    let best = danceLeg(p, s, p) ? [p, s] : null;
+    const take = (r) => {
+      const L = routeLen(r);
+      if (L <= VDANCE.reach && (!best || L < routeLen(best))) best = r;
+    };
+    const fromP = via.map((v) => danceLeg(p, v, p));
+    for (let i = 0; i < via.length; i++) {
+      if (!fromP[i]) continue;
+      if (via[i].to.get(s)) take([p, via[i], s]);
+      for (let j = 0; j < via.length; j++) if (j !== i && via[i].next[j] && via[j].to.get(s)) take([p, via[i], via[j], s]);
+    }
+    return best && routeLen(best) <= VDANCE.reach ? best : null;
+  }
   function stepVillagerDance(t) {
     if (!musicPlot) musicPlot = plotList.find((p) => p.id === DANCE4.plot && p.v4) || null;
     const isl4 = { v: 1, t: { [DANCE4.plot]: musicPlot ? musicPlot.tier : 0 } };
@@ -6747,35 +6839,64 @@ export function build(scene, ctx = {}) {
     if (!vdance) {
       vdance = { t0: t - u, who: new Map() };
       if (u > VDANCE.late) return;
-      const plaza = walkData.areas.find((a) => a.id === 'plaza');
-      const onPlaza = (x, z) => !!plaza && Math.abs(x - plaza.x) <= plaza.w / 2 && Math.abs(z - plaza.z) <= plaza.d / 2;
       const taken = (v4.folk && v4call(() => v4.folk.danceSpots)) || [];
-      const spots = danceSpots().filter((s) => !taken.some((q) => Math.hypot(q.x - s.x, q.z - s.z) < 0.3));
-      if (!spots.length) return;
       const all = danceSpots();
+      const spots = all.filter((s) => !taken.some((q) => Math.hypot(q.x - s.x, q.z - s.z) < 0.3));
+      if (!spots.length || !all.length) return;
       const cx = all.reduce((a, q) => a + q.x, 0) / all.length;
       const cz = all.reduce((a, q) => a + q.z, 0) / all.length;
+      // the turning points, with the legs between them and on to each free spot (the same for every villager)
+      const via = DANCE_VIA.map((v) => ({ x: v.x, z: v.z, to: new Map(), next: [] }));
+      for (const v of via) {
+        for (const s of spots) v.to.set(s, danceLeg(v, s, null));
+        v.next = via.map((w) => w !== v && danceLeg(v, w, null));
+      }
+      // who can reach which spot, and how far
       const cands = [];
       for (const f of villagers) {
         if (f.greet || f.p.parent !== root) continue;
-        const p = f.p.position;
-        if (!onPlaza(p.x, p.z) || nearBridge(p.x, p.z)) continue;
+        const p = { x: f.p.position.x, z: f.p.position.z };
+        if (!danceFree(p.x, p.z) || danceKeep(p.x, p.z) === 'keep') continue;
+        const ways = [];
         for (const s of spots) {
-          const d = Math.hypot(s.x - p.x, s.z - p.z);
-          if (d <= VDANCE.join && wayClear(p, s)) cands.push({ f, s, d });
+          const r = danceRoute(p, s, via);
+          if (r) ways.push({ s, r, L: routeLen(r) });
         }
+        if (ways.length) cands.push({ f, ways: ways.sort((a, b) => a.L - b.L) });
       }
-      cands.sort((a, b) => a.d - b.d);
+      // as many dancers as can be (then the shortest ways): a small search, villagers × spots
+      cands.sort((a, b) => a.ways[0].L - b.ways[0].L);
+      let best = { n: 0, L: 0, pick: [] };
+      let tries = 0;
       const used = new Set();
-      for (const c of cands) {
-        if (vdance.who.has(c.f) || used.has(c.s)) continue;
-        used.add(c.s);
-        const p = c.f.p.position;
-        vdance.who.set(c.f, { spot: { x: c.s.x, z: c.s.z, h: Math.atan2(cx - c.s.x, cz - c.s.z) }, from: { x: p.x, y: p.y, z: p.z, h: c.f.p.rotation.y }, s0: t + c.f.off });
+      const pick = [];
+      (function search(i, n, L) {
+        if (++tries > VDANCE.tries) return;
+        if (n + (cands.length - i) < best.n || (n + (cands.length - i) === best.n && L >= best.L && best.n > 0)) return;
+        if (i === cands.length) {
+          if (n > best.n || (n === best.n && L < best.L)) best = { n, L, pick: pick.slice() };
+          return;
+        }
+        for (const w of cands[i].ways) {
+          if (used.has(w.s)) continue;
+          used.add(w.s);
+          pick.push({ c: cands[i], w });
+          search(i + 1, n + 1, L + w.L);
+          pick.pop();
+          used.delete(w.s);
+        }
+        search(i + 1, n, L);
+      })(0, 0, 0);
+      for (const { c, w } of best.pick) {
+        const f = c.f;
+        const p = f.p.position;
+        const route = w.r.map((q) => ({ x: q.x, z: q.z }));
+        route[route.length - 1].h = Math.atan2(cx - w.s.x, cz - w.s.z);
+        vdance.who.set(f, { spot: { x: w.s.x, z: w.s.z, h: route[route.length - 1].h }, route, from: { x: p.x, y: p.y, z: p.z, h: f.p.rotation.y }, s0: t + f.off });
       }
     }
     for (const [f, d] of vdance.who) {
-      const st = folk4.danceStep(d.from, d.spot, t - vdance.t0, DANCE4.dur);
+      const st = folk4.danceRouteStep ? folk4.danceRouteStep(d.route, t - vdance.t0, DANCE4.dur) : folk4.danceStep(d.from, d.spot, t - vdance.t0, DANCE4.dur);
       f.off = d.s0 - t; // (his loop's clock waits where he left it)
       f.p.position.set(st.x, d.from.y, st.z);
       f.p.rotation.y = st.h;
@@ -7147,11 +7268,11 @@ export function build(scene, ctx = {}) {
     get islanders() {
       return V4 && v4.folk ? v4call(() => v4.folk.crowd()) || [] : [];
     },
-    // (v4) the Music Hall's plaza dance (§4.1): the villagers dancing now ({ home, loop, x, z, spot: { x, z } }), [] when
-    // none is
+    // (v4) the Music Hall's plaza dance (§4.1): the villagers dancing now ({ home, loop, x, z, spot: { x, z }, route:
+    // [[x, z], ...] from where he left his loop to the spot }), [] when none is
     get villagerDance() {
       if (!V4 || !vdance) return [];
-      return [...vdance.who].map(([f, d]) => ({ home: f.home, loop: f.loop, x: f.p.position.x, z: f.p.position.z, spot: { x: d.spot.x, z: d.spot.z } }));
+      return [...vdance.who].map(([f, d]) => ({ home: f.home, loop: f.loop, x: f.p.position.x, z: f.p.position.z, spot: { x: d.spot.x, z: d.spot.z }, route: d.route.map((q) => [q.x, q.z]) }));
     },
     get critters() {
       return V4 ? v4.critters : null;

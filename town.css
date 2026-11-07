@@ -505,6 +505,17 @@
 .tav-h.powder-h { margin-top: 20px; }
 .powder-row.locked .up-ico svg { filter: grayscale(0.6); opacity: 0.8; }
 .rumour-tip { font-weight: 700; font-style: normal; color: var(--ink); }
+/* The Sea Guide (SPEC4 §8.7; only with the Sunset Isles): a card for each foe kind, made of the upgrade rows without
+   their Buy column; a kind not met yet is an empty slot, a flat card with a dashed edge and a softer icon (it says
+   "Not met yet" too: never told by colour alone); "Beaten ×N" is a little badge under the card's words. */
+.tav-h.guide-h { margin-top: 20px; }
+.up-row.guide-row { grid-template-columns: 44px minmax(0, 1fr); grid-template-areas: "ico head" "ico stat"; }
+.up-row.guide-unseen { background: #fbf3e2; border-style: dashed; box-shadow: none; }
+.guide-unseen .up-ico svg { opacity: 0.8; }
+.up-extra.guide-beaten { width: max-content; max-width: 100%; margin-top: 5px; padding: 1px 9px 0; font-size: 13px; line-height: 1.35; background: #eaf8f3; border: 2px solid var(--teal-text); border-radius: 999px; }
+@container (max-width: 300px) {
+  .up-row.guide-row { grid-template-columns: 34px minmax(0, 1fr); }
+}
 .log-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; margin: 0; }
 .log-stats div { display: flex; align-items: baseline; justify-content: space-between; gap: 6px; padding: 5px 10px; background: #fffaf0; border: 2px solid var(--ink); border-radius: 12px; }
 .log-stats dt { font-size: 13px; line-height: 1.25; color: #5a4632; }
@@ -1286,6 +1297,12 @@
   border-radius: 999px;
   transform: rotate(6deg);
 }
+
+/* A petted animal's word and its heart (townMode's .pet-bubble, a .town-bubble) */
+.pet-bubble .pet-heart { color: var(--red-text); }
+/* The hop's and the lookout climb's fade: a full-screen ink veil under the town's HUD that never catches a pointer
+   (townMode shows it and drives its opacity on the game's clock; while it also sets these inline they change nothing) */
+.town-fade { position: fixed; inset: 0; display: none; opacity: 0; background: var(--ink); pointer-events: none; }
 
 @media (prefers-reduced-motion: reduce) {
   .talk-bubble, .town-toast { animation: none; }

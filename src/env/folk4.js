@@ -41,8 +41,11 @@ export const FOLK4 = Object.freeze({
   // mouth (the run-in's deck end), in a doorway (1.5 u), inside a place circle (+ 0.35) or at the gangplank (1.9 u)
   quiet: Object.freeze({ mouth: 2.0, link: 0.35, place: 0.35, door: 1.5, gang: 1.9 }),
 });
-/** The plaza dance's moves (§4.1): out to the spot, dance, and back to where the loop was left, within DANCE.dur. */
-export const DANCE_STEP = Object.freeze({ join: 4.5, out: 1.2, back: 1.4 });
+/** The plaza dance's moves (§4.1): out to the spot, dance, and back to where the loop was left, within DANCE.dur.
+ *  Along a route (danceRouteStep): `pace` u/s on average out and back (an eased run), `walk` the most a way back may
+ *  average and still be walked, `look` how far ahead along it a runner looks (rounding its corners), `turn` the s a
+ *  dancer takes to turn to the plaza on arrival (and from it as he leaves). */
+export const DANCE_STEP = Object.freeze({ join: 4.5, out: 1.2, back: 1.4, pace: 3.0, walk: 1.5, look: 0.7, turn: 0.35 });
 // sparrow's LOOK-2 (sparrow.js inTheWay): the fallback when no kit is given (a harness)
 const WAIT = { ahead: 1.0, side: 0.7, inside: 0.6 };
 // actions that hold a posture or a tool at a prop: a greeting turns only the head
@@ -91,6 +94,69 @@ export function danceStep(from, spot, u, dur = DANCE.dur) {
     return { x: from.x + dx * k, z: from.z + dz * k, h: wrap(towards + Math.PI), action: 'walk', moving: true, k };
   }
   return { x: spot.x, z: spot.z, h: face, action: 'cheer', moving: false, k: 1 };
+}
+
+/**
+ * The plaza dance's step along a route (sparrow's villagers, §4.1): route = [from, ...turning points, spot] ({ x, z };
+ * the spot's h, if given, is the way he faces while he dances), u: s since the dance began (of `dur`). Out along the
+ * route at an eased run (DANCE_STEP.out s at least, `pace` u/s on average), dance (cheer) on the spot, then back the
+ * same way (at a run, or a walk when the way is short) to `from`, where his loop goes on. The way is followed by arc
+ * length (no jumps), heading round its corners by looking `look` ahead, and he turns to face the plaza (and away
+ * again) over `turn` s. { x, z, h, action, moving, k } (k: 0..1 how far along the route). Pure.
+ */
+export function danceRouteStep(route, u, dur = DANCE.dur) {
+  const pts = arr(route).filter((q) => q && fin(q.x) && fin(q.z));
+  if (!pts.length) return { x: 0, z: 0, h: 0, action: 'idle', moving: false, k: 0 };
+  const cum = [0];
+  for (let i = 1; i < pts.length; i++) cum.push(cum[i - 1] + Math.hypot(pts[i].x - pts[i - 1].x, pts[i].z - pts[i - 1].z));
+  const L = cum[cum.length - 1];
+  const at = (s) => {
+    const ss = clamp(s, 0, L);
+    let i = 1;
+    while (i < cum.length - 1 && cum[i] < ss) i++;
+    if (pts.length < 2) return { x: pts[0].x, z: pts[0].z };
+    const a = pts[i - 1];
+    const b = pts[i];
+    const f = (ss - cum[i - 1]) / Math.max(1e-9, cum[i] - cum[i - 1]);
+    return { x: a.x + (b.x - a.x) * f, z: a.z + (b.z - a.z) * f };
+  };
+  // the way he heads at arc length s going out (+1) or back (-1): towards the point `look` further on
+  const heading = (s, dir) => {
+    const p = at(s);
+    let q = at(s + dir * DANCE_STEP.look);
+    if (Math.hypot(q.x - p.x, q.z - p.z) < 1e-4) q = at(s + dir * 1e-3);
+    if (Math.hypot(q.x - p.x, q.z - p.z) < 1e-6) {
+      const a = at(dir > 0 ? L - 1e-3 : 1e-3);
+      const b = at(dir > 0 ? L : 0);
+      return Math.hypot(b.x - a.x, b.z - a.z) > 1e-9 ? Math.atan2(b.x - a.x, b.z - a.z) : 0;
+    }
+    return Math.atan2(q.x - p.x, q.z - p.z);
+  };
+  const out = Math.max(DANCE_STEP.out, L / DANCE_STEP.pace);
+  const back = Math.max(DANCE_STEP.back, L / DANCE_STEP.pace);
+  const D = Math.max(out + back + 0.5, fin(dur) ? dur : DANCE.dur);
+  const uu = clamp(fin(u) ? u : 0, 0, D);
+  const ease = (k) => k * k * (3 - 2 * k);
+  const spot = pts[pts.length - 1];
+  const arrive = heading(L, 1);
+  const face = fin(spot.h) ? spot.h : arrive;
+  const leave = heading(L, -1);
+  const turnTo2 = (a, b, k) => a + wrap(b - a) * clamp(k, 0, 1);
+  if (uu < out) {
+    const k = ease(uu / out);
+    const p = at(k * L);
+    return { x: p.x, z: p.z, h: heading(k * L, 1), action: 'run', moving: true, k };
+  }
+  if (uu > D - back) {
+    const k = ease((D - uu) / back);
+    const p = at(k * L);
+    const v = uu - (D - back);
+    const h = v < DANCE_STEP.turn ? turnTo2(face, heading(k * L, -1), v / DANCE_STEP.turn) : heading(k * L, -1);
+    return { x: p.x, z: p.z, h: wrap(h), action: L / back > DANCE_STEP.walk ? 'run' : 'walk', moving: true, k };
+  }
+  // dancing on the spot: he turns to the plaza first
+  const v = uu - out;
+  return { x: spot.x, z: spot.z, h: wrap(v < DANCE_STEP.turn ? turnTo2(arrive, face, v / DANCE_STEP.turn) : face), action: 'cheer', moving: false, k: 1 };
 }
 
 /**

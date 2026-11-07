@@ -1071,6 +1071,7 @@ export function createBuildPanel({ root = null, ctx = null } = {}) {
       e.preventDefault();
       e.stopPropagation();
       swallowed = e;
+      if (escLeaves(e)) return;
       if (!e.repeat) skip();
     });
   }
@@ -1079,6 +1080,13 @@ export function createBuildPanel({ root = null, ctx = null } = {}) {
   // Keys
   // ---------------------------------------------------------------------------------------------
   const MODIFIERS = new Set(['shift', 'control', 'alt', 'meta', 'capslock']);
+  // (v4) Esc skips the scene and a second Esc leaves the panel (SPEC4 §5.2), also during a skipped scene's wave,
+  // while every other key is still swallowed; a held Esc's auto-repeat never leaves
+  function escLeaves(e) {
+    if (!scene || !scene.skipped || String(e.key || '').toLowerCase() !== 'escape') return false;
+    if (!e.repeat) call(C.back);
+    return true;
+  }
   // Inside the panel: a held Enter or Space never presses twice; during the montage a key only skips it.
   el.panel.addEventListener('keydown', (e) => {
     if (!active) return;
@@ -1087,6 +1095,7 @@ export function createBuildPanel({ root = null, ctx = null } = {}) {
       e.preventDefault();
       e.stopPropagation();
       swallowed = e;
+      if (escLeaves(e)) return;
       if (!e.repeat) skip();
       return;
     }
@@ -1098,6 +1107,7 @@ export function createBuildPanel({ root = null, ctx = null } = {}) {
     const k = String(e.key || '').toLowerCase();
     if (celebrating() && !MODIFIERS.has(k)) {
       e.preventDefault();
+      if (escLeaves(e)) return true;
       if (!e.repeat) skip();
       return true;
     }

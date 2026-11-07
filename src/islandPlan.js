@@ -39,6 +39,7 @@ const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
 export const WALKWAY = freeze({ boardHw: 0.6, boardWidth: 2.0, stepsHw: 0.6, ropeHw: 0.25, ropeMax: 3, ropeLoops: 2, longRopeLoops: 1, porch: 1.6, padPad: 0.2 });
 const INSET = 0.65; // sparrow's WALK_INSET: the captain's centre keeps this far from a deck's edge
 const RUN = 0.9; // a link runs this far into the decks it joins (as sparrow's bridge({ walk }) does)
+const FILLET = 0.35; // a sharp rope bend's inside corner is cut this far back along each edge (newAreas)
 const ROPE_HAND = 0.55; // a rope bridge's hand ropes and end posts, either side of its middle
 const BOARD_RAIL = 1.0; // a boardwalk's rails and posts
 
@@ -314,7 +315,9 @@ function bridgeWalk(a, b) {
 const SCENERY_RUN = {
   tavernS3: { a: { trim: 0 } },
   yardS7: { a: { to: ['yard', 1.1, -3.75] } },
-  s1S2: { b: { to: ['s2', -2.75, 1.6] } },
+  // (s1S2 runs on into s2 a short way, 32° off the bridge's line to keep off the pad: never back on itself past its end
+  // post, where a jog held along the bridge from the deck would meet the deck's edge beside the bridge)
+  s1S2: { b: { to: ['s2', -2.33, 1.0] } },
   gardenS13: { b: { trim: 0.9 } },
   s13S14: {},
   s17S18x: {},
@@ -589,6 +592,45 @@ function newAreas() {
       if (cos < Math.cos((20 * Math.PI) / 180)) out.push({ id: `${id}-k${i}`, kind: 'rect', x: r2(P[i][0]), z: r2(P[i][2]), w: 0.1, d: 0.1, ry: 0, y: r2(P[i][1]) });
     }
   }
+  // a fillet inside a new rope bridge's bend sharper than 60°, where it turns square off its run-in at a deck's edge
+  // (s4S3 runs along both decks' edges): the inside corner of its band, over the porch's planks, cut off by a small
+  // square laid corner-on across it, so a walker steering round the bend a little early slides round the corner onto
+  // the bridge (a blocked step turns at most 60°) instead of standing pressed into it
+  for (const id of LINK_ORDER) {
+    const L = LINK[id];
+    if (!L || L.kind !== 'rope' || !L.anchors) continue;
+    const P = L.pts;
+    for (const [i, A] of [[1, L.anchors[0]], [P.length - 2, L.anchors[1]]]) {
+      const f = PLATFORMS[A.deck];
+      if (!f) continue;
+      let ux = P[i][0] - P[i - 1][0];
+      let uz = P[i][2] - P[i - 1][2];
+      let vx = P[i + 1][0] - P[i][0];
+      let vz = P[i + 1][2] - P[i][2];
+      const lu = Math.hypot(ux, uz) || 1;
+      const lv = Math.hypot(vx, vz) || 1;
+      [ux, uz, vx, vz] = [ux / lu, uz / lu, vx / lv, vz / lv];
+      const cos = ux * vx + uz * vz;
+      if (cos >= 0.5) continue;
+      // the band's two inner edges (hw in from each stretch, on the side it turns to) meet at Q
+      const nu = [vx - cos * ux, vz - cos * uz];
+      const nv = [-ux + cos * vx, -uz + cos * vz];
+      const ln = Math.hypot(...nu) || 1;
+      const lm = Math.hypot(...nv) || 1;
+      const [ax, az, bx, bz] = [nu[0] / ln, nu[1] / ln, nv[0] / lm, nv[1] / lm];
+      const det = ax * bz - az * bx;
+      if (Math.abs(det) < 1e-6) continue;
+      const qx = P[i][0] + (L.hw * bz - az * L.hw) / det;
+      const qz = P[i][2] + (ax * L.hw - L.hw * bx) / det;
+      // the square's corners on those edges, FILLET back along the stretch in and on along the stretch out
+      const tri = [[qx, qz], [qx - ux * FILLET, qz - uz * FILLET], [qx + vx * FILLET, qz + vz * FILLET]];
+      const rs = deckRects(A.deck);
+      if (!tri.every(([x, z]) => rs.some((q) => { const [lx, lz] = W2L(f, x, z); return lx >= q.x0 && lx <= q.x1 && lz >= q.z0 && lz <= q.z1; }))) continue;
+      const ex = ux + vx;
+      const ez = uz + vz;
+      out.push({ id: `${id}-f${i}`, kind: 'rect', x: r2(qx), z: r2(qz), w: r2(FILLET * Math.SQRT2), d: r2(FILLET * Math.SQRT2), ry: r3(Math.atan2(-ez, ex)), y: r2(P[i][1]) });
+    }
+  }
   const FP = FISHER_PIER;
   out.push({ id: 'fisherPier', kind: 'rect', x: r2((FP.x0 + FP.x1) / 2), z: FP.z, w: r2(FP.x1 - FP.x0 - 2 * INSET), d: r2(FP.w - 2 * INSET), ry: 0, y: FP.y });
   // the portal from s18's back porch onto the pier
@@ -736,7 +778,8 @@ export const LINKS = freeze(LINK_ORDER.map((id) => ({ id, kind: LINK_PLAN[id].ki
 // a link's mouth, in a doorway, inside a place's circle or at the gangplank; >= 1 u from today's walkers' and
 // villagers' loops and from Bess and Barnacle; at most one loop over a long scenery bridge, two over a short rope
 // bridge, none over today's four. The merfolk's loops lie in the Grotto's rock pool (their rock, then the water).
-// 'dance': the Music Hall's dance spots on the plaza (§4.1, tier 3).
+// 'dance': the Music Hall's dance spots on the plaza (§4.1, tier 3): five round the porter's stall end and between the
+// stalls, and one at the plaza's west end (the villagers of the portal and the north strip reach it round the stalls).
 const LOOPS = [
   ['finn', [['pierEnd', 0, 1.57], ['market', 7], ['bench', 13, 3.14]], [[46.2, 1.3, -13.5], [38.58, 1.3, -13.73], [36.35, 1.3, -15.61], [34.74, 1.3, -15.96], [32.2, 1.3, -14.07], [31.49, 1.3, -10.82], [26.88, 1.3, -8.56], [24.96, 1.3, -9.27], [26.88, 1.3, -8.56], [31.49, 1.3, -10.82], [32.2, 1.3, -14.07], [34.74, 1.3, -15.96], [36.35, 1.3, -15.61], [39.4, 1.3, -12.95], [46.2, 1.3, -13.5]]],
   ['marina', [['pier', 0, 0], ['stall', 1]], [[43.6, 1.3, -12.95], [40.8, 1.3, -14.05], [43.6, 1.3, -12.95]]],
@@ -771,7 +814,7 @@ const LOOPS = [
   ['tam', [['stall', 0], ['store', 3]], [[-28.54, 1.3, -13.53], [-33.9, 1.3, -13.32], [-34.27, 1.3, -14.03], [-34.53, 1.3, -15.14], [-34.27, 1.3, -14.03], [-33.9, 1.3, -13.32], [-28.54, 1.3, -13.53]]],
   ['page', [['desk', 0], ['porch', 2]], [[-22.27, 1.3, 5.46], [-21.86, 1.3, 5.57], [-17.97, 1.3, 3.19], [-21.86, 1.3, 5.57], [-22.27, 1.3, 5.46]]],
   ['rosa', [['beds', 0], ['pump', 5]], [[-32.36, 1.3, -7.15], [-33.47, 1.3, -6.46], [-32.99, 1.3, -4.56], [-32.36, 1.3, -2.1], [-32.16, 1.3, -1.32], [-30.88, 1.3, -1.34], [-32.16, 1.3, -1.32], [-32.36, 1.3, -2.1], [-32.99, 1.3, -4.56], [-33.47, 1.3, -6.46], [-32.36, 1.3, -7.15]]],
-  ['dance', [['spot0', 0], ['spot1', 1], ['spot2', 2], ['spot3', 3], ['spot4', 4]], [[-3.5, 1.3, -11.15], [-0.98, 1.3, -10.75], [1.45, 1.3, -11.14], [2.66, 1.3, -12.04], [-0.5, 1.3, -9.25]]],
+  ['dance', [['spot0', 0], ['spot1', 1], ['spot2', 2], ['spot3', 3], ['spot4', 4], ['spot5', 5]], [[-3.5, 1.3, -11.15], [-0.98, 1.3, -10.75], [1.45, 1.3, -11.14], [2.66, 1.3, -12.04], [-0.5, 1.3, -9.25], [-4.9, 1.3, -10.9]]],
 ];
 export const ISLANDER_PATHS = freeze(LOOPS.map(([who, st, pts]) => (who === 'dance'
   ? { id: 'dance', kind: 'dance', pts, stations: st.map(([id, i]) => ({ id, i })) }

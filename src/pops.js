@@ -254,10 +254,14 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     return _pose;
   }
   // the word's bottom centre on screen: its anchor (ax, ay) minus rise and stack, kept inside the screen
-  // edges and its top (`up` above that centre) below the top inset
-  const spotX = (ax, hw) => {
+  // edges and its top (`up` above that centre) below the top inset. The edges keep the word's half-width hw clear
+  // on each side, or more while it wobbles: k, its reach (below), takes in the tilted top corner, so the pop-in's
+  // wobble never cuts a first or last letter at the edge (a still word's reach is hw itself)
+  const spotX = (ax, hw, k) => {
     const W = window.innerWidth;
-    return W > 2 * (hw + EDGE) ? clamp(ax, hw + EDGE, W - hw - EDGE) : W / 2;
+    const l = Math.max(hw, k.l);
+    const r = Math.max(hw, k.r);
+    return W > l + r + 2 * EDGE ? clamp(ax, l + EDGE, W - r - EDGE) : W / 2;
   };
   const spotY = (base, st, up) => Math.min(Math.max(base - st, up + top), window.innerHeight - EDGE);
   // how far a word of half-width hw and height sh, tilted by `rot` degrees about its bottom centre,
@@ -280,7 +284,7 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     if (q.o <= 0.05) return null;
     const hw = (p.w * q.s) / 2;
     const k = reach(hw, p.h * q.s, q.rot);
-    const x = spotX(p.ax + dx, hw);
+    const x = spotX(p.ax + dx, hw, k);
     return { base: p.ay - q.rise, up: k.up, down: k.down, l: x - k.l, r: x + k.r };
   }
 
@@ -500,8 +504,9 @@ export function createPops(layerEl, camera, { reducedMotion = false, avoid = nul
     p.el.style.visibility = '';
     const { s, rise, rot, o } = pose(p, p.age);
     // keep the whole word on screen (and below the top inset) when its impact is near an edge
-    const x = spotX(at.x + p.dx, (p.w * s) / 2);
-    const y = spotY(at.y - rise, p.stack, reach((p.w * s) / 2, p.h * s, rot).up);
+    const k = reach((p.w * s) / 2, p.h * s, rot);
+    const x = spotX(at.x + p.dx, (p.w * s) / 2, k);
+    const y = spotY(at.y - rise, p.stack, k.up);
     p.el.style.opacity = String(clamp(o, 0, 1).toFixed(3));
     p.el.style.transform = `translate3d(${x.toFixed(1)}px, ${y.toFixed(1)}px, 0) translate(-50%, -100%) scale(${s.toFixed(3)}) rotate(${rot.toFixed(2)}deg)`;
   }
