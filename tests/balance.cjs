@@ -11,6 +11,9 @@
 // Run with `node tests/balance.cjs` (BALANCE_ONLY=act1,act2 runs one bot; BALANCE_RUNS=n; BALANCE_ROOT serves another
 // copy of the game; BALANCE_QUERY replaces "?quality=low", e.g. "?quality=low&kraken=1" before the Kraken Seas
 // sailed for everyone).
+// Voyage IV's opt-in section (v4, SPEC4 §13.2-13.3) runs only when named: BALANCE_ONLY=v4 sails bot v4 (tests/voyage4.cjs)
+// over BALANCE_V4_SEEDS seeds (default 3; Stage 3: 48) of levels 10-12 (BALANCE_V4_LEVELS) with and without special
+// shot, in a page with BALANCE_V4_QUERY (default '?quality=low&v4=1'); the Voyage I-III runs stay exactly as they are.
 const fs = require('fs');
 const path = require('path');
 const { chromium } = require('playwright');
@@ -442,6 +445,76 @@ function botLevel(args) {
 
   // --------------------------------------------------------------------------------------- Voyage II (Act II)
   await section('act2', () => voyage('act2', [4, 5, 6], botLevel, { profile: 'mid', maxT: 900, specials: true }, { easy: 'Doubloon Bay', hard: 'the Maelstrom', limit: 900 }));
+
+  // -------------------------------------------------------------------------------- Voyage IV (opt-in: v4)
+  // Bot v4 (SPEC4 §13.3: tests/voyage4.cjs's botV4) on profile V4 (§2.8: the late-game profile, no Voyage IV building)
+  // over BALANCE_V4_SEEDS seeds (default 3; Stage 3's offline medians use 48) of each Voyage IV level, with special shot
+  // and with none, a second try allowed: every level is cleared within 900 s of simulated time on all but 5 % of the
+  // seeds (none of 3), never stuck 60 s, never inside land, and the no-special runs fire no special load. Level 12: its
+  // waves until the Shellback joins (Stage 2 round R5). The damage and time medians are printed for §19 (the order
+  // L10 < L11 < L12 and the Shellback's band are Stage 3's guards, not checked here). It runs only when named
+  // (BALANCE_ONLY=v4), in its own page: BALANCE_V4_QUERY (default '?quality=low&v4=1'; '?quality=low' once Voyage IV
+  // sails for everyone).
+  if (ONLY.includes('v4')) {
+    await section('v4', async () => {
+      const { botV4 } = require('./voyage4.cjs');
+      const V4Q = process.env.BALANCE_V4_QUERY || '?quality=low&v4=1';
+      const SEEDS = Math.max(1, Math.floor(Number(process.env.BALANCE_V4_SEEDS) || 3));
+      const LEVELS4 = (process.env.BALANCE_V4_LEVELS || '10,11,12').split(',').map(Number).filter((n) => [10, 11, 12].includes(n));
+      const ctx = await browser.newContext({ viewport: { width: 1280, height: 720 } });
+      await ctx.addInitScript(() => {
+        try {
+          localStorage.setItem('pirates-ahoy-unlocked', '12');
+          localStorage.setItem('pirates-ahoy-tutorial-done', '1');
+          localStorage.setItem('pirates-ahoy-tips', '65535');
+          localStorage.setItem('pirates-ahoy-voyage4', '{"v":1,"plays":[0,0,0],"met":255,"won":0,"tips":65535,"prizes":{}}');
+        } catch {
+          // storage blocked
+        }
+      });
+      const page = await ctx.newPage();
+      page.on('pageerror', (e) => errors.push(`v4: ${e.message}`));
+      page.on('console', (m) => m.type() === 'error' && !/fonts\.g|ERR_|Failed to load resource/.test(m.text()) && errors.push(`v4: ${m.text()}`));
+      await page.goto(base + V4Q, { waitUntil: 'domcontentloaded', timeout: 120000 });
+      await page.waitForFunction(() => window.__gameReady === true && window.__game && window.__game.env, null, { timeout: 120000 });
+      const SPECIAL = await page.evaluate(async () => JSON.parse(JSON.stringify((await import('/src/specials.js')).SPECIAL)));
+      const v4 = await page.evaluate(() => window.__game.v4.WITH_V4);
+      check(v4 === true, `v4: the Sunset Isles sail with ${V4Q}`);
+      const allowed = Math.floor(SEEDS * 0.05);
+      for (const specials of [true, false]) {
+        const tag = specials ? 'with special shot' : 'with no special shot';
+        const rows = [];
+        for (const n of LEVELS4) {
+          const runs = [];
+          for (let s = 1; s <= SEEDS; s++) {
+            const tries = [];
+            let r = null;
+            for (let k = 0; k < 2; k++) {
+              r = await page.evaluate(botV4, { n, profile: 'v4', specials, strategy: s % 2 ? 'circle' : 'beam', seed: s * 7 + k * 1009, maxT: 900, SPECIAL });
+              tries.push(r);
+              if (won(r)) break;
+            }
+            r.tries = tries.map((t) => (t.result === 'timeout' ? `timeout(${t.left})` : t.result)).join('>');
+            r.stuckAll = tries.reduce((m, t) => m + t.stuck, 0);
+            r.noProgressAll = Math.max(...tries.map((t) => t.noProgress));
+            console.log(`      bot v4: L${n} ${specials ? 'specials' : 'none'} seed ${s}: ${r.tries} ${r.time} s dmg ${r.damageTaken} hp ${r.hpLeft}/${r.maxHp} waves ${J(r.waves)} spent ${J(r.spent)} noProgress ${r.noProgressAll}`);
+            runs.push(r);
+          }
+          rows.push({ n, runs });
+        }
+        const lost = rows.map(({ runs }) => runs.filter((r) => !(won(r) && r.time <= 900)).length);
+        const dmg = rows.map(({ runs }) => median(runs.filter(won).map((r) => r.damageTaken)));
+        const time = rows.map(({ runs }) => median(runs.filter(won).map((r) => r.time)));
+        console.log(`      bot v4 ${tag}: median damage taken ${rows.map((x, i) => `L${x.n} ${dmg[i]}`).join(', ')}; median time ${rows.map((x, i) => `L${x.n} ${time[i]} s`).join(', ')}`);
+        check(lost.every((k) => k <= allowed),
+          `v4: bot v4 ${tag} clears ${rows.map((x) => `L${x.n}`).join(', ')} within 900 s on ${allowed ? `all but ${allowed} of ${SEEDS}` : `each of ${SEEDS}`} seeds, a second try allowed (lost ${lost.join(' / ')})`);
+        check(rows.every(({ runs }) => runs.every((r) => r.noProgressAll < 60 && r.stuckAll === 0)),
+          `v4: bot v4 ${tag} is never stuck 60 s and never inside land (${rows.map(({ n, runs }) => `L${n} ${runs.map((r) => `${r.noProgressAll}s/${r.stuckAll}`).join(',')}`).join('; ')})`);
+        if (!specials) check(rows.every(({ runs }) => runs.every((r) => r.spent.fire + r.spent.frost + r.spent.stink === 0)), `v4: with no special shot it fires none`);
+      }
+      await ctx.close();
+    });
+  }
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);
   await browser.close();

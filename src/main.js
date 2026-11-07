@@ -1884,6 +1884,9 @@ function clearLevelEntities() {
   clearHazardCues();
   hazardVis = null;
   if (WITH_KRAKEN) envFrame.hazards = null;
+  fogLevel = false;
+  tideLevel = false;
+  fogHidden.clear();
   if (statusFxView) {
     stopCrackle();
     statusFxView.sync([], 0, 0); // (nothing burns, freezes or stinks on the next scene)
@@ -2261,6 +2264,10 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     }
   }
   mechanics = mechanics3.composeMechanics([createMechanics(ids, ctx), m3, m4]);
+  // (level 10's fog banks hide ships from you: worked out each step from now, SPEC4 §2.6)
+  fogLevel = !!m4 && ids.includes('fog');
+  tideLevel = !!m4 && ids.includes('tide');
+  fogHidden.clear();
   if (cp) {
     // (from the Kraken: no ships and no geysers, only the Kraken rising at once, its short rise)
     state.wave = levelWaves(def).length - 1;
@@ -2311,6 +2318,16 @@ function startLevel(n, { retry = false, fromKraken = false } = {}) {
     // (A level whose mechanic names a key has touch wording too: def.mechanicTouch.)
     const sub = firstVoyage ? controlsLine() : (isTouch() && def.mechanicTouch) || def.mechanic || m.subtitle;
     showBanner(`Level ${n}: ${m.name}<small>${sub}</small><small>${describeWave(levelWaves(def)[0])}</small>`, firstVoyage ? 6 : 4.5);
+  }
+  // Voyage IV's seas (SPEC4 §14.1): the env's hazard objects that only show later (the mangroves' fog puffs and
+  // mist, the spires' current lanes and fish, the shoals' tide water, sand cloud and rainbow) get a real first draw
+  // now, behind the fly-in, through both outline passes; the foes' model warm-draws itself once it is built.
+  if (WITH_V4 && def.act === 4 && env && typeof env.warmables === 'function') {
+    try {
+      warmDraw(env.warmables() || []);
+    } catch (err) {
+      console.warn('warm draw:', err);
+    }
   }
   warmShaders();
   updateHud(true);
@@ -3587,7 +3604,20 @@ function mechanics4Ctx(def, ctx3) {
   const act4 = !!def && def.act === 4;
   return {
     ...ctx3,
-    pop: (text, x, y, z, style) => pop4(text, x, y, z, style),
+    pop: (text, x, y, z, style) => {
+      // (LOW TIDE! waits a step: the first warning of a level also shows the banner with the same words, and then
+      // the word goes only to the banner, so a child reads it once)
+      if (text === tideWord.text) {
+        tideWord.pending = [text, x, y, z, style];
+        tideWord.at = state.time;
+        return true;
+      }
+      return pop4(text, x, y, z, style);
+    },
+    showBanner: (html, s) => {
+      if (html === tideWord.banner) tideWord.bannerAt = state.time;
+      return ctx3.showBanner(html, s);
+    },
     warn: warnSlots,
     cutHold: () => {
       const v = act4 ? Number(perks4().cutHold) : NaN;
@@ -3612,6 +3642,7 @@ function mechanics4Ctx(def, ctx3) {
     tables: { RAIDERS, STATUS: specials.STATUS, POOL_RULES: poolRules.POOL_RULES },
   };
 }
+const tideWord = { text: W4.pop && W4.pop.lowTide, banner: W4.banner && W4.banner.tide, pending: null, at: -1, bannerAt: -2 };
 // Floating loot worth `gold` (a jollyboat 10, a puffer 2): one coin (step()'s updateCoins pays its value).
 function dropCoin(x, z, gold) {
   const g = Math.max(0, Math.round(Number(gold) || 0));
@@ -3708,6 +3739,7 @@ function disposeFoes4() {
   clearMeet();
   state.netted = null;
   netUi.on = false;
+  tideWord.pending = null;
 }
 // Where a wave's pseudo kind is placed (§3.7): a puffer patch 18-24 u ahead of you in open water (puffers only drift
 // at hulls within 25 u), a fort on the FIRST free env.fortSpots entry in order (a sea stack, never a spawn point;
@@ -3820,11 +3852,31 @@ const netted = () => WITH_V4 && !!player && !player.sinking && !!mechanics.playe
 // Every step: the state mirror (state.netted), the first-net tip (bit 2), the dive and fort-sighting tips (bits 4, 8).
 const netUi = { on: false };
 function stepV4(dt) {
+  if (tideWord.pending) {
+    const a = tideWord.pending;
+    tideWord.pending = null;
+    if (tideWord.bannerAt !== tideWord.at) pop4(...a);
+  }
   const n = player && !player.sinking ? mechanics.playerMods().netted : null;
   state.netted = n ? { t: n.t, max: n.max } : null;
   if (n && !netUi.on) showTip4('net', 4);
   netUi.on = !!n;
   stepMeet();
+  // Level 12's ebb tide (§8.4 tip bit 16): the first time the sandbars are out (the bell's banner has said "Low
+  // tide!" 3 s before, so the hint comes once the bars are there to see).
+  if (tideLevel && !(voyage4Rec.tips & 16) && state.intro <= 0) {
+    state.v4TideT = (state.v4TideT || 0) - dt;
+    if (state.v4TideT <= 0) {
+      state.v4TideT = 0.1;
+      let tv = null;
+      try {
+        tv = m4 ? m4.visuals().tide : null;
+      } catch {
+        tv = null;
+      }
+      if (tv && tv.state === 'low') showTip4('tide');
+    }
+  }
   // (looked at 10 times a second until both are seen)
   state.v4TipT = (state.v4TipT || 0) - dt;
   if (state.v4TipT > 0 || !foes4 || state.intro > 0 || (voyage4Rec.tips & 12) === 12) return;
@@ -4367,18 +4419,77 @@ function outOfSpecial(id) {
 }
 
 // What your broadsides may aim at (SPEC3 §5.8): the enemy ships, and once the Kraken has risen its raised parts
-// as pseudo-targets (Stage 2). aimTarget, playerFire, rakeCue, the FIRE! light, the tutorial, the minimap, the
-// chase camera and the portrait framing all read this one list. side: −1 port, +1 starboard, 0 either.
+// as pseudo-targets (Stage 2). aimTarget, playerFire, rakeCue, the FIRE! light, the tutorial, the chase camera and
+// the portrait framing all read this one list. side: −1 port, +1 starboard, 0 either. A ship hidden from you in a
+// fog bank (SPEC4 §2.6, fogHidden) is left out: no auto-aim at her, no FIRE! light, no tag.
 function targetsFor(side = 0) {
   let n = 0;
   for (const S of PARTS) n += S.list.length;
-  if (!n) return enemies;
+  if (!n && !fogHidden.size) return enemies;
   partsAll.length = 0;
-  for (const e of enemies) partsAll.push(e);
+  for (const e of enemies) if (!fogHidden.has(e)) partsAll.push(e);
   for (const S of PARTS) for (const w of S.list) partsAll.push(w);
   return partsAll;
 }
 const partsAll = []; // (enemies and every source's raised parts, reused)
+// Everything your cannonballs can hit and the minimap shows: targetsFor's list with the fog's hidden ships in it (a
+// manual broadside still hits a ship in a fog bank, §2.6). Its own array: a hit can ask targetsFor again.
+function hitTargets() {
+  if (!fogHidden.size) return targetsFor();
+  hitsAll.length = 0;
+  for (const e of enemies) hitsAll.push(e);
+  for (const S of PARTS) for (const w of S.list) hitsAll.push(w);
+  return hitsAll;
+}
+const hitsAll = [];
+// Voyage IV's fog banks (level 10, mechanics4 'fog'): the ships hidden from you, worked out once a step (after the
+// banks have moved): a ship whose centre is in a bank more than FOG.see u (+ the Observatory's spyglass) from you.
+// Never your own ship, a pseudo foe, a warning shape or a crate (mechanics4 hides ships only). Empty elsewhere.
+const fogHidden = new Set();
+let fogLevel = false; // (the level's mechanics name 'fog': set at its start)
+let tideLevel = false; // (level 12's ebb tide: 'tide')
+function syncFog() {
+  fogHidden.clear();
+  if (!fogLevel || !player || player.sinking) return;
+  for (const e of enemies) {
+    if (!(e.hp > 0) || e.sinking || e.captured || e.escaped) continue;
+    try {
+      if (mechanics.hidden(e, player)) fogHidden.add(e);
+    } catch {
+      // (a hidden() that throws hides nothing)
+    }
+  }
+}
+// Is a ship hidden in the fog inside that side's firing arc (the loaded ammo's range)? (the Fire cell's FOG!)
+function fogInArc(side, range) {
+  for (const e of fogHidden) if (fighting(e) && inArc(player, e, side, range)) return true;
+  return false;
+}
+const fogWord = () => (W4.hud && W4.hud.fog) || 'FOG!';
+// The HIDDEN chip (§8.2) beside the hull bar while your ship is inside a fog bank: an eye with a slash and the word.
+const fogChip = { el: $('fog-chip'), on: false, built: false };
+function updateFogChip(force) {
+  let on = false;
+  if (fogLevel && player && !player.sinking && (state.mode === 'playing' || state.mode === 'paused')) {
+    try {
+      on = !!mechanics.fogAt(player.x, player.z);
+    } catch {
+      on = false;
+    }
+  }
+  if (on && !fogChip.built && fogChip.el) {
+    fogChip.built = true;
+    const word = (W4.hud && W4.hud.hidden) || 'HIDDEN';
+    fogChip.el.innerHTML =
+      '<svg class="fog-ico" viewBox="0 0 24 24" aria-hidden="true" focusable="false"><path class="fog-eye" d="M2.5 12c2.6-4.2 5.8-6.3 9.5-6.3s6.9 2.1 9.5 6.3c-2.6 4.2-5.8 6.3-9.5 6.3S5.1 16.2 2.5 12z"/>' +
+      '<circle class="fog-pupil" cx="12" cy="12" r="3"/><path class="fog-slash" d="M4.5 4.5l15 15"/></svg>' +
+      `<span class="fog-word">${word}</span>`;
+  }
+  if (fogChip.el && (force || on !== fogChip.on)) {
+    show(fogChip.el, on);
+    fogChip.on = on;
+  }
+}
 
 // What a side's guns would aim at (the loaded ammo's range): the nearest enemy inside that side's
 // firing arc (inArc: true), failing that the nearest one roughly abeam.
@@ -5817,7 +5928,7 @@ function updateBalls(dt) {
     b.z += b.vz * dt;
     let gone = false;
 
-    const targets = b.owner === 'player' ? targetsFor() : player ? [player] : [];
+    const targets = b.owner === 'player' ? hitTargets() : player ? [player] : [];
     for (const s of targets) {
       if (hitsShip(b, s)) {
         const info = ballHit(b, s);
@@ -6129,6 +6240,7 @@ function step(dt) {
   serviceFireQueue(); // (the reloads just ticked down: a queued shot goes the moment its side is loaded)
   for (const e of enemies) moveShip(e, dt);
   mechanics.step(dt); // floes crunch, the maelstrom's eye grinds, galleons slip through their gates
+  if (fogLevel) syncFog(); // (Voyage IV's fog banks have moved: who is hidden from you now)
   if (foes4) {
     // (Voyage IV's pseudo foes, SPEC4 §3.1: their own clocks; their parts wrapped for the guns again)
     foes4.step(dt);
@@ -7664,6 +7776,8 @@ function openDock(from) {
   renderDockExits();
   setDockTab('up', false);
   renderDock();
+  // (Sunset Isles: the town and its walk path graph are built now, behind the 'Rowing to…' toast, SPEC4 §6.6)
+  if (typeof townMode.prepare === 'function') townMode.prepare();
   ui.dockLive.textContent = '';
   show(ui.dock, true);
   document.body.classList.add('docked');
@@ -8573,8 +8687,19 @@ function updateHud(force = false, dt = 0) {
   const rakeS = starIn ? rakeCue(1) : null;
   setClass(ui.gunPort, 'gp', 'rake', !!rakeP, force);
   setClass(ui.gunStar, 'gs', 'rake', !!rakeS, force);
-  setText(ui.firePort, 'fireP', rakeP ? 'RAKE!' : 'FIRE!', force);
-  setText(ui.fireStar, 'fireS', rakeS ? 'RAKE!' : 'FIRE!', force);
+  // FOG! instead (SPEC4 §2.6, §8.2): that side's guns have nothing to aim at only because a ship there is hidden in a
+  // fog bank (a broadside still hits her). The first time, the tip (voyage4 tips bit 1).
+  const fogP = fogHidden.size > 0 && live && !portIn && fogInArc(-1, range) && !aimTarget(-1).target;
+  const fogS = fogHidden.size > 0 && live && !starIn && fogInArc(1, range) && !aimTarget(1).target;
+  if (fogHidden.size || shown.fogCells) {
+    setClass(ui.gunPort, 'gp', 'fog', fogP, force);
+    setClass(ui.gunStar, 'gs', 'fog', fogS, force);
+    shown.fogCells = fogP || fogS;
+    if ((fogP && player.reload.port === 0) || (fogS && player.reload.star === 0)) showTip4('fog');
+  }
+  setText(ui.firePort, 'fireP', rakeP ? 'RAKE!' : fogP ? fogWord() : 'FIRE!', force);
+  setText(ui.fireStar, 'fireS', rakeS ? 'RAKE!' : fogS ? fogWord() : 'FIRE!', force);
+  if (WITH_V4) updateFogChip(force);
   const rake = (rakeP && player.reload.port === 0 ? rakeP : null) || (rakeS && player.reload.star === 0 ? rakeS : null);
   if (rake && !(tips & TIP.rake)) {
     showTip(
@@ -9095,6 +9220,118 @@ function drawKrakenMarks(toMap, scale, c) {
 // fort's sight line red, dashed while it tracks and solid once it locks), then the foes: a pack as small yellow
 // dots, puffers as orange dots with spikes, Old Coilback as a teal squiggle (not while it is under water), a fort as
 // a sandstone square (pinned to the rim when off the map, as ships are).
+function drawHazards4(marks, toMap, scale) {
+  const bars = env && Array.isArray(env.tideBars) ? env.tideBars : [];
+  let tide = null;
+  for (const m of marks) {
+    if (m.kind === 'current' && Array.isArray(m.points) && m.points.length > 1) {
+      // a lane: a pale band along its points, white chevrons every 18 u the way it flows
+      const pts = m.points.map((p) => toMap(p.x, p.z));
+      mm.lineCap = 'round';
+      mm.lineJoin = 'round';
+      mm.strokeStyle = 'rgba(214, 250, 255, 0.4)';
+      mm.lineWidth = Math.max(3, (m.r || 4) * 2 * scale);
+      mm.beginPath();
+      pts.forEach(([x, y], i) => (i ? mm.lineTo(x, y) : mm.moveTo(x, y)));
+      mm.stroke();
+      mm.strokeStyle = '#ffffff';
+      mm.lineWidth = 1.6;
+      let run = 9;
+      for (let i = 1; i < m.points.length; i++) {
+        const a = m.points[i - 1];
+        const b = m.points[i];
+        const L = Math.hypot(b.x - a.x, b.z - a.z);
+        if (!(L > 0)) continue;
+        while (run <= L) {
+          const k = run / L;
+          const [x, y] = toMap(a.x + (b.x - a.x) * k, a.z + (b.z - a.z) * k);
+          const [x2, y2] = toMap(b.x, b.z);
+          const [x1, y1] = toMap(a.x, a.z);
+          const ang = Math.atan2(y2 - y1, x2 - x1);
+          mm.beginPath();
+          mm.moveTo(x + Math.cos(ang + 2.5) * 3.5, y + Math.sin(ang + 2.5) * 3.5);
+          mm.lineTo(x + Math.cos(ang) * 2, y + Math.sin(ang) * 2);
+          mm.lineTo(x + Math.cos(ang - 2.5) * 3.5, y + Math.sin(ang - 2.5) * 3.5);
+          mm.stroke();
+          run += 18;
+        }
+        run -= L;
+      }
+      mm.lineCap = 'butt';
+      mm.lineJoin = 'miter';
+    } else if (m.kind === 'tide' && !tide) tide = m;
+  }
+  if (tide) {
+    // the sandbars (env.tideBars: capsules a→b of radius r), dashed while the bell warns, sand-filled while out
+    mm.lineCap = 'round';
+    for (const b of bars) {
+      if (!b || !Number.isFinite(b.ax) || !Number.isFinite(b.bx)) continue;
+      const [x0, y0] = toMap(b.ax, b.az);
+      const [x1, y1] = toMap(b.bx, b.bz);
+      const w = Math.max(3, (Number(b.r) || 4) * 2 * scale);
+      if (tide.low) {
+        mm.strokeStyle = '#1d1330';
+        mm.lineWidth = w + 2;
+        mm.beginPath();
+        mm.moveTo(x0, y0);
+        mm.lineTo(x1, y1);
+        mm.stroke();
+        mm.strokeStyle = '#f2d98a';
+        mm.lineWidth = w;
+        mm.stroke();
+      } else {
+        // (the outline of the capsule, dashed)
+        const ang = Math.atan2(y1 - y0, x1 - x0);
+        const hw = w / 2;
+        mm.setLineDash([3, 2]);
+        mm.strokeStyle = '#f2d98a';
+        mm.lineWidth = 1.6;
+        mm.beginPath();
+        mm.arc(x1, y1, hw, ang - Math.PI / 2, ang + Math.PI / 2);
+        mm.arc(x0, y0, hw, ang + Math.PI / 2, ang + Math.PI * 1.5);
+        mm.closePath();
+        mm.stroke();
+        mm.setLineDash([]);
+      }
+    }
+    mm.lineCap = 'butt';
+  }
+}
+// The fog banks on the minimap (§8.2): soft white blobs along their headings, over the islands and under the ships
+// (a ship hidden in one shows as a grey "?" inside it).
+function drawFog4(marks, toMap, scale) {
+  for (const m of marks) {
+    if (m.kind !== 'fog') continue;
+    const [x, y] = toMap(m.x, m.z);
+    const ang = Number.isFinite(m.h) ? player.h - m.h : 0; // (a heading turns to port as it grows: mirrored on the map)
+    const rx = Math.max(3, ((m.wid || 18) / 2) * scale);
+    const ry = Math.max(4, ((m.len || 30) / 2) * scale);
+    mm.fillStyle = 'rgba(250, 252, 246, 0.42)';
+    mm.beginPath();
+    mm.ellipse(x, y, rx + 1.5, ry + 1.5, ang, 0, Math.PI * 2);
+    mm.fill();
+    mm.fillStyle = 'rgba(250, 252, 246, 0.6)';
+    mm.beginPath();
+    mm.ellipse(x, y, rx, ry, ang, 0, Math.PI * 2);
+    mm.fill();
+  }
+}
+// A ship hidden from you in a fog bank (§2.6, §8.2): a grey dot with a "?".
+function fogShipMark(x, y) {
+  mm.fillStyle = '#1d1330';
+  mm.beginPath();
+  mm.arc(x, y, 5.5, 0, Math.PI * 2);
+  mm.fill();
+  mm.fillStyle = '#b8b8c0';
+  mm.beginPath();
+  mm.arc(x, y, 4, 0, Math.PI * 2);
+  mm.fill();
+  mm.fillStyle = '#1d1330';
+  mm.font = 'bold 8px sans-serif';
+  mm.textAlign = 'center';
+  mm.textBaseline = 'middle';
+  mm.fillText('?', x, y + 0.5);
+}
 function drawFoes4Marks(toMap, scale, c) {
   const V = foes4Vis;
   const pin = (x, y, m = 7) => {
@@ -9265,6 +9502,9 @@ function drawMinimap() {
       mm.fill();
     }
   }
+  // Voyage IV's hazards (SPEC4 §8.2): the coral currents' lanes with arrows, the low tide's sandbars (dashed while
+  // warned, filled while out) and the fog banks (pale blobs), under the islands and the ships.
+  if (WITH_V4 && m4) drawHazards4(marks, toMap, scale);
   for (const r of reefs) {
     const [x, y] = toMap(r.x, r.z);
     mm.fillStyle = r.ice ? '#e8f7ff' : '#7fe0d6'; // ice floes pale, reefs and sandbars teal
@@ -9345,6 +9585,7 @@ function drawMinimap() {
     mm.arc(x, y, Math.max(1.5, col.r * scale), 0, Math.PI * 2);
     mm.fill();
   }
+  if (WITH_V4 && fogLevel) drawFog4(marks, toMap, scale);
   if (env.volcano) {
     const [x, y] = toMap(env.volcano.x, env.volcano.z);
     mm.fillStyle = '#ff5a1f';
@@ -9382,7 +9623,7 @@ function drawMinimap() {
     mm.fill();
     mm.stroke();
   }
-  for (const e of targetsFor()) {
+  for (const e of hitTargets()) {
     if (e.pseudo) continue; // (the Kraken's parts: drawn below)
     // Ships still fighting (red, the boss orange) and struck ones (white: board them to take them).
     const struck = e.surrendered && e.hp > 0 && !e.captured && !e.escaped && !e.sinking;
@@ -9396,6 +9637,10 @@ function drawMinimap() {
     if (dl > c - 7) {
       x = c + (dx / dl) * (c - 7);
       y = c + (dy / dl) * (c - 7);
+    }
+    if (fogHidden.has(e)) {
+      fogShipMark(x, y);
+      continue;
     }
     const r = e.type.boss ? 6 : 4;
     const fill = struck ? '#ffffff' : e.type.merchant ? '#ffc93c' : e.type.boss ? '#ff9f1c' : '#e63946';
@@ -9449,6 +9694,7 @@ let visualTime = 0;
 // What env.update(t, dt, ctx) gets besides the visual time: the simulated time (moving obstacles are
 // placed by it) and the camera.
 const envFrame = { simTime: 0, camera };
+const envFocus = { x: 0, z: 0 }; // (Voyage IV: your ship, envFrame.focus)
 // What Voyage III's rules show this frame (mechanics.visuals(): waterspouts, the rogue wave, ink slicks, rams
 // winding up, lit fire ships, shells in the air), worked out once a frame: the envs draw the spouts, the wave and
 // the slicks from it (envFrame.hazards), main the tags' RAM! chevrons, the fire ships' rings and flames, the edge
@@ -10471,7 +10717,8 @@ function frame() {
   // The ship G would board now (tags, the Board cell and button read it).
   if (!paused) boardView = state.mode === 'playing' && player && !player.sinking ? boardPick() : null;
   // Voyage III's hazards and new ships as they stand (tags, rings, the envs, the minimap read it).
-  if (WITH_KRAKEN && !paused) hazardVis = player && (state.mode === 'playing' || state.mode === 'paused') ? mechanics.visuals() : null;
+  // (and Voyage IV's: fog banks, coral currents, the tide, nets, songs, summons, whenever mechanics4 is composed)
+  if ((WITH_KRAKEN || m4) && !paused) hazardVis = player && (state.mode === 'playing' || state.mode === 'paused') ? mechanics.visuals() : null;
   for (const e of enemies) {
     if (!paused) e.flash = Math.max(0, e.flash - dt);
     syncShip(e, t);
@@ -10533,8 +10780,10 @@ function frame() {
   updateCamera(dt, paused);
   camera.updateMatrixWorld();
   // After the ships and the camera have moved: name tags, statuses on the ships, sailors going overboard, pop words.
-  if (foes4) tags.update(enemies, camera, t, paused ? 0 : dt, foes4Tags()); // (+ the packs', forts' and Old Coilback's)
-  else tags.update(enemies, camera, t, paused ? 0 : dt);
+  // (a ship hidden from you in a fog bank has no tag, SPEC4 §2.6: tags.js hides a tag whose ship isn't passed)
+  const tagged = fogHidden.size ? targetsFor().filter((e) => !e.pseudo) : enemies;
+  if (foes4) tags.update(tagged, camera, t, paused ? 0 : dt, foes4Tags()); // (+ the packs', forts' and Old Coilback's)
+  else tags.update(tagged, camera, t, paused ? 0 : dt);
   if (statusFxView) {
     // (the Kraken's status stands on the part that burns, its head or its shadow: krakenView.statusShip)
     let fxShips = enemies;
@@ -10558,8 +10807,18 @@ function frame() {
   clouds.update(paused ? 0 : dt, focusX, focusZ);
   if (env && !paused) {
     envFrame.simTime = state.time;
-    // (the envs draw Voyage III's spouts, rogue waves and ink slicks from mechanics.visuals(), SPEC3 §11.1)
-    if (WITH_KRAKEN) envFrame.hazards = hazardVis;
+    // (the envs draw Voyage III's spouts, rogue waves and ink slicks from mechanics.visuals(), SPEC3 §11.1; Voyage
+    // IV's draw their fog banks, current lanes and tide bars from the same snapshot, SPEC4 §11.1, and the mangroves'
+    // fog keeps its puffs off your own ship round `focus`)
+    if (WITH_KRAKEN || m4) envFrame.hazards = hazardVis;
+    if (WITH_V4) {
+      const act4 = !!m4 && !!player && LEVELS[state.level - 1] && LEVELS[state.level - 1].act === 4;
+      if (act4) {
+        envFocus.x = player.x;
+        envFocus.z = player.z;
+      }
+      envFrame.focus = act4 ? envFocus : null;
+    }
     env.update(t, dt, envFrame);
   }
   if (state.mode === 'dock' && t < dock.cheerUntil) for (const p of dock.cheering) animatePerson(p, t, 'cheer');
@@ -11032,21 +11291,22 @@ window.__game = {
       return { ok: !!r.ok, reason: r.ok ? null : r.reason };
     },
     // The construction scene (SPEC4 §5.4). Stage 0: none ever runs (the montage still plays).
+    // The construction scene (SPEC4 §5.4): sparrow's env.scene.
     scene: {
       get running() {
-        return false;
+        return !!(env && env.scene && env.scene.running);
       },
       get stage() {
-        return null;
+        return env && env.scene ? env.scene.stage : null;
       },
       get t() {
-        return 0;
+        return env && env.scene ? env.scene.t : 0;
       },
       get kind() {
-        return null;
+        return env && env.scene ? env.scene.kind : null;
       },
-      skip: () => false,
-      advance: (dt) => false,
+      skip: () => !!(env && env.scene && env.scene.skip()),
+      advance: (dt) => !!(env && env.scene && env.scene.advance(dt)),
     },
   },
   // The quiz record (in memory: set() is not saved), and a round played through the Riddle Bell's panel (in the
@@ -11186,8 +11446,26 @@ window.__game = {
     cutHold(down) {
       if (WITH_V4) mechanics.cutHold(!!down);
     },
-    // (R3 wires the fog's hiding and the tide's HUD; these already answer from mechanics4)
+    // Is (x, z) inside a fog bank (the HIDDEN chip's test)? The ships hidden from you now (their G.enemies indices: no
+    // auto-aim, FIRE! light or tag for them; a "?" on the minimap). The coral current's push at (x, z) ({ vx, vz }
+    // u/s or null), as every ship there drifts (yours too).
     fog: (x, z) => !!mechanics.fogAt(x, z),
+    get hidden() {
+      return [...fogHidden].map((e) => enemies.indexOf(e)).filter((i) => i >= 0);
+    },
+    get fogChip() {
+      return fogChip.on;
+    },
+    drift: (x, z) => (m4 && Number.isFinite(x) && Number.isFinite(z) ? m4.drift({ x, z }) : null),
+    // How many shader programs the renderer holds (the warm draws' check, SPEC4 §14.1: constant after the fly-in).
+    get programs() {
+      const P = view.renderer.info.programs;
+      return Array.isArray(P) ? P.length : 0;
+    },
+    get programNames() {
+      const P = view.renderer.info.programs;
+      return Array.isArray(P) ? P.map((p) => `${p.name}#${p.id}`) : [];
+    },
     tide: (on) => (m4 && typeof m4.tide === 'function' ? m4.tide(!!on) : null),
     get mechanics4() {
       return mechanics.state.m4 ?? null;
@@ -11328,24 +11606,20 @@ window.__game = {
     },
     // (SPEC4 §11.3: the islanders and the animals, talk, pet, hops, the Island map, the districts and the lookout.
     // Stage 0: nobody, nothing, never.)
+    // The Sunset Isles' town (SPEC4 §11.3), townMode's: the islanders and animals out, talk, pet, a hop, the Island
+    // map, the district at a point, the lookout.
     get islanders() {
-      return [];
+      return townMode.api.islanders;
     },
     get critters() {
-      return [];
+      return townMode.api.critters;
     },
-    talk: (id) => false,
-    pet: (i) => false,
-    hop: (id) => false,
-    map: {
-      open: () => false,
-      close: () => false,
-      get active() {
-        return false;
-      },
-    },
-    districtAt: (x, z) => null,
-    lookout: (on) => false,
+    talk: (id) => townMode.api.talk(id),
+    pet: (i) => townMode.api.pet(i),
+    hop: (id) => townMode.api.hop(id),
+    map: townMode.api.map,
+    districtAt: (x, z) => townMode.api.districtAt(x, z),
+    lookout: (on) => townMode.api.lookout(on),
   },
   // The shipyard: open('menu' | 'levelDone' | 'over' | 'won' | 'quit'), at once (the buttons wait two frames);
   // 'quit' leaves the battle in play as the pause dialog's Shipyard does (this level's plunder is dropped as

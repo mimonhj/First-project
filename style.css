@@ -2466,3 +2466,60 @@ body:has(#boss:not(.hidden)):has(#grab-strip:not(.hidden)) .banner { top: max(24
    --gold-text, 5.5:1). */
 .edge-arrow.behind .ea-arrow svg { fill: var(--gold); }
 .edge-arrow.behind .ea-word { background: var(--gold-text); }
+/* HIDDEN (SPEC4 §2.6, §8.2): your ship is inside a fog bank (pirates lose sight of you). An eye with a slash and the
+   word, under the hull card (below the goal pill or the net strip when they show); never colour alone. */
+.fog-chip {
+  position: fixed;
+  top: calc(var(--edge) + var(--top-h) + 8px);
+  left: var(--edge);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 11px 3px 7px;
+  font-family: var(--head);
+  font-size: 16px;
+  line-height: 1.1;
+  letter-spacing: 0.06em;
+  color: var(--ink);
+  background: #e9eef0;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  box-shadow: 0 3px 0 var(--ink);
+  pointer-events: none;
+  white-space: nowrap;
+}
+.fog-ico { width: 22px; height: 22px; flex: none; fill: none; stroke: var(--ink); stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
+.fog-ico .fog-eye { fill: #ffffff; }
+.fog-ico .fog-pupil { fill: var(--ink); stroke: none; }
+.fog-ico .fog-slash { stroke-width: 2.6; }
+#hud:has(#objective:not(.hidden)) .fog-chip { top: calc(var(--edge) + var(--top-h) + 44px); }
+@media (max-width: 640px) and (hover: none) and (pointer: coarse) {
+  /* (the net strip spans the top left of a portrait phone: the chip goes under it) */
+  #hud:has(#grab-strip:not(.hidden)) .fog-chip { top: calc(var(--edge) + var(--top-h) + 92px); }
+}
+@media (max-height: 500px) {
+  .fog-chip { top: calc(var(--edge) + var(--top-h) + 6px); font-size: 14px; padding: 2px 9px 2px 6px; }
+  .fog-ico { width: 18px; height: 18px; }
+}
+/* FOG! (§2.6): that side's guns have nothing to aim at only because a ship there is hidden in the fog. The tag in
+   pale grey with ink, no glow (a broadside still hits her); the touch Fire button wears the word too. */
+.gun.fog.ready .fire-tag { display: block; background: #e9eef0; color: var(--ink); text-shadow: none; }
+.gun.fog.ready { box-shadow: 0 0 0 2px #8a96a0; }
+#hud:has(#gun-port.fog.ready) button[data-tap="firePort"]::after,
+#hud:has(#gun-star.fog.ready) button[data-tap="fireStar"]::after {
+  content: "FOG!";
+  position: absolute;
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 1px 5px 0;
+  font-size: 11px;
+  line-height: 1.1;
+  letter-spacing: 0.04em;
+  color: var(--ink);
+  text-shadow: none;
+  background: #e9eef0;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  pointer-events: none;
+}

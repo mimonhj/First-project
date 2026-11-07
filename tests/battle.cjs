@@ -19,6 +19,10 @@
 // - the Kraken Seas (SPEC3 §13.2, with ?kraken=1): special shot, the ammo tray, statuses, armour, hot and stinky
 //   boarding, the rudder, the thumb slide and the wheel, the records, the rudder row, the new sounds, and the live
 //   game unchanged without ?kraken=1 (the kraken-* sections)
+// - the Sunset Isles (SPEC4 §13.2, with ?v4=1 until Voyage IV sails for everyone: BATTLE_V4_QUERY, default
+//   '?quality=low&v4=1'; Stage 3 drops the v4=1 at the flip): the parts registry on a level of today with a spawned
+//   pack, patch and fort (aim, FIRE!, hits, a word once a volley, no capture), a net cut by G and by CUT!, and
+//   levels 1-9 as today (no warning-shape cap, no fog, no new kind, the dice seeded as today) (the v4-* sections)
 // The simulation is frozen (the real-time loop is paused) and driven with G.step(1/120) like smoke.cjs;
 // crits are pinned with G.combat.seed() / forceCrit(). Run with `npm test` or `npm run test:battle`
 // (BATTLE_ONLY=damage,ammo,review4 runs some sections; BATTLE_ROOT serves another copy of the game).
@@ -5672,6 +5676,300 @@ function ev(page, fn, arg = null) {
     check(help.arrows.pause === '◀▶ steer · slide on them for gentle turns' && help.arrows.menu === help.arrows.pause && /Hold ◀ ▶ to steer/.test(help.arrows.banner),
       `kraken thumbs: back on the arrows, the help reads "${help.arrows.pause}" again and the banner "Hold ◀ ▶ to steer" (${J(help.arrows)})`);
     await closeK(ctx);
+  });
+
+  // =========================================================================================================
+  // The Sunset Isles (SPEC4 §13.2's battle additions), with ?v4=1 until Voyage IV sails for everyone (BATTLE_V4_QUERY;
+  // Stage 3 drops the v4=1 at the flip): the parts registry on a level of today with a jollyboat pack, a puffer patch
+  // and a Rock Fort spawned (the guns aim at them and light FIRE!, balls hit them, a foe says its word once a volley,
+  // nothing of them is ever captured); a net cut by G (held or pressed 3 times) and by CUT! on a phone; and levels 1-9
+  // as today (no warning-shape cap, no fog, no tide, no current, no new kind in their waves, the dice seeded with
+  // n × 7919 + 13). BATTLE_ONLY=v4-parts,v4-nets,v4-levels runs them.
+  // =========================================================================================================
+  const V4Q = process.env.BATTLE_V4_QUERY || '?quality=low&v4=1';
+  const V4STORE = {
+    'pirates-ahoy-unlocked': '12',
+    'pirates-ahoy-tutorial-done': '1',
+    'pirates-ahoy-tips': '65535',
+    'pirates-ahoy-powder': '{"v":1,"own":{"fire":1,"frost":1,"stink":1}}',
+    'pirates-ahoy-voyage4': '{"v":1,"plays":[0,0,0],"met":255,"won":0,"tips":65535,"prizes":{}}',
+  };
+  async function openV4(o = {}) {
+    const r = await open({ query: V4Q, store: V4STORE, ...o });
+    KLABEL.set(r.page, o.label || 'page');
+    await r.page.evaluate(installKraken);
+    return r;
+  }
+
+  // ------------------------------------------------------------------- v4: the parts registry on any level
+  await section('v4-parts', async () => {
+    const { ctx, page: vp } = await openV4({ label: 'v4-parts' });
+    const r = await ev(vp, async () => {
+      const G = window.__game;
+      const out = {};
+      const level = (n) => {
+        const p = T.level(n);
+        const def = G.LEVELS[n - 1];
+        // (past the level's grace for Voyage IV's rules: their own clock)
+        for (let i = 0; i < 120 * 8 && G.v4.mechanics4 && G.v4.mechanics4.hazardTime < (def.grace || 0) + 0.05; i++) {
+          p.speed = 0;
+          G.step(1 / 120);
+        }
+        return p;
+      };
+      const rx = (h) => -Math.cos(h);
+      const rz = (h) => Math.sin(h);
+      const lit = (id) => document.getElementById(id).classList.contains('target');
+      const tag = (id) => ((document.getElementById(id).querySelector('.fire-tag') || {}).textContent || '').trim();
+      // 1. a Rock Fort off your starboard beam: the guns aim at it (FIRE!), a broadside hits it, its tag shows
+      let p = level(2);
+      const fx = p.x + rx(p.h) * 20;
+      const fz = p.z + rz(p.h) * 20;
+      const fort = G.v4.spawn('fort', fx, fz);
+      const pin = () => {
+        p.speed = 0;
+        p.hp = p.maxHp;
+      };
+      T.steps(0.2, pin);
+      p.reload.port = p.reload.star = 0;
+      await K.play(0.15, pin);
+      const fw = G.v4.wrappers.find((w) => w.kind === 'fort');
+      out.fort = {
+        id: fort,
+        wrapper: !!fw && fw.partKind === 'fort' && /^foes4-/.test(fw.id),
+        inArc: !!fw && G.inArc(p, { x: fw.x, z: fw.z, h: 0, speed: 0, hp: fw.hp, type: { len: fw.len, wid: fw.len } }, 1),
+        light: { star: lit('gun-star'), tag: tag('gun-star'), port: lit('gun-port') },
+        tag: G.tagInfo(fort),
+      };
+      const hp0 = G.v4.foes.foes.find((f) => f.id === fort).hp;
+      G.combat.clearLog();
+      p.reload.port = p.reload.star = 0;
+      G.playerFire(1);
+      T.steps(1.5, pin);
+      out.fort.hit = Math.round(hp0 - G.v4.foes.foes.find((f) => f.id === fort).hp);
+      out.fort.log = G.combat.log.filter((l) => l.owner === 'player' && /^foes4-/.test(String(l.targetId))).length;
+      // 2. a puffer patch clustered off your beam: one grape volley sends several home, and says PFFT! once
+      p = level(2);
+      G.v4.spawn('puffer', p.x + rx(p.h) * 14, p.z + rz(p.h) * 14, { n: 4 });
+      T.steps(0.7, pin);
+      K.watchPops();
+      G.combat.setAmmo('grape');
+      p.reload.port = p.reload.star = 0;
+      const home0 = G.v4.foes.counts.pffts;
+      G.playerFire(1);
+      T.steps(1.2, pin);
+      await K.play(0.3, pin);
+      out.patch = { sent: G.v4.foes.counts.pffts - home0, pfft: K.pops().filter((t) => t === 'PFFT!').length };
+      G.combat.setAmmo('round');
+      // 3. a jollyboat pack: grape tips its boats (SPLOSH! once a volley); nothing of it is ever boarded or captured
+      p = level(2);
+      const pack = G.v4.spawn('jolly', p.x + rx(p.h) * 14, p.z + rz(p.h) * 14);
+      T.steps(0.3, pin);
+      K.watchPops();
+      G.combat.setAmmo('grape');
+      let tipped = 0;
+      let volleys = 0;
+      for (let k = 0; k < 6 && tipped < 2; k++) {
+        p.reload.port = p.reload.star = 0;
+        const t0 = G.v4.foes.counts.tipped;
+        const side = G.v4.wrappers.filter((w) => w.kind === 'jolly').some((w) => G.relative(p, w.x, w.z).lat > 0) ? 1 : -1;
+        G.playerFire(side);
+        volleys++;
+        T.steps(1.2, pin);
+        tipped += G.v4.foes.counts.tipped - t0;
+      }
+      await K.play(0.3, pin);
+      out.pack = { tipped, volleys, splosh: K.pops().filter((t) => t === 'SPLOSH!').length };
+      G.combat.setAmmo('round');
+      out.never = {
+        captures: G.capture.count,
+        boarding: G.boarding.active,
+        pick: G.boarding.pick().target ? 'something' : null,
+        grapple: G.grapple().ok,
+        strike: G.v4.wrappers.map((w) => G.capture.strike(w)),
+      };
+      out.feats = Object.keys(G.feats.prizes || {});
+      return out;
+    });
+    check(r.fort.wrapper && r.fort.inArc && r.fort.light.star && r.fort.light.tag === 'FIRE!' && !r.fort.light.port && !!r.fort.tag && r.fort.tag.visible && r.fort.tag.bar,
+      `v4-parts: a Rock Fort off your starboard beam on level 2 is a part (foes4-…) your guns aim at: FIRE! lights on that side only, its tag shows its hull bar (${J({ wrapper: r.fort.wrapper, inArc: r.fort.inArc, light: r.fort.light, tag: r.fort.tag && { visible: r.fort.tag.visible, bar: r.fort.tag.bar } })})`);
+    check(r.fort.hit > 0 && r.fort.log >= 1, `v4-parts: a broadside at it hits (${r.fort.log} balls in the shot log, ${r.fort.hit} hp off it)`);
+    check(r.patch.sent >= 2 && r.patch.pfft === 1, `v4-parts: one grape volley at a puffer patch sends ${r.patch.sent} home and says PFFT! once (${r.patch.pfft})`);
+    check(r.pack.tipped >= 2 && r.pack.splosh >= 1 && r.pack.splosh <= r.pack.volleys, `v4-parts: grape tips the pack's boats (${r.pack.tipped} in ${r.pack.volleys} volleys), SPLOSH! at most once a volley (${r.pack.splosh})`);
+    check(r.never.captures === 0 && !r.never.boarding && r.never.pick === null && r.never.grapple === false && r.never.strike.every((s) => s === false) && !r.feats.some((k) => ['jolly', 'puffer', 'coilback', 'fort'].includes(k)),
+      `v4-parts: nothing of them is ever boarded, struck or captured, nor counted as a prize (${J({ never: r.never, feats: r.feats })})`);
+    await closeK(ctx);
+  });
+
+  // ------------------------------------------------------------------------ v4: a net cut by G and CUT!
+  await section('v4-nets', async () => {
+    const { ctx, page: vp } = await openV4({ label: 'v4-nets' });
+    const r = await ev(vp, () => {
+      const G = window.__game;
+      const r2 = (v) => Math.round(v * 100) / 100;
+      const p = T.level(3);
+      const pin = () => {
+        p.speed = 0;
+        p.hp = p.maxHp;
+      };
+      const out = {};
+      const net = () => {
+        const ok = G.v4.net();
+        G.step(1 / 120);
+        return ok && !!G.v4.netted;
+      };
+      // held: free after the hold time (0.8 s), not before
+      out.on1 = net();
+      const t0 = G.state.time;
+      T.key('g', 'KeyG');
+      let at = null;
+      T.steps(1.5, () => {
+        pin();
+        if (at === null && !G.v4.netted) at = G.state.time;
+      });
+      T.key('g', 'KeyG', { type: 'keyup' });
+      out.held = at === null ? null : r2(at - t0);
+      // pressed: free at the third press
+      out.on2 = net();
+      out.presses = [];
+      for (let k = 0; k < 3; k++) {
+        T.key('g', 'KeyG');
+        T.key('g', 'KeyG', { type: 'keyup' });
+        T.steps(0.1, pin);
+        out.presses.push(!!G.v4.netted);
+      }
+      // a short hold (0.4 s) lets go of nothing; the net still lets go by itself within 4 s
+      out.on3 = net();
+      T.key('g', 'KeyG');
+      T.steps(0.4, pin);
+      T.key('g', 'KeyG', { type: 'keyup' });
+      out.short = !!G.v4.netted;
+      const t3 = G.state.time;
+      let free = null;
+      T.steps(4.5, () => {
+        pin();
+        if (free === null && !G.v4.netted) free = G.state.time;
+      });
+      out.timeout = free === null ? null : r2(free - t3 + 0.4);
+      return out;
+    });
+    check(r.on1 && r.held !== null && Math.abs(r.held - 0.8) <= 0.03 && r.on2 && J(r.presses) === '[true,true,false]',
+      `v4-nets: a net is cut by G held ${r.held} s (0.8) and by 3 presses of G (netted after each: ${J(r.presses)})`);
+    check(r.on3 && r.short && r.timeout !== null && r.timeout <= 4 + 1e-6, `v4-nets: a short hold cuts nothing; left alone it lets go by itself within 4 s (${r.timeout} s)`);
+    const { ctx: tc, page: tp } = await openV4({ width: 390, height: 844, touch: true, label: 'v4-nets-phone' });
+    const t = await ev(tp, async () => {
+      const G = window.__game;
+      const r2 = (v) => Math.round(v * 100) / 100;
+      const p = T.level(3);
+      const pin = () => {
+        p.speed = 0;
+        p.hp = p.maxHp;
+      };
+      const btn = document.getElementById('touch-board');
+      const ptr = (type, id) => btn.dispatchEvent(new PointerEvent(type, { bubbles: true, cancelable: true, pointerId: id, pointerType: 'touch', isPrimary: true }));
+      const out = {};
+      G.v4.net();
+      G.step(1 / 120);
+      await K.play(0.1, pin);
+      out.word = btn.textContent.trim();
+      out.disabled = btn.getAttribute('aria-disabled');
+      out.strip = T.text('grab-strip');
+      ptr('pointerdown', 61);
+      const t0 = G.state.time;
+      let at = null;
+      T.steps(1.5, () => {
+        pin();
+        if (at === null && !G.v4.netted) at = G.state.time;
+      });
+      ptr('pointerup', 61);
+      out.held = at === null ? null : r2(at - t0);
+      G.v4.net();
+      G.step(1 / 120);
+      for (let k = 0; k < 3; k++) {
+        ptr('pointerdown', 62 + k);
+        ptr('pointerup', 62 + k);
+        T.steps(0.05, pin);
+      }
+      out.taps = !G.v4.netted;
+      return out;
+    });
+    check(/CUT!/.test(t.word) && t.disabled === 'false' && /Hold CUT!/.test(t.strip) && t.held !== null && Math.abs(t.held - 0.8) <= 0.05 && t.taps,
+      `v4-nets: on a phone the Board pill reads ${t.word} ("${t.strip}"): held it cuts the net in ${t.held} s, and 3 taps cut one (${J(t)})`);
+    await closeK(tc);
+    await closeK(ctx);
+  });
+
+  // ------------------------------------------------------------------------ v4: levels 1-9 as they are today
+  await section('v4-levels', async () => {
+    // Each of levels 1-9 started and played 12 s with the same rolls (Math.random pinned, broadsides fired now and
+    // then so the crit dice roll) in a page with ?v4=1 and in one without: the same shots, the same crits, the same
+    // ships in the same places (so the dice are seeded n × 7919 + 13 as today, and nothing new takes a roll).
+    const play = () => {
+      const G = window.__game;
+      const out = [];
+      for (let n = 1; n <= 9; n++) {
+        let a = 99991 + n;
+        Math.random = () => ((a = (a * 48271) % 2147483647) / 2147483647);
+        G.state.tutorialDone = true;
+        G.newGame(n);
+        G.state.intro = 0;
+        G.combat.forceCrit(null);
+        G.combat.clearLog();
+        const p = G.player;
+        let fired = 0;
+        for (let i = 0; i < 120 * 12; i++) {
+          if (i % 120 === 0) {
+            p.reload.port = p.reload.star = 0;
+            if (G.playerFire(1)) fired++;
+            if (G.playerFire(-1)) fired++;
+          }
+          p.hp = p.maxHp;
+          G.step(1 / 120);
+        }
+        out.push(JSON.stringify({ fired, log: G.combat.log.map((l) => [l.target, Math.round(l.dmg * 1000), l.crit || null, Math.round(l.x * 100), Math.round(l.z * 100)]), enemies: G.enemies.map((e) => [e.typeName, Math.round(e.x * 100), Math.round(e.z * 100), Math.round(e.hp * 100)]) }));
+      }
+      return out;
+    };
+    const { ctx, page: vp } = await openV4({ label: 'v4-levels' });
+    const withV4 = await ev(vp, play);
+    const r = await ev(vp, () => {
+      const G = window.__game;
+      const out = [];
+      for (let n = 1; n <= 9; n++) {
+        const def = G.LEVELS[n - 1];
+        G.state.tutorialDone = true;
+        G.newGame(n);
+        G.state.intro = 0;
+        G.step(1 / 120);
+        const W = G.v4.warnSlots;
+        const m4 = G.v4.mechanics4 || {};
+        const pts = [[0, 0], [G.player.x, G.player.z], [40, -40], [-60, 30], [80, 80]];
+        out.push({
+          n,
+          cap: W.max === Infinity && W.boss === Infinity,
+          fog: !m4.fog || (m4.fog.on === false && m4.fog.banks.length === 0),
+          fogAt: pts.some(([x, z]) => G.v4.fog(x, z)),
+          tide: !m4.tide || m4.tide.on === false,
+          currents: !m4.currents || (m4.currents.on === false && m4.currents.lanes.length === 0),
+          waves: JSON.stringify(G.v4.waves) === JSON.stringify(def.waves),
+          kinds: def.waves.flat().every((k) => !!G.SHIP_TYPES[k] && !['jolly', 'puffer', 'coilback', 'fort', 'shellback'].includes(k)),
+          slots: G.v4.slots,
+        });
+      }
+      return out;
+    });
+    const bad = r.filter((x) => !(x.cap && x.fog && !x.fogAt && x.tide && x.currents && x.waves && x.kinds && x.slots === 0));
+    check(r.length === 9 && bad.length === 0,
+      `v4-levels: with ${V4Q} levels 1-9 have no warning-shape cap, no fog, tide or current, their own waves of ships only and no pseudo foe${bad.length ? ` -> ${J(bad)}` : ''}`);
+    await closeK(ctx);
+    const { ctx: pc, page: pp } = await open({ store: V4STORE, label: 'v4-levels-plain' });
+    KLABEL.set(pp, 'v4-levels-plain');
+    const plain = await ev(pp, play);
+    await closeK(pc);
+    const differ = withV4.map((s, i) => (s === plain[i] ? null : i + 1)).filter(Boolean);
+    const shots = withV4.map((s) => JSON.parse(s).log.length);
+    check(withV4.length === 9 && differ.length === 0 && shots.every((k) => k > 0),
+      `v4-levels: levels 1-9 played 12 s with the same rolls with and without ?v4=1 land the same shots and crits (${shots.join('/')} hits) and leave the same ships in the same places (the dice seeded n × 7919 + 13 as today)${differ.length ? ` -> levels ${differ.join(', ')} differ` : ''}`);
   });
 
   check(errors.length === 0, `no page errors${errors.length ? ': ' + errors.slice(0, 8).join(' | ') : ''}`);
